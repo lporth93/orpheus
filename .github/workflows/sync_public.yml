@@ -23,7 +23,7 @@ jobs:
         cd $GITHUB_WORKSPACE/orpheus_public/
         git config --global user.email "actions@github.com"
         git config --global user.name "GitHub Actions"
-        git remote add origin git@github.com:lporth93/orpheus_public.git
+        git remote set-url origin https://$GH_PUBLIC_REPO_TOKEN@github.com/lporth93/orpheus_public.git
         
 
     - name: Commit and push changes to public repository
