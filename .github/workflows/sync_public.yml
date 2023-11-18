@@ -1,0 +1,33 @@
+name: Sync Public Files
+
+on:
+  push:
+    branches:
+      - main  # Adjust to your main branch name
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout private repository
+      uses: actions/checkout@v2
+
+    - name: Copy public files to public repository
+      run: |
+        mkdir $GITHUB_WORKSPACE/orpheus_public/
+        cp README.rst $GITHUB_WORKSPACE/orpheus_public/
+
+    - name: Configure Git
+      run: |
+        cd $GITHUB_WORKSPACE/orpheus_public/
+        git config --global user.email "actions@github.com"
+        git config --global user.name "GitHub Actions"
+
+    - name: Commit and push changes to public repository
+      run: |
+        cd $GITHUB_WORKSPACE/orpheus_public/
+        git add .
+        git commit -m "Sync public files from private repository"
+        git push origin main
+
