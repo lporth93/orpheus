@@ -11,7 +11,7 @@ jobs:
 
     steps:
     - name: Checkout private repository
-      uses: actions/checkout@v2
+      uses: actions/checkout@v3
 
     - name: Copy public files to public repository
       run: |
@@ -23,15 +23,19 @@ jobs:
         cd $GITHUB_WORKSPACE/orpheus_public/
         git config --global user.email "actions@github.com"
         git config --global user.name "GitHub Actions"
-        git remote set-url origin https://github.com/lporth93/orpheus_public.git
-        git config --global credential.helper '!f() { echo "username=gh-token password=${secrets.GH_PUBLIC_REPO_TOKEN}"; }; f'
-        git fetch
-        git checkout -B main origin/main        
+        #git remote set-url origin https://github.com/lporth93/orpheus_public.git
+        #git config --global credential.helper '!f() { echo "username=gh-token password=${secrets.GH_PUBLIC_REPO_TOKEN}"; }; f'
+        #git fetch
+        #git checkout -B main origin/main        
 
     - name: Commit and push changes to public repository
       run: |
         cd $GITHUB_WORKSPACE/orpheus_public/
         git add .
         git commit -m "Sync public files from private repository"
-        git push origin main
+        #git push origin main
+        git push https://$USERNAME:$REPO_KEY@github.com/lporth93/orpheus_public.git
+      env:
+        REPO_KEY: ${{secrets.GH_PUBLIC_REPO_TOKEN}}
+        USERNAME: github-actions[bot]
 
