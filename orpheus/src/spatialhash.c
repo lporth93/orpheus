@@ -143,7 +143,7 @@ void _gen_pixmeans(double *pos_1, double *pos_2, double *e1, double *e2, double 
 }
 
 void reducecat(double *w, double *pos_1, double *pos_2, double *scalarquants, int ngal, int nscalarquants,
-               double mask_d1, double mask_d2, double mask_min1, double mask_min2, int mask_n1, int mask_n2,
+               double mask_d1, double mask_d2, double mask_min1, double mask_min2, int mask_n1, int mask_n2, int shuffle,
                double *w_red, double *pos1_red, double *pos2_red, double *scalarquants_red, int ngal_red){
     
     // Build spatial hash
@@ -160,8 +160,10 @@ void reducecat(double *w, double *pos_1, double *pos_2, double *scalarquants, in
     
     // Allocate pixelized catalog from spatial hash
     int ind_pix1, ind_pix2, ind_red, lower, upper, ind_inpix, ind_gal, elscalarquant;
-    double tmppos_1, tmppos_2, tmpw;
+    double tmppos_1, tmppos_2, tmpw, shift_1, shift_2;
     double *tmpscalarquants;
+    int rseed=42;
+    srand(rseed);  
     for (ind_pix1=0; ind_pix1<mask_n1; ind_pix1++){
         for (ind_pix2=0; ind_pix2<mask_n2; ind_pix2++){
             ind_red = spatialhash[start_matcher + ind_pix2*mask_n1 + ind_pix1];
@@ -183,8 +185,14 @@ void reducecat(double *w, double *pos_1, double *pos_2, double *scalarquants, in
             }
             if (tmpw==0){continue;}
             w_red[ngal_red] = tmpw;
-            pos1_red[ngal_red] = tmppos_1/tmpw;
-            pos2_red[ngal_red] = tmppos_2/tmpw;
+            if (shuffle==0){
+                pos1_red[ngal_red] = tmppos_1/tmpw;
+                pos2_red[ngal_red] = tmppos_2/tmpw;}
+            else{
+                shift_1 = ((double)rand()/(double)(RAND_MAX)) * mask_d1;
+                shift_2 = ((double)rand()/(double)(RAND_MAX)) * mask_d2;
+                pos1_red[ngal_red] = mask_min1+ind_pix1*mask_d1 + shift_1;
+                pos2_red[ngal_red] = mask_min2+ind_pix2*mask_d2 + shift_2;}
             for (elscalarquant=0; elscalarquant<nscalarquants; elscalarquant++){
                 // Here we need to average each of the quantities in order to retain the correct
                 // normalization of the NPCF - i.e. for a polar field we would have
@@ -196,8 +204,10 @@ void reducecat(double *w, double *pos_1, double *pos_2, double *scalarquants, in
                 scalarquants_red[elscalarquant*ngal+ngal_red] =  tmpscalarquants[elscalarquant]/tmpw;
             }
             ngal_red += 1;
+            free(tmpscalarquants);
         }
     }
+    free(spatialhash);
 }
 
 void reducecat2(double *pos_1, double *pos_2, double *e1, double *e2, double *w, int ngal,

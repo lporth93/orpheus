@@ -8,11 +8,12 @@ import numpy as np
 from numpy.ctypeslib import ndpointer
 from pathlib import Path
 from .catalog import Catalog, ScalarTracerCatalog, SpinTracerCatalog, MultiTracerCatalog
+from .utils import get_site_packages_dir, search_file_in_site_package
 
 
 __all__ = ["BinnedNPCF", 
            "GGGCorrelation", "FFFCorrelation", "GNNCorrelation", "NGGCorrelation",
-           "GGGGCorrelation"]
+           "GGGGCorrelation", "XipmMixedCovariance"]
 
 #########################################################
 ## ABSTRACT BASE CLASSES FOR NPCF AND THEIR MULTIPOLES ##
@@ -20,20 +21,21 @@ __all__ = ["BinnedNPCF",
 class BinnedNPCF:
     
     def __init__(self, order, spins, n_cfs, min_sep, max_sep, nbinsr=None, binsize=None, nbinsphi=100, 
-                 nmaxs=30, method="Tree", multicountcorr=True,
+                 nmaxs=30, method="Tree", multicountcorr=True, shuffle_pix=True,
                  tree_resos=[0,0.25,0.5,1.,2.], tree_redges=None, rmin_pixsize=20):
         
-        self.order = np.int32(order)
-        self.n_cfs = np.int32(n_cfs)
+        self.order = int(order)
+        self.n_cfs = int(n_cfs)
         self.min_sep = min_sep
         self.max_sep = max_sep
         self.nbinsphi = nbinsphi
         self.nmaxs = nmaxs
         self.method = method
         self.multicountcorr = int(multicountcorr)
+        self.shuffle_pix = shuffle_pix
         self.methods_avail = ["Discrete", "Tree", "DoubleTree"]
-        self.tree_resos = np.asarray(tree_resos, dtype=float)
-        self.tree_nresos = np.int32(len(self.tree_resos))
+        self.tree_resos = np.asarray(tree_resos, dtype=np.float64)
+        self.tree_nresos = int(len(self.tree_resos))
         self.tree_redges = tree_redges
         self.rmin_pixsize = rmin_pixsize
         self.tree_resosatr = None
@@ -53,18 +55,18 @@ class BinnedNPCF:
             spins = spins*np.ones(order).astype(np.int32)
         self.spins = np.asarray(spins, dtype=np.int32)
         print(self.spins)
-        assert(isinstance(self.order, np.int32))
+        assert(isinstance(self.order, int))
         assert(isinstance(self.spins, np.ndarray))
-        assert(isinstance(self.spins[0], np.int32))
+        assert(isinstance(self.spins[0], int))
         assert(len(spins)==self.order)
-        assert(isinstance(self.n_cfs, np.int32))
+        assert(isinstance(self.n_cfs, int))
         assert(isinstance(self.min_sep, float))
         assert(isinstance(self.max_sep, float))
         assert(isinstance(self.nbinsphi, np.ndarray))
-        assert(isinstance(self.nbinsphi[0], np.int32))
+        assert(isinstance(self.nbinsphi[0], int))
         assert(len(self.nbinsphi)==self.order-2)
         assert(isinstance(self.nmaxs, np.ndarray))
-        assert(isinstance(self.nmaxs[0], np.int32))
+        assert(isinstance(self.nmaxs[0], int))
         assert(len(self.nmaxs)==self.order-2)
         assert(self.method in self.methods_avail)
         assert(isinstance(self.tree_resos, np.ndarray))
@@ -74,11 +76,11 @@ class BinnedNPCF:
         # Note that we always have self.binsize <= binsize
         assert((binsize!=None) or (nbinsr!=None))
         if nbinsr != None:
-            self.nbinsr = np.int32(nbinsr)
+            self.nbinsr = int(nbinsr)
         if binsize != None:
             assert(isinstance(binsize, float))
-            self.nbinsr = np.int32(np.ceil(np.log(self.max_sep/self.min_sep)/binsize))
-        assert(isinstance(self.nbinsr, np.int32))
+            self.nbinsr = int(np.ceil(np.log(self.max_sep/self.min_sep)/binsize))
+        assert(isinstance(self.nbinsr, int))
         self.bin_edges = np.geomspace(self.min_sep, self.max_sep, self.nbinsr+1)
         self.binsize = np.log(self.bin_edges[1]/self.bin_edges[0])
         # Setup variable for tree estimator
@@ -109,13 +111,14 @@ class BinnedNPCF:
         #############################
         ## Link compiled libraries ##
         #############################
-        target_path = __import__('orpheus').__file__
-        self.library_path = str(Path(__import__('orpheus').__file__).parent.parent.absolute())
-        self.clib = ct.CDLL(glob.glob(self.library_path+"/orpheus_clib*.so")[0])
-        p_c128 = ndpointer(np.complex128, flags="C_CONTIGUOUS")
+        #target_path = __import__('orpheus').__file__
+        #self.library_path = str(Path(__import__('orpheus').__file__).parent.parent.absolute())
+        #self.clib = ct.CDLL(glob.glob(self.library_path+"/orpheus_clib*.so")[0])
+        self.clib = ct.CDLL(search_file_in_site_package(get_site_packages_dir(),"orpheus_clib"))
+        p_c128 = ndpointer(complex, flags="C_CONTIGUOUS")
         p_f64 = ndpointer(np.float64, flags="C_CONTIGUOUS")
         p_f32 = ndpointer(np.float32, flags="C_CONTIGUOUS")
-        p_i32 = ndpointer(np.int32, flags="C_CONTIGUOUS")
+        p_i32 = ndpointer(int, flags="C_CONTIGUOUS")
         p_f64_nof = ndpointer(np.float64)
         
         ## Third order shear statistics ##
@@ -127,9 +130,9 @@ class BinnedNPCF:
                 ct.c_int32, ct.c_int32, ct.c_double, ct.c_double, p_f64, ct.c_int32, ct.c_int32, 
                 p_i32, p_i32, p_i32, ct.c_double, ct.c_double, ct.c_int32, 
                 ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, 
-                np.ctypeslib.ndpointer(dtype=np.double), 
-                np.ctypeslib.ndpointer(dtype=np.complex),
-                np.ctypeslib.ndpointer(dtype=np.complex)] 
+                np.ctypeslib.ndpointer(dtype=np.float64), 
+                np.ctypeslib.ndpointer(dtype=np.complex128),
+                np.ctypeslib.ndpointer(dtype=np.complex128)] 
             
             # Tree-based estimator of third-order shear correlation function
             self.clib.alloc_Gammans_tree_ggg.restype = ct.c_void_p
@@ -139,10 +142,24 @@ class BinnedNPCF:
                 p_f64, p_f64, p_f64, p_f64, p_f64, p_i32,
                 p_i32, p_i32, p_i32, ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32,
                 ct.c_int32, ct.c_int32, ct.c_double, ct.c_double, p_f64, ct.c_int32, ct.c_int32, ct.c_int32, 
-                np.ctypeslib.ndpointer(dtype=np.double), 
-                np.ctypeslib.ndpointer(dtype=np.complex),
-                np.ctypeslib.ndpointer(dtype=np.complex)] 
-        
+                np.ctypeslib.ndpointer(dtype=np.float64), 
+                np.ctypeslib.ndpointer(dtype=np.complex128),
+                np.ctypeslib.ndpointer(dtype=np.complex128)] 
+            
+        if self.order==3:
+            self.clib.alloc_triplets_tree_xipxipcov.restype = ct.c_void_p
+            self.clib.alloc_triplets_tree_xipxipcov.argtypes = [
+                p_i32, p_f64, p_f64, p_f64, p_i32, ct.c_int32, ct.c_int32, 
+                ct.c_int32, p_f64, p_i32,
+                p_f64, p_f64, p_f64 , p_i32,
+                p_i32, p_i32, p_i32, ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32,
+                ct.c_int32, ct.c_int32, ct.c_double, ct.c_double, p_f64, ct.c_int32, ct.c_int32, ct.c_int32, 
+                np.ctypeslib.ndpointer(dtype=np.float64), 
+                np.ctypeslib.ndpointer(dtype=np.float64), 
+                np.ctypeslib.ndpointer(dtype=np.float64), 
+                np.ctypeslib.ndpointer(dtype=np.complex128),
+                np.ctypeslib.ndpointer(dtype=np.complex128)] 
+
         
     ############################################################
     ## Functions that deal with different projections of NPCF ##
@@ -232,24 +249,24 @@ class GGGCorrelation(BinnedNPCF):
         sn = (self.nmax+1,self.nbinsz*self.nbinsz*self.nbinsz,self.nbinsr,self.nbinsr)
         szr = (self.nbinsz, self.nbinsr)
         bin_centers = np.zeros(self.nbinsz*self.nbinsr).astype(np.float64)
-        threepcfs_n = np.zeros(4*(self.nmax+1)*self.nbinsz*self.nbinsz*self.nbinsz*self.nbinsr*self.nbinsr).astype(np.complex128)
-        threepcfsnorm_n = np.zeros((self.nmax+1)*self.nbinsz*self.nbinsz*self.nbinsz*self.nbinsr*self.nbinsr).astype(np.complex128)
+        threepcfs_n = np.zeros(4*(self.nmax+1)*self.nbinsz*self.nbinsz*self.nbinsz*self.nbinsr*self.nbinsr).astype(complex)
+        threepcfsnorm_n = np.zeros((self.nmax+1)*self.nbinsz*self.nbinsz*self.nbinsz*self.nbinsr*self.nbinsr).astype(complex)
         args_basecat = (cat.isinner.astype(np.int32), cat.weight, cat.pos1, cat.pos2, cat.tracer_1, cat.tracer_2, 
-                        zbins.astype(np.int32), np.int32(self.nbinsz), np.int32(cat.ngal), )
-        args_basesetup = (np.int32(0), np.int32(self.nmax), np.float64(self.min_sep), np.float64(self.max_sep), np.array([-1.]).astype(np.float64), 
-                          np.int32(self.nbinsr), np.int32(self.multicountcorr), )
+                        zbins.astype(np.int32), int(self.nbinsz), int(cat.ngal), )
+        args_basesetup = (int(0), int(self.nmax), np.float64(self.min_sep), np.float64(self.max_sep), np.array([-1.]).astype(np.float64), 
+                          int(self.nbinsr), int(self.multicountcorr), )
         if self.method=="Discrete":
             if not cat.hasspatialhash:
                 cat.build_spatialhash(dpix=max(1.,self.max_sep//10.))
-            args_pixgrid = (np.float64(cat.pix1_start), np.float64(cat.pix1_d), np.int32(cat.pix1_n), 
-                            np.float64(cat.pix2_start), np.float64(cat.pix2_d), np.int32(cat.pix2_n), )
+            args_pixgrid = (np.float64(cat.pix1_start), np.float64(cat.pix1_d), int(cat.pix1_n), 
+                            np.float64(cat.pix2_start), np.float64(cat.pix2_d), int(cat.pix2_n), )
             args = (*args_basecat,
                     *args_basesetup,
                     cat.index_matcher,
                     cat.pixs_galind_bounds, 
                     cat.pix_gals,
                     *args_pixgrid,
-                    np.int32(nthreads),
+                    int(nthreads),
                     bin_centers,
                     threepcfs_n,
                     threepcfsnorm_n)
@@ -259,7 +276,7 @@ class GGGCorrelation(BinnedNPCF):
                 print(arg.dtype, func.argtypes[elarg])
         elif self.method=="Tree":
             cutfirst = int(self.tree_resos[0]==0.)
-            mhash = cat.multihash(dpixs=self.tree_resos[cutfirst:],tomo=dotomo)
+            mhash = cat.multihash(dpixs=self.tree_resos[cutfirst:],tomo=dotomo,shuffle=self.shuffle_pix)
             ngal_resos, pos1s, pos2s, weights, zbins, allfields, index_matchers, pixs_galind_bounds, pix_gals = mhash
             weight_resos = np.concatenate(weights).astype(np.float64)
             pos1_resos = np.concatenate(pos1s).astype(np.float64)
@@ -270,8 +287,8 @@ class GGGCorrelation(BinnedNPCF):
             index_matcher = np.concatenate(index_matchers).astype(np.int32)
             pixs_galind_bounds = np.concatenate(pixs_galind_bounds).astype(np.int32)
             pix_gals = np.concatenate(pix_gals).astype(np.int32)
-            args_pixgrid = (np.float64(cat.pix1_start), np.float64(cat.pix1_d), np.int32(cat.pix1_n), 
-                            np.float64(cat.pix2_start), np.float64(cat.pix2_d), np.int32(cat.pix2_n), )
+            args_pixgrid = (np.float64(cat.pix1_start), np.float64(cat.pix1_d), int(cat.pix1_n), 
+                            np.float64(cat.pix2_start), np.float64(cat.pix2_d), int(cat.pix2_n), )
             args = (*args_basecat,
                     self.tree_nresos,
                     self.tree_redges,
@@ -287,7 +304,7 @@ class GGGCorrelation(BinnedNPCF):
                     pix_gals,
                     *args_pixgrid,
                     *args_basesetup,
-                    np.int32(nthreads),
+                    int(nthreads),
                     bin_centers,
                     threepcfs_n,
                     threepcfsnorm_n)
@@ -305,28 +322,29 @@ class GGGCorrelation(BinnedNPCF):
     def multipoles2npcf(self):
         
         _, nzcombis, rbins, rbins = np.shape(self.npcf_multipoles[0])
-        self.npcf = np.zeros((4, nzcombis, rbins, rbins, len(self.phi)), dtype=np.complex128)
-        self.npcf_norm = np.zeros((nzcombis, rbins, rbins, len(self.phi)), dtype=np.complex128)
+        self.npcf = np.zeros((4, nzcombis, rbins, rbins, len(self.phi)), dtype=complex)
+        self.npcf_norm = np.zeros((nzcombis, rbins, rbins, len(self.phi)), dtype=complex)
         ztiler = np.arange(self.nbinsz*self.nbinsz*self.nbinsz).reshape(
-            (self.nbinsz,self.nbinsz,self.nbinsz)).transpose(0,2,1).flatten().astype(int)
+            (self.nbinsz,self.nbinsz,self.nbinsz)).transpose(0,2,1).flatten().astype(np.int32)
         
         # 3PCF components
         conjmap = [0,1,3,2]
         for elm in range(4):
             for elphi, phi in enumerate(self.phi):
-                tmp = np.zeros((nzcombis, rbins, rbins), dtype=np.complex128)
-                N0 = 1./(2*np.pi) * self.npcf_multipoles_norm[0].astype(np.complex128)
+                tmp = np.zeros((nzcombis, rbins, rbins), dtype=complex)
+                N0 = 1./(2*np.pi) * self.npcf_multipoles_norm[0].astype(complex)
                 for eln,n in enumerate(range(self.nmax+1)):
                     _const = 1./(2*np.pi) * np.exp(1J*n*phi)
-                    tmp += _const * self.npcf_multipoles[elm,eln].astype(np.complex128)
+                    tmp += _const * self.npcf_multipoles[elm,eln].astype(complex)
                     if n>0:
-                        tmp += _const.conj() * self.npcf_multipoles[conjmap[elm],eln][ztiler].astype(np.complex128).transpose(0,2,1)
+                        tmp += _const.conj() * self.npcf_multipoles[conjmap[elm],eln][ztiler].astype(complex).transpose(0,2,1)
                 self.npcf[elm,...,elphi] = tmp/N0.real
         # Number of triangles
         for elphi, phi in enumerate(self.phi):
-            tmptotnorm = np.zeros((nzcombis, rbins, rbins), dtype=np.complex128)
+            tmptotnorm = np.zeros((nzcombis, rbins, rbins), dtype=complex)
             for eln,n in enumerate(range(self.nmax+1)):
-                tmptotnorm += _const * self.npcf_multipoles_norm[eln].astype(np.complex128)
+                _const = 1./(2*np.pi) * np.exp(1J*n*phi)
+                tmptotnorm += _const * self.npcf_multipoles_norm[eln].astype(complex)
                 if n>0:
                     tmptotnorm += _const.conj() * self.npcf_multipoles_norm[eln][ztiler].astype(complex).transpose(0,2,1)
                 self.npcf_norm[...,elphi] = tmptotnorm
@@ -370,7 +388,7 @@ class GGGCorrelation(BinnedNPCF):
         if thisproj != "Centroid":
             self.toprojection("Centroid")
         # Compute Map3...
-        
+        map3 = None
         if thisproj != "Centroid":
             self.toprojection(thisproj)
             
@@ -384,9 +402,38 @@ class GNNCorrelation(BinnedNPCF):
     """ Shear-Lens-Lens (G3L) correlation function """
     def __init__(self, n_cfs, min_sep, max_sep, **kwargs):
         super().__init__(3, [2,0,0], n_cfs=n_cfs, min_sep=min_sep, max_sep=max_sep, **kwargs)
+        self.nmax = self.nmaxs[0]
+        self.phi = self.phis[0]
+        self.projection = None
+        self.projections_avail = [None, "X"]
+        self.nbinsz_source = None
+        self.nbinsz_lens = None
         
-    def process_single(self, cat, nthreads, dotomo=True):
-        pass
+        # (Add here any newly implemented projections)
+        self._initprojections(self)
+        
+    def process(self, cat_lens, cat_source, nthreads=16, dotomo=True):
+        self._checkcats([cat_lens, cat_source], [0, 2])
+        if not dotomo:
+            self.nbinsz_lens = 1
+            self.nbinsz_source = 1
+            zbins_lens = np.zeros(cat_lens.ngal, dtype=np.int32)
+            zbins_source = np.zeros(cat_source.ngal, dtype=np.int32)
+        else:
+            self.nbinsz_lens = cat_lens.nbinsz
+            self.nbinsz_source = cat_source.nbinsz
+        _z3combis = self.nbinsz_source*self.nbinsz_lens*self.nbinsz_lens
+        _r2combis = self.nbinsr*self.nbinsr
+        sc = (4,self.nmax+1, _z3combis, self.nbinsr,self.nbinsr)
+        sn = (self.nmax+1, _z3combis, self.nbinsr,self.nbinsr)
+        szr = (self.nbinsz_lens, self.nbinsz_source, self.nbinsr)
+        bin_centers = np.zeros(self.nbinsz_source*self.nbinsz_lens*self.nbinsr).astype(np.float64)
+        threepcfs_n = np.zeros(4*(self.nmax+1)*_z3combis*_r2combis).astype(complex)
+        threepcfsnorm_n = np.zeros((self.nmax+1)*_z3combis*_r2combis).astype(complex)
+        args_basecat = (cat.isinner.astype(np.int32), cat.weight, cat.pos1, cat.pos2, cat.tracer_1, cat.tracer_2, 
+                        zbins.astype(np.int32), int(self.nbinsz), int(cat.ngal), )
+        args_basesetup = (int(0), int(self.nmax), np.float64(self.min_sep), np.float64(self.max_sep), np.array([-1.]).astype(np.float64), 
+                          int(self.nbinsr), int(self.multicountcorr), )
     
 class NGGCorrelation(BinnedNPCF):
     """ Lens-Shear-Shear correlation function """
@@ -439,8 +486,131 @@ class GGGGCorrelation(BinnedNPCF):
             # Write to file
             pass
             
-        return map3    
+        return map3  
     
+###########################
+## COVARIANCE STATISTICS ##
+###########################
+
+class XipmMixedCovariance(BinnedNPCF):
+    
+    def __init__(self, min_sep_xi, max_sep_xi, nbins_xi, nsubbins, nmax=10, **kwargs):
+        self.nsubbins = int(nsubbins)
+        nbinsr = nsubbins*nbins_xi
+        super().__init__(order=3, spins=[0,0,0], n_cfs=1, min_sep=min_sep_xi, max_sep=max_sep_xi, nbinsr=nbinsr, 
+                         nmaxs=nmax, **kwargs)
+        self.nmax = self.nmaxs[0]
+        self.phi = self.phis[0]
+        self.projection = None
+        self.projections_avail = [None]
+        self.nbinsz = None
+        
+        # (Add here any newly implemented projections)
+        self._initprojections(self)
+        
+    def process(self, cat, nthreads=16, dotomo=True):
+        #self._checkcats(cat, self.spins)
+        if not dotomo:
+            self.nbinsz = 1
+            zbins = np.zeros(cat.ngal, dtype=np.int32)
+        else:
+            self.nbinsz = cat.nbinsz
+            zbins = cat.zbins
+        sc = (1,self.nmax+1,self.nbinsz*self.nbinsz*self.nbinsz,self.nbinsr,self.nbinsr)
+        sn = (self.nmax+1,self.nbinsz*self.nbinsz*self.nbinsz,self.nbinsr,self.nbinsr)
+        szr = (self.nbinsz, self.nbinsr)
+        szzr = (self.nbinsz, self.nbinsz, self.nbinsr)
+        bin_centers = np.zeros(self.nbinsz*self.nbinsr).astype(np.float64)
+        w2wwtriplets = np.zeros((self.nmax+1)*self.nbinsz*self.nbinsz*self.nbinsz*self.nbinsr*self.nbinsr).astype(complex)
+        wwwtriplets = np.zeros((self.nmax+1)*self.nbinsz*self.nbinsz*self.nbinsz*self.nbinsr*self.nbinsr).astype(complex)
+        wwcounts = np.zeros(self.nbinsz*self.nbinsz*self.nbinsr).astype(np.float64)
+        w2wcounts = np.zeros(self.nbinsz*self.nbinsz*self.nbinsr).astype(np.float64)
+        args_basecat = (cat.isinner.astype(np.int32), cat.weight.astype(np.float64), cat.pos1.astype(np.float64), cat.pos2.astype(np.float64), 
+                        zbins.astype(np.int32), int(self.nbinsz), int(cat.ngal), )
+        args_basesetup = (int(0), int(self.nmax), np.float64(self.min_sep), np.float64(self.max_sep), np.array([-1.]).astype(np.float64), 
+                          int(self.nbinsr), int(self.multicountcorr), )
+        if self.method=="Discrete":
+            raise NotImplementedError
+        elif self.method=="Tree":
+            cutfirst = int(self.tree_resos[0]==0.)
+            mhash = cat.multihash(dpixs=self.tree_resos[cutfirst:],tomo=dotomo,shuffle=self.shuffle_pix)
+            ngal_resos, pos1s, pos2s, weights, zbins, _, index_matchers, pixs_galind_bounds, pix_gals = mhash
+            weight_resos = np.concatenate(weights).astype(np.float64)
+            pos1_resos = np.concatenate(pos1s).astype(np.float64)
+            pos2_resos = np.concatenate(pos2s).astype(np.float64)
+            zbin_resos = np.concatenate(zbins).astype(np.int32)
+            index_matcher = np.concatenate(index_matchers).astype(np.int32)
+            pixs_galind_bounds = np.concatenate(pixs_galind_bounds).astype(np.int32)
+            pix_gals = np.concatenate(pix_gals).astype(np.int32)
+            args_pixgrid = (np.float64(cat.pix1_start), np.float64(cat.pix1_d), int(cat.pix1_n), 
+                            np.float64(cat.pix2_start), np.float64(cat.pix2_d), int(cat.pix2_n), )
+
+            args = (*args_basecat,
+                    self.tree_nresos,
+                    self.tree_redges,
+                    np.array(ngal_resos, dtype=np.int32),
+                    weight_resos,
+                    pos1_resos,
+                    pos2_resos,
+                    zbin_resos,
+                    index_matcher,
+                    pixs_galind_bounds,
+                    pix_gals,
+                    *args_pixgrid,
+                    *args_basesetup,
+                    int(nthreads),
+                    bin_centers,
+                    wwcounts,
+                    w2wcounts,
+                    w2wwtriplets,
+                    wwwtriplets)
+            func = self.clib.alloc_triplets_tree_xipxipcov
+        elif self.method=="DoubleTree":
+            raise NotImplementedError 
+        print(args[0])
+        print(args[1])
+        func(*args)
+        
+        self.bin_centers = bin_centers.reshape(szr)
+        self.wwcounts = wwcounts.reshape(szzr)
+        self.w2wcounts = w2wcounts.reshape(szzr)
+        self.npcf_multipoles = w2wwtriplets.reshape(sc)
+        self.npcf_multipoles_norm = wwwtriplets.reshape(sn)
+        self.projection = None 
+        
+    def multipoles2npcf(self):
+        
+        _, nzcombis, rbins, rbins = np.shape(self.npcf_multipoles[0])
+        self.npcf = np.zeros((4, nzcombis, rbins, rbins, len(self.phi)), dtype=complex)
+        self.npcf_norm = np.zeros((nzcombis, rbins, rbins, len(self.phi)), dtype=complex)
+        ztiler = np.arange(self.nbinsz*self.nbinsz*self.nbinsz).reshape(
+            (self.nbinsz,self.nbinsz,self.nbinsz)).transpose(0,2,1).flatten().astype(np.int32)
+
+        # 3PCF components
+        conjmap = [0,1,3,2]
+        for elm in range(4):
+            for elphi, phi in enumerate(self.phi):
+                tmp = np.zeros((nzcombis, rbins, rbins), dtype=complex)
+                N0 = 1./(2*np.pi) * self.npcf_multipoles_norm[0].astype(complex)
+                for eln,n in enumerate(range(self.nmax+1)):
+                    _const = 1./(2*np.pi) * np.exp(1J*n*phi)
+                    tmp += _const * self.npcf_multipoles[elm,eln].astype(complex)
+                    if n>0:
+                        tmp += _const.conj() * self.npcf_multipoles[conjmap[elm],eln][ztiler].astype(complex).transpose(0,2,1)
+                self.npcf[elm,...,elphi] = tmp/N0.real
+        # Number of triangles
+        for elphi, phi in enumerate(self.phi):
+            tmp = np.zeros((1,nzcombis, rbins, rbins), dtype=complex)
+            tmpnorm = np.zeros((nzcombis, rbins, rbins), dtype=complex)
+            for eln,n in enumerate(range(self.nmax+1)):
+                _const = 1./(2*np.pi) * np.exp(1J*n*phi)
+                tmp += _const * self.npcf_multipoles_norm[:,eln].astype(complex)
+                tmpnorm += _const * self.npcf_multipoles[:,eln].astype(complex)
+                if n>0:
+                    tmp += _const.conj() * self.npcf_multipoles[0,eln][ztiler].astype(complex).transpose(0,2,1)
+                    tmpnorm += _const.conj() * self.npcf_multipoles_norm[eln][ztiler].astype(complex).transpose(0,2,1)
+            self.npcf[...,elphi] = tmp
+            self.npcf_norm[...,elphi] = tmpnorm
     
 if False:
 
@@ -513,10 +683,10 @@ if False:
             hash_library_fpath = self.library_path + "spatialhash.so"
             hash_library = ct.CDLL(hash_library_fpath)
             discrete_library = ct.CDLL(discrete_library_fpath)
-            p_c128 = ndpointer(np.complex128, flags="C_CONTIGUOUS")
-            p_f64 = ndpointer(np.float64, flags="C_CONTIGUOUS")
+            p_c128 = ndpointer(complex, flags="C_CONTIGUOUS")
+            p_f64 = ndpointer(float, flags="C_CONTIGUOUS")
             p_f32 = ndpointer(np.float32, flags="C_CONTIGUOUS")
-            p_i32 = ndpointer(np.int32, flags="C_CONTIGUOUS")
+            p_i32 = ndpointer(int, flags="C_CONTIGUOUS")
 
             # Generate pixel --> galaxy mapping
             # Safely called within other wrapped functions
@@ -534,9 +704,9 @@ if False:
                 p_i32, p_i32, p_i32,
                 ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, 
                 ct.c_int32, 
-                np.ctypeslib.ndpointer(dtype=np.double), np.ctypeslib.ndpointer(dtype=np.int32), 
-                np.ctypeslib.ndpointer(dtype=np.complex), np.ctypeslib.ndpointer(dtype=np.complex),
-                np.ctypeslib.ndpointer(dtype=np.complex)]  
+                np.ctypeslib.ndpointer(dtype=np.float64), np.ctypeslib.ndpointer(dtype=np.int32), 
+                np.ctypeslib.ndpointer(dtype=np.complex128), np.ctypeslib.ndpointer(dtype=np.complex128),
+                np.ctypeslib.ndpointer(dtype=np.complex128)]  
             """
 
             # Allocates Gns for discrete data such that one can evaluate all Gamman in [nmin, nmax]
@@ -548,8 +718,8 @@ if False:
                 p_i32, p_i32, p_i32,
                 ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, 
                 ct.c_int32, 
-                np.ctypeslib.ndpointer(dtype=np.double), np.ctypeslib.ndpointer(dtype=np.int32), 
-                np.ctypeslib.ndpointer(dtype=np.complex), np.ctypeslib.ndpointer(dtype=np.complex)]    
+                np.ctypeslib.ndpointer(dtype=np.float64), np.ctypeslib.ndpointer(dtype=np.int32), 
+                np.ctypeslib.ndpointer(dtype=np.complex128), np.ctypeslib.ndpointer(dtype=np.complex128)]    
 
             # Allocate Gamman from Gns obtained via the discrete estimator
             # Use 'alloc_Gamman_discrete' to safely call this function
@@ -557,7 +727,7 @@ if False:
             discrete_library.alloc_Gamman_discrete_basic.argtypes = [
                 p_c128, p_c128, p_f64, p_f64, p_f64, p_i32, ct.c_int32, ct.c_int32,
                 ct.c_int32, ct.c_int32, ct.c_int32, 
-                np.ctypeslib.ndpointer(dtype=np.complex), np.ctypeslib.ndpointer(dtype=np.complex)]
+                np.ctypeslib.ndpointer(dtype=np.complex128), np.ctypeslib.ndpointer(dtype=np.complex128)]
 
         ###########################################################################
         ## Functions that deal with the the config file for the 3pcf computation ##
@@ -741,8 +911,8 @@ if False:
                 nradii += len(_)-1
             nradii += config["nbins_baseres"]
 
-            ndata_pix = np.zeros(nnpix, dtype=np.int)
-            cumndata_pix = np.zeros(nnpix+1, dtype=np.int)
+            ndata_pix = np.zeros(nnpix, dtype=np.int32)
+            cumndata_pix = np.zeros(nnpix+1, dtype=np.int32)
             if config["npix"][0]=="discrete":
                 ndata_pix.append(len(pos1))
             for npix in config["npix"]:

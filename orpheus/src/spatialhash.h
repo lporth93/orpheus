@@ -31,7 +31,7 @@ void _gen_pixmeans(double *pos_1, double *pos_2, double *e1, double *e2, double 
 // Have a smaller memory footprint in case the number of pixels exceeds the number
 // of galaxies.
 void reducecat(double *w, double *pos_1, double *pos_2, double *scalarquants, int ngal, int nscalarquants,
-               double mask_d1, double mask_d2, double mask_min1, double mask_min2, int mask_n1, int mask_n2,
+               double mask_d1, double mask_d2, double mask_min1, double mask_min2, int mask_n1, int mask_n2, int shuffle,
                double *w_red, double *pos1_red, double *pos2_red, double *scalarquants_red, int ngal_red);
     
 // Pixelizes catalog onto regular grid

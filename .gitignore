@@ -2,6 +2,8 @@
 ## REPO SPECIFIC GITIGNORE ##
 #############################
 
+data/
+
 #################################################################################
 ############################ GENERIC GITIGNORE ##################################
 ##(stolen from https://github.com/github/gitignore/blob/main/Python.gitignore) ## 
