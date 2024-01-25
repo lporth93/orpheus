@@ -15,8 +15,8 @@ else:
     compiler_args = ["-shared"]
     linker_args = ["-shared"]
 
-compiler_args += ["-fopenmp", "-fPIC", "-Wall", "-O3", "-std=c99"]
-linker_args +=   ["-fopenmp", "-fPIC", "-Wall", "-O3", "-std=c99"]
+compiler_args += ["-fopenmp", "-fPIC", "-Wall", "-O3", "-ffast-math", "-std=c99"]
+linker_args +=   ["-fopenmp", "-fPIC", "-Wall", "-O3", "-ffast-math", "-std=c99"]
     
 ext_modules = [
 Extension(

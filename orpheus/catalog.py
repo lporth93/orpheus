@@ -33,7 +33,7 @@ class Catalog:
         # Require zbins to only contain elements in {0, 1, ..., nbinsz-1}
         if self.zbins is None:
             self.zbins = np.zeros(self.ngal)        
-        self.zbins = self.zbins.astype(np.int)
+        self.zbins = self.zbins.astype(np.int32)
         self.nbinsz = len(np.unique(self.zbins))
         assert(np.max(self.zbins)-np.min(self.zbins)==self.nbinsz-1)
         self.zbins -= (np.min( self.zbins))
@@ -69,9 +69,12 @@ class Catalog:
         self.assign_methods = {"NGP":0, "CIC":1, "TSC":2}
         
         ## Link compiled libraries ##
+        # Method that works for LP
         target_path = __import__('orpheus').__file__
-        #print(target_path)
-        self.clib = ct.CDLL(search_file_in_site_package(get_site_packages_dir(),"orpheus_clib"))
+        self.library_path = str(Path(__import__('orpheus').__file__).parent.parent.absolute())
+        self.clib = ct.CDLL(glob.glob(self.library_path+"/orpheus_clib*.so")[0])
+        # Method that works for RR (but not for LP with a local HPC install)
+        #self.clib = ct.CDLL(search_file_in_site_package(get_site_packages_dir(),"orpheus_clib"))
         #self.library_path = str(Path(__import__('orpheus').__file__).parent.parent.absolute())
         #print(self.library_path)
         #self.clib = ct.CDLL(glob.glob(self.library_path+"/orpheus_clib*.so")[0])
@@ -215,7 +218,7 @@ class Catalog:
         
     # Reduces catalog to smaller catalog where positions & quantities are
     # averaged over regular grid
-    def _reduce(self, fields, dpix, dpix2=None, relative_to_hash=None, tomo=False, normed=False, shuffle=False,
+    def _reduce(self, fields, dpix, dpix2=None, relative_to_hash=None, normed=False, shuffle=False,
                extent=[None,None,None,None], forcedivide=1, 
                ret_inst=False):
         
@@ -226,19 +229,16 @@ class Catalog:
             start1, start2, n1, n2 = self._gengridprops(dpix, dpix2, forcedivide, extent)
         else:
             assert(self.hasspatialhash)
-            assert(isinstance(relative_to_hash,int))
+            assert(isinstance(relative_to_hash,np.int32))
             start1 = self.pix1_start
             start2 = self.pix2_start
-            dpix = self.pix1_d/float(relative_to_hash)
-            dpix2 = self.pix2_d/float(relative_to_hash)
+            dpix = self.pix1_d/np.float64(relative_to_hash)
+            dpix2 = self.pix2_d/np.float64(relative_to_hash)
             n1 = self.pix1_n*relative_to_hash
             n2 = self.pix2_n*relative_to_hash
         
         # Prepare arguments
-        if not tomo:
-            zbinarr = np.zeros(self.ngal).astype(np.int32)
-        else:
-            zbinarr = self.zbins.astype(np.int32)
+        zbinarr = self.zbins.astype(np.int32)
         nbinsz = len(np.unique(zbinarr))
         ncompfields = []
         scalarquants = []
@@ -276,7 +276,7 @@ class Catalog:
                                 self.pos2[sel_z].astype(np.float64),
                                 scalarquants[:,sel_z].flatten().astype(np.float64),
                                 ngal_z, nfields,
-                                dpix, dpix2, start1, start2, n1, n2, int(shuffle),
+                                dpix, dpix2, start1, start2, n1, n2, np.int32(shuffle),
                                 w_red_z, pos1_red_z, pos2_red_z, scalarquants_red_z, ngal_red_z)
             w_red[ind_start:ind_start+ngal_z] = w_red_z
             pos1_red[ind_start:ind_start+ngal_z] = pos1_red_z
@@ -306,7 +306,7 @@ class Catalog:
             
         return w_red, pos1_red, pos2_red, zbins_red, fields_red
     
-    def _multihash(self, dpixs, fields, dpix_hash=None, tomo=False, normed=False, shuffle=False,
+    def _multihash(self, dpixs, fields, dpix_hash=None, normed=False, shuffle=False,
                   extent=[None,None,None,None], forcedivide=1):
         """ Builds spatialhash for a base catalog and its reductions. """
         
@@ -319,12 +319,13 @@ class Catalog:
             #          self.min2, self.max2+dpix_hash-self.len2%dpix_hash]
         
         # Initialize spatial hash for discrete catalog
+        print("First spatialhash")
         self.build_spatialhash(dpix=dpix_hash, extent=extent)
         ngals = [self.ngal]
         pos1s = [self.pos1]
         pos2s = [self.pos2]
         weights = [self.weight]
-        zbins = [self.zbins*tomo]
+        zbins = [self.zbins]
         allfields = [fields]
         index_matchers = [self.index_matcher]
         pixs_galind_bounds = [self.pixs_galind_bounds]
@@ -336,15 +337,15 @@ class Catalog:
         dpixs1_true = np.zeros_like(np.asarray(dpixs))
         dpixs2_true = np.zeros_like(np.asarray(dpixs))
         for elreso in range(len(dpixs)):
+            print("Doing reso %i"%elreso)
             dpixs1_true[elreso]=fac_pix1*dpixs[elreso]
             dpixs2_true[elreso]=fac_pix2*dpixs[elreso]
             #print(dpixs[elreso], dpixs1_true[elreso], dpixs2_true[elreso], len(self.pos1))
             nextcat, fields_red = self._reduce(fields=fields,
                                                dpix=dpixs1_true[elreso], 
                                                dpix2=dpixs2_true[elreso],
-                                               relative_to_hash=int(2**(len(dpixs)-elreso-1)),
+                                               relative_to_hash=np.int32(2**(len(dpixs)-elreso-1)),
                                                #relative_to_hash=None,
-                                               tomo=tomo, 
                                                normed=normed, 
                                                shuffle=shuffle,
                                                extent=extent, 
@@ -360,16 +361,17 @@ class Catalog:
             index_matchers.append(nextcat.index_matcher)
             pixs_galind_bounds.append(nextcat.pixs_galind_bounds)
             pix_gals.append(nextcat.pix_gals)
+            print("Done reso %i"%elreso)
             
         return ngals, pos1s, pos2s, weights, zbins, allfields, index_matchers, pixs_galind_bounds, pix_gals, dpixs1_true, dpixs2_true
     
-    def _genmatched_multiresocats(self, dpixs, fields, flattened=True, tomo=False, 
+    def _genmatched_multiresocats(self, dpixs, fields, flattened=True, 
                                   normed=False, extent=[None,None,None,None], forcedivide=1):
         """
         Shapes of the unflattened arrays/lists:
         - ngals/resos1/resos2: (nresos,)
         - ngalshifts_1d: (nresos+1,)
-        - ngalshifts_2d: (nresos-1, nresos)
+        - ngalshifts_3d: (nbinsz, nresos-1, nresos)
         - pos1s/pos1s/weights/zbins: (ngals_reso1 + ngal_reso2 + ... + ngal_nresos)==(cumgals,)
         - allfields: (nfields, cumgals)
         - index_matchers: (nresos, npix_spatialhash)
@@ -377,20 +379,25 @@ class Catalog:
         - pixmatcher: (nresos*ngal_reso1 + (nresos-1)*ngal_reso2 + ... + 1*ngal_{nresos-1}, )
         """
         _ = self.__genmatched_multiresocats(dpixs, fields, change_renormsign=False, 
-                                            tomo=tomo, normed=normed,
+                                            normed=normed,
                                             extent=extent, forcedivide=forcedivide)
         failed, *res = _
         if failed:
             print("Pixelmapper creation failed first try....shuffling grid")
             _ = self.__genmatched_multiresocats(dpixs, fields, change_renormsign=True,
-                                                tomo=tomo, normed=normed,
+                                                normed=normed,
                                                 extent=extent, forcedivide=forcedivide)
             failed, *res = _
+            print(failed)
         if not flattened:
             return res
         else:
             ngals = res[0]
             nresos = len(ngals)
+            ngals_zreso = np.zeros((self.nbinsz,nresos), dtype=np.int32)
+            for elbinz in range(self.nbinsz):
+                for elreso in range(nresos):
+                    ngals_zreso[elbinz][elreso] = np.sum(res[4][elreso]==elbinz)
             ngalshifts_1d = np.append(np.array([0]), np.cumsum(ngals)).astype(np.int32)
             pos1s = np.hstack(res[1]).squeeze()
             pos2s = np.hstack(res[2]).squeeze()
@@ -408,25 +415,27 @@ class Catalog:
             resos1 = res[9]
             resos2 = res[10]
             _tmpshift = 0
-            ngalshifts_2d = -1*np.ones((nresos-1,nresos), dtype=np.int32)
-            for elreso in range(nresos-1):
-                ngalshifts_2d[elreso][elreso] = _tmpshift
-                for elreso2 in range(elreso+1,nresos):
-                    _tmpshift += ngals[elreso]
-                    ngalshifts_2d[elreso][elreso2] = _tmpshift
-            pixmatcher = np.zeros(ngalshifts_2d[-1][-1])
-            for elreso in range(nresos-1):
-                for elreso2 in range(elreso+1,nresos):
-                    _start = ngalshifts_2d[elreso][elreso2-1]
-                    _toappend = res[11][elreso][elreso2-elreso-1]
-                    pixmatcher[_start:_start+len(_toappend)] = _toappend
-                    #print(elreso,elreso2,len(res[11]),len(res[11][0]),_start,len(_toappend))
+            ngalshifts_3d = -1*np.ones((self.nbinsz, nresos-1, nresos), dtype=np.int32)
+            for elbinz in range(self.nbinsz):
+                for elreso in range(nresos-1):
+                    ngalshifts_3d[elbinz][elreso][elreso] = _tmpshift
+                    for elreso2 in range(elreso+1,nresos):
+                        _tmpshift += ngals_zreso[elbinz][elreso]
+                        ngalshifts_3d[elbinz][elreso][elreso2] = _tmpshift
+            pixmatcher = np.zeros(ngalshifts_3d[-1][-1][-1])
+            for elbinz in range(self.nbinsz):
+                for elreso in range(nresos-1):
+                    for elreso2 in range(elreso+1,nresos):
+                        _start = ngalshifts_3d[elbinz][elreso][elreso2-1]
+                        _toappend = res[11][elbinz][elreso][elreso2-elreso-1]
+                        pixmatcher[_start:_start+len(_toappend)] = _toappend
+                        #print(elreso,elreso2,len(res[11]),len(res[11][0]),_start,len(_toappend))
         return np.array(ngals, dtype=np.int32), resos1.astype(np.float64), resos2.astype(np.float64), \
-               ngalshifts_1d, ngalshifts_2d.flatten(), \
+               ngalshifts_1d, ngalshifts_3d.flatten(), \
                pos1s, pos2s, weights, zbins, allfields, \
-               index_matchers, pixs_galind_bounds, pix_gals, pixmatcher
+               index_matchers, pixs_galind_bounds , pix_gals, pixmatcher
 
-    def __genmatched_multiresocats(self, dpixs, fields, change_renormsign=False, tomo=False,
+    def __genmatched_multiresocats(self, dpixs, fields, change_renormsign=False,
                                    normed=False, extent=[None,None,None,None], forcedivide=1):
 
         # Build multihashsh
@@ -438,42 +447,53 @@ class Catalog:
         extent = [_min1, _max1-(_max1-_min1)%dpixs[-1]-_renorm, 
                   _min2, _max2-(_max2-_min2)%dpixs[-1]-_renorm]
         _ = self._multihash(dpixs=dpixs, fields=fields, extent=extent, shuffle=False, 
-                            tomo=tomo, normed=normed, forcedivide=forcedivide)
+                            normed=normed, forcedivide=forcedivide)
         ngals, pos1s, pos2s, weights, zbins, allfields, index_matchers, pixs_galind_bounds, pix_gals, dpixs1_true, dpixs2_true = _ 
 
         # Match reduced pixelgrids between catalogs
         resos1 = np.append([0], dpixs1_true)
         resos2 = np.append([0], dpixs2_true)
         #print(resos1,resos2)
-        ind_targets = [None]*(len(resos1)-1)
-        ind_targetmatcher = [None]*(len(resos1)-1)
-        for elreso in range(1,len(resos1)):
-            thisn1 = int(self.pix1_n*self.pix1_d/resos1[elreso])
-            thisn2 = int(self.pix2_n*self.pix2_d/resos2[elreso])
-            ipix_1 = np.floor((pos1s[elreso] - self.pix1_start)/resos1[elreso]).astype(np.int32)
-            ipix_2 = np.floor((pos2s[elreso] - self.pix2_start)/resos2[elreso]).astype(np.int32)
-            ind_targets[elreso-1] = (ipix_2*thisn1 + ipix_1).astype(np.int32)
-            ind_targetmatcher[elreso-1] = np.zeros(thisn1*thisn2, dtype=np.int32)
-            ind_targetmatcher[elreso-1][ind_targets[elreso-1]] = np.arange(ngals[elreso], dtype=np.int32)
-            #print(elreso, len(ind_targetmatcher[elreso-1]), np.max(ind_targets[elreso-1]), np.max(ind_targetmatcher[elreso-1]))
+        ind_targetmatcher = [None]*(self.nbinsz)
+        for elbinz in range(self.nbinsz):
+            ind_targetmatcher[elbinz] = [None]*(len(resos1)-1)
+            for elreso in range(1,len(resos1)):
+                if elbinz==0:
+                    ipixfull_1 = np.floor((pos1s[elreso] - self.pix1_start)/resos1[elreso]).astype(np.int32)
+                    ipixfull_2 = np.floor((pos2s[elreso] - self.pix2_start)/resos2[elreso]).astype(np.int32)
+                    indfull_targets = (ipixfull_1*thisn1 + ipixfull_2).astype(np.int32)
+                sel_z = np.argwhere(zbins[elreso]==elbinz).flatten()
+                thisn1 = int(self.pix1_n*self.pix1_d/resos1[elreso])
+                thisn2 = int(self.pix2_n*self.pix2_d/resos2[elreso])
+                ipix_1 = np.floor((pos1s[elreso][sel_z] - self.pix1_start)/resos1[elreso]).astype(np.int32)
+                ipix_2 = np.floor((pos2s[elreso][sel_z] - self.pix2_start)/resos2[elreso]).astype(np.int32)
+                ind_targets = (ipix_2*thisn1 + ipix_1).astype(np.int32)
+                ind_targetmatcher[elbinz][elreso-1] = np.zeros(thisn1*thisn2, dtype=np.int32)
+                ind_targetmatcher[elbinz][elreso-1][ind_targets] = sel_z.astype(np.int32)
+                #print(elreso, len(ind_targetmatcher[elreso-1]), np.max(ind_targets[elreso-1]), np.max(ind_targetmatcher[elreso-1]))
 
         # Build pixelmatcher
-        pixmatcher = [None]*(len(resos1)-1)
-        for elreso in range(len(resos1)-1):
-            pixmatcher[elreso] = [None]*(len(resos1)-elreso-1)
-            for elreso2 in range(elreso+1, len(resos1)):
-                ipix_1 = np.floor((pos1s[elreso] - self.pix1_start)/resos1[elreso2]).astype(np.int32)
-                ipix_2 = np.floor((pos2s[elreso] - self.pix2_start)/resos2[elreso2]).astype(np.int32)
-                indreso = (ipix_2*(self.pix1_n*self.pix1_d/resos1[elreso2]) + ipix_1).astype(np.int32)
-                pixmatcher[elreso][elreso2-(elreso+1)] = ind_targetmatcher[elreso2-1][indreso]
-        failed = pixmatcher[-1][0][0]!=0
+        pixmatcher = [None]*(self.nbinsz)
+        for elbinz in range(self.nbinsz):
+            pixmatcher[elbinz] = [None]*(len(resos1)-1)
+            for elreso in range(len(resos1)-1):
+                pixmatcher[elbinz][elreso] = [None]*(len(resos1)-elreso-1)
+                sel_z = np.argwhere(zbins[elreso]==elbinz).flatten()
+                for elreso2 in range(elreso+1, len(resos1)):
+                    ipix_1 = np.floor((pos1s[elreso][sel_z] - self.pix1_start)/resos1[elreso2]).astype(np.int32)
+                    ipix_2 = np.floor((pos2s[elreso][sel_z] - self.pix2_start)/resos2[elreso2]).astype(np.int32)
+                    indreso = (ipix_2*(self.pix1_n*self.pix1_d/resos1[elreso2]) + ipix_1).astype(np.int32)
+                    pixmatcher[elbinz][elreso][elreso2-(elreso+1)] = ind_targetmatcher[elbinz][elreso2-1][indreso]
+                    #print(elbinz,elreso,elreso2,np.min(pixmatcher[elbinz][elreso][elreso2-(elreso+1)]))
+                    pixmatcher[elbinz][elreso][elreso2-(elreso+1)] -= np.min(pixmatcher[elbinz][elreso][elreso2-(elreso+1)])
+        failed = pixmatcher[0][-1][0][0]!=0
 
         return failed, ngals, pos1s, pos2s, weights, zbins, allfields, \
                index_matchers, pixs_galind_bounds, pix_gals, resos1, resos2, pixmatcher
 
 
     # Maps catalog to grid
-    def togrid(self, fields, dpix, tomo=False, normed=False, 
+    def togrid(self, fields, dpix, normed=False, 
                extent=[None,None,None,None], method="CIC", forcedivide=1, 
                asgrid=None, nthreads=1, ret_inst=False):
         """ 
@@ -509,10 +529,7 @@ class Catalog:
         start1, start2, n1, n2 = self._gengridprops(dpix, dpix, forcedivide, extent)
         
         # Prepare arguments
-        if not tomo:
-            zbinarr = np.zeros(self.ngal).astype(np.int32)
-        else:
-            zbinarr = self.zbins.astype(np.int32)
+        zbinarr = self.zbins.astype(np.int32)
         nbinsz = len(np.unique(zbinarr))
         nfields = len(fields)-1
         weightarr = fields[-1].astype(np.float64)
@@ -683,7 +700,7 @@ class ScalarTracerCatalog(Catalog):
         self.tracer = tracer
         self.spin = 0
         
-    def reduce(self, dpix, dpix2=None, relative_to_hash=None, tomo=False, normed=False, shuffle=False,
+    def reduce(self, dpix, dpix2=None, relative_to_hash=None, normed=False, shuffle=False,
                extent=[None,None,None,None], forcedivide=1, 
                ret_inst=False):
         res = super()._reduce(
@@ -691,7 +708,6 @@ class ScalarTracerCatalog(Catalog):
             dpix2=None, 
             relative_to_hash=None, 
             fields=[self.tracer], 
-            tomo=tomo, 
             normed=normed, 
             shuffle=shuffle,
             extent=extent,
@@ -704,26 +720,24 @@ class ScalarTracerCatalog(Catalog):
                                        weight=w_red, zbins=zbins_red)
         return res
     
-    def multihash(self, dpixs, dpix_hash=None, tomo=False, normed=False, shuffle=False,
+    def multihash(self, dpixs, dpix_hash=None, normed=False, shuffle=False,
                   extent=[None,None,None,None], forcedivide=1):
         res = super()._multihash(
-            dpixs=dpixs, 
+            dpixs=dpixs.astype(np.float64), 
             fields=[self.tracer], 
             dpix_hash=dpix_hash,
-            tomo=tomo, 
             normed=normed, 
             shuffle=shuffle,
             extent=extent,
             forcedivide=forcedivide)
         return res
     
-    def genmatched_multiresocats(self, dpixs, flattened=True, tomo=False, 
+    def genmatched_multiresocats(self, dpixs, flattened=True, 
                                  normed=False, extent=[None,None,None,None], forcedivide=1):
         res = super()._multihash(
             dpixs=dpixs, 
             fields=[self.tracer], 
             flattened=flattened,
-            tomo=tomo, 
             normed=normed, 
             extent=extent,
             forcedivide=forcedivide)
@@ -737,7 +751,7 @@ class SpinTracerCatalog(Catalog):
         self.tracer_2 = tracer_2.astype(np.float64)
         self.spin = int(spin)
         
-    def reduce(self, dpix, dpix2=None, relative_to_hash=None, tomo=False, normed=False, shuffle=False,
+    def reduce(self, dpix, dpix2=None, relative_to_hash=None, normed=False, shuffle=False,
                extent=[None,None,None,None], forcedivide=1, 
                ret_inst=False):
         res = super()._reduce(
@@ -745,7 +759,6 @@ class SpinTracerCatalog(Catalog):
             dpix2=None, 
             relative_to_hash=None, 
             fields=[self.tracer_1, self.tracer_2], 
-            tomo=tomo, 
             normed=normed,
             shuffle=shuffle,
             extent=extent,
@@ -758,26 +771,24 @@ class SpinTracerCatalog(Catalog):
                                      weight=w_red, zbins=zbins_red)
         return res
     
-    def multihash(self, dpixs, dpix_hash=None, tomo=False, normed=False, shuffle=False,
+    def multihash(self, dpixs, dpix_hash=None, normed=False, shuffle=False,
                   extent=[None,None,None,None], forcedivide=1):
         res = super()._multihash(
             dpixs=dpixs, 
             fields=[self.tracer_1, self.tracer_2], 
             dpix_hash=dpix_hash,
-            tomo=tomo, 
             normed=normed, 
             shuffle=shuffle,
             extent=extent,
             forcedivide=forcedivide)
         return res
     
-    def genmatched_multiresocats(self, dpixs, flattened=True, tomo=False, 
+    def genmatched_multiresocats(self, dpixs, flattened=True,
                                  normed=False, extent=[None,None,None,None], forcedivide=1):
         res = super()._genmatched_multiresocats(
             dpixs=dpixs, 
             fields=[self.tracer_1, self.tracer_2], 
             flattened=flattened,
-            tomo=tomo, 
             normed=normed, 
             extent=extent,
             forcedivide=forcedivide)
@@ -827,7 +838,7 @@ class MultiTracerCatalog:
                                                          tracer_2=tracers[eltracer][1],
                                                          **thiskwargs))
                 
-    def reduce(self, dpix, tomo=False, normed=False, 
+    def reduce(self, dpix, normed=False, 
                extent=[None,None,None,None], forcedivide=1, 
                ret_inst=False):
         
@@ -839,7 +850,6 @@ class MultiTracerCatalog:
         
         for eltracer in range(self.ntracers):
             res = self.tracercats[eltracer].reduce(dpix, 
-                                                   tomo=tomo,
                                                    normed=normed, 
                                                    extent=extent, 
                                                    forcedivide=forcedivide,

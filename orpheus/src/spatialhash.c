@@ -164,8 +164,8 @@ void reducecat(double *w, double *pos_1, double *pos_2, double *scalarquants, in
     double *tmpscalarquants;
     int rseed=42;
     srand(rseed);  
-    for (ind_pix1=0; ind_pix1<mask_n1; ind_pix1++){
-        for (ind_pix2=0; ind_pix2<mask_n2; ind_pix2++){
+    for (ind_pix2=0; ind_pix2<mask_n2; ind_pix2++){
+        for (ind_pix1=0; ind_pix1<mask_n1; ind_pix1++){
             ind_red = spatialhash[start_matcher + ind_pix2*mask_n1 + ind_pix1];
             if (ind_red==FLAG_NOGAL){continue;}
             lower = spatialhash[start_bounds+ind_red];

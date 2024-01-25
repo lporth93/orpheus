@@ -40,37 +40,40 @@ class BinnedNPCF:
         self.rmin_pixsize = rmin_pixsize
         self.tree_resosatr = None
         self.bin_centers = None
+        self.bin_centers_mean = None
         self.phis = [None]*self.order
         self.npcf = None
         self.npcf_norm = None
         self.npcf_multipoles = None
         self.npcf_multipoles_norm = None
+        self.is_edge_corrected = False
         
         # Check types or arguments
         if isinstance(self.nbinsphi, int):
-            self.nbinsphi = self.nbinsphi*np.ones(order-2).astype(np.int32)
+            self.nbinsphi = self.nbinsphi*np.ones(order-2)
+        self.nbinsphi =  self.nbinsphi.astype(np.int32)
         if isinstance(self.nmaxs, int):
-            self.nmaxs = self.nmaxs*np.ones(order-2).astype(np.int32)
+            self.nmaxs = self.nmaxs*np.ones(order-2)
+        self.nmaxs = self.nmaxs.astype(np.int32)
         if isinstance(spins, int):
             spins = spins*np.ones(order).astype(np.int32)
         self.spins = np.asarray(spins, dtype=np.int32)
-        print(self.spins)
         assert(isinstance(self.order, int))
         assert(isinstance(self.spins, np.ndarray))
-        assert(isinstance(self.spins[0], int))
+        assert(isinstance(self.spins[0], np.int32))
         assert(len(spins)==self.order)
         assert(isinstance(self.n_cfs, int))
         assert(isinstance(self.min_sep, float))
         assert(isinstance(self.max_sep, float))
         assert(isinstance(self.nbinsphi, np.ndarray))
-        assert(isinstance(self.nbinsphi[0], int))
+        assert(isinstance(self.nbinsphi[0], np.int32))
         assert(len(self.nbinsphi)==self.order-2)
         assert(isinstance(self.nmaxs, np.ndarray))
-        assert(isinstance(self.nmaxs[0], int))
+        assert(isinstance(self.nmaxs[0], np.int32))
         assert(len(self.nmaxs)==self.order-2)
         assert(self.method in self.methods_avail)
         assert(isinstance(self.tree_resos, np.ndarray))
-        assert(isinstance(self.tree_resos[0], float))
+        assert(isinstance(self.tree_resos[0], np.float64))
         
         # Setup radial bins
         # Note that we always have self.binsize <= binsize
@@ -86,7 +89,7 @@ class BinnedNPCF:
         # Setup variable for tree estimator
         if self.tree_redges != None:
             assert(isinstance(self.tree_redges, np.ndarray))
-            assert(isinstance(self.tree_redges[0], float))
+            self.tree_redges = self.tree_redges.astype(np.float64)
             assert(len(self.tree_redges)==self.tree_resos+1)
             self.tree_redges = np.sort(self.tree_redges)
             assert(self.tree_redges[0]==self.min_sep)
@@ -111,14 +114,18 @@ class BinnedNPCF:
         #############################
         ## Link compiled libraries ##
         #############################
-        #target_path = __import__('orpheus').__file__
+        # Method that works for LP
+        target_path = __import__('orpheus').__file__
+        self.library_path = str(Path(__import__('orpheus').__file__).parent.parent.absolute())
+        self.clib = ct.CDLL(glob.glob(self.library_path+"/orpheus_clib*.so")[0])
+        # Method that works for RR (but not for LP with a local HPC install)
+        #self.clib = ct.CDLL(search_file_in_site_package(get_site_packages_dir(),"orpheus_clib"))
         #self.library_path = str(Path(__import__('orpheus').__file__).parent.parent.absolute())
-        #self.clib = ct.CDLL(glob.glob(self.library_path+"/orpheus_clib*.so")[0])
-        self.clib = ct.CDLL(search_file_in_site_package(get_site_packages_dir(),"orpheus_clib"))
+        #print(self.library_path)
         p_c128 = ndpointer(complex, flags="C_CONTIGUOUS")
         p_f64 = ndpointer(np.float64, flags="C_CONTIGUOUS")
         p_f32 = ndpointer(np.float32, flags="C_CONTIGUOUS")
-        p_i32 = ndpointer(int, flags="C_CONTIGUOUS")
+        p_i32 = ndpointer(np.int32, flags="C_CONTIGUOUS")
         p_f64_nof = ndpointer(np.float64)
         
         ## Third order shear statistics ##
@@ -142,6 +149,18 @@ class BinnedNPCF:
                 p_f64, p_f64, p_f64, p_f64, p_f64, p_i32,
                 p_i32, p_i32, p_i32, ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32,
                 ct.c_int32, ct.c_int32, ct.c_double, ct.c_double, p_f64, ct.c_int32, ct.c_int32, ct.c_int32, 
+                np.ctypeslib.ndpointer(dtype=np.float64), 
+                np.ctypeslib.ndpointer(dtype=np.complex128),
+                np.ctypeslib.ndpointer(dtype=np.complex128)] 
+            
+            # Doubletree-based estimator of third-order shear correlation function
+            self.clib.alloc_Gammans_doubletree_ggg.restype = ct.c_void_p
+            self.clib.alloc_Gammans_doubletree_ggg.argtypes = [
+                ct.c_int32, ct.c_int32, p_f64, p_f64, p_f64, p_i32, ct.c_int32, 
+                p_i32, p_f64, p_f64, p_f64, p_f64, p_f64, p_i32,
+                p_i32, p_i32, p_i32, 
+                ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, p_i32, 
+                ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, ct.c_int32, 
                 np.ctypeslib.ndpointer(dtype=np.float64), 
                 np.ctypeslib.ndpointer(dtype=np.complex128),
                 np.ctypeslib.ndpointer(dtype=np.complex128)] 
@@ -197,8 +216,7 @@ class BinnedNPCF:
             for proj2 in child.projections_avail:
                 if child.project[proj][proj2] is not None:
                     print("  %s --> %s"%(proj,proj2))
-
-    
+ 
     ####################
     ## MISC FUNCTIONS ##
     ####################
@@ -226,58 +244,63 @@ class GGGCorrelation(BinnedNPCF):
     """
     
     def __init__(self, n_cfs, min_sep, max_sep, **kwargs):
-        super().__init__(order=3, spins=[2,2,2], n_cfs=n_cfs, min_sep=min_sep, max_sep=max_sep, **kwargs)
+        super().__init__(order=3, spins=np.array([2,2,2], dtype=np.int32), n_cfs=n_cfs, min_sep=min_sep, max_sep=max_sep, **kwargs)
         self.nmax = self.nmaxs[0]
         self.phi = self.phis[0]
         self.projection = None
         self.projections_avail = [None, "X", "Centroid"]
         self.nbinsz = None
+        self.nzcombis = None
         
         # (Add here any newly implemented projections)
         self._initprojections(self)
         self.project["X"]["Centroid"] = self._x2centroid
         
-    def process(self, cat, nthreads=16, dotomo=True):
+    def process(self, cat, nthreads=16, dotomo=True, apply_edge_correction=True):
         self._checkcats(cat, self.spins)
         if not dotomo:
             self.nbinsz = 1
             zbins = np.zeros(cat.ngal, dtype=np.int32)
+            self.nzcombis = 1
         else:
             self.nbinsz = cat.nbinsz
             zbins = cat.zbins
+            self.nzcombis = self.nbinsz*self.nbinsz*self.nbinsz
         sc = (4,self.nmax+1,self.nbinsz*self.nbinsz*self.nbinsz,self.nbinsr,self.nbinsr)
         sn = (self.nmax+1,self.nbinsz*self.nbinsz*self.nbinsz,self.nbinsr,self.nbinsr)
         szr = (self.nbinsz, self.nbinsr)
         bin_centers = np.zeros(self.nbinsz*self.nbinsr).astype(np.float64)
-        threepcfs_n = np.zeros(4*(self.nmax+1)*self.nbinsz*self.nbinsz*self.nbinsz*self.nbinsr*self.nbinsr).astype(complex)
-        threepcfsnorm_n = np.zeros((self.nmax+1)*self.nbinsz*self.nbinsz*self.nbinsz*self.nbinsr*self.nbinsr).astype(complex)
+        threepcfs_n = np.zeros(4*(self.nmax+1)*self.nbinsz*self.nbinsz*self.nbinsz*self.nbinsr*self.nbinsr).astype(np.complex128)
+        threepcfsnorm_n = np.zeros((self.nmax+1)*self.nbinsz*self.nbinsz*self.nbinsz*self.nbinsr*self.nbinsr).astype(np.complex128)
         args_basecat = (cat.isinner.astype(np.int32), cat.weight, cat.pos1, cat.pos2, cat.tracer_1, cat.tracer_2, 
-                        zbins.astype(np.int32), int(self.nbinsz), int(cat.ngal), )
-        args_basesetup = (int(0), int(self.nmax), np.float64(self.min_sep), np.float64(self.max_sep), np.array([-1.]).astype(np.float64), 
-                          int(self.nbinsr), int(self.multicountcorr), )
+                        zbins.astype(np.int32), np.int32(self.nbinsz), np.int32(cat.ngal), )
+        args_basesetup = (np.int32(0), np.int32(self.nmax), np.float64(self.min_sep), np.float64(self.max_sep), np.array([-1.]).astype(np.float64), 
+                          np.int32(self.nbinsr), np.int32(self.multicountcorr), )
         if self.method=="Discrete":
             if not cat.hasspatialhash:
                 cat.build_spatialhash(dpix=max(1.,self.max_sep//10.))
-            args_pixgrid = (np.float64(cat.pix1_start), np.float64(cat.pix1_d), int(cat.pix1_n), 
-                            np.float64(cat.pix2_start), np.float64(cat.pix2_d), int(cat.pix2_n), )
+            args_pixgrid = (np.float64(cat.pix1_start), np.float64(cat.pix1_d), np.int32(cat.pix1_n), 
+                            np.float64(cat.pix2_start), np.float64(cat.pix2_d), np.int32(cat.pix2_n), )
             args = (*args_basecat,
                     *args_basesetup,
                     cat.index_matcher,
                     cat.pixs_galind_bounds, 
                     cat.pix_gals,
                     *args_pixgrid,
-                    int(nthreads),
+                    np.int32(nthreads),
                     bin_centers,
                     threepcfs_n,
                     threepcfsnorm_n)
             func = self.clib.alloc_Gammans_discrete_ggg
-            for elarg, arg in enumerate(args):
-                print(elarg, arg)
-                print(arg.dtype, func.argtypes[elarg])
-        elif self.method=="Tree":
-            cutfirst = int(self.tree_resos[0]==0.)
-            mhash = cat.multihash(dpixs=self.tree_resos[cutfirst:],tomo=dotomo,shuffle=self.shuffle_pix)
-            ngal_resos, pos1s, pos2s, weights, zbins, allfields, index_matchers, pixs_galind_bounds, pix_gals = mhash
+        elif self.method in ["Tree", "DoubleTree"]:
+            print("Doing multihash")
+            print(cat)
+            cutfirst = np.int32(self.tree_resos[0]==0.)
+            print(self.tree_resos[cutfirst:])
+            mhash = cat.multihash(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1], shuffle=self.shuffle_pix)
+            print("Done multihash")
+            ngal_resos, pos1s, pos2s, weights, zbins, allfields, index_matchers, pixs_galind_bounds, pix_gals, dpixs1_true, dpixs2_true = mhash
+            print(dpixs1_true, ngal_resos, len(pos1s))
             weight_resos = np.concatenate(weights).astype(np.float64)
             pos1_resos = np.concatenate(pos1s).astype(np.float64)
             pos2_resos = np.concatenate(pos2s).astype(np.float64)
@@ -287,37 +310,103 @@ class GGGCorrelation(BinnedNPCF):
             index_matcher = np.concatenate(index_matchers).astype(np.int32)
             pixs_galind_bounds = np.concatenate(pixs_galind_bounds).astype(np.int32)
             pix_gals = np.concatenate(pix_gals).astype(np.int32)
-            args_pixgrid = (np.float64(cat.pix1_start), np.float64(cat.pix1_d), int(cat.pix1_n), 
-                            np.float64(cat.pix2_start), np.float64(cat.pix2_d), int(cat.pix2_n), )
-            args = (*args_basecat,
-                    self.tree_nresos,
-                    self.tree_redges,
-                    np.array(ngal_resos, dtype=np.int32),
-                    weight_resos,
-                    pos1_resos,
-                    pos2_resos,
-                    e1_resos,
-                    e2_resos,
-                    zbin_resos,
-                    index_matcher,
-                    pixs_galind_bounds,
-                    pix_gals,
-                    *args_pixgrid,
-                    *args_basesetup,
-                    int(nthreads),
-                    bin_centers,
-                    threepcfs_n,
-                    threepcfsnorm_n)
-            func = self.clib.alloc_Gammans_tree_ggg
-        elif self.method=="DoubleTree":
-            raise NotImplementedError 
-            
+            args_pixgrid = (np.float64(cat.pix1_start), np.float64(cat.pix1_d), np.int32(cat.pix1_n), 
+                            np.float64(cat.pix2_start), np.float64(cat.pix2_d), np.int32(cat.pix2_n), )
+            args_resos = (weight_resos, pos1_resos, pos2_resos, e1_resos, e2_resos, zbin_resos, 
+                          index_matcher, pixs_galind_bounds, pix_gals, )
+            args_output = (bin_centers, threepcfs_n, threepcfsnorm_n, )
+            if self.method=="Tree":
+                print("Doing Tree")
+                args = (*args_basecat,
+                        np.int32(self.tree_nresos),
+                        self.tree_redges,
+                        np.array(ngal_resos, dtype=np.int32),
+                        *args_resos,
+                        *args_pixgrid,
+                        *args_basesetup,
+                        np.int32(nthreads),
+                        *args_output)
+                func = self.clib.alloc_Gammans_tree_ggg
+            if self.method=="DoubleTree":
+                print("Doing Tree")
+                index_matcher_flat = np.argwhere(cat.index_matcher>-1).flatten()
+                nregions = len(index_matcher_flat)
+                args_basesetup_dtree = (np.int32(self.nmax), np.float64(self.min_sep), np.float64(self.max_sep), 
+                                        np.int32(self.nbinsr), np.int32(self.multicountcorr), )
+                isinner_resos = np.ones_like(zbin_resos)
+                args = (np.int32(self.tree_nresos),
+                        np.int32(self.tree_nresos-cutfirst),
+                        dpixs1_true.astype(np.float64),
+                        dpixs2_true.astype(np.float64),
+                        self.tree_redges,
+                        np.array(ngal_resos, dtype=np.int32),
+                        np.int32(self.nbinsz),
+                        isinner_resos,
+                        *args_resos,
+                        *args_pixgrid,
+                        np.int32(nregions),
+                        index_matcher_flat.astype(np.int32),
+                        *args_basesetup_dtree,
+                        np.int32(nthreads),
+                        *args_output)
+                func = self.clib.alloc_Gammans_doubletree_ggg
+       
         func(*args)
         
         self.bin_centers = bin_centers.reshape(szr)
+        self.bin_centers_mean = np.mean(self.bin_centers, axis=0)
         self.npcf_multipoles = threepcfs_n.reshape(sc)
         self.npcf_multipoles_norm = threepcfsnorm_n.reshape(sn)
         self.projection = "X"
+        
+        if apply_edge_correction:
+            self.edge_correction()
+        
+    def edge_correction(self, ret_matrices=False):
+        
+        def gen_M_matrix(thet1,thet2,threepcf_n_norm):
+            nvals, ntheta, _ = threepcf_n_norm.shape
+            nmax = (nvals-1)//2
+            narr = np.arange(-nmax,nmax+1, dtype=np.int)
+            nextM = np.zeros((nvals,nvals))
+            for ind, ell in enumerate(narr):
+                lminusn = ell-narr
+                sel = np.logical_and(lminusn+nmax>=0, lminusn+nmax<nvals)
+                nextM[ind,sel] = threepcf_n_norm[(lminusn+nmax)[sel],thet1,thet2].real/threepcf_n_norm[nmax,thet1,thet2].real
+            return nextM
+    
+        nvals, nzcombis, ntheta, _ = self.npcf_multipoles_norm.shape
+        nmax = nvals-1
+        threepcf_n_full = np.zeros((4,2*nmax+1, nzcombis, ntheta, ntheta), dtype=complex)
+        threepcf_n_norm_full = np.zeros((2*nmax+1, nzcombis, ntheta, ntheta), dtype=complex)
+        threepcf_n_corr = np.zeros(threepcf_n_full.shape, dtype=np.complex)
+        threepcf_n_full[:,nmax:] = self.npcf_multipoles
+        threepcf_n_norm_full[nmax:] = self.npcf_multipoles_norm
+        for nextn in range(1,nvals):
+            threepcf_n_full[0,nmax-nextn] = self.npcf_multipoles[0,nextn].transpose(0,2,1)
+            threepcf_n_full[1,nmax-nextn] = self.npcf_multipoles[1,nextn].transpose(0,2,1)
+            threepcf_n_full[2,nmax-nextn] = self.npcf_multipoles[3,nextn].transpose(0,2,1)
+            threepcf_n_full[3,nmax-nextn] = self.npcf_multipoles[2,nextn].transpose(0,2,1)
+            threepcf_n_norm_full[nmax-nextn] = self.npcf_multipoles_norm[nextn].transpose(0,2,1)
+
+        if ret_matrices:
+            mats = np.zeros((nzcombis,ntheta,ntheta,nvals,nvals))
+        for indz in range(nzcombis):
+            #sys.stdout.write("%i"%indz)
+            for thet1 in range(ntheta):
+                for thet2 in range(ntheta):
+                    nextM = gen_M_matrix(thet1,thet2,threepcf_n_norm_full[:,indz])
+                    nextM_inv = np.linalg.inv(nextM)
+                    if ret_matrices:
+                        mats[indz,thet1,thet2] = nextM
+                    for i in range(4):
+                        threepcf_n_corr[i,:,indz,thet1,thet2] = np.matmul(nextM_inv,threepcf_n_full[i,:,indz,thet1,thet2])
+                        
+        self.npcf_multipoles = threepcf_n_corr[:,nmax:]
+        self.is_edge_corrected = True
+        
+        if ret_matrices:
+            return threepcf_n_corr[:,nmax:], mats
     
     def multipoles2npcf(self):
         
@@ -331,23 +420,22 @@ class GGGCorrelation(BinnedNPCF):
         conjmap = [0,1,3,2]
         for elm in range(4):
             for elphi, phi in enumerate(self.phi):
-                tmp = np.zeros((nzcombis, rbins, rbins), dtype=complex)
                 N0 = 1./(2*np.pi) * self.npcf_multipoles_norm[0].astype(complex)
-                for eln,n in enumerate(range(self.nmax+1)):
+                tmp =  1./(2*np.pi) * self.npcf_multipoles[elm,0].astype(complex)
+                for n in range(1,self.nmax+1):
                     _const = 1./(2*np.pi) * np.exp(1J*n*phi)
-                    tmp += _const * self.npcf_multipoles[elm,eln].astype(complex)
-                    if n>0:
-                        tmp += _const.conj() * self.npcf_multipoles[conjmap[elm],eln][ztiler].astype(complex).transpose(0,2,1)
+                    tmp += _const * self.npcf_multipoles[elm,n].astype(complex)
+                    tmp += _const.conj() * self.npcf_multipoles[conjmap[elm],n][ztiler].astype(complex).transpose(0,2,1)
                 self.npcf[elm,...,elphi] = tmp/N0.real
         # Number of triangles
         for elphi, phi in enumerate(self.phi):
-            tmptotnorm = np.zeros((nzcombis, rbins, rbins), dtype=complex)
-            for eln,n in enumerate(range(self.nmax+1)):
+            tmptotnorm = 1./(2*np.pi) * self.npcf_multipoles_norm[0].astype(complex)
+            for n in range(1,self.nmax+1):
                 _const = 1./(2*np.pi) * np.exp(1J*n*phi)
-                tmptotnorm += _const * self.npcf_multipoles_norm[eln].astype(complex)
-                if n>0:
-                    tmptotnorm += _const.conj() * self.npcf_multipoles_norm[eln][ztiler].astype(complex).transpose(0,2,1)
-                self.npcf_norm[...,elphi] = tmptotnorm
+                tmptotnorm += _const * self.npcf_multipoles_norm[n].astype(complex)
+                tmptotnorm += _const.conj() * self.npcf_multipoles_norm[n][ztiler].astype(complex).transpose(0,2,1)
+            self.npcf_norm[...,elphi] = tmptotnorm
+        self.projection = "X"
     
     ## PROJECTIONS ##
     def projectnpcf(self, projection):
@@ -380,23 +468,209 @@ class GGGCorrelation(BinnedNPCF):
         return gammas_cen
         
         
-    def computeMap3(self, radii, do_multiscale=False, tofile=False):
+    def computeMap3(self, radii, do_multiscale=False, tofile=False, filtercache=None):
         """
         Compute third-order aperture statistics
         """
-        thisproj = self.projection
-        if thisproj != "Centroid":
-            self.toprojection("Centroid")
-        # Compute Map3...
-        map3 = None
-        if thisproj != "Centroid":
-            self.toprojection(thisproj)
+        
+        if self.npcf is None and self.npcf_multipoles is not None:
+            self.multipoles2npcf()
             
+        if self.projection != "Centroid":
+            self.projectnpcf("Centroid")
+        
+        nradii = len(radii)
+        if not do_multiscale:
+            nrcombis = nradii
+            filterfunc = self._map3_filtergrid_singleR
+            _rcut = 1 
+        else:
+            nrcombis = nradii*nradii*nradii
+            filterfunc = self._map3_filtergrid_multiR
+            _rcut = nradii
+        map3s = np.zeros((8, self.nzcombis, nrcombis), dtype=complex)
+        M3 = np.zeros((self.nzcombis, nrcombis), dtype=complex)
+        M2M1 = np.zeros((self.nzcombis, nrcombis), dtype=complex)
+        M2M2 = np.zeros((self.nzcombis, nrcombis), dtype=complex)
+        M2M3 = np.zeros((self.nzcombis, nrcombis), dtype=complex)
+        tmprcombi = 0
+        
+        for elr1, R1 in enumerate(radii):
+            for elr2, R2 in enumerate(radii[:_rcut]):
+                for elr3, R3 in enumerate(radii[:_rcut]):
+                    if filtercache is not None:
+                        T0, T3_123, T3_231, T3_312 = filtercache[tmprcombi][0], filtercache[tmprcombi][1], filtercache[tmprcombi][2], filtercache[tmprcombi][3]
+                    else:
+                        T0, T3_123, T3_231, T3_312 = filterfunc(R1, R2, R3)
+                    M3[:,tmprcombi] = np.nansum(T0*self.npcf[0,...],axis=(1,2,3))
+                    M2M1[:,tmprcombi] = np.nansum(T3_123*self.npcf[1,...],axis=(1,2,3))
+                    M2M2[:,tmprcombi] = np.nansum(T3_231*self.npcf[2,...],axis=(1,2,3))
+                    M2M3[:,tmprcombi] = np.nansum(T3_312*self.npcf[3,...],axis=(1,2,3))
+                    tmprcombi += 1            
+        map3s[0] = 1./4. * (+M2M1+M2M2+M2M3 + M3).real # MapMapMap
+        map3s[1] = 1./4. * (+M2M1+M2M2-M2M3 + M3).imag # MapMapMx
+        map3s[2] = 1./4. * (+M2M1-M2M2+M2M3 + M3).imag # MapMxMap
+        map3s[3] = 1./4. * (-M2M1+M2M2+M2M3 + M3).imag # MxMapMap
+        map3s[4] = 1./4. * (-M2M1+M2M2+M2M3 - M3).real # MapMxMx
+        map3s[5] = 1./4. * (+M2M1-M2M2+M2M3 - M3).real # MxMapMx
+        map3s[6] = 1./4. * (+M2M1+M2M2-M2M3 - M3).real # MxMxMap
+        map3s[7] = 1./4. * (+M2M1+M2M2+M2M3 - M3).imag # MxMxMx
+                                    
         if tofile:
             # Write to file
             pass
             
-        return map3
+        return map3s
+    
+    def _map3_filtergrid_singleR(self, R1, R2, R3):
+        phis = self.phi
+        normys_edges = self.bin_edges
+        normys_centers = self.bin_centers_mean
+        R_ap = R1
+        
+        nbinsr = len(normys_centers)
+        nbinsphi = len(phis)
+        _cphis = np.cos(phis)
+        _c2phis = np.cos(2*phis)
+        _sphis = np.sin(phis)
+        _ephis = np.e**(1J*phis)
+        _ephisc = np.e**(-1J*phis)
+        _e2phis = np.e**(2J*phis)
+        _e2phisc = np.e**(-2J*phis)
+        T0 = np.zeros((nbinsr, nbinsr, nbinsphi), dtype=complex)
+        T3_123 = np.zeros((nbinsr, nbinsr, nbinsphi), dtype=complex)
+        T3_231 = np.zeros((nbinsr, nbinsr, nbinsphi), dtype=complex)
+        T3_312 = np.zeros((nbinsr, nbinsr, nbinsphi), dtype=complex)
+        for elb1 in range(nbinsr):
+            _y1 = normys_centers[elb1]
+            _dbin1 = normys_edges[elb1+1] - normys_edges[elb1]
+            for elb2 in range(nbinsr):
+                _y2 = normys_centers[elb2]
+                _y14 = _y1**4
+                _y13y2 = _y1**3*_y2
+                _y12y22 = _y1**2*_y2**2
+                _y1y23 = _y1*_y2**3
+                _y24 = _y2**4
+                _dbin2 = normys_edges[elb2+1] - normys_edges[elb2]
+                _dbinphi = phis[1] - phis[0]
+                _absq1s = 1./9.*(4*_y1**2 - 4*_y1*_y2*_cphis + 1*_y2**2)
+                _absq2s = 1./9.*(1*_y1**2 - 4*_y1*_y2*_cphis + 4*_y2**2)
+                _absq3s = 1./9.*(1*_y1**2 + 2*_y1*_y2*_cphis + 1*_y2**2)
+                _absq123s = 2./3. * (_y1**2+_y2**2-_y1*_y2*_cphis)
+                _absq1q2q3_2 = _absq1s*_absq2s*_absq3s
+                _measures = _y1*_dbin1/R_ap**2 * _y2*_dbin2/R_ap**2 * _dbinphi/(2*np.pi)
+                nextT0 = _absq1q2q3_2/R_ap**6 * np.e**(-_absq123s/(2*R_ap**2))
+                T0[elb1,elb2] = 1./24. * _measures * nextT0
+                _tmp1 = _y1**4 + _y2**4 + _y1**2*_y2**2 * (2*np.cos(2*phis)-5.)
+                _tmp2 = (_y1**2+_y2**2)*_cphis + 9J*(_y1**2-_y2**2)*_sphis
+                q1q2q3starsq = -1./81*(2*_tmp1 - _y1*_y2*_tmp2)
+                nextT3_123 = np.e**(-_absq123s/(2*R_ap**2)) * (1./24*_absq1q2q3_2/R_ap**6 -
+                                                               1./9.*q1q2q3starsq/R_ap**4 +
+                                                               1./27*(q1q2q3starsq**2/(_absq1q2q3_2*R_ap**2) +
+                                                                      2*q1q2q3starsq/(_absq3s*R_ap**2)))
+                _231inner = -4*_y14 + 2*_y24 + _y13y2*8*_cphis + _y12y22*(8*_e2phis-4-_e2phisc) + _y1y23*(_ephisc-8*_ephis)
+                q2q3q1starsq = -1./81*(_231inner)
+                nextT3_231 = np.e**(-_absq123s/(2*R_ap**2)) * (1./24*_absq1q2q3_2/R_ap**6 -
+                                                               1./9.*q2q3q1starsq/R_ap**4 +
+                                                               1./27*(q2q3q1starsq**2/(_absq1q2q3_2*R_ap**2) +
+                                                                      2*q2q3q1starsq/(_absq1s*R_ap**2)))
+                _312inner = 2*_y14 - 4*_y24 - _y13y2*(8*_ephisc-_ephis) - _y12y22*(4+_e2phis-8*_e2phisc) + 8*_y1y23*_cphis
+                q3q1q2starsq = -1./81*(_312inner)
+                nextT3_312 = np.e**(-_absq123s/(2*R_ap**2)) * (1./24*_absq1q2q3_2/R_ap**6 -
+                                                               1./9.*q3q1q2starsq/R_ap**4 +
+                                                               1./27*(q3q1q2starsq**2/(_absq1q2q3_2*R_ap**2) +
+                                                                      2*q3q1q2starsq/(_absq2s*R_ap**2)))
+                T3_123[elb1,elb2] = _measures * nextT3_123
+                T3_231[elb1,elb2] = _measures * nextT3_231
+                T3_312[elb1,elb2] = _measures * nextT3_312
+
+        return T0, T3_123, T3_231, T3_312
+    
+    def _map3_filtergrid_multiR(self, R1, R2, R3, include_measure=True):
+        phis = self.phi
+        normys_edges = self.bin_edges
+        normys_centers = self.bin_centers_mean
+        nbinsr = len(normys_centers)
+        nbinsphi = len(phis)
+        _cphis = np.cos(phis)
+        _c2phis = np.cos(2*phis)
+        _sphis = np.sin(phis)
+        _ephis = np.e**(1J*phis)
+        _ephisc = np.e**(-1J*phis)
+        _e2phis = np.e**(2J*phis)
+        _e2phisc = np.e**(-2J*phis)
+        T0 = np.zeros((nbinsr, nbinsr, nbinsphi), dtype=complex)
+        T3_123 = np.zeros((nbinsr, nbinsr, nbinsphi), dtype=complex)
+        T3_231 = np.zeros((nbinsr, nbinsr, nbinsphi), dtype=complex)
+        T3_312 = np.zeros((nbinsr, nbinsr, nbinsphi), dtype=complex)
+        for elb1 in range(nbinsr):
+            _y1 = normys_centers[elb1]
+            _dbin1 = normys_edges[elb1+1] - normys_edges[elb1]
+            for elb2 in range(nbinsr):
+                Theta2 = np.sqrt((R1**2*R2**2 + R1**2*R3**2 + R2**2*R3**2)/3)
+                S = R1**2*R2**2*R3**2/Theta2**3
+
+                _y2 = normys_centers[elb2]
+                _y14 = _y1**4
+                _y13y2 = _y1**3*_y2
+                _y12y22 = _y1**2*_y2**2
+                _y1y23 = _y1*_y2**3
+                _y24 = _y2**4
+                _dbin2 = normys_edges[elb2+1] - normys_edges[elb2]
+                _dbinphi = phis[1] - phis[0]
+                _absq1s = 1./9.*(4*_y1**2 - 4*_y1*_y2*_cphis + 1*_y2**2)
+                _absq2s = 1./9.*(1*_y1**2 - 4*_y1*_y2*_cphis + 4*_y2**2)
+                _absq3s = 1./9.*(1*_y1**2 + 2*_y1*_y2*_cphis + 1*_y2**2)
+                _absq123s = 2./3. * (_y1**2+_y2**2-_y1*_y2*_cphis)
+                _absq1q2q3_2 = _absq1s*_absq2s*_absq3s
+
+                Z = ((-R1**2+2*R2**2+2*R3**2)*_absq1s + (2*R1**2-R2**2+2*R3**2)*_absq2s + (2*R1**2+2*R2**2-R3**2)*_absq3s)/(6*Theta2**2)
+                _frac231c = 1./3.*_y2*(2*_y1*_ephis-_y2)/_absq1s
+                _frac312c = 1./3.*_y1*(_y1-2*_y2*_ephisc)/_absq2s
+                _frac123c = 1./3.*(_y2**2-_y1**2+2J*_y1*_y2*_sphis)/_absq3s
+                f1 = (R2**2+R3**2)/(2*Theta2) + _frac231c * (R2**2-R3**2)/(6*Theta2)
+                f2 = (R1**2+R3**2)/(2*Theta2) + _frac312c * (R3**2-R1**2)/(6*Theta2)
+                f3 = (R1**2+R2**2)/(2*Theta2) + _frac123c * (R1**2-R2**2)/(6*Theta2)
+                f1c = f1.conj()
+                f2c = f2.conj()
+                f3c = f3.conj()
+                g1c = (R2**2*R3**2/Theta2**2 + R1**2*(R3**2-R2**2)/(3*Theta2**2)*_frac231c).conj()
+                g2c = (R3**2*R1**2/Theta2**2 + R2**2*(R1**2-R3**2)/(3*Theta2**2)*_frac312c).conj()
+                g3c = (R1**2*R2**2/Theta2**2 + R3**2*(R2**2-R1**2)/(3*Theta2**2)*_frac123c).conj()
+                _measures = _y1*_dbin1/Theta2 * _y2*_dbin2/Theta2 * _dbinphi/(2*np.pi)
+                if not include_measure:
+                    _measures/=_measures
+                nextT0 = _absq1q2q3_2/Theta2**3 * f1c**2*f2c**2*f3c**2 * np.e**(-Z)
+                T0[elb1,elb2] = S/24. * _measures * nextT0
+
+                _tmp1 = _y1**4 + _y2**4 + _y1**2*_y2**2 * (2*np.cos(2*phis)-5.)
+                _tmp2 = (_y1**2+_y2**2)*_cphis + 9J*(_y1**2-_y2**2)*_sphis
+                q1q2q3starsq = -1./81*(2*_tmp1 - _y1*_y2*_tmp2)
+                nextT3_123 = np.e**(-Z) * (1./24*_absq1q2q3_2/Theta2**3 * f1c**2*f2c**2*f3**2 -
+                                           1./9.*q1q2q3starsq/Theta2**2 * f1c*f2c*f3*g3c +
+                                           1./27*(q1q2q3starsq**2/(_absq1q2q3_2*Theta2) * g3c**2 +
+                                                  2*R1**2*R2**2/Theta2**2 * q1q2q3starsq/(_absq3s*Theta2) * f1c*f2c))
+                _231inner = -4*_y14 + 2*_y24 + _y13y2*8*_cphis + _y12y22*(8*_e2phis-4-_e2phisc) + _y1y23*(_ephisc-8*_ephis)
+                q2q3q1starsq = -1./81*(_231inner)
+                nextT3_231 = np.e**(-Z) * (1./24*_absq1q2q3_2/Theta2**3 * f2c**2*f3c**2*f1**2 -
+                                           1./9.*q2q3q1starsq/Theta2**2 * f2c*f3c*f1*g1c +
+                                           1./27*(q2q3q1starsq**2/(_absq1q2q3_2*Theta2) * g1c**2 +
+                                                  2*R2**2*R3**2/Theta2**2 * q2q3q1starsq/(_absq1s*Theta2) * f2c*f3c))
+                _312inner = 2*_y14 - 4*_y24 - _y13y2*(8*_ephisc-_ephis) - _y12y22*(4+_e2phis-8*_e2phisc) + 8*_y1y23*_cphis
+                q3q1q2starsq = -1./81*(_312inner)
+                nextT3_312 = np.e**(-Z) * (1./24*_absq1q2q3_2/Theta2**3 * f3c**2*f1c**2*f2**2 -
+                                           1./9.*q3q1q2starsq/Theta2**2 * f3c*f1c*f2*g2c +
+                                           1./27*(q3q1q2starsq**2/(_absq1q2q3_2*Theta2) * g2c**2 +
+                                                  2*R3**2*R1**2/Theta2**2 * q3q1q2starsq/(_absq2s*Theta2) * f3c*f1c))
+
+                T3_123[elb1,elb2] = S * _measures * nextT3_123
+                T3_231[elb1,elb2] = S * _measures * nextT3_231
+                T3_312[elb1,elb2] = S * _measures * nextT3_312
+
+        return T0, T3_123, T3_231, T3_312
+
+
+    
 
 class GNNCorrelation(BinnedNPCF):
     """ Shear-Lens-Lens (G3L) correlation function """
