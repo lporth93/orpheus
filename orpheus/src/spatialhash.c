@@ -21,6 +21,17 @@
 #define SQUARE(x) ((x)*(x))
 #define mymax(x,y) ((x) >= (y)) ? (x) : (y)
 
+/*
+// Hack against gclib>2.31 issues -- see https://stackoverflow.com/questions/63261220/link-errors-with-ffast-math-ffinite-math-only-and-glibc-2-31
+double __exp_finite(double x) { return exp(x); }
+double __log_finite(double x) { return log(x); }
+double __pow_finite(double x, double y) { return pow(x, y); }
+double __cpow_finite(double x, double y) { return cpow(x, y); }
+
+float __expf_finite(float x) { return expf(x); }
+float __logf_finite(float x) { return logf(x); }
+float __powf_finite(float x, float y) { return powf(x, y); }
+*/
 
 void build_spatialhash(double *pos_1, double *pos_2, int ngal,
     double mask_d1, double mask_d2, double mask_min1, double mask_min2, int mask_n1, int mask_n2,
@@ -142,9 +153,10 @@ void _gen_pixmeans(double *pos_1, double *pos_2, double *e1, double *e2, double 
     }  
 }
 
-void reducecat(double *w, double *pos_1, double *pos_2, double *scalarquants, int ngal, int nscalarquants,
+void reducecat(double *isinner, double *w, double *pos_1, double *pos_2, double *scalarquants, int ngal, int nscalarquants, 
+               int normed,
                double mask_d1, double mask_d2, double mask_min1, double mask_min2, int mask_n1, int mask_n2, int shuffle,
-               double *w_red, double *pos1_red, double *pos2_red, double *scalarquants_red, int ngal_red){
+               double *isinner_red, double *w_red, double *pos1_red, double *pos2_red, double *scalarquants_red, int ngal_red){
     
     // Build spatial hash
     int npix = mask_n1*mask_n2;
@@ -160,7 +172,7 @@ void reducecat(double *w, double *pos_1, double *pos_2, double *scalarquants, in
     
     // Allocate pixelized catalog from spatial hash
     int ind_pix1, ind_pix2, ind_red, lower, upper, ind_inpix, ind_gal, elscalarquant;
-    double tmppos_1, tmppos_2, tmpw, shift_1, shift_2;
+    double tmpisinner, tmppos_1, tmppos_2, tmpw, tmpdenom, shift_1, shift_2;
     double *tmpscalarquants;
     int rseed=42;
     srand(rseed);  
@@ -170,12 +182,14 @@ void reducecat(double *w, double *pos_1, double *pos_2, double *scalarquants, in
             if (ind_red==FLAG_NOGAL){continue;}
             lower = spatialhash[start_bounds+ind_red];
             upper = spatialhash[start_bounds+ind_red+1];
+            tmpisinner = 0;
             tmpw = 0;
             tmppos_1 = 0;
             tmppos_2 = 0;
             tmpscalarquants = calloc(nscalarquants, sizeof(double));            
             for (ind_inpix=lower; ind_inpix<upper; ind_inpix++){
                 ind_gal = spatialhash[start_pixgals+ind_inpix];
+                tmpisinner += w[ind_gal]*isinner[ind_gal];
                 tmpw += w[ind_gal];
                 tmppos_1 += w[ind_gal]*pos_1[ind_gal];
                 tmppos_2 += w[ind_gal]*pos_2[ind_gal];
@@ -185,6 +199,7 @@ void reducecat(double *w, double *pos_1, double *pos_2, double *scalarquants, in
             }
             if (tmpw==0){continue;}
             w_red[ngal_red] = tmpw;
+            isinner_red[ngal_red] = tmpisinner/tmpw;
             if (shuffle==0){
                 pos1_red[ngal_red] = tmppos_1/tmpw;
                 pos2_red[ngal_red] = tmppos_2/tmpw;}
@@ -194,6 +209,8 @@ void reducecat(double *w, double *pos_1, double *pos_2, double *scalarquants, in
                 pos1_red[ngal_red] = mask_min1+ind_pix1*mask_d1 + shift_1;
                 pos2_red[ngal_red] = mask_min2+ind_pix2*mask_d2 + shift_2;}
             for (elscalarquant=0; elscalarquant<nscalarquants; elscalarquant++){
+                // It depends on the statistics whether we want to normalize:
+                // i) Shear 3pcf
                 // Here we need to average each of the quantities in order to retain the correct
                 // normalization of the NPCF - i.e. for a polar field we would have
                 // Upsilon_n,pix ~ w_pix * G1_pix * G2_pix
@@ -201,7 +218,11 @@ void reducecat(double *w, double *pos_1, double *pos_2, double *scalarquants, in
                 //               ~ w_pix^3 * shape_pix^2
                 // This means that shape_pix should be independent of the size of the pixel, i.e. that
                 // we should normalize shape_pix ~ (sum_i w_i*gamma_i) / (sum_i w_i)
-                scalarquants_red[elscalarquant*ngal+ngal_red] =  tmpscalarquants[elscalarquant]/tmpw;
+                // ii) w^2ww correlators
+                // Here we simply compute w_pix^2*w_pix*w_pix, meaning that we should not normalie
+                tmpdenom = 1;
+                if (normed==1){tmpdenom=tmpw;}
+                scalarquants_red[elscalarquant*ngal+ngal_red] =  tmpscalarquants[elscalarquant]/tmpdenom;
             }
             ngal_red += 1;
             free(tmpscalarquants);

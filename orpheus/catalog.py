@@ -113,9 +113,9 @@ class Catalog:
         
         self.clib.reducecat.restype = ct.c_void_p
         self.clib.reducecat.argtypes = [
-            p_f64, p_f64, p_f64, p_f64, ct.c_int32, ct.c_int32, 
+            p_f64, p_f64, p_f64, p_f64, p_f64, ct.c_int32, ct.c_int32, ct.c_int32, 
             ct.c_double, ct.c_double, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, ct.c_int32,
-            p_f64_nof, p_f64_nof, p_f64_nof, p_f64_nof,ct.c_int32]
+            p_f64_nof, p_f64_nof, p_f64_nof, p_f64_nof, p_f64_nof,ct.c_int32]
         
         self.clib.reducecat2.restype = ct.c_void_p
         self.clib.reducecat2.argtypes = [
@@ -218,7 +218,7 @@ class Catalog:
         
     # Reduces catalog to smaller catalog where positions & quantities are
     # averaged over regular grid
-    def _reduce(self, fields, dpix, dpix2=None, relative_to_hash=None, normed=False, shuffle=False,
+    def _reduce(self, fields, dpix, dpix2=None, relative_to_hash=None, normed=True, shuffle=False,
                extent=[None,None,None,None], forcedivide=1, 
                ret_inst=False):
         
@@ -256,6 +256,7 @@ class Catalog:
         scalarquants = np.asarray(scalarquants)
         
         # Compute reduction (individually for each zbin)
+        isinner_red = np.zeros(self.ngal, dtype=np.int32)
         w_red = np.zeros(self.ngal, dtype=np.float64)
         pos1_red = np.zeros(self.ngal, dtype=np.float64)
         pos2_red = np.zeros(self.ngal, dtype=np.float64)
@@ -267,17 +268,20 @@ class Catalog:
             ngal_z = np.sum(sel_z)
             ngal_red_z = 0
             red_shape = (len(fields), ngal_z)
+            isinner_red_z = np.zeros(ngal_z, dtype=np.float64)
             w_red_z = np.zeros(ngal_z, dtype=np.float64)
             pos1_red_z = np.zeros(ngal_z, dtype=np.float64)
             pos2_red_z = np.zeros(ngal_z, dtype=np.float64)
             scalarquants_red_z = np.zeros(nfields*ngal_z, dtype=np.float64)
-            self.clib.reducecat(self.weight[sel_z].astype(np.float64), 
+            self.clib.reducecat(self.isinner[sel_z].astype(np.float64), 
+                                self.weight[sel_z].astype(np.float64), 
                                 self.pos1[sel_z].astype(np.float64), 
                                 self.pos2[sel_z].astype(np.float64),
                                 scalarquants[:,sel_z].flatten().astype(np.float64),
-                                ngal_z, nfields,
+                                ngal_z, nfields, np.int32(normed),
                                 dpix, dpix2, start1, start2, n1, n2, np.int32(shuffle),
-                                w_red_z, pos1_red_z, pos2_red_z, scalarquants_red_z, ngal_red_z)
+                                isinner_red_z, w_red_z, pos1_red_z, pos2_red_z, scalarquants_red_z, ngal_red_z)
+            isinner_red[ind_start:ind_start+ngal_z] = isinner_red_z
             w_red[ind_start:ind_start+ngal_z] = w_red_z
             pos1_red[ind_start:ind_start+ngal_z] = pos1_red_z
             pos2_red[ind_start:ind_start+ngal_z] = pos2_red_z
@@ -287,6 +291,7 @@ class Catalog:
             
         # Accumulate reduced atalog
         sel_nonzero = w_red>0
+        isinner_red = isinner_red[sel_nonzero]
         w_red = w_red[sel_nonzero]
         pos1_red = pos1_red[sel_nonzero]
         pos2_red = pos2_red[sel_nonzero]
@@ -300,13 +305,15 @@ class Catalog:
             if ncompfields[elf]==2:
                 fields_red.append(scalarquants_red[tmpcomp]+1J*scalarquants_red[tmpcomp+1])
             tmpcomp += ncompfields[elf]
-            
+        isinner_red[isinner_red<0.5] = 0  
+        isinner_red[isinner_red>=0.5] = 1  
         if ret_inst:
-            return Catalog(pos1=pos1_red, pos2=pos2_red, weight=w_red, zbins=zbins_red), fields_red
+            return Catalog(pos1=pos1_red, pos2=pos2_red, weight=w_red, zbins=zbins_red,
+                           isinner=isinner_red.astype(np.int32)), fields_red
             
-        return w_red, pos1_red, pos2_red, zbins_red, fields_red
+        return w_red, pos1_red, pos2_red, zbins_red, isinner_red.astype(np.int32), fields_red
     
-    def _multihash(self, dpixs, fields, dpix_hash=None, normed=False, shuffle=False,
+    def _multihash(self, dpixs, fields, dpix_hash=None, normed=True, shuffle=False,
                   extent=[None,None,None,None], forcedivide=1):
         """ Builds spatialhash for a base catalog and its reductions. """
         
@@ -322,11 +329,14 @@ class Catalog:
         print("First spatialhash")
         self.build_spatialhash(dpix=dpix_hash, extent=extent)
         ngals = [self.ngal]
+        isinners = [self.isinner]
         pos1s = [self.pos1]
         pos2s = [self.pos2]
         weights = [self.weight]
         zbins = [self.zbins]
         allfields = [fields]
+        if not normed:
+            allfields[0] *= self.weight
         index_matchers = [self.index_matcher]
         pixs_galind_bounds = [self.pixs_galind_bounds]
         pix_gals = [self.pix_gals]
@@ -336,6 +346,7 @@ class Catalog:
         fac_pix2 = self.pix2_d/dpix_hash
         dpixs1_true = np.zeros_like(np.asarray(dpixs))
         dpixs2_true = np.zeros_like(np.asarray(dpixs))
+        print(len(fields),fields)
         for elreso in range(len(dpixs)):
             print("Doing reso %i"%elreso)
             dpixs1_true[elreso]=fac_pix1*dpixs[elreso]
@@ -353,6 +364,7 @@ class Catalog:
                                                ret_inst=True)
             nextcat.build_spatialhash(dpix=dpix_hash, extent=extent)
             ngals.append(nextcat.ngal)
+            isinners.append(nextcat.isinner)
             pos1s.append(nextcat.pos1)
             pos2s.append(nextcat.pos2)
             weights.append(nextcat.weight)
@@ -363,10 +375,10 @@ class Catalog:
             pix_gals.append(nextcat.pix_gals)
             print("Done reso %i"%elreso)
             
-        return ngals, pos1s, pos2s, weights, zbins, allfields, index_matchers, pixs_galind_bounds, pix_gals, dpixs1_true, dpixs2_true
+        return ngals, pos1s, pos2s, weights, zbins, isinners, allfields, index_matchers, pixs_galind_bounds, pix_gals, dpixs1_true, dpixs2_true
     
     def _genmatched_multiresocats(self, dpixs, fields, flattened=True, 
-                                  normed=False, extent=[None,None,None,None], forcedivide=1):
+                                  normed=True, extent=[None,None,None,None], forcedivide=1):
         """
         Shapes of the unflattened arrays/lists:
         - ngals/resos1/resos2: (nresos,)
@@ -403,17 +415,18 @@ class Catalog:
             pos2s = np.hstack(res[2]).squeeze()
             weights = np.hstack(res[3]).squeeze()
             zbins = np.hstack(res[4]).squeeze()
-            allfields = [None]*len(res[5][0])
-            for elf in range(len(res[5][0])):
-                allfields[elf] = np.zeros(ngalshifts_1d[-1], dtype=type(res[5][0][elf][0]))
+            isinners = np.hstack(res[5]).squeeze()
+            allfields = [None]*len(res[6][0])
+            for elf in range(len(res[6][0])):
+                allfields[elf] = np.zeros(ngalshifts_1d[-1], dtype=type(res[6][0][elf][0]))
                 for elreso in range(nresos):
                     #print(elf,elreso,len(res[elreso][elf]),ngalshifts_1d[elreso]-ngalshifts_1d[elreso+1])
-                    allfields[elf][ngalshifts_1d[elreso]:ngalshifts_1d[elreso+1]] = res[5][elreso][elf]
-            index_matchers = np.hstack(res[6]).squeeze() # length: nresos*self.pix1_n*self.pix2_n
-            pixs_galind_bounds = np.hstack(res[7]).squeeze()
-            pix_gals = np.hstack(res[8]).squeeze()
-            resos1 = res[9]
-            resos2 = res[10]
+                    allfields[elf][ngalshifts_1d[elreso]:ngalshifts_1d[elreso+1]] = res[6][elreso][elf]
+            index_matchers = np.hstack(res[7]).squeeze() # length: nresos*self.pix1_n*self.pix2_n
+            pixs_galind_bounds = np.hstack(res[8]).squeeze()
+            pix_gals = np.hstack(res[9]).squeeze()
+            resos1 = res[10]
+            resos2 = res[11]
             _tmpshift = 0
             ngalshifts_3d = -1*np.ones((self.nbinsz, nresos-1, nresos), dtype=np.int32)
             for elbinz in range(self.nbinsz):
@@ -432,11 +445,11 @@ class Catalog:
                         #print(elreso,elreso2,len(res[11]),len(res[11][0]),_start,len(_toappend))
         return np.array(ngals, dtype=np.int32), resos1.astype(np.float64), resos2.astype(np.float64), \
                ngalshifts_1d, ngalshifts_3d.flatten(), \
-               pos1s, pos2s, weights, zbins, allfields, \
+               pos1s, pos2s, weights, zbins, isinners, allfields, \
                index_matchers, pixs_galind_bounds , pix_gals, pixmatcher
 
     def __genmatched_multiresocats(self, dpixs, fields, change_renormsign=False,
-                                   normed=False, extent=[None,None,None,None], forcedivide=1):
+                                   normed=True, extent=[None,None,None,None], forcedivide=1):
 
         # Build multihashsh
         _min1 = self.min1-2.*dpixs[-1]
@@ -448,7 +461,7 @@ class Catalog:
                   _min2, _max2-(_max2-_min2)%dpixs[-1]-_renorm]
         _ = self._multihash(dpixs=dpixs, fields=fields, extent=extent, shuffle=False, 
                             normed=normed, forcedivide=forcedivide)
-        ngals, pos1s, pos2s, weights, zbins, allfields, index_matchers, pixs_galind_bounds, pix_gals, dpixs1_true, dpixs2_true = _ 
+        ngals, pos1s, pos2s, weights, zbins, isinners, allfields, index_matchers, pixs_galind_bounds, pix_gals, dpixs1_true, dpixs2_true = _ 
 
         # Match reduced pixelgrids between catalogs
         resos1 = np.append([0], dpixs1_true)
@@ -488,7 +501,7 @@ class Catalog:
                     pixmatcher[elbinz][elreso][elreso2-(elreso+1)] -= np.min(pixmatcher[elbinz][elreso][elreso2-(elreso+1)])
         failed = pixmatcher[0][-1][0][0]!=0
 
-        return failed, ngals, pos1s, pos2s, weights, zbins, allfields, \
+        return failed, ngals, pos1s, pos2s, weights, zbins, isinners, allfields, \
                index_matchers, pixs_galind_bounds, pix_gals, resos1, resos2, pixmatcher
 
 
@@ -700,7 +713,7 @@ class ScalarTracerCatalog(Catalog):
         self.tracer = tracer
         self.spin = 0
         
-    def reduce(self, dpix, dpix2=None, relative_to_hash=None, normed=False, shuffle=False,
+    def reduce(self, dpix, dpix2=None, relative_to_hash=None, normed=True, shuffle=False,
                extent=[None,None,None,None], forcedivide=1, 
                ret_inst=False):
         res = super()._reduce(
@@ -713,14 +726,14 @@ class ScalarTracerCatalog(Catalog):
             extent=extent,
             forcedivide=forcedivide,
             ret_inst=False)
-        (w_red, pos1_red, pos2_red, zbins_red, fields_red) = res
+        (w_red, pos1_red, pos2_red, zbins_red, isinner_red, fields_red) = res
         if ret_inst:
             return ScalarTracerCatalog(self.spin, pos1_red, pos2_red, 
                                        fields_red[0], 
-                                       weight=w_red, zbins=zbins_red)
+                                       weight=w_red, zbins=zbins_red, isinner=isinner_red)
         return res
     
-    def multihash(self, dpixs, dpix_hash=None, normed=False, shuffle=False,
+    def multihash(self, dpixs, dpix_hash=None, normed=True, shuffle=False,
                   extent=[None,None,None,None], forcedivide=1):
         res = super()._multihash(
             dpixs=dpixs.astype(np.float64), 
@@ -733,7 +746,7 @@ class ScalarTracerCatalog(Catalog):
         return res
     
     def genmatched_multiresocats(self, dpixs, flattened=True, 
-                                 normed=False, extent=[None,None,None,None], forcedivide=1):
+                                 normed=True, extent=[None,None,None,None], forcedivide=1):
         res = super()._multihash(
             dpixs=dpixs, 
             fields=[self.tracer], 
@@ -751,31 +764,39 @@ class SpinTracerCatalog(Catalog):
         self.tracer_2 = tracer_2.astype(np.float64)
         self.spin = int(spin)
         
-    def reduce(self, dpix, dpix2=None, relative_to_hash=None, normed=False, shuffle=False,
-               extent=[None,None,None,None], forcedivide=1, 
+    def reduce(self, dpix, dpix2=None, relative_to_hash=None, normed=True, shuffle=False,
+               extent=[None,None,None,None], forcedivide=1, w2field=True,
                ret_inst=False):
+        if not w2field:
+            fields=(self.tracer_1, self.tracer_2,) 
+        else:
+            fields=(self.tracer_1, self.tracer_2, self.weight**2, )
         res = super()._reduce(
             dpix=dpix, 
             dpix2=None, 
             relative_to_hash=None, 
-            fields=[self.tracer_1, self.tracer_2], 
+            fields=fields, 
             normed=normed,
             shuffle=shuffle,
             extent=extent,
             forcedivide=forcedivide,
             ret_inst=False)
-        (w_red, pos1_red, pos2_red, zbins_red, fields_red) = res
+        (w_red, pos1_red, pos2_red, zbins_red, isinner_red, fields_red) = res
         if ret_inst:
             return SpinTracerCatalog(spin=self.spin, pos1=pos1_red, pos2=pos2_red, 
                                      tracer_1=fields_red[0], tracer_2=fields_red[1], 
-                                     weight=w_red, zbins=zbins_red)
+                                     weight=w_red, zbins=zbins_red, isinner=isinner_red)
         return res
     
-    def multihash(self, dpixs, dpix_hash=None, normed=False, shuffle=False,
+    def multihash(self, dpixs, dpix_hash=None, normed=True, shuffle=False, w2field=True,
                   extent=[None,None,None,None], forcedivide=1):
+        if not w2field:
+            fields=(self.tracer_1, self.tracer_2,) 
+        else:
+            fields=(self.tracer_1, self.tracer_2, self.weight**2,) 
         res = super()._multihash(
             dpixs=dpixs, 
-            fields=[self.tracer_1, self.tracer_2], 
+            fields=fields, 
             dpix_hash=dpix_hash,
             normed=normed, 
             shuffle=shuffle,
@@ -784,7 +805,7 @@ class SpinTracerCatalog(Catalog):
         return res
     
     def genmatched_multiresocats(self, dpixs, flattened=True,
-                                 normed=False, extent=[None,None,None,None], forcedivide=1):
+                                 normed=True, extent=[None,None,None,None], forcedivide=1):
         res = super()._genmatched_multiresocats(
             dpixs=dpixs, 
             fields=[self.tracer_1, self.tracer_2], 
@@ -838,7 +859,7 @@ class MultiTracerCatalog:
                                                          tracer_2=tracers[eltracer][1],
                                                          **thiskwargs))
                 
-    def reduce(self, dpix, normed=False, 
+    def reduce(self, dpix, normed=True, 
                extent=[None,None,None,None], forcedivide=1, 
                ret_inst=False):
         
@@ -847,6 +868,7 @@ class MultiTracerCatalog:
         alltracers_red = []
         allweights_red = []
         allzbins_red = []
+        allisinners_red = []
         
         for eltracer in range(self.ntracers):
             res = self.tracercats[eltracer].reduce(dpix, 
@@ -854,12 +876,13 @@ class MultiTracerCatalog:
                                                    extent=extent, 
                                                    forcedivide=forcedivide,
                                                    ret_inst=False)
-            (w_red, pos1_red, pos2_red, zbins_red, fields_red) = res
+            (w_red, pos1_red, pos2_red, zbins_red, isinners_red, fields_red) = res
             allpos1_red.append(pos1_red)
             allpos2_red.append(pos2_red)
             alltracers_red.append(fields_red)
             allweights_red.append(w_red)
             allzbins_red.append(zbins_red)
+            allisinners_red.append(isinners_red)
         
         if ret_inst:
             return MultiTracerCatalog(pos1=allpos1_red,
@@ -867,5 +890,7 @@ class MultiTracerCatalog:
                                       tracers=alltracers_red,
                                       spins=self.spins,
                                       weight=allweights_red, 
-                                      zbins=allzbins_red)
-        return allweights_red, allpos1_red, allpos2_red, allzbins_red, alltracers_red
+                                      zbins=allzbins_red,
+                                      isinners=isinners_red
+                                     )
+        return allweights_red, allpos1_red, allpos2_red, allzbins_red, isinners_red, alltracers_red

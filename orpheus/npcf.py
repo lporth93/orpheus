@@ -21,7 +21,7 @@ __all__ = ["BinnedNPCF",
 class BinnedNPCF:
     
     def __init__(self, order, spins, n_cfs, min_sep, max_sep, nbinsr=None, binsize=None, nbinsphi=100, 
-                 nmaxs=30, method="Tree", multicountcorr=True, shuffle_pix=True,
+                 nmaxs=30, method="Tree", multicountcorr=True, diagrenorm=True, shuffle_pix=True,
                  tree_resos=[0,0.25,0.5,1.,2.], tree_redges=None, rmin_pixsize=20):
         
         self.order = int(order)
@@ -32,6 +32,7 @@ class BinnedNPCF:
         self.nmaxs = nmaxs
         self.method = method
         self.multicountcorr = int(multicountcorr)
+        self.diagrenorm = int(diagrenorm)
         self.shuffle_pix = shuffle_pix
         self.methods_avail = ["Discrete", "Tree", "DoubleTree"]
         self.tree_resos = np.asarray(tree_resos, dtype=np.float64)
@@ -146,7 +147,7 @@ class BinnedNPCF:
             self.clib.alloc_Gammans_tree_ggg.argtypes = [
                 p_i32, p_f64, p_f64, p_f64, p_f64, p_f64, p_i32, ct.c_int32, ct.c_int32, 
                 ct.c_int32, p_f64, p_i32,
-                p_f64, p_f64, p_f64, p_f64, p_f64, p_i32,
+                p_f64, p_f64, p_f64, p_f64, p_f64, p_i32, p_f64,
                 p_i32, p_i32, p_i32, ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32,
                 ct.c_int32, ct.c_int32, ct.c_double, ct.c_double, p_f64, ct.c_int32, ct.c_int32, ct.c_int32, 
                 np.ctypeslib.ndpointer(dtype=np.float64), 
@@ -157,13 +158,13 @@ class BinnedNPCF:
             self.clib.alloc_Gammans_doubletree_ggg.restype = ct.c_void_p
             self.clib.alloc_Gammans_doubletree_ggg.argtypes = [
                 ct.c_int32, ct.c_int32, p_f64, p_f64, p_f64, p_i32, ct.c_int32, 
-                p_i32, p_f64, p_f64, p_f64, p_f64, p_f64, p_i32,
+                p_i32, p_f64, p_f64, p_f64, p_f64, p_f64, p_i32, p_f64,
                 p_i32, p_i32, p_i32, 
                 ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, p_i32, 
                 ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, ct.c_int32, 
                 np.ctypeslib.ndpointer(dtype=np.float64), 
                 np.ctypeslib.ndpointer(dtype=np.complex128),
-                np.ctypeslib.ndpointer(dtype=np.complex128)] 
+                np.ctypeslib.ndpointer(dtype=np.complex128)]             
             
         if self.order==3:
             self.clib.alloc_triplets_tree_xipxipcov.restype = ct.c_void_p
@@ -178,6 +179,20 @@ class BinnedNPCF:
                 np.ctypeslib.ndpointer(dtype=np.float64), 
                 np.ctypeslib.ndpointer(dtype=np.complex128),
                 np.ctypeslib.ndpointer(dtype=np.complex128)] 
+            
+            self.clib.alloc_triplets_doubletree_xipxipcov.restype = ct.c_void_p
+            self.clib.alloc_triplets_doubletree_xipxipcov.argtypes = [
+                ct.c_int32, ct.c_int32, p_f64, p_f64, p_f64, p_i32, ct.c_int32, 
+                p_i32, p_f64, p_f64, p_f64, p_f64, p_i32,
+                p_i32, p_i32, p_i32, 
+                ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, p_i32, 
+                ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, ct.c_int32, 
+                np.ctypeslib.ndpointer(dtype=np.float64), 
+                np.ctypeslib.ndpointer(dtype=np.float64), 
+                np.ctypeslib.ndpointer(dtype=np.float64), 
+                np.ctypeslib.ndpointer(dtype=np.complex128),
+                np.ctypeslib.ndpointer(dtype=np.complex128)] 
+            
 
         
     ############################################################
@@ -266,15 +281,16 @@ class GGGCorrelation(BinnedNPCF):
             self.nbinsz = cat.nbinsz
             zbins = cat.zbins
             self.nzcombis = self.nbinsz*self.nbinsz*self.nbinsz
-        sc = (4,self.nmax+1,self.nbinsz*self.nbinsz*self.nbinsz,self.nbinsr,self.nbinsr)
-        sn = (self.nmax+1,self.nbinsz*self.nbinsz*self.nbinsz,self.nbinsr,self.nbinsr)
+        sc = (4,self.nmax+1,self.nzcombis,self.nbinsr,self.nbinsr)
+        sn = (self.nmax+1,self.nzcombis,self.nbinsr,self.nbinsr)
         szr = (self.nbinsz, self.nbinsr)
         bin_centers = np.zeros(self.nbinsz*self.nbinsr).astype(np.float64)
-        threepcfs_n = np.zeros(4*(self.nmax+1)*self.nbinsz*self.nbinsz*self.nbinsz*self.nbinsr*self.nbinsr).astype(np.complex128)
-        threepcfsnorm_n = np.zeros((self.nmax+1)*self.nbinsz*self.nbinsz*self.nbinsz*self.nbinsr*self.nbinsr).astype(np.complex128)
+        threepcfs_n = np.zeros(4*(self.nmax+1)*self.nzcombis*self.nbinsr*self.nbinsr).astype(np.complex128)
+        threepcfsnorm_n = np.zeros((self.nmax+1)*self.nzcombis*self.nbinsr*self.nbinsr).astype(np.complex128)
         args_basecat = (cat.isinner.astype(np.int32), cat.weight, cat.pos1, cat.pos2, cat.tracer_1, cat.tracer_2, 
                         zbins.astype(np.int32), np.int32(self.nbinsz), np.int32(cat.ngal), )
-        args_basesetup = (np.int32(0), np.int32(self.nmax), np.float64(self.min_sep), np.float64(self.max_sep), np.array([-1.]).astype(np.float64), 
+        args_basesetup = (np.int32(0), np.int32(self.nmax), np.float64(self.min_sep), 
+                          np.float64(self.max_sep), np.array([-1.]).astype(np.float64), 
                           np.int32(self.nbinsr), np.int32(self.multicountcorr), )
         if self.method=="Discrete":
             if not cat.hasspatialhash:
@@ -297,22 +313,27 @@ class GGGCorrelation(BinnedNPCF):
             print(cat)
             cutfirst = np.int32(self.tree_resos[0]==0.)
             print(self.tree_resos[cutfirst:])
-            mhash = cat.multihash(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1], shuffle=self.shuffle_pix)
+            mhash = cat.multihash(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1], 
+                                  shuffle=self.shuffle_pix, w2field=True, normed=True)
             print("Done multihash")
-            ngal_resos, pos1s, pos2s, weights, zbins, allfields, index_matchers, pixs_galind_bounds, pix_gals, dpixs1_true, dpixs2_true = mhash
+            ngal_resos, pos1s, pos2s, weights, zbins, isinners, allfields, index_matchers, pixs_galind_bounds, pix_gals, dpixs1_true, dpixs2_true = mhash
             print(dpixs1_true, ngal_resos, len(pos1s))
             weight_resos = np.concatenate(weights).astype(np.float64)
             pos1_resos = np.concatenate(pos1s).astype(np.float64)
             pos2_resos = np.concatenate(pos2s).astype(np.float64)
             zbin_resos = np.concatenate(zbins).astype(np.int32)
+            isinner_resos = np.concatenate(isinners).astype(np.int32)
             e1_resos = np.concatenate([allfields[i][0] for i in range(len(allfields))]).astype(np.float64)
             e2_resos = np.concatenate([allfields[i][1] for i in range(len(allfields))]).astype(np.float64)
+            _weightsq_resos = np.concatenate([allfields[i][2] for i in range(len(allfields))]).astype(np.float64)
+            weightsq_resos = _weightsq_resos*weight_resos # As in reduce we renorm all the fields --> need to `unrenorm'
+            print(np.mean(weight_resos), np.mean(_weightsq_resos), np.mean(weightsq_resos))
             index_matcher = np.concatenate(index_matchers).astype(np.int32)
             pixs_galind_bounds = np.concatenate(pixs_galind_bounds).astype(np.int32)
             pix_gals = np.concatenate(pix_gals).astype(np.int32)
             args_pixgrid = (np.float64(cat.pix1_start), np.float64(cat.pix1_d), np.int32(cat.pix1_n), 
                             np.float64(cat.pix2_start), np.float64(cat.pix2_d), np.int32(cat.pix2_n), )
-            args_resos = (weight_resos, pos1_resos, pos2_resos, e1_resos, e2_resos, zbin_resos, 
+            args_resos = (weight_resos, pos1_resos, pos2_resos, e1_resos, e2_resos, zbin_resos, weightsq_resos,
                           index_matcher, pixs_galind_bounds, pix_gals, )
             args_output = (bin_centers, threepcfs_n, threepcfsnorm_n, )
             if self.method=="Tree":
@@ -328,12 +349,12 @@ class GGGCorrelation(BinnedNPCF):
                         *args_output)
                 func = self.clib.alloc_Gammans_tree_ggg
             if self.method=="DoubleTree":
-                print("Doing Tree")
+                print("Doing DoubleTree")
                 index_matcher_flat = np.argwhere(cat.index_matcher>-1).flatten()
                 nregions = len(index_matcher_flat)
                 args_basesetup_dtree = (np.int32(self.nmax), np.float64(self.min_sep), np.float64(self.max_sep), 
                                         np.int32(self.nbinsr), np.int32(self.multicountcorr), )
-                isinner_resos = np.ones_like(zbin_resos)
+                #isinner_resos = np.ones_like(zbin_resos)
                 args = (np.int32(self.tree_nresos),
                         np.int32(self.tree_nresos-cutfirst),
                         dpixs1_true.astype(np.float64),
@@ -769,9 +790,13 @@ class GGGGCorrelation(BinnedNPCF):
 class XipmMixedCovariance(BinnedNPCF):
     
     def __init__(self, min_sep_xi, max_sep_xi, nbins_xi, nsubbins, nmax=10, **kwargs):
-        self.nsubbins = int(nsubbins)
+        self.min_sep_xi = min_sep_xi
+        self.max_sep_xi = max_sep_xi
+        self.nsubbins = max(1,int(nsubbins))
         nbinsr = nsubbins*nbins_xi
-        super().__init__(order=3, spins=[0,0,0], n_cfs=1, min_sep=min_sep_xi, max_sep=max_sep_xi, nbinsr=nbinsr, 
+        min_sep_triplets = float(min_sep_xi)
+        max_sep_triplets = max_sep_xi
+        super().__init__(order=3, spins=[0,0,0], n_cfs=1, min_sep=min_sep_triplets, max_sep=max_sep_triplets, nbinsr=nbinsr, 
                          nmaxs=nmax, **kwargs)
         self.nmax = self.nmaxs[0]
         self.phi = self.phis[0]
@@ -783,6 +808,7 @@ class XipmMixedCovariance(BinnedNPCF):
         self._initprojections(self)
         
     def process(self, cat, nthreads=16, dotomo=True):
+        """ Note that this cat should have a w^2 as its tracer """
         #self._checkcats(cat, self.spins)
         if not dotomo:
             self.nbinsz = 1
@@ -805,44 +831,75 @@ class XipmMixedCovariance(BinnedNPCF):
                           int(self.nbinsr), int(self.multicountcorr), )
         if self.method=="Discrete":
             raise NotImplementedError
-        elif self.method=="Tree":
-            cutfirst = int(self.tree_resos[0]==0.)
-            mhash = cat.multihash(dpixs=self.tree_resos[cutfirst:],tomo=dotomo,shuffle=self.shuffle_pix)
-            ngal_resos, pos1s, pos2s, weights, zbins, _, index_matchers, pixs_galind_bounds, pix_gals = mhash
+        elif self.method in ["Tree", "DoubleTree"]:
+            cutfirst = np.int32(self.tree_resos[0]==0.)
+            mhash = cat.multihash(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1], 
+                                  normed=False, shuffle=self.shuffle_pix)
+            ngal_resos, pos1s, pos2s, weights, zbins, isinners, tracers, index_matchers, pixs_galind_bounds, pix_gals, dpixs1_true, dpixs2_true = mhash
             weight_resos = np.concatenate(weights).astype(np.float64)
+            weight_sq_resos = np.concatenate([tracer[0] for tracer in tracers]).astype(np.float64)
             pos1_resos = np.concatenate(pos1s).astype(np.float64)
             pos2_resos = np.concatenate(pos2s).astype(np.float64)
             zbin_resos = np.concatenate(zbins).astype(np.int32)
+            isinner_resos = np.concatenate(isinners).astype(np.int32)
             index_matcher = np.concatenate(index_matchers).astype(np.int32)
             pixs_galind_bounds = np.concatenate(pixs_galind_bounds).astype(np.int32)
             pix_gals = np.concatenate(pix_gals).astype(np.int32)
+            args_resos = (weight_resos, weight_sq_resos, pos1_resos, pos2_resos, zbin_resos, 
+                              index_matcher, pixs_galind_bounds, pix_gals, )
             args_pixgrid = (np.float64(cat.pix1_start), np.float64(cat.pix1_d), int(cat.pix1_n), 
                             np.float64(cat.pix2_start), np.float64(cat.pix2_d), int(cat.pix2_n), )
-
-            args = (*args_basecat,
-                    self.tree_nresos,
-                    self.tree_redges,
-                    np.array(ngal_resos, dtype=np.int32),
-                    weight_resos,
-                    pos1_resos,
-                    pos2_resos,
-                    zbin_resos,
-                    index_matcher,
-                    pixs_galind_bounds,
-                    pix_gals,
-                    *args_pixgrid,
-                    *args_basesetup,
-                    int(nthreads),
-                    bin_centers,
-                    wwcounts,
-                    w2wcounts,
-                    w2wwtriplets,
-                    wwwtriplets)
-            func = self.clib.alloc_triplets_tree_xipxipcov
-        elif self.method=="DoubleTree":
-            raise NotImplementedError 
-        print(args[0])
-        print(args[1])
+            args_output = (bin_centers, wwcounts, w2wcounts, w2wwtriplets, wwwtriplets, )
+            if self.method=="Tree":
+                print("Doing Tree")
+                args = (*args_basecat,
+                        self.tree_nresos,
+                        self.tree_redges,
+                        np.array(ngal_resos, dtype=np.int32),
+                        *args_resos
+                        *args_pixgrid,
+                        *args_basesetup,
+                        int(nthreads),
+                        *args_output)
+                func = self.clib.alloc_triplets_tree_xipxipcov
+            if self.method=="DoubleTree":
+                print("Doing DoubleTree")
+                index_matcher_flat = np.argwhere(cat.index_matcher>-1).flatten()
+                nregions = len(index_matcher_flat)
+                args_basesetup_dtree = (np.int32(self.nmax), np.float64(self.min_sep), np.float64(self.max_sep), 
+                                            np.int32(self.nbinsr), np.int32(self.multicountcorr), )
+                
+                args = (np.int32(self.tree_nresos),
+                        np.int32(self.tree_nresos-cutfirst),
+                        dpixs1_true.astype(np.float64),
+                        dpixs2_true.astype(np.float64),
+                        self.tree_redges,
+                        np.array(ngal_resos, dtype=np.int32),
+                        np.int32(self.nbinsz),
+                        isinner_resos,
+                        *args_resos,
+                        *args_pixgrid,
+                        np.int32(nregions),
+                        index_matcher_flat.astype(np.int32),
+                        *args_basesetup_dtree,
+                        np.int32(nthreads),
+                        *args_output)
+                func = self.clib.alloc_triplets_doubletree_xipxipcov    
+                
+        #self.clib.alloc_triplets_doubletree_xipxipcov.argtypes = [
+        #ct.c_int32, ct.c_int32, p_f64, p_f64 p_i32, ct.c_int32, 
+        #p_i32, p_f64, p_f64, p_f64, p_f64, p_f64, p_i32,
+        #p_i32, p_i32, p_i32, 
+        #ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, p_i32, 
+        #ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, ct.c_int32, 
+        #np.ctypeslib.ndpointer(dtype=np.float64), 
+        #np.ctypeslib.ndpointer(dtype=np.float64), 
+        #np.ctypeslib.ndpointer(dtype=np.float64), 
+        #np.ctypeslib.ndpointer(dtype=np.complex128),
+        #np.ctypeslib.ndpointer(dtype=np.complex128)] 
+        for elarg, arg in enumerate(args):
+            print(elarg,arg) 
+        
         func(*args)
         
         self.bin_centers = bin_centers.reshape(szr)
@@ -855,33 +912,21 @@ class XipmMixedCovariance(BinnedNPCF):
     def multipoles2npcf(self):
         
         _, nzcombis, rbins, rbins = np.shape(self.npcf_multipoles[0])
-        self.npcf = np.zeros((4, nzcombis, rbins, rbins, len(self.phi)), dtype=complex)
+        self.npcf = np.zeros((nzcombis, rbins, rbins, len(self.phi)), dtype=complex)
         self.npcf_norm = np.zeros((nzcombis, rbins, rbins, len(self.phi)), dtype=complex)
         ztiler = np.arange(self.nbinsz*self.nbinsz*self.nbinsz).reshape(
             (self.nbinsz,self.nbinsz,self.nbinsz)).transpose(0,2,1).flatten().astype(np.int32)
 
-        # 3PCF components
-        conjmap = [0,1,3,2]
-        for elm in range(4):
-            for elphi, phi in enumerate(self.phi):
-                tmp = np.zeros((nzcombis, rbins, rbins), dtype=complex)
-                N0 = 1./(2*np.pi) * self.npcf_multipoles_norm[0].astype(complex)
-                for eln,n in enumerate(range(self.nmax+1)):
-                    _const = 1./(2*np.pi) * np.exp(1J*n*phi)
-                    tmp += _const * self.npcf_multipoles[elm,eln].astype(complex)
-                    if n>0:
-                        tmp += _const.conj() * self.npcf_multipoles[conjmap[elm],eln][ztiler].astype(complex).transpose(0,2,1)
-                self.npcf[elm,...,elphi] = tmp/N0.real
-        # Number of triangles
+        # w*w*w triplets
         for elphi, phi in enumerate(self.phi):
             tmp = np.zeros((1,nzcombis, rbins, rbins), dtype=complex)
             tmpnorm = np.zeros((nzcombis, rbins, rbins), dtype=complex)
             for eln,n in enumerate(range(self.nmax+1)):
                 _const = 1./(2*np.pi) * np.exp(1J*n*phi)
-                tmp += _const * self.npcf_multipoles_norm[:,eln].astype(complex)
-                tmpnorm += _const * self.npcf_multipoles[:,eln].astype(complex)
+                tmp += _const * self.npcf_multipoles[:,eln].astype(complex)
+                tmpnorm += _const * self.npcf_multipoles_norm[:,eln].astype(complex)
                 if n>0:
-                    tmp += _const.conj() * self.npcf_multipoles[0,eln][ztiler].astype(complex).transpose(0,2,1)
+                    tmp += _const.conj() * self.npcf_multipoles[eln][ztiler].astype(complex).transpose(0,2,1)
                     tmpnorm += _const.conj() * self.npcf_multipoles_norm[eln][ztiler].astype(complex).transpose(0,2,1)
             self.npcf[...,elphi] = tmp
             self.npcf_norm[...,elphi] = tmpnorm

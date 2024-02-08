@@ -30,9 +30,10 @@ void _gen_pixmeans(double *pos_1, double *pos_2, double *e1, double *e2, double 
 // Although as an intermediate step, the spatial hash is beig allocated, we still
 // Have a smaller memory footprint in case the number of pixels exceeds the number
 // of galaxies.
-void reducecat(double *w, double *pos_1, double *pos_2, double *scalarquants, int ngal, int nscalarquants,
+void reducecat(double *isinner, double *w, double *pos_1, double *pos_2, double *scalarquants, int ngal, int nscalarquants,
+               int normed,
                double mask_d1, double mask_d2, double mask_min1, double mask_min2, int mask_n1, int mask_n2, int shuffle,
-               double *w_red, double *pos1_red, double *pos2_red, double *scalarquants_red, int ngal_red);
+               double *isinner_red, double *w_red, double *pos1_red, double *pos2_red, double *scalarquants_red, int ngal_red);
     
 // Pixelizes catalog onto regular grid
 // Note that we do not assume the `averaged' galaxy to be in the center of the pixel, 
@@ -43,3 +44,4 @@ void reducecat(double *w, double *pos_1, double *pos_2, double *scalarquants, in
 void reducecat2(double *pos_1, double *pos_2, double *e1, double *e2, double *w, int ngal,
                double mask_d1, double mask_d2, double mask_min1, double mask_min2, int mask_n1, int mask_n2,
                double *pos1_red, double *pos2_red, double *e1_red, double *e2_red, double *w_red);
+

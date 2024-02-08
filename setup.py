@@ -12,11 +12,14 @@ if (sys.platform[:6] == "darwin"
     compiler_args = ["-Xpreprocessor"]
     linker_args = ["-mlinker-version=305", "-Xpreprocessor"]
 else:
+    # Force this for now as anacoda default compiler incompatible with newer gcc versions
+    # See https://github.com/ContinuumIO/anaconda-issues/issues/11152
+    os.environ["CC"] = "/usr/bin/gcc" 
     compiler_args = ["-shared"]
     linker_args = ["-shared"]
 
-compiler_args += ["-fopenmp", "-fPIC", "-Wall", "-O3", "-ffast-math", "-std=c99"]
-linker_args +=   ["-fopenmp", "-fPIC", "-Wall", "-O3", "-ffast-math", "-std=c99"]
+compiler_args += ["-fopenmp", "-fPIC", "-Wall", "-lm", "-O3", "-ffast-math", "-std=c99", "-lgomp" "-lrt"]
+linker_args +=   ["-fopenmp", "-fPIC", "-Wall", "-lm", "-O3", "-ffast-math", "-std=c99", "-lgomp" "-lrt"]
     
 ext_modules = [
 Extension(
@@ -44,7 +47,7 @@ setup(name='orpheus',
       license='MIT',
       packages=find_packages(),
       install_requires=[
-          'numpy'],
+          'numpy', 'pathlib'],
       ext_modules=ext_modules,
       #cmdclass={'compile_ext': compile_ext},
       include_package_data=True,
