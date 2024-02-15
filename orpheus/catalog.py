@@ -19,7 +19,7 @@ __all__ = ["Catalog", "ScalarTracerCatalog", "SpinTracerCatalog", "MultiTracerCa
 ##############################################
 class Catalog:
     
-    def __init__(self, pos1, pos2, weight=None, zbins=None, isinner=None):
+    def __init__(self, pos1, pos2, weight=None, zbins=None, isinner=None, zbins_mean=None, zbins_std=None):
         self.pos1 = pos1.astype(np.float64)
         self.pos2 = pos2.astype(np.float64)
         self.weight = weight
@@ -46,6 +46,13 @@ class Catalog:
         assert(len(self.pos2)==self.ngal)
         assert(len(self.weight)==self.ngal)
         assert(len(self.zbins)==self.ngal)
+        
+        self.zbins_mean = zbins_mean
+        self.zbins_std = zbins_std
+        for _ in [self.zbins_mean, self.zbins_mean]:
+            if _ is not None:
+                assert(isinstance(_np.ndarray))
+                assert(len(_)==self.nbinsz)
         
         self.min1 = np.min(self.pos1)
         self.min2 = np.min(self.pos2)
@@ -123,102 +130,9 @@ class Catalog:
             ct.c_double, ct.c_double, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
             p_f64_nof, p_f64_nof, p_f64_nof, p_f64_nof,p_f64_nof]
 
-        """
-        # Allocates Gns and Gammans for discrete data such that one can evaluate all Gamman in [nmin, nmax]
-        # Use 'alloc_Gns_discrete' to safely call this function
-        self.clib.alloc_GnsGammans_discrete_basic.restype = ct.c_void_p
-        self.clib.alloc_GnsGammans_discrete_basic.argtypes = [
-            p_f64, p_f64, p_f64, p_f64, p_f64, p_i32, ct.c_int32, ct.c_int32,
-            ct.c_int32, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, 
-            p_i32, p_i32, p_i32,
-            ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, 
-            ct.c_int32, 
-            np.ctypeslib.ndpointer(dtype=np.double), np.ctypeslib.ndpointer(dtype=np.int32), 
-            np.ctypeslib.ndpointer(dtype=complex), np.ctypeslib.ndpointer(dtype=complex),
-            np.ctypeslib.ndpointer(dtype=complex)] """
-        
-        """
-        self.clib.alloc_Gammansingle_discretemixed_basic.restype = ct.c_void_p
-        self.clib.alloc_Gammansingle_discretemixed_basic.argtypes = [
-            p_i32, p_f64, p_f64, p_f64, p_f64, p_f64, p_i32, ct.c_int32, ct.c_int32,
-            ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, 
-            p_i32, p_i32, p_i32,
-            ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, 
-            ct.c_double, ct.c_double, 
-            ct.c_int32, p_f64, p_f64, p_f64, p_i32, p_i32, p_i32, p_i32, p_i32, p_i32,
-            p_f64, p_f64, p_f64, p_c128, ct.c_int32,
-            np.ctypeslib.ndpointer(dtype=np.float64),
-            np.ctypeslib.ndpointer(dtype=np.int32),
-            np.ctypeslib.ndpointer(dtype=complex),
-            np.ctypeslib.ndpointer(dtype=complex), ct.c_int32]
-        
-        # Allocates Gns for discrete data such that one can evaluate all Gamman in [nmin, nmax]
-        # Use 'alloc_Gns_discrete' to safely call this function
-        self.clib.alloc_Gns_discrete_basic.restype = ct.c_void_p
-        self.clib.alloc_Gns_discrete_basic.argtypes = [
-            p_f64, p_f64, p_f64, p_f64, p_f64, p_i32, ct.c_int32, ct.c_int32,
-            ct.c_int32, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, 
-            p_i32, p_i32, p_i32,
-            ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, 
-            ct.c_int32, 
-            np.ctypeslib.ndpointer(dtype=np.double), np.ctypeslib.ndpointer(dtype=np.int32), 
-            np.ctypeslib.ndpointer(dtype=complex), np.ctypeslib.ndpointer(dtype=complex)]    
-        
-        # Allocates Gns for discrete data such that one can evaluate all Gamman in [nmin, nmax]
-        # Use 'alloc_Gns_discrete' to safely call this function
-        self.clib.alloc_Gnsingle_discrete_basic.restype = ct.c_void_p
-        self.clib.alloc_Gnsingle_discrete_basic.argtypes = [
-            p_f64, p_f64, p_f64, p_f64, p_f64, p_i32, ct.c_int32, ct.c_int32,
-            ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, 
-            p_i32, p_i32, p_i32,
-            ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, 
-            ct.c_int32, 
-            np.ctypeslib.ndpointer(dtype=np.double), 
-            np.ctypeslib.ndpointer(dtype=np.int32), 
-            np.ctypeslib.ndpointer(dtype=complex),
-            np.ctypeslib.ndpointer(dtype=complex)]    
-        
-        # Allocate Gamman from Gns obtained via the discrete estimator
-        # Use 'alloc_Gamman_discrete' to safely call this function    
-        self.clib.alloc_Gamman_discrete_basic.restype = ct.c_void_p
-        self.clib.alloc_Gamman_discrete_basic.argtypes = [
-            p_c128, p_c128, p_f64, p_f64, p_f64, p_i32, ct.c_int32, ct.c_int32,
-            ct.c_int32, ct.c_int32,
-            np.ctypeslib.ndpointer(dtype=complex),
-            np.ctypeslib.ndpointer(dtype=complex)]
-        
-        # Allocate Gamman for G3L via the discrete estimator
-        # Use 'alloc_Gamman_G3L' to safely call this function 
-        self.clib.alloc_Gammans_discrete_G3L.restype = ct.c_void_p
-        self.clib.alloc_Gammans_discrete_G3L.argtypes = [
-            p_f64, p_f64, p_f64, p_f64, p_f64, ct.c_int32, 
-            p_f64, p_f64, p_f64, ct.c_int32, 
-            ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, 
-            p_i32, p_i32, p_i32,
-            ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, 
-            ct.c_int32, 
-            np.ctypeslib.ndpointer(dtype=np.double),
-            np.ctypeslib.ndpointer(dtype=complex),
-            np.ctypeslib.ndpointer(dtype=complex)]
-        
-        # Allocate Gamman for G3L via the discrete estimator
-        # Use 'alloc_Gamman_G3L' to safely call this function 
-        self.clib.alloc_Gammans_discrete_SSL.restype = ct.c_void_p
-        self.clib.alloc_Gammans_discrete_SSL.argtypes = [
-            p_f64, p_f64, p_f64, p_f64, p_f64, ct.c_int32, 
-            p_f64, p_f64, p_f64, ct.c_int32, 
-            ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, 
-            p_i32, p_i32, p_i32,
-            ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, 
-            ct.c_int32, 
-            np.ctypeslib.ndpointer(dtype=np.double),
-            np.ctypeslib.ndpointer(dtype=complex),
-            np.ctypeslib.ndpointer(dtype=complex)]
-    """
-        
     # Reduces catalog to smaller catalog where positions & quantities are
     # averaged over regular grid
-    def _reduce(self, fields, dpix, dpix2=None, relative_to_hash=None, normed=True, shuffle=False,
+    def _reduce(self, fields, dpix, dpix2=None, relative_to_hash=None, normed=True, shuffle=0,
                extent=[None,None,None,None], forcedivide=1, 
                ret_inst=False):
         
@@ -256,6 +170,7 @@ class Catalog:
         scalarquants = np.asarray(scalarquants)
         
         # Compute reduction (individually for each zbin)
+        assert(shuffle in [True, False, 0, 1, 2, 3, 4])
         isinner_red = np.zeros(self.ngal, dtype=np.int32)
         w_red = np.zeros(self.ngal, dtype=np.float64)
         pos1_red = np.zeros(self.ngal, dtype=np.float64)
@@ -313,7 +228,7 @@ class Catalog:
             
         return w_red, pos1_red, pos2_red, zbins_red, isinner_red.astype(np.int32), fields_red
     
-    def _multihash(self, dpixs, fields, dpix_hash=None, normed=True, shuffle=False,
+    def _multihash(self, dpixs, fields, dpix_hash=None, normed=True, shuffle=0,
                   extent=[None,None,None,None], forcedivide=1):
         """ Builds spatialhash for a base catalog and its reductions. """
         
@@ -322,11 +237,9 @@ class Catalog:
             dpix_hash = dpixs[-1]
         if extent[0] is None:
             extent = [self.min1-dpix_hash, self.max1+dpix_hash, self.min2-dpix_hash, self.max2+dpix_hash]
-            #extent = [self.min1, self.max1+dpix_hash-self.len1%dpix_hash, 
-            #          self.min2, self.max2+dpix_hash-self.len2%dpix_hash]
+            
         
         # Initialize spatial hash for discrete catalog
-        print("First spatialhash")
         self.build_spatialhash(dpix=dpix_hash, extent=extent)
         ngals = [self.ngal]
         isinners = [self.isinner]
@@ -346,9 +259,9 @@ class Catalog:
         fac_pix2 = self.pix2_d/dpix_hash
         dpixs1_true = np.zeros_like(np.asarray(dpixs))
         dpixs2_true = np.zeros_like(np.asarray(dpixs))
-        print(len(fields),fields)
+        #print(len(fields),fields)
         for elreso in range(len(dpixs)):
-            print("Doing reso %i"%elreso)
+            #print("Doing reso %i"%elreso)
             dpixs1_true[elreso]=fac_pix1*dpixs[elreso]
             dpixs2_true[elreso]=fac_pix2*dpixs[elreso]
             #print(dpixs[elreso], dpixs1_true[elreso], dpixs2_true[elreso], len(self.pos1))
@@ -373,10 +286,26 @@ class Catalog:
             index_matchers.append(nextcat.index_matcher)
             pixs_galind_bounds.append(nextcat.pixs_galind_bounds)
             pix_gals.append(nextcat.pix_gals)
-            print("Done reso %i"%elreso)
             
         return ngals, pos1s, pos2s, weights, zbins, isinners, allfields, index_matchers, pixs_galind_bounds, pix_gals, dpixs1_true, dpixs2_true
     
+    def _jointextent(self, others, extend=0):
+        """ Draws largest possible rectangle over set of catalogs """
+        for other in others:
+            assert(isinstance(other, Catalog))
+        
+        xlo = self.min1
+        xhi = self.max1
+        ylo = self.min2
+        yhi = self.max2
+        for other in others:
+            xlo = min(xlo, other.min1)
+            xhi = min(xhi, other.max1)
+            ylo = min(ylo, other.min2)
+            yhi = min(yhi, other.max2)
+        
+        return (xlo-extend, xhi+extend, ylo-extend, yhi+extend)
+            
     def _genmatched_multiresocats(self, dpixs, fields, flattened=True, 
                                   normed=True, extent=[None,None,None,None], forcedivide=1):
         """
@@ -459,7 +388,7 @@ class Catalog:
         _renorm = (-1)**change_renormsign*dpixs[-1]*1e-5
         extent = [_min1, _max1-(_max1-_min1)%dpixs[-1]-_renorm, 
                   _min2, _max2-(_max2-_min2)%dpixs[-1]-_renorm]
-        _ = self._multihash(dpixs=dpixs, fields=fields, extent=extent, shuffle=False, 
+        _ = self._multihash(dpixs=dpixs, fields=fields, extent=extent, shuffle=0, 
                             normed=normed, forcedivide=forcedivide)
         ngals, pos1s, pos2s, weights, zbins, isinners, allfields, index_matchers, pixs_galind_bounds, pix_gals, dpixs1_true, dpixs2_true = _ 
 
@@ -529,12 +458,6 @@ class Catalog:
             normed = asgrid.normed
             method = asgrid.method
             asgrid = None
-            #print(asgrid.dpix, tomo, asgrid.normed, extent, asgrid.method, 
-            #      forcedivide, nthreads)
-            #return self.togrid(fields, asgrid.dpix, tomo=tomo, 
-            #                   normed=asgrid.normed, extent=extent, 
-            #                   method=asgrid.method, forcedivide=forcedivide,
-            #                   asgrid=None, nthreads=nthreads)
         
         # Choose index of method for c wrapper
         assert(method in ["NGP", "CIC", "TSC"])
@@ -634,11 +557,6 @@ class Catalog:
         self.pix2_d = (stop2-self.pix2_start)/(self.pix2_n)
 
         # Compute hashtable
-        #print(np.min(self.pos1), np.min(self.pos2), np.max(self.pos1), np.max(self.pos2))
-        #print(self.pix1_start, self.pix2_start, 
-        #      self.pix1_start+self.pix1_n*self.pix1_d,
-        #     self.pix2_start+self.pix2_n*self.pix2_d)
-        #print(self.pix1_n,self.pix2_n,self.pix1_d,self.pix2_d)
         result = np.zeros(2 * npix + 3 * self.ngal + 1).astype(np.int32)
         self.clib.build_spatialhash(self.pos1, self.pos2, self.ngal,
                                   self.pix1_d, self.pix2_d, 
@@ -713,7 +631,7 @@ class ScalarTracerCatalog(Catalog):
         self.tracer = tracer
         self.spin = 0
         
-    def reduce(self, dpix, dpix2=None, relative_to_hash=None, normed=True, shuffle=False,
+    def reduce(self, dpix, dpix2=None, relative_to_hash=None, normed=True, shuffle=0,
                extent=[None,None,None,None], forcedivide=1, 
                ret_inst=False):
         res = super()._reduce(
@@ -733,7 +651,7 @@ class ScalarTracerCatalog(Catalog):
                                        weight=w_red, zbins=zbins_red, isinner=isinner_red)
         return res
     
-    def multihash(self, dpixs, dpix_hash=None, normed=True, shuffle=False,
+    def multihash(self, dpixs, dpix_hash=None, normed=True, shuffle=0,
                   extent=[None,None,None,None], forcedivide=1):
         res = super()._multihash(
             dpixs=dpixs.astype(np.float64), 
@@ -764,7 +682,7 @@ class SpinTracerCatalog(Catalog):
         self.tracer_2 = tracer_2.astype(np.float64)
         self.spin = int(spin)
         
-    def reduce(self, dpix, dpix2=None, relative_to_hash=None, normed=True, shuffle=False,
+    def reduce(self, dpix, dpix2=None, relative_to_hash=None, normed=True, shuffle=0,
                extent=[None,None,None,None], forcedivide=1, w2field=True,
                ret_inst=False):
         if not w2field:
@@ -788,7 +706,7 @@ class SpinTracerCatalog(Catalog):
                                      weight=w_red, zbins=zbins_red, isinner=isinner_red)
         return res
     
-    def multihash(self, dpixs, dpix_hash=None, normed=True, shuffle=False, w2field=True,
+    def multihash(self, dpixs, dpix_hash=None, normed=True, shuffle=0, w2field=True,
                   extent=[None,None,None,None], forcedivide=1):
         if not w2field:
             fields=(self.tracer_1, self.tracer_2,) 

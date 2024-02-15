@@ -38,7 +38,6 @@ void build_spatialhash(double *pos_1, double *pos_2, int ngal,
     int *result){
 
     int npix, npixs_with_gals, pix_1, pix_2, index, noutside;
-    int nrelpix, cumsum;
     int noutsiders, index_raw, index_red;
     int ind_gal, ind_pix;
 
@@ -75,8 +74,8 @@ void build_spatialhash(double *pos_1, double *pos_2, int ngal,
     //     --> length npix
     // pixs_galind_bounds = [0, ngals_in_pix_a, ngals_in_pix_a + ngals_in_pix_b, ..., ngal_tot, g.a.r.b.a.g.e]
     //     --> length ngal+1
-    nrelpix = 0;
-    cumsum = 0;
+    int nrelpix = 0;
+    int cumsum = 0;
     result[start_bounds+0] = 0;
     for (ind_pix=0; ind_pix<npix; ind_pix++){
         if (result[start_ngalinpix+ind_pix] == 0){result[start_matcher+ind_pix] = FLAG_NOGAL;}
@@ -153,6 +152,13 @@ void _gen_pixmeans(double *pos_1, double *pos_2, double *e1, double *e2, double 
     }  
 }
 
+// Parameter shuffle specifies how the pixel center is chosen. Options are:
+// 0: Use center of mass
+// 1: Do a random shift
+// 2: Use pixel center
+// 3: Use galaxy with largest weight 
+// 4: Use random galaxy (unweighted) 
+// 5: Use random galaxy (weighted) (TODO)
 void reducecat(double *isinner, double *w, double *pos_1, double *pos_2, double *scalarquants, int ngal, int nscalarquants, 
                int normed,
                double mask_d1, double mask_d2, double mask_min1, double mask_min2, int mask_n1, int mask_n2, int shuffle,
@@ -160,11 +166,11 @@ void reducecat(double *isinner, double *w, double *pos_1, double *pos_2, double 
     
     // Build spatial hash
     int npix = mask_n1*mask_n2;
-    int start_isoutside = 0;
+    //int start_isoutside = 0;
     int start_matcher = ngal;
     int start_bounds = ngal+npix;
     int start_pixgals = ngal+npix+ngal+1;
-    int start_ngalinpix=ngal+npix+ngal+1+ngal;
+    //int start_ngalinpix=ngal+npix+ngal+1+ngal;
     int *spatialhash = calloc(2*npix+3*ngal+1, sizeof(int));
     build_spatialhash(pos_1, pos_2, ngal,
                       mask_d1, mask_d2, mask_min1, mask_min2, mask_n1, mask_n2,
@@ -172,7 +178,8 @@ void reducecat(double *isinner, double *w, double *pos_1, double *pos_2, double 
     
     // Allocate pixelized catalog from spatial hash
     int ind_pix1, ind_pix2, ind_red, lower, upper, ind_inpix, ind_gal, elscalarquant;
-    double tmpisinner, tmppos_1, tmppos_2, tmpw, tmpdenom, shift_1, shift_2;
+    int ind_maxw;
+    double tmpisinner, tmppos_1, tmppos_2, tmpw, maxw, tmpdenom, shift_1, shift_2;
     double *tmpscalarquants;
     int rseed=42;
     srand(rseed);  
@@ -184,9 +191,11 @@ void reducecat(double *isinner, double *w, double *pos_1, double *pos_2, double 
             upper = spatialhash[start_bounds+ind_red+1];
             tmpisinner = 0;
             tmpw = 0;
+            maxw = 0;
             tmppos_1 = 0;
             tmppos_2 = 0;
-            tmpscalarquants = calloc(nscalarquants, sizeof(double));            
+            ind_maxw = 0;
+            tmpscalarquants = calloc(nscalarquants, sizeof(double));
             for (ind_inpix=lower; ind_inpix<upper; ind_inpix++){
                 ind_gal = spatialhash[start_pixgals+ind_inpix];
                 tmpisinner += w[ind_gal]*isinner[ind_gal];
@@ -196,6 +205,7 @@ void reducecat(double *isinner, double *w, double *pos_1, double *pos_2, double 
                 for (elscalarquant=0; elscalarquant<nscalarquants; elscalarquant++){
                     tmpscalarquants[elscalarquant] +=  w[ind_gal]*scalarquants[elscalarquant*ngal+ind_gal];
                 }
+                if(w[ind_gal]>maxw){ind_maxw=ind_gal;}
             }
             if (tmpw==0){continue;}
             w_red[ngal_red] = tmpw;
@@ -203,11 +213,22 @@ void reducecat(double *isinner, double *w, double *pos_1, double *pos_2, double 
             if (shuffle==0){
                 pos1_red[ngal_red] = tmppos_1/tmpw;
                 pos2_red[ngal_red] = tmppos_2/tmpw;}
-            else{
+            else if (shuffle==1){
                 shift_1 = ((double)rand()/(double)(RAND_MAX)) * mask_d1;
                 shift_2 = ((double)rand()/(double)(RAND_MAX)) * mask_d2;
                 pos1_red[ngal_red] = mask_min1+ind_pix1*mask_d1 + shift_1;
                 pos2_red[ngal_red] = mask_min2+ind_pix2*mask_d2 + shift_2;}
+            else if (shuffle==2){
+                pos1_red[ngal_red] = mask_min1+ind_pix1*mask_d1 + mask_d1/2;
+                pos2_red[ngal_red] = mask_min2+ind_pix2*mask_d2 + mask_d2/2;}
+            else if (shuffle==3){
+                pos1_red[ngal_red] = pos_1[ind_maxw];
+                pos2_red[ngal_red] = pos_2[ind_maxw];}
+            else if (shuffle==4){
+                ind_inpix = (int) (((double) rand()/(double)(RAND_MAX)) * (upper-lower+1));
+                ind_gal = spatialhash[start_pixgals+ind_inpix];
+                pos1_red[ngal_red] = pos_1[ind_gal];
+                pos2_red[ngal_red] = pos_2[ind_gal];}
             for (elscalarquant=0; elscalarquant<nscalarquants; elscalarquant++){
                 // It depends on the statistics whether we want to normalize:
                 // i) Shear 3pcf
