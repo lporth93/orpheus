@@ -134,9 +134,9 @@ class BinnedNPCF:
             # Discrete estimator of third-order shear correlation function
             self.clib.alloc_Gammans_discrete_ggg.restype = ct.c_void_p
             self.clib.alloc_Gammans_discrete_ggg.argtypes = [
-                p_i32, p_f64, p_f64, p_f64, p_f64, p_f64, p_i32, ct.c_int32, ct.c_int32, 
-                ct.c_int32, ct.c_int32, ct.c_double, ct.c_double, p_f64, ct.c_int32, ct.c_int32, 
-                p_i32, p_i32, p_i32, ct.c_double, ct.c_double, ct.c_int32, 
+                p_i32, p_f64, p_f64, p_f64, p_f64, p_f64, p_i32, ct.c_int32, 
+                ct.c_int32, ct.c_int32, ct.c_int32, ct.c_double, ct.c_double, 
+                p_f64, ct.c_int32, ct.c_int32, p_i32, p_i32, p_i32, ct.c_double, ct.c_double, ct.c_int32, 
                 ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, 
                 np.ctypeslib.ndpointer(dtype=np.float64), 
                 np.ctypeslib.ndpointer(dtype=np.complex128),
@@ -194,6 +194,21 @@ class BinnedNPCF:
                 np.ctypeslib.ndpointer(dtype=np.complex128)] 
             
 
+        # Shear-Lens-Lens correlations
+        if self.order==3 and np.array_equal(self.spins, np.array([2, 0, 0], dtype=np.int32)):
+            # Allocate Gamman for gnn via the discrete estimator
+            self.clib.alloc_Gammans_discrete_gnn.restype = ct.c_void_p
+            self.clib.alloc_Gammans_discrete_gnn.argtypes = [
+                p_i32, p_f64, p_f64, p_f64, p_f64, p_f64, ct.c_int32, 
+                p_f64, p_f64, p_f64, ct.c_int32, 
+                ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, 
+                p_i32, p_i32, p_i32,
+                ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, 
+                ct.c_int32, 
+                np.ctypeslib.ndpointer(dtype=np.double),
+                np.ctypeslib.ndpointer(dtype=np.complex128),
+                np.ctypeslib.ndpointer(dtype=np.complex128)]         
+
         
     ############################################################
     ## Functions that deal with different projections of NPCF ##
@@ -244,6 +259,73 @@ class BinnedNPCF:
             else:
                 thiscat = cats[els]
             assert(thiscat.spin == s)
+        
+
+    def edge_correction(self, npcf_n, npcf_n_norm, ret_matrices=False):
+
+        def gen_M_matrix(thet1,thet2,npcf_n_norm):
+            nvals, ntheta, _ = npcf_n_norm.shape
+            nmax = (nvals-1)//2
+            narr = np.arange(-nmax,nmax+1, dtype=int)
+            nextM = np.zeros((nvals,nvals), dtype=complex)
+            for ind, ell in enumerate(narr):
+                lminusn = ell-narr
+                sel = np.logical_and(lminusn+nmax>=0, lminusn+nmax<nvals)
+                nextM[ind,sel] = npcf_n_norm[(lminusn+nmax)[sel],thet1,thet2]/npcf_n_norm[nmax,thet1,thet2]
+            return nextM
+    
+        nnvals, ntheta, _ = npcf_n_norm.shape
+        nmax = int((nnvals-1)/2)
+        print(nnvals, ntheta, nmax)
+        
+        npcf_n_corr = np.zeros_like(npcf_n)
+        if ret_matrices:
+            mats = np.zeros((ntheta,ntheta,nnvals,nnvals))
+        for thet1 in range(ntheta):
+            for thet2 in range(ntheta):
+                nextM = gen_M_matrix(thet1,thet2,npcf_n_norm)
+                if ret_matrices:
+                    mats[thet1,thet2] = nextM
+                npcf_n_corr[:,thet1,thet2] = np.linalg.inv(nextM)@npcf_n[:,thet1,thet2]
+        if ret_matrices:
+            return npcf_n_corr, mats
+        return npcf_n_corr
+
+    def addMultipoles(self, npcf_n, npcf_n_norm, do_edge_correction=True):
+
+        nnvals, _, _ = npcf_n_norm.shape
+
+        nmax = int((nnvals-1)/2)
+
+        if do_edge_correction:
+            npcf_n = self.edge_correction(npcf_n, npcf_n_norm)
+
+        Gamma_tot=np.zeros((self.nbinsr, self.nbinsr, self.nbinsphi), dtype=np.complex128)
+        if ~do_edge_correction:
+            Norm_tot=np.zeros((self.nbinsr, self.nbinsr, self.nbinsphi), dtype=np.complex128)
+        for i in range(self.nbinsphi):
+            phi=i*2*np.pi/self.nbinsphi
+            for n in range(-nmax, nmax):
+                phase=np.exp(1j*phi*n)
+                tmp1=npcf_n_norm[n+nmax, :, :]*phase
+                tmp2=npcf_n[n+nmax, :,:]*phase
+
+                Gamma_tot[:,:,i]+=tmp2
+                if ~do_edge_correction:
+                    Norm_tot[:,:,i]+=tmp1
+        
+        if do_edge_correction:
+            for i in range(self.nbinsphi):
+                Gamma_tot[:,:,i]/=npcf_n_norm[nmax, :, :]
+        else:
+            Gamma_tot/=Norm_tot
+        
+        np.nan_to_num(Gamma_tot, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+        Gamma_tot[np.abs(Gamma_tot)>1]=0
+
+        return Gamma_tot, Norm_tot
+
+
         
 
 ##############################
@@ -707,29 +789,109 @@ class GNNCorrelation(BinnedNPCF):
         # (Add here any newly implemented projections)
         self._initprojections(self)
         
-    def process(self, cat_lens, cat_source, nthreads=16, dotomo=True):
-        self._checkcats([cat_lens, cat_source], [0, 2])
-        if not dotomo:
-            self.nbinsz_lens = 1
-            self.nbinsz_source = 1
-            zbins_lens = np.zeros(cat_lens.ngal, dtype=np.int32)
-            zbins_source = np.zeros(cat_source.ngal, dtype=np.int32)
-        else:
-            self.nbinsz_lens = cat_lens.nbinsz
-            self.nbinsz_source = cat_source.nbinsz
-        _z3combis = self.nbinsz_source*self.nbinsz_lens*self.nbinsz_lens
-        _r2combis = self.nbinsr*self.nbinsr
-        sc = (4,self.nmax+1, _z3combis, self.nbinsr,self.nbinsr)
-        sn = (self.nmax+1, _z3combis, self.nbinsr,self.nbinsr)
-        szr = (self.nbinsz_lens, self.nbinsz_source, self.nbinsr)
-        bin_centers = np.zeros(self.nbinsz_source*self.nbinsz_lens*self.nbinsr).astype(np.float64)
-        threepcfs_n = np.zeros(4*(self.nmax+1)*_z3combis*_r2combis).astype(complex)
-        threepcfsnorm_n = np.zeros((self.nmax+1)*_z3combis*_r2combis).astype(complex)
-        args_basecat = (cat.isinner.astype(np.int32), cat.weight, cat.pos1, cat.pos2, cat.tracer_1, cat.tracer_2, 
-                        zbins.astype(np.int32), int(self.nbinsz), int(cat.ngal), )
-        args_basesetup = (int(0), int(self.nmax), np.float64(self.min_sep), np.float64(self.max_sep), np.array([-1.]).astype(np.float64), 
-                          int(self.nbinsr), int(self.multicountcorr), )
+    def process(self, cat_lens, cat_source, nthreads=16, dotomo=False):
+        self._checkcats([cat_source, cat_lens, cat_lens], [2, 0,0])
+
+        if dotomo:
+            raise NotImplementedError('For SLL correlation tomography is not yet implemented')
+
+         # Prepare output
+        nbinsr=self.nbinsr
+        nmax=self.nmax
+        bin_centers = np.zeros(nbinsr).astype(np.float64)
+        threepcfs_n = np.zeros(nbinsr*nbinsr*(2*nmax+1)).astype(complex)
+        threepcfsnorm_n = np.zeros(nbinsr*nbinsr*(2*nmax+1)).astype(complex)
+        
+        args = (cat_source.isinner.astype(np.int32),
+                cat_source.weight,
+                cat_source.pos1,
+                cat_source.pos2,
+                cat_source.tracer_1,
+                cat_source.tracer_2,
+                cat_source.ngal,
+                cat_lens.weight,
+                cat_lens.pos1,
+                cat_lens.pos2,
+                cat_lens.ngal,
+                self.nmax,
+                self.min_sep,
+                self.max_sep,
+                self.nbinsr,
+                np.int32(self.multicountcorr),
+                cat_lens.index_matcher,
+                cat_lens.pixs_galind_bounds,
+                cat_lens.pix_gals,
+                cat_lens.pix1_start,
+                cat_lens.pix1_d, 
+                cat_lens.pix1_n, 
+                cat_lens.pix2_start,
+                cat_lens.pix2_d, 
+                cat_lens.pix2_n,
+                nthreads,
+                bin_centers,
+                threepcfs_n,
+                threepcfsnorm_n
+                )
+        self.clib.alloc_Gammans_discrete_gnn(cat_source.isinner.astype(np.int32),
+                cat_source.weight,
+                cat_source.pos1,
+                cat_source.pos2,
+                cat_source.tracer_1,
+                cat_source.tracer_2,
+                cat_source.ngal,
+                cat_lens.weight,
+                cat_lens.pos1,
+                cat_lens.pos2,
+                cat_lens.ngal,
+                self.nmax,
+                self.min_sep,
+                self.max_sep,
+                self.nbinsr,
+                np.int32(self.multicountcorr),
+                cat_lens.index_matcher,
+                cat_lens.pixs_galind_bounds,
+                cat_lens.pix_gals,
+                cat_lens.pix1_start,
+                cat_lens.pix1_d, 
+                cat_lens.pix1_n, 
+                cat_lens.pix2_start,
+                cat_lens.pix2_d, 
+                cat_lens.pix2_n,
+                nthreads,
+                bin_centers,
+                threepcfs_n,
+                threepcfsnorm_n
+                )
+        self.bin_centers=bin_centers.reshape(nbinsr)
+        self.npcf_multipoles = threepcfs_n.reshape(((2*nmax+1),nbinsr,nbinsr))
+        self.npcf_multipoles_norm = threepcfsnorm_n.reshape(((2*nmax+1),nbinsr,nbinsr))
+
+        # if not dotomo:
+        #     self.nbinsz_lens = 1
+        #     self.nbinsz_source = 1
+        #     zbins_lens = np.zeros(cat_lens.ngal, dtype=np.int32)
+        #     zbins_source = np.zeros(cat_source.ngal, dtype=np.int32)
+        # else:
+        #     self.nbinsz_lens = cat_lens.nbinsz
+        #     self.nbinsz_source = cat_source.nbinsz
+        # _z3combis = self.nbinsz_source*self.nbinsz_lens*self.nbinsz_lens
+        # _r2combis = self.nbinsr*self.nbinsr
+        # sc = (4,self.nmax+1, _z3combis, self.nbinsr,self.nbinsr)
+        # sn = (self.nmax+1, _z3combis, self.nbinsr,self.nbinsr)
+        # szr = (self.nbinsz_lens, self.nbinsz_source, self.nbinsr)
+        # bin_centers = np.zeros(self.nbinsz_source*self.nbinsz_lens*self.nbinsr).astype(np.float64)
+        # threepcfs_n = np.zeros(4*(self.nmax+1)*_z3combis*_r2combis).astype(complex)
+        # threepcfsnorm_n = np.zeros((self.nmax+1)*_z3combis*_r2combis).astype(complex)
+        # args_basecat = (cat.isinner.astype(np.int32), cat.weight, cat.pos1, cat.pos2, cat.tracer_1, cat.tracer_2, 
+        #                 zbins.astype(np.int32), int(self.nbinsz), int(cat.ngal), )
+        # args_basesetup = (int(0), int(self.nmax), np.float64(self.min_sep), np.float64(self.max_sep), np.array([-1.]).astype(np.float64), 
+        #                   int(self.nbinsr), int(self.multicountcorr), )
     
+
+    def multipoles2npcf(self, do_edge_correction=True):
+        self.gnn_correlation, self.gnn_norm = self.addMultipoles(self.npcf_multipoles, self.npcf_multipoles_norm, do_edge_correction=do_edge_correction)
+
+
 class NGGCorrelation(BinnedNPCF):
     """ Lens-Shear-Shear correlation function """
     def __init__(self, n_cfs, min_sep, max_sep, **kwargs):

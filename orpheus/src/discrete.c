@@ -3648,3 +3648,342 @@ void alloc_triplets_doubletree_xipxipcov(
     free(totcounts);
     free(totnorms);
 }
+
+
+
+
+void alloc_Gammans_discrete_gnn(
+    int *isinner_source, double *w_source, double *pos1_source, double *pos2_source, double *e1, double *e2, int ngal_source,
+    double *w_lens, double *pos1_lens, double *pos2_lens, int ngal_lens,
+    int nmax, double rmin, double rmax, int nbinsr, int dccorr,
+    int *index_matcher, int *pixs_galind_bounds, int *pix_gals,
+    double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n,
+    int nthreads, double *rbin_means, double complex *Gammans, double complex *Gammans_norm)
+{
+
+    // Put in args if those turn out to be useful
+    // 0 = False, 1==True
+    bool do_discrete_phibins = false;
+    bool skip_empty_bins = false;
+
+    // Need to allocate the bin centers/counts in this way to ensure parallelizability
+    // At a later stage are reduced to the shape of the output
+    double *rbin_means_denom = calloc(nbinsr, sizeof(double));
+    int *globnmaxs_bins = calloc(nbinsr, sizeof(int));
+
+    // Allocate Gns
+    // We do this in parallel as follows:
+    // * Split survey in 2*nthreads equal area stripes along x-axis
+    // * Do two parallelized iterations over galaxies
+    //   - In first one only consider galaxies within stripes of even number
+    //   - In second one only consider galaxies within stripes of odd number
+    // --> We avoid race conditions in calling the spatial hash arrays. - This
+    //    is explicitly made sure by (re)setting nthreads in the python layer.
+    for (int odd = 0; odd < 2; odd++)
+    {
+        // #pragma omp parallel for private(nbinsz, ngal, nmin, nmax, rmin, rmax, nbinsr, pix1_start, pix1_d, pix1_n, pix2_start, pix2_d, pix2_n, nthreads)
+        double complex *tmpGamma_n = calloc(nthreads * (2 * nmax + 1) * nbinsr * nbinsr, sizeof(double complex));
+        double complex *tmpGamma_n_norm = calloc(nthreads * (2 * nmax + 1) * nbinsr * nbinsr, sizeof(double complex));
+        double complex *dccorrGamma_n = calloc(nthreads * nbinsr, sizeof(double complex));
+        double complex *dccorrGamma_n_norm = calloc(nthreads * nbinsr, sizeof(double complex));
+        double *tmprbin_nom = calloc(nthreads * nbinsr, sizeof(double));
+        double *tmprbin_denom = calloc(nthreads * nbinsr, sizeof(double));
+#pragma omp parallel for num_threads(nthreads)
+        for (int thisthread = 0; thisthread < nthreads; thisthread++)
+        {
+            // Course phi-binning to avoid empty bins
+            int *nphi_discbins = calloc(nbinsr, sizeof(int));
+            double *phibin_width = calloc(nbinsr, sizeof(double));
+            int *nmaxs_bins = calloc(nbinsr, sizeof(int));
+            double *bincontents = calloc(nbinsr, sizeof(double));
+            double tmpr = rmin;
+            double drbin = exp(log(rmax / rmin) / nbinsr);
+            double nperbin_target = 10;
+            double survey_area = pix1_d * (double)pix1_n * pix2_d * (double)pix2_n;
+            double nbar_lens = ngal_lens / survey_area;
+            // Check how many galaxies we expect in an rbin and fromm
+            // theres set number of discrete phi-bins
+            if (do_discrete_phibins != 0 || skip_empty_bins != 0)
+            {
+                for (int elbinr = 0; elbinr < nbinsr; elbinr++)
+                {
+                    double eff_in_bin = sqrt(ngal_source / nperbin_target) * 2 * M_PI * nbar_lens * tmpr * tmpr * (drbin - 1);
+                    nphi_discbins[elbinr] = (int)fmax(1, eff_in_bin);
+                    phibin_width[elbinr] = 2 * M_PI / (double)nphi_discbins[elbinr];
+                    nmaxs_bins[elbinr] = (int)fmax(0, fmin(nmax, nphi_discbins[elbinr] - 1));
+                    if (eff_in_bin < 0.5)
+                    {
+                        nmaxs_bins[elbinr] = -1;
+                    }
+                    bincontents[elbinr] = nbar_lens * tmpr * tmpr * (drbin - 1) * 2 * M_PI / (float)nphi_discbins[elbinr];
+                    if (odd == 0 && thisthread == 0)
+                    {
+                        globnmaxs_bins[elbinr] = nmaxs_bins[elbinr];
+                    }
+                    tmpr *= drbin;
+                    printf("%i %f %f %f %f %i %i\n", elbinr, tmpr, nbar_lens,
+                           eff_in_bin,
+                           phibin_width[elbinr], nphi_discbins[elbinr], nmaxs_bins[elbinr]);
+                }
+            }
+            for (int ind_gal = 0; ind_gal < ngal_source; ind_gal++)
+            {
+
+                // Check if galaxy falls in stripe used in this process
+                double p11, p12, e11, e12, w_s;
+                int isinner;
+#pragma omp critical
+                {
+                    p11 = pos1_source[ind_gal];
+                    p12 = pos2_source[ind_gal];
+                    w_s = w_source[ind_gal];
+                    e11 = e1[ind_gal];
+                    e12 = e2[ind_gal];
+                    isinner = isinner_source[ind_gal];
+                }
+                if (isinner == 0)
+                {
+                    continue;
+                }
+                int thisstripe = 2 * thisthread + odd;
+                int galstripe = (int)floor((p11 - pix1_start) / pix1_d * (2 * nthreads) / pix1_n);
+                if (thisstripe != galstripe)
+                {
+                    continue;
+                }
+
+                // Allocate the Gn for this galaxy
+                // ordering is {-nmax-1, -nmax, ..., nmax-1} for Gn
+                //             {-nmax, ..., nmax} for Gn_norm
+                int ind_pix1, ind_pix2, ind_inpix, ind_gal2;
+                int ind_red, lower, upper;
+                double p21, p22, w_l;
+                double rel1, rel2, dist, dphi;
+                double complex wshape;
+                int tmpGind, rbin;
+                double complex nphirot, phirot;
+
+                wshape = w_s * (e11 + I * e12);
+
+                // Define discrete bins
+                int pix1_lower = mymax(0, (int)floor((p11 - (rmax + pix1_d) - pix1_start) / pix1_d));
+                int pix2_lower = mymax(0, (int)floor((p12 - (rmax + pix2_d) - pix2_start) / pix2_d));
+                int pix1_upper = mymin(pix1_n - 1, (int)floor((p11 + (rmax + pix1_d) - pix1_start) / pix1_d));
+                int pix2_upper = mymin(pix2_n - 1, (int)floor((p12 + (rmax + pix2_d) - pix2_start) / pix2_d));
+
+                double complex *thisGns = calloc((nmax + 3) * nbinsr, sizeof(double complex));
+                for (ind_pix1 = pix1_lower; ind_pix1 < pix1_upper; ind_pix1++)
+                {
+                    for (ind_pix2 = pix2_lower; ind_pix2 < pix2_upper; ind_pix2++)
+                    {
+                        ind_red = index_matcher[ind_pix2 * pix1_n + ind_pix1];
+                        if (ind_red == -1)
+                        {
+                            continue;
+                        }
+                        lower = pixs_galind_bounds[ind_red];
+                        upper = pixs_galind_bounds[ind_red + 1];
+                        for (ind_inpix = lower; ind_inpix < upper; ind_inpix++)
+                        {
+                            ind_gal2 = pix_gals[ind_inpix];
+                            p21 = pos1_lens[ind_gal2];
+                            p22 = pos2_lens[ind_gal2];
+                            w_l = w_lens[ind_gal2];
+
+                            // LP
+                            // rel1 = p21 - p11;
+                            // rel2 = p22 - p12;
+
+                            // LL
+                            rel1 = p11 - p21;
+                            rel2 = p12 - p22;
+
+                            dist = sqrt(rel1 * rel1 + rel2 * rel2);
+                            if (dist < rmin || dist >= rmax)
+                                continue;
+                            rbin = (int)floor(log(dist / rmin) / log(drbin));
+                            tmprbin_nom[thisthread * nbinsr + rbin] += w_l * w_s * dist;
+                            tmprbin_denom[thisthread * nbinsr + rbin] += w_l * w_s;
+                            dphi = atan2(rel2, rel1);
+                            if (dphi < 0)
+                            {
+                                dphi += 2 * M_PI;
+                            }
+                            // Put into discrete phibin
+                            if (do_discrete_phibins != 0)
+                            {
+                                dphi -= fmod(dphi, phibin_width[rbin]) - 1 * phibin_width[rbin] / 2; // Put in discrete bin
+                            }
+                            // LL
+                            phirot = cexp(I * dphi); // Changed to plus
+                            // LP
+                            // phirot = cexp(I*dphi);
+                            nphirot = 1;
+                            tmpGind = rbin;
+                            for (int nextn = 0; nextn <= nmax + 2; nextn++)
+                            {
+                                thisGns[tmpGind] += w_l * nphirot;
+                                nphirot *= phirot;
+                                tmpGind += nbinsr;
+                            }
+                            dccorrGamma_n[thisthread * nbinsr + rbin] += wshape * w_l * w_l * phirot * phirot;
+                            dccorrGamma_n_norm[thisthread * nbinsr + rbin] += (double complex)w_s * w_l * w_l;
+                        }
+                    }
+                }
+
+                // Update the Gamman & Gamman_norm for this galaxy
+                // shape (nthreads, nmax+1, nbinsr, nbinsr)
+                double complex Gn1, Gn2, Gnnorm1, Gnnorm2;
+                int threadshift = thisthread * (2 * nmax + 1) * nbinsr * nbinsr;
+                int Gammaind, thisnshift;
+                double ntri_expected;
+                for (int thisn = -nmax; thisn <= nmax; thisn++)
+                {
+                    thisnshift = (thisn + nmax) * nbinsr * nbinsr;
+                    for (int elb1 = 0; elb1 < nbinsr; elb1++)
+                    {
+                        if (skip_empty_bins != 0)
+                        {
+                            if (abs(thisn) > nmaxs_bins[elb1])
+                            {
+                                continue;
+                            }
+                        }
+                        // // LP:
+                        // if (thisn+1>=0){Gn1 = thisGns[(thisn+1)*nbinsr+elb1];}
+                        // else{Gn1 = conj(thisGns[(-thisn-1)*nbinsr+elb1]);}
+
+                        // LL:
+                        if (thisn - 1 >= 0)
+                        {
+                            Gn1 = thisGns[(thisn - 1) * nbinsr + elb1];
+                        }
+                        else
+                        {
+                            Gn1 = conj(thisGns[(-thisn + 1) * nbinsr + elb1]);
+                        }
+
+                        if (thisn >= 0)
+                        {
+                            Gnnorm1 = thisGns[thisn * nbinsr + elb1];
+                        }
+                        else
+                        {
+                            Gnnorm1 = conj(thisGns[(-thisn) * nbinsr + elb1]);
+                        }
+                        for (int elb2 = 0; elb2 < nbinsr; elb2++)
+                        {
+
+                            // Skip radial bins which are most likely empty
+                            if (skip_empty_bins != 0)
+                            {
+                                ntri_expected = ngal_source * bincontents[elb1] * bincontents[elb2] *
+                                                nphi_discbins[(int)fmin(elb1, elb2)];
+                                if (abs(thisn) > nmaxs_bins[elb2])
+                                {
+                                    continue;
+                                }
+                                if (ntri_expected < nperbin_target)
+                                {
+                                    continue;
+                                }
+                            }
+
+                            // // LP:
+                            // if (-thisn+1>=0){Gn2 = (thisGns[(-thisn+1)*nbinsr+elb2]);}
+                            // else{Gn2 = conj(thisGns[(thisn-1)*nbinsr+elb2]);}
+
+                            // LL:
+                            if (-thisn - 1 >= 0)
+                            {
+                                Gn2 = (thisGns[(-thisn - 1) * nbinsr + elb2]);
+                            }
+                            else
+                            {
+                                Gn2 = conj(thisGns[(thisn + 1) * nbinsr + elb2]);
+                            }
+
+                            if (-thisn >= 0)
+                            {
+                                Gnnorm2 = thisGns[(-thisn) * nbinsr + elb2];
+                            }
+                            else
+                            {
+                                Gnnorm2 = conj(thisGns[thisn * nbinsr + elb2]);
+                            }
+                            Gammaind = threadshift + thisnshift + elb1 * nbinsr + elb2;
+                            tmpGamma_n[Gammaind] += wshape * Gn1 * Gn2;
+                            tmpGamma_n_norm[Gammaind] += w_s * Gnnorm1 * Gnnorm2;
+                        }
+                    }
+                }
+                free(thisGns);
+            }
+            free(nphi_discbins);
+            free(phibin_width);
+            free(nmaxs_bins);
+            free(bincontents);
+        }
+
+        // Accumulate the Gammans & Gammans_norm
+        for (int nthread = 0; nthread < nthreads; nthread++)
+        {
+            int threadshift = nthread * (2 * nmax + 1) * nbinsr * nbinsr;
+            for (int thisn = 0; thisn <= 2 * nmax; thisn++)
+            {
+                int nshift = thisn * nbinsr * nbinsr;
+                for (int elb1 = 0; elb1 < nbinsr; elb1++)
+                {
+                    for (int elb2 = 0; elb2 < nbinsr; elb2++)
+                    {
+                        Gammans[nshift + elb1 * nbinsr + elb2] += tmpGamma_n[threadshift + nshift + elb1 * nbinsr + elb2];
+                        Gammans_norm[nshift + elb1 * nbinsr + elb2] += tmpGamma_n_norm[threadshift + nshift + elb1 * nbinsr + elb2];
+                    }
+                }
+            }
+        }
+
+        // Finalize the renomalization
+        if (dccorr != 0)
+        {
+            for (int elb = 0; elb < nbinsr; elb++)
+            {
+                for (int thisn = 0; thisn <= 2 * nmax; thisn++)
+                {
+                    for (int nthread = 0; nthread < nthreads; nthread++)
+                    {
+                        int nshift = thisn * nbinsr * nbinsr;
+                        Gammans[nshift + elb * nbinsr + elb] -= dccorrGamma_n[nthread * nbinsr + elb];
+                        Gammans_norm[nshift + elb * nbinsr + elb] -= dccorrGamma_n_norm[nthread * nbinsr + elb];
+                    }
+                }
+            }
+        }
+
+        // Accumulate the bin centers
+        for (int nthread = 0; nthread < nthreads; nthread++)
+        {
+            for (int elb = 0; elb < nbinsr; elb++)
+            {
+                rbin_means[elb] += tmprbin_nom[nthread * nbinsr + elb];
+                rbin_means_denom[elb] += tmprbin_denom[nthread * nbinsr + elb];
+            }
+        }
+        free(tmpGamma_n);
+        free(tmpGamma_n_norm);
+        free(dccorrGamma_n);
+        free(dccorrGamma_n_norm);
+        free(tmprbin_nom);
+        free(tmprbin_denom);
+    }
+
+    // Finalize radial bin centers
+    for (int elb = 0; elb < nbinsr; elb++)
+    {
+        rbin_means[elb] /= rbin_means_denom[elb];
+    }
+
+    free(rbin_means_denom);
+    free(globnmaxs_bins);
+}
