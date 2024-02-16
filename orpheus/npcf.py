@@ -300,11 +300,13 @@ class BinnedNPCF:
         if do_edge_correction:
             npcf_n = self.edge_correction(npcf_n, npcf_n_norm)
 
-        Gamma_tot=np.zeros((self.nbinsr, self.nbinsr, self.nbinsphi), dtype=np.complex128)
+        nbinsr=self.nbinsr
+        nbinsphi=self.nbinsphi.item()
+        Gamma_tot=np.zeros((nbinsr, nbinsr, nbinsphi), dtype=np.complex128)
         if ~do_edge_correction:
-            Norm_tot=np.zeros((self.nbinsr, self.nbinsr, self.nbinsphi), dtype=np.complex128)
-        for i in range(self.nbinsphi):
-            phi=i*2*np.pi/self.nbinsphi
+            Norm_tot=np.zeros((nbinsr, nbinsr, nbinsphi), dtype=np.complex128)
+        for i in range(nbinsphi):
+            phi=i*2*np.pi/nbinsphi
             for n in range(-nmax, nmax):
                 phase=np.exp(1j*phi*n)
                 tmp1=npcf_n_norm[n+nmax, :, :]*phase
@@ -315,7 +317,7 @@ class BinnedNPCF:
                     Norm_tot[:,:,i]+=tmp1
         
         if do_edge_correction:
-            for i in range(self.nbinsphi):
+            for i in range(nbinsphi):
                 Gamma_tot[:,:,i]/=npcf_n_norm[nmax, :, :]
         else:
             Gamma_tot/=Norm_tot
@@ -802,36 +804,9 @@ class GNNCorrelation(BinnedNPCF):
         threepcfs_n = np.zeros(nbinsr*nbinsr*(2*nmax+1)).astype(complex)
         threepcfsnorm_n = np.zeros(nbinsr*nbinsr*(2*nmax+1)).astype(complex)
         
-        args = (cat_source.isinner.astype(np.int32),
-                cat_source.weight,
-                cat_source.pos1,
-                cat_source.pos2,
-                cat_source.tracer_1,
-                cat_source.tracer_2,
-                cat_source.ngal,
-                cat_lens.weight,
-                cat_lens.pos1,
-                cat_lens.pos2,
-                cat_lens.ngal,
-                self.nmax,
-                self.min_sep,
-                self.max_sep,
-                self.nbinsr,
-                np.int32(self.multicountcorr),
-                cat_lens.index_matcher,
-                cat_lens.pixs_galind_bounds,
-                cat_lens.pix_gals,
-                cat_lens.pix1_start,
-                cat_lens.pix1_d, 
-                cat_lens.pix1_n, 
-                cat_lens.pix2_start,
-                cat_lens.pix2_d, 
-                cat_lens.pix2_n,
-                nthreads,
-                bin_centers,
-                threepcfs_n,
-                threepcfsnorm_n
-                )
+        cat_lens.build_spatialhash()
+
+
         self.clib.alloc_Gammans_discrete_gnn(cat_source.isinner.astype(np.int32),
                 cat_source.weight,
                 cat_source.pos1,
