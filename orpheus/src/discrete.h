@@ -61,6 +61,15 @@ void alloc_Gammans_discrete_gnn(
     double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n, 
     int nthreads, double *rbin_means, double complex *Gammans, double complex *Gammans_norm);
 
+
+void alloc_Gammans_discrete_ggn(
+    double *w_source, double *pos1_source, double *pos2_source, double *e1, double *e2, int ngal_source,
+    double *w_lens, double *pos1_lens, double *pos2_lens, int ngal_lens, 
+    int nmax, double rmin, double rmax, int nbinsr, int dccorr,
+    int *index_matcher, int *pixs_galind_bounds, int *pix_gals, 
+    double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n, 
+    int nthreads, double *rbin_means, double complex *Gammans, double complex *Gammans_norm);
+
 // /**
 //  * @brief Calculates Multipoles for source-source-lens correlation function. 
 //  * 

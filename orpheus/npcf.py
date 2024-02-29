@@ -207,8 +207,21 @@ class BinnedNPCF:
                 ct.c_int32, 
                 np.ctypeslib.ndpointer(dtype=np.double),
                 np.ctypeslib.ndpointer(dtype=np.complex128),
-                np.ctypeslib.ndpointer(dtype=np.complex128)]         
+                np.ctypeslib.ndpointer(dtype=np.complex128)]
 
+        # Shear-Shear-Lens correlations
+        if self.order==3 and np.array_equal(self.spins, np.array([2,2,0], dtype=np.int32)):
+            self.clib.alloc_Gammans_discrete_ggn.restype = ct.c_void_p
+            self.clib.alloc_Gammans_discrete_ggn.argtypes = [
+                p_f64, p_f64, p_f64, p_f64, p_f64, ct.c_int32, 
+                p_f64, p_f64, p_f64, ct.c_int32, 
+                ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, 
+                p_i32, p_i32, p_i32,
+                ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, 
+                ct.c_int32, 
+                np.ctypeslib.ndpointer(dtype=np.double),
+                np.ctypeslib.ndpointer(dtype=np.complex),
+                np.ctypeslib.ndpointer(dtype=np.complex)]
         
     ############################################################
     ## Functions that deal with different projections of NPCF ##
