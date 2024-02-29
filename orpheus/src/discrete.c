@@ -21,6 +21,10 @@ void alloc_negone_int(int *arr, int length){
     for (int i=0; i<length; i++){arr[i]=-1;}
 }
 
+void set_to_zero_dcomplex(double complex *arr, int *indices, int nindices){
+    for (int elind=0;elind<nindices;elind++){arr[indices[elind]] = 0;}
+}
+
 double complex mycmul(double complex z1, double complex z2){
     double a, b, c, d;
     a=creal(z1); b = cimag(z1);
@@ -993,7 +997,7 @@ void alloc_Gammans_doubletree_ggg(
             }
             zbin2shift = zbinshifts[nbinsz];
             nshift = nbinsz*zbin2shift;
-            // Set all the cache indeces that are updated in this region to zero
+            // Set all the cache indices that are updated in this region to zero
             if ((elregion==region_debug)){printf("zbin2shift=%d: nshift=%d: \n", zbin2shift,  nshift);}
             for (int _i=0; _i<nnvals_Gn*nshift; _i++){Gncache[_i] = 0; wGncache[_i] = 0; cwGncache[_i] = 0;}
             for (int _i=0; _i<nnvals_Nn*nshift; _i++){ Nncache[_i] = 0; wNncache[_i] = 0;}
@@ -1184,7 +1188,6 @@ void alloc_Gammans_doubletree_ggg(
                                 Nncache_updates[ind_Gncacheshift] += 1;
                                 Nncache_totupdates += 1;
                             }
-                            
                         } 
                     }
                                     
@@ -3239,6 +3242,305 @@ void alloc_Gammans_doubletree_GNN(
             }
         }
     }
+    free(tmpUpsilon);
+    free(tmpNorm);
+    free(tmpwcounts);
+    free(tmpwnorms);
+    free(totcounts);
+    free(totnorms);
+}
+
+// Discrete estimator of Lens-Source-Source Correlator
+void alloc_Gammans_discrete_NGG(
+    double *w_source, double *pos1_source, double *pos2_source, double *e1_source, double *e2_source, int *zbin_source, int nbinsz_source, int ngal_source,
+    int *isinner_lens, double *w_lens, double *pos1_lens, double *pos2_lens, int *zbin_lens, int nbinsz_lens, int ngal_lens, 
+    int nmax, double rmin, double rmax, int nbinsr, int dccorr,
+    int *index_matcher_source, int *pixs_galind_bounds_source, int *pix_gals_source, 
+    int *index_matcher_lens, int *pixs_galind_bounds_lens, int *pix_gals_lens, int nregions, 
+    double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n,
+    int nthreads, double *bin_centers, double complex *Upsilon_n, double complex *Norm_n){
+    
+    int _nzcombis = nbinsz_lens*nbinsz_source*nbinsz_source;
+    int _upsilonzshift = nbinsr*nbinsr;
+    int _upsilonnshift = _upsilonzshift*_nzcombis;
+    int _upsiloncompshift = (2*nmax+1)*_upsilonnshift;
+    int _upsilonthreadshift = 2*_upsiloncompshift;
+    int _normzshift = nbinsr*nbinsr;
+    int _normnshift = _normzshift*_nzcombis;
+    int _normthreadshift = (2*nmax+1)*_normnshift;    
+    
+    double *tmpwcounts = calloc(nthreads*nbinsz_lens*nbinsz_source*nbinsr, sizeof(double));
+    double *tmpwnorms  = calloc(nthreads*nbinsz_lens*nbinsz_source*nbinsr, sizeof(double));
+    double *totcounts = calloc(nbinsz_lens*nbinsz_source*nbinsr, sizeof(double));
+    double *totnorms  = calloc(nbinsz_lens*nbinsz_source*nbinsr, sizeof(double));
+    // Temporary arrays that are allocated in parallel and later reduced
+    // Shape of tmpUpsilon ~ (nthreads, nnvals, nz_source, nz_lens, nz_lens, nbinsr, nbinsr)
+    double complex *tmpUpsilon = calloc(nthreads*_upsilonthreadshift, sizeof(double complex));
+    double complex *tmpNorm = calloc(nthreads*_normthreadshift, sizeof(double complex));
+    #pragma omp parallel for num_threads(nthreads)
+    for(int elthread=0;elthread<nthreads;elthread++){
+        int nregions_per_thread = nregions/nthreads;
+        int nnvals_Gn = 2*nmax+5; // Need [-nmax-2, ..., nmax+2]
+        int nnvals_Wn = 2*nmax+1; // Need [-nmax, ..., nmax]
+        int nnvals_Ups = 2*nmax+1;
+        int nnvals_Norm = 2*nmax+1;
+        int nzcombis = nbinsz_lens*nbinsz_source*nbinsz_source;
+        int upsilon_zshift = nbinsr*nbinsr;
+        int upsilon_nshift = upsilon_zshift*nzcombis;
+        int upsilon_compshift = nnvals_Ups*upsilon_nshift;
+        int threadshift_upsilon = 2*elthread*nnvals_Ups*upsilon_nshift;
+        int norm_zshift = nbinsr*nbinsr;
+        int norm_nshift = norm_zshift*nzcombis;
+        int norm_compshift = nnvals_Norm*norm_nshift;
+        int threadshift_norm = elthread*nnvals_Norm*norm_nshift;
+        int threadshift_counts = elthread*nbinsz_lens*nbinsz_source*nbinsr;
+        int nbinszr_Gn = nbinsz_source*nbinsr;
+        int nbinszr_Wn = nbinsz_source*nbinsr;
+        double rmin_sq = rmin*rmin;
+        double rmax_sq = rmax*rmax;
+        double drbin = log(rmax/rmin)/nbinsr;
+        
+        for (int elregion=0; elregion<nregions; elregion++){
+            int region_debug=(int) (nthreads/2) * nregions_per_thread;//99999;
+            //int region_debug=99999;
+            // Check if this thread is responsible for the region
+            int nthread_target = mymin(elregion/nregions_per_thread, nthreads-1);
+            if (nthread_target!=elthread){continue;}
+            // printf("Region %d is in thread %d\n",elregion,elthread);
+            if (elregion==region_debug){printf("Region %d is in thread %d\n",elregion,elthread);}
+            if (elthread==nthreads/2){
+                printf("\rDone %.2f per cent",100*((double) elregion-nregions_per_thread*(int)(nthreads/2))/nregions_per_thread);
+            }
+            
+            int zbin_gal1, zbin_gal2;
+            double pos1_gal1, pos2_gal1, w_gal1;
+            double pos1_gal2, pos2_gal2, w_gal2, e1_gal2, e2_gal2;
+            double complex wshape_gal2;
+            int ind_red, ind_gal1, ind_gal2, lower1, upper1, isinner_gal1, lower2, upper2;
+            int pix1_lower, pix2_lower, pix1_upper, pix2_upper;
+            lower1 = pixs_galind_bounds_lens[elregion];
+            upper1 = pixs_galind_bounds_lens[elregion+1];
+            for (int ind_inpix1=lower1; ind_inpix1<upper1; ind_inpix1++){
+                
+                // Load lens galaxy info
+                ind_gal1 = pix_gals_lens[ind_inpix1];
+                #pragma omp critical
+                {pos1_gal1 = pos1_lens[ind_gal1];
+                pos2_gal1 = pos2_lens[ind_gal1];
+                w_gal1 = w_lens[ind_gal1];
+                zbin_gal1 = zbin_lens[ind_gal1];
+                zbin_gal1 = zbin_lens[ind_gal1];
+                isinner_gal1 = isinner_lens[ind_gal1];}
+                if(isinner_gal1==0){continue;}
+                
+                // Allocate the G_n and W_n coefficients + Double-counting correction factors
+                double complex phirot, nphirot;
+                double rel1, rel2, dist;
+                int ind_Wnp, ind_Wnm, ind_Gnp, ind_Gnm, ind_counts, z1shift, z2rshift, rbin;
+                double complex *thisGns = calloc(nnvals_Gn*nbinszr_Gn, sizeof(double complex)); 
+                double complex *thisWns = calloc(nnvals_Wn*nbinszr_Wn, sizeof(double complex)); 
+                double complex *thisG2ns = calloc(2*nbinszr_Gn, sizeof(double complex));
+                double complex *thisW2ns = calloc(nbinszr_Wn, sizeof(double complex));
+                int *thisncounts = calloc(nbinszr_Wn, sizeof(int));
+                int *allowedrinds = calloc(nbinszr_Wn, sizeof(int));
+                int *allowedzinds = calloc(nbinszr_Wn, sizeof(int));
+                z1shift = zbin_gal1*nbinsz_source*nbinsr;
+                pix1_lower = mymax(0, (int) floor((pos1_gal1 - (rmax+pix1_d) - pix1_start)/pix1_d));
+                pix2_lower = mymax(0, (int) floor((pos2_gal1 - (rmax+pix2_d) - pix2_start)/pix2_d));
+                pix1_upper = mymin(pix1_n-1, (int) floor((pos1_gal1 + (rmax+pix1_d) - pix1_start)/pix1_d));
+                pix2_upper = mymin(pix2_n-1, (int) floor((pos2_gal1 + (rmax+pix2_d) - pix2_start)/pix2_d));
+                for (int ind_pix1=pix1_lower; ind_pix1<pix1_upper; ind_pix1++){
+                    for (int ind_pix2=pix2_lower; ind_pix2<pix2_upper; ind_pix2++){
+                        ind_red = index_matcher_source[ind_pix2*pix1_n + ind_pix1];
+                        if (ind_red==-1){continue;}
+                        lower2 = pixs_galind_bounds_source[ind_red];
+                        upper2 = pixs_galind_bounds_source[ind_red+1];
+                        for (int ind_inpix=lower2; ind_inpix<upper2; ind_inpix++){
+                            ind_gal2 = pix_gals_source[ind_inpix];
+                            pos1_gal2 = pos1_source[ind_gal2];
+                            pos2_gal2 = pos2_source[ind_gal2];
+                            rel1 = pos1_gal2 - pos1_gal1;
+                            rel2 = pos2_gal2 - pos2_gal1;
+                            dist = rel1*rel1 + rel2*rel2;
+                            if(dist < rmin_sq || dist >= rmax_sq) continue;
+                            dist = sqrt(dist);
+                            rbin = (int) floor(log(dist/rmin)/drbin);
+                            if (rbin<0 || rbin>=nbinsr){
+                                printf("%.2f %d",dist,rbin);
+                                continue;
+                            }
+                            w_gal2 = w_source[ind_gal2];
+                            zbin_gal2 = zbin_source[ind_gal2];
+                            e1_gal2 = e1_source[ind_gal2];
+                            e2_gal2 = e2_source[ind_gal2];
+                            wshape_gal2 = w_gal2*(e1_gal2+I*e2_gal2);
+                            
+                            z2rshift = zbin_gal2*nbinsr + rbin;
+                            ind_counts = threadshift_counts + z1shift + z2rshift;
+                            
+                            
+                            phirot = (rel1+I*rel2)/dist;
+                            thisncounts[z2rshift] += 1;
+                            tmpwcounts[ind_counts] += w_gal1*w_gal2*dist; 
+                            tmpwnorms[ind_counts] += w_gal1*w_gal2; 
+                            thisG2ns[z2rshift] += w_gal1*wshape_gal2*wshape_gal2*phirot*phirot*phirot*phirot;
+                            thisG2ns[nbinszr_Gn+z2rshift] += w_gal1*wshape_gal2*conj(wshape_gal2);
+                            thisW2ns[z2rshift] += w_gal1*w_gal2*w_gal2;
+                            
+                            // n=0
+                            ind_Wnp = nmax*nbinszr_Wn + z2rshift;
+                            ind_Wnm = ind_Wnp;
+                            ind_Gnp = (nmax+2)*nbinszr_Gn+z2rshift;
+                            ind_Gnm = ind_Gnp;
+                            nphirot = 1;
+                            thisGns[ind_Gnp] += wshape_gal2;
+                            thisWns[ind_Wnp] += w_gal2;
+                            // n \in {-nmax, ..., -1, 1, ...,  nmax}
+                            for (int nextn=1;nextn<=nmax;nextn++){
+                                nphirot *= phirot; 
+                                ind_Wnp += nbinszr_Wn;
+                                ind_Wnm -= nbinszr_Wn;
+                                ind_Gnp += nbinszr_Gn;
+                                ind_Gnm -= nbinszr_Gn;
+                                thisGns[ind_Gnp] += wshape_gal2*nphirot;
+                                thisGns[ind_Gnm] += wshape_gal2*conj(nphirot);
+                                thisWns[ind_Wnp] += w_gal2*nphirot;
+                                thisWns[ind_Wnm] += w_gal2*conj(nphirot);
+                            }
+                            
+                            // n \in {-nmax-2, -nmax-1, nmax+1, nmax+2}
+                            nphirot *= phirot; 
+                            ind_Gnp += nbinszr_Gn;
+                            ind_Gnm -= nbinszr_Gn;
+                            thisGns[ind_Gnp] += wshape_gal2*nphirot;
+                            thisGns[ind_Gnm] += wshape_gal2*conj(nphirot);
+                            nphirot *= phirot; 
+                            ind_Gnp += nbinszr_Gn;
+                            ind_Gnm -= nbinszr_Gn;
+                            thisGns[ind_Gnp] += wshape_gal2*nphirot;
+                            thisGns[ind_Gnm] += wshape_gal2*conj(nphirot);
+                        }
+                    }
+                }
+                
+                // Update the Upsilon_n & N_n for this galaxy
+                // shape (nthreads, nmax+1, nbinsz_lens, nbinsz_source, nbinsz_source, nbinsr, nbinsr)
+                // First check for zero count bins
+                // Note: Expected number of tracers in tomobin: <N> ~ 2*pi*nbar*drbin*<rbin>
+                //   --> If we put lenses (with nbar<~1/arcmin^2) in tomo bins, most 3pcf bins will be empty...
+                int nallowedcounts = 0;
+                for (int zbin1=0; zbin1<nbinsz_source; zbin1++){
+                    for (int elb1=0; elb1<nbinsr; elb1++){
+                        z2rshift = zbin1*nbinsr + elb1;
+                        if (thisncounts[z2rshift] != 0){
+                            allowedrinds[nallowedcounts] = elb1;
+                            allowedzinds[nallowedcounts] = zbin1;
+                            nallowedcounts += 1;
+                        }
+                    }
+                }
+                // Now allocate only nonzero bins
+                // Upsilon_+(thet1, thet2) ~ w * G_{+n-2}(thet1) * G_{-n-2}(thet2) + delta^K_{thet1,thet2} * (w * (we)^2*exp(4*phi))
+                // Upsilon_-(thet1, thet2) ~ w * G_{+n-2}(thet1) * conj(G_{+n-2})(thet2) + delta^K_{thet1,thet2} * (w * |we|^2)
+                // Norm(thet1, thet2)    ~   w  * W_{n}(thet1)   * W_{-n}(thet2)   - delta^K_{thet1,thet2} * (w  * w*w)
+                // Note that here we allocate also the negative multipoles as Upsilon_- does not have a symmetry connecting the 
+                // negative multipoles to the positive one (for this we would need also a <n gamma^* gamma> correlator, but this
+                // does not carry any additional information as compared to <n gamma gamma^*>...). 
+                
+                for (int thisn=-nmax; thisn<=nmax; thisn++){
+                    int thisnshift_ups = threadshift_upsilon + (thisn+nmax)*upsilon_nshift;
+                    int thisnshift_norm = threadshift_norm + (thisn+nmax)*norm_nshift;
+                    int _wind, _upsind1, _upsind2, zrshift, zcombi, upsilon_indshift, norm_indshift, elb1, zbin2, elb2, zbin3;
+                    double complex nextUps1, nextUps2, nextN;
+                    for (int zrcombis1=0; zrcombis1<nallowedcounts; zrcombis1++){
+                        elb1 = allowedrinds[zrcombis1];
+                        zbin2 = allowedzinds[zrcombis1];
+                        zrshift = zbin2*nbinsr + elb1;
+                        // Double counting correction
+                        if (dccorr==1){
+                            zcombi = zbin_gal1*nbinsz_source*nbinsz_source + zbin2*nbinsz_source + zbin2;
+                            upsilon_indshift = thisnshift_ups + zcombi*upsilon_zshift + elb1*nbinsr+elb1;
+                            norm_indshift = thisnshift_norm + zcombi*norm_zshift + elb1*nbinsr+elb1;
+                            tmpUpsilon[upsilon_indshift] -= thisG2ns[zrshift];
+                            tmpUpsilon[upsilon_indshift+upsilon_compshift] -= thisG2ns[nbinszr_Gn+zrshift];
+                            tmpNorm[norm_indshift] -= thisW2ns[zrshift];
+                        }
+                        _wind = (nmax+thisn)*nbinszr_Wn+zrshift;
+                        _upsind1 = (nmax+4+thisn)*nbinszr_Gn+zrshift;
+                        _upsind2 = (nmax+thisn+4)*nbinszr_Gn+zrshift;
+                        nextUps1 = w_gal1*thisGns[_upsind1];
+                        nextUps2 = w_gal1*thisGns[_upsind2];
+                        nextN = w_gal1*thisWns[_wind];
+                        for (int zrcombis2=0; zrcombis2<nallowedcounts; zrcombis2++){
+                            elb2 = allowedrinds[zrcombis2];
+                            zbin3 = allowedzinds[zrcombis2];
+                            zrshift = zbin3*nbinsr + elb2;
+                            _wind = (nmax-thisn)*nbinszr_Wn+zrshift;
+                            _upsind1 = (nmax-thisn+4)*nbinszr_Gn+zrshift;
+                            _upsind2 = (nmax+thisn+4)*nbinszr_Gn+zrshift;
+                            zcombi = zbin_gal1*nbinsz_source*nbinsz_source + zbin2*nbinsz_source + zbin3;
+                            upsilon_indshift = thisnshift_ups + elb1*nbinsr + zcombi*upsilon_zshift + elb2;
+                            norm_indshift = thisnshift_norm + elb1*nbinsr + zcombi*upsilon_zshift + elb2;
+                            tmpUpsilon[upsilon_indshift] += nextUps1*thisGns[_upsind1];
+                            tmpUpsilon[upsilon_indshift+upsilon_compshift] += nextUps2*conj(thisGns[_upsind2]);
+                            tmpNorm[norm_indshift] += nextN*thisWns[_wind];
+                        }
+                    }
+                }
+                
+                free(thisWns);
+                free(thisGns);
+                free(thisG2ns);
+                free(thisW2ns);
+                free(thisncounts);
+                free(allowedrinds);
+                free(allowedzinds);
+            }
+        }
+    }
+    
+    // Accumulate the Upsilon_n / N_n
+    #pragma omp parallel for num_threads(nthreads)
+    for (int thisn=0; thisn<2*nmax+1; thisn++){
+        int iUps;
+        for (int thisthread=0; thisthread<nthreads; thisthread++){
+            int thisthreadshift_ups = thisthread*_upsilonthreadshift;
+            int thisthreadshift_norm = thisthread*_normthreadshift;
+            for (int zcombi=0; zcombi<_nzcombis; zcombi++){
+                for (int elb1=0; elb1<nbinsr; elb1++){
+                    for (int elb2=0; elb2<nbinsr; elb2++){
+                        iUps = thisn*_upsilonnshift + zcombi*_upsilonzshift + elb1*nbinsr + elb2;
+                        Upsilon_n[iUps] += tmpUpsilon[thisthreadshift_ups+iUps];
+                        Upsilon_n[iUps+_upsiloncompshift] += tmpUpsilon[thisthreadshift_ups+_upsiloncompshift+iUps];
+                        Norm_n[iUps] += tmpNorm[thisthreadshift_norm+iUps];
+                    }
+                }
+            }
+        }
+    }
+    
+    // Accumulate the bin distances and weights
+    for (int thisthread=0; thisthread<nthreads; thisthread++){
+        int tmpind;
+        int thisthreadshift = thisthread*nbinsz_source*nbinsz_lens*nbinsr; 
+        for (int elbinz=0; elbinz<nbinsz_source*nbinsz_lens; elbinz++){
+            for (int elbinr=0; elbinr<nbinsr; elbinr++){
+                tmpind = elbinz*nbinsr + elbinr;
+                totcounts[tmpind] += tmpwcounts[thisthreadshift+tmpind];
+                totnorms[tmpind] += tmpwnorms[thisthreadshift+tmpind];
+            }
+        }
+    }
+    
+    // Get bin centers
+    for (int elbinz=0; elbinz<nbinsz_source*nbinsz_lens; elbinz++){
+        for (int elbinr=0; elbinr<nbinsr; elbinr++){
+            int tmpind = elbinz*nbinsr + elbinr;
+            if (totnorms[tmpind] != 0){
+                bin_centers[tmpind] = totcounts[tmpind]/totnorms[tmpind];
+            }
+        }
+    } 
     free(tmpUpsilon);
     free(tmpNorm);
     free(tmpwcounts);

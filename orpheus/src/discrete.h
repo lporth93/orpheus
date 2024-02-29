@@ -68,6 +68,15 @@ void alloc_Gammans_doubletree_GNN(
     double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n,
     int nthreads, double *bin_centers, double complex *Upsilon_n, double complex *Norm_n);
 
+void alloc_Gammans_discrete_NGG(
+    double *w_source, double *pos1_source, double *pos2_source, double *e1_source, double *e2_source, int *zbin_source, int nbinsz_source, int ngal_source,
+    int *isinner_lens, double *w_lens, double *pos1_lens, double *pos2_lens, int *zbin_lens, int nbinsz_lens, int ngal_lens, 
+    int nmax, double rmin, double rmax, int nbinsr, int dccorr,
+    int *index_matcher_source, int *pixs_galind_bounds_source, int *pix_gals_source, 
+    int *index_matcher_lens, int *pixs_galind_bounds_lens, int *pix_gals_lens, int nregions, 
+    double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n,
+    int nthreads, double *bin_centers, double complex *Upsilon_n, double complex *Norm_n);
+
 void alloc_triplets_tree_xipxipcov(
     int *isinner, double *weight, double *pos1, double *pos2, int *zbins, int nbinsz, int ngal, 
     int nresos, double *reso_redges, int *ngal_resos, 

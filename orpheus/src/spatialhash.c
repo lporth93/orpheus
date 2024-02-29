@@ -75,7 +75,6 @@ void build_spatialhash(double *pos_1, double *pos_2, int ngal,
     // pixs_galind_bounds = [0, ngals_in_pix_a, ngals_in_pix_a + ngals_in_pix_b, ..., ngal_tot, g.a.r.b.a.g.e]
     //     --> length ngal+1
     int nrelpix = 0;
-    int cumsum = 0;
     result[start_bounds+0] = 0;
     for (ind_pix=0; ind_pix<npix; ind_pix++){
         if (result[start_ngalinpix+ind_pix] == 0){result[start_matcher+ind_pix] = FLAG_NOGAL;}
