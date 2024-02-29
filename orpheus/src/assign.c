@@ -22,7 +22,7 @@ void assign_fields(
 	//#pragma omp parallel for num_threads(nthreads)
 	for (int ind_gal=0; ind_gal<ngal; ind_gal++){
 		double w1, w12, wgal, zbin;
-		double _d1, _d2, i1, i2, _i1, _i2;
+		double _d1, _d2, i1, i2, _i1;
         int elfield, zshift, index;
         
         i1 = (int) floor((pos1[ind_gal]-min1)/dpix);
@@ -77,7 +77,7 @@ void assign_shapes2d(
 	#pragma omp parallel for num_threads(nthreads)
 	for (int ind_gal=0; ind_gal<ngal; ind_gal++){
 		double w1, w12, wgal, e1gal, e2gal;
-		double _d1, _d2, i1, i2, _i1, _i2;
+		double _d1, _d2, i1, i2, _i1;
         double toadd1, toadd2, toadd3;
         int index;
         
@@ -125,12 +125,11 @@ void gen_weightgrid2d(
     double min1, double min2, double dpix, int n1, int n2,
     int nthreads, int *pixinds, double *pixweights){
     
-    int npix = n1*n2;
     int nwspergal_side = (2*method+1);
     int nwspergal = nwspergal_side*nwspergal_side;
 	for (int ind_gal=0; ind_gal<ngal; ind_gal++){
 		double w1, w12;
-		double _d1, _d2, i1, i2, _i1, _i2;
+		double _d1, _d2, i1, i2, _i1;
         int indside1, indside2;
         int index;
         int gshift = ind_gal*nwspergal;
