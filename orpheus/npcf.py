@@ -1000,7 +1000,7 @@ class GNNCorrelation(BinnedNPCF):
                     Upsilon_n,
                     Norm_n, )
             func = self.clib.alloc_Gammans_discrete_GNN
-        if self.method == "DoubleTree":
+        elif self.method == "DoubleTree":
             cutfirst = np.int32(self.tree_resos[0]==0.)
             jointextent = list(cat_source._jointextent([cat_lens], extend=self.tree_resos[-1]))
             # Build multihashes for sources and lenses
@@ -1058,6 +1058,8 @@ class GNNCorrelation(BinnedNPCF):
                     Upsilon_n,
                     Norm_n, )
             func = self.clib.alloc_Gammans_doubletree_GNN
+        else:
+            raise ValueError(f"Method {self.method} not implemented for GNNCorrelation")
         print("Doing %s"%self.method)
         if False:
             for elarg, arg in enumerate(args):
