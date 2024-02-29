@@ -2586,6 +2586,9 @@ void alloc_Gammans_discrete_GNN(
                 // Now allocate only nonzero bins
                 // Upsilon(thet1, thet2) ~ - we * W_{n+1}(thet1) * conj(W_{n-1})(thet2) + delta^K_{thet1,thet2} * (we * w*w*exp(-2phi))
                 // Norm(thet1, thet2)    ~   w  * W_{n}(thet1)   * conj(W_{n})(thet2)   - delta^K_{thet1,thet2} * (w  * w*w)
+                // LL: I think this should be
+                // Upsilon(thet1, thet2) ~ - we * W_{n-1}(thet1) * conj(W_{n+1})(thet2) + delta^K_{thet1,thet2} * (we * w*w*exp(-2phi))
+                double complex W_ups1, W_ups2, W_norm1, W_norm2;
                 for (int thisn=0; thisn<nmax+1; thisn++){
                     int thisnshift = elthread*upsilon_threadshift + thisn*upsilon_nshift;
                     int _wind, _gammashift, zrshift, _zcombi, zcombi, gammashift, elb1, zbin2, elb2, zbin3;
@@ -2602,20 +2605,40 @@ void alloc_Gammans_discrete_GNN(
                             tmpNorm[gammashift] -= thisW2ns[zrshift];
                         }
                         _zcombi = zbin_gal1*nbinsz_lens*nbinsz_lens + zbin2*nbinsz_lens;
+
+
+// Lucas_
+                        // _wind = (thisn+1)*nbinszr_Gn+zrshift;
+                        // _gammashift = thisnshift + elb1*nbinsr;
+                        // nextUps = -wshape_gal1*thisWns[_wind+nbinszr_Gn];
+                        // nextN = w_gal1*thisWns[_wind];
+                        // _wind -= nbinszr_Gn;
+                        // for (int zrcombis2=0; zrcombis2<nallowedcounts; zrcombis2++){
+                        //     elb2 = allowedrinds[zrcombis2];
+                        //     zbin3 = allowedzinds[zrcombis2];
+                        //     _wind = thisn*nbinszr_Gn + zbin3*nbinsr + elb2;
+                        //     zcombi = _zcombi + zbin3;
+                        //     gammashift = _gammashift + zcombi*upsilon_zshift + elb2;
+                        //     tmpUpsilon[gammashift] += nextUps*conj(thisWns[_wind]);
+                        //     tmpNorm[gammashift] += nextN*conj(thisWns[_wind+nbinszr_Gn]);
+                        // }
+
+
                         _wind = (thisn+1)*nbinszr_Gn+zrshift;
                         _gammashift = thisnshift + elb1*nbinsr;
-                        nextUps = -wshape_gal1*thisWns[_wind+nbinszr_Gn];
+                        nextUps = -wshape_gal1*thisWns[_wind-nbinszr_Gn];
                         nextN = w_gal1*thisWns[_wind];
-                        _wind -= nbinszr_Gn;
+                        // _wind -= nbinszr_Gn;
                         for (int zrcombis2=0; zrcombis2<nallowedcounts; zrcombis2++){
                             elb2 = allowedrinds[zrcombis2];
                             zbin3 = allowedzinds[zrcombis2];
-                            _wind = thisn*nbinszr_Gn + zbin3*nbinsr + elb2;
+                            _wind = (thisn+1)*nbinszr_Gn + zbin3*nbinsr + elb2;
                             zcombi = _zcombi + zbin3;
                             gammashift = _gammashift + zcombi*upsilon_zshift + elb2;
-                            tmpUpsilon[gammashift] += nextUps*conj(thisWns[_wind]);
-                            tmpNorm[gammashift] += nextN*conj(thisWns[_wind+nbinszr_Gn]);
+                            tmpUpsilon[gammashift] += nextUps*conj(thisWns[_wind+nbinszr_Gn]);
+                            tmpNorm[gammashift] += nextN*conj(thisWns[_wind]);
                         }
+
                     }
                 }
                 free(thisWns);
