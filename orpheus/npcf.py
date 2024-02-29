@@ -1070,7 +1070,7 @@ class GNNCorrelation(BinnedNPCF):
                 print(toprint)
                 print(arg)
         
-        func(*args)
+        func(*args) # TO DO: Timings would be nice. Or a progress bar.
         
         self.bin_centers = bin_centers.reshape(szr)
         self.bin_centers_mean = np.mean(self.bin_centers, axis=(0,1))
