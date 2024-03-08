@@ -6,6 +6,8 @@ import sys
 
 __version__ = "0.0.1"
 
+# export LD_LIBRARY_PATH=/usr/lib/gcc/x86_64-linux-gnu/12/
+# Setting environment variables and flags for OpenMP and GCC
 if (sys.platform[:6] == "darwin"
         and ("clang" in get_config_var("CC")
                 or "clang" in os.environ.get("CC", ""))):
@@ -14,20 +16,17 @@ if (sys.platform[:6] == "darwin"
 else:
     # Force this for now as anacoda default compiler incompatible with newer gcc versions
     # See https://github.com/ContinuumIO/anaconda-issues/issues/11152
-    os.environ["CC"] = "/usr/bin/gcc" 
-    compiler_args = ["-shared"]
-    linker_args = ["-shared"]
+    #os.environ["CC"] = "/usr/bin/gcc-12" 
+    compiler_args = ["-shared", "-fopenmp", "-fPIC", "-Wall", "-lm", "-O3", "-ffast-math", "-std=c99"]
+    linker_args = ["-fopenmp", "-lm"]
 
-compiler_args += ["-fopenmp", "-fPIC", "-Wall", "-lm", "-O3", "-ffast-math", "-std=c99", "-lgomp" "-lrt"]
-linker_args +=   ["-fopenmp", "-fPIC", "-Wall", "-lm", "-O3", "-ffast-math", "-std=c99", "-lgomp" "-lrt"]
-    
 ext_modules = [
-Extension(
-    "orpheus_clib",
-    sources=["orpheus/src/assign.c", "orpheus/src/spatialhash.c", "orpheus/src/discrete.c"],#, "orpheus/src/discrete.c"],#, "orpheus/src/spatialhash.c"],
-    include_dirs=["orpheus/src/assign.h", "orpheus/src/spatialhash.h", "orpheus/src/discrete.h"],#, "orpheus/src/spatialhash.h"],
-    extra_compile_args = compiler_args,
-    extra_linker_args = linker_args,
+    Extension(
+        "orpheus_clib",
+        sources=["orpheus/src/assign.c", "orpheus/src/spatialhash.c", "orpheus/src/discrete.c"],
+        include_dirs=["orpheus/src"],
+        extra_compile_args=compiler_args,
+        extra_link_args=linker_args,
     ),
 ]
 

@@ -300,9 +300,9 @@ class Catalog:
         yhi = self.max2
         for other in others:
             xlo = min(xlo, other.min1)
-            xhi = min(xhi, other.max1)
+            xhi = max(xhi, other.max1)
             ylo = min(ylo, other.min2)
-            yhi = min(yhi, other.max2)
+            yhi = max(yhi, other.max2)
         
         return (xlo-extend, xhi+extend, ylo-extend, yhi+extend)
             
@@ -435,7 +435,7 @@ class Catalog:
 
 
     # Maps catalog to grid
-    def togrid(self, fields, dpix, normed=False, 
+    def togrid(self, fields, dpix, normed=False, weighted=True, 
                extent=[None,None,None,None], method="CIC", forcedivide=1, 
                asgrid=None, nthreads=1, ret_inst=False):
         """ 
@@ -467,15 +467,18 @@ class Catalog:
         # Prepare arguments
         zbinarr = self.zbins.astype(np.int32)
         nbinsz = len(np.unique(zbinarr))
-        nfields = len(fields)-1
-        weightarr = fields[-1].astype(np.float64)
+        nfields = len(fields)
+        if not weighted:
+            weightarr = np.ones(self.ngal, dtype=np.float64)
+        else:
+            weightarr = self.weight.astype(np.float64)
         fieldarr = np.zeros(nfields*self.ngal, dtype=np.float64)
         for _ in range(nfields):
             fieldarr[_*self.ngal:(1+_)*self.ngal] = fields[_]
             
         # Call wrapper and reshape output to (zbins, nfields, size_field)
-        proj_shape = (nbinsz, len(fields), n2, n1)
-        projectedfields = np.zeros((nbinsz*len(fields)*n2*n1), dtype=np.float64)
+        proj_shape = (nbinsz, (nfields+1), n2, n1)
+        projectedfields = np.zeros((nbinsz*(nfields+1)*n2*n1), dtype=np.float64)
         self.clib.assign_fields(self.pos1.astype(np.float64), 
                                           self.pos2.astype(np.float64),
                                           zbinarr, weightarr, fieldarr,

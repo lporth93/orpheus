@@ -5,7 +5,8 @@ from copy import deepcopy
 from functools import reduce
 from itertools import accumulate
 import glob
-from numba import jit
+from numba import jit, prange
+from numba import config as nb_config
 from numba import complex128 as nb_complex128
 import numpy as np 
 from numpy.ctypeslib import ndpointer
@@ -416,7 +417,7 @@ class GGGCorrelation(BinnedNPCF):
                     threepcfsnorm_n)
             func = self.clib.alloc_Gammans_discrete_ggg
         elif self.method in ["Tree", "BaseTree", "DoubleTree"]:
-            print("Doing multihash")
+            #print("Doing multihash")
             cutfirst = np.int32(self.tree_resos[0]==0.)
             mhash = cat.multihash(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1], 
                                   shuffle=self.shuffle_pix, w2field=True, normed=True)
@@ -438,7 +439,7 @@ class GGGCorrelation(BinnedNPCF):
             args_resos = (weight_resos, pos1_resos, pos2_resos, e1_resos, e2_resos, zbin_resos, weightsq_resos,
                           index_matcher, pixs_galind_bounds, pix_gals, )
             args_output = (bin_centers, threepcfs_n, threepcfsnorm_n, )
-            print("Doing %s"%self.method)
+            #print("Doing %s"%self.method)
             if self.method=="Tree":
                 args = (*args_basecat,
                         np.int32(self.tree_nresos),
@@ -659,6 +660,9 @@ class GGGCorrelation(BinnedNPCF):
         for elr1, R1 in enumerate(radii):
             for elr2, R2 in enumerate(radii[:_rcut]):
                 for elr3, R3 in enumerate(radii[:_rcut]):
+                    if not do_multiscale:
+                        R2 = R1
+                        R3 = R1
                     if filtercache is not None:
                         T0, T3_123, T3_231, T3_312 = filtercache[tmprcombi][0], filtercache[tmprcombi][1], filtercache[tmprcombi][2], filtercache[tmprcombi][3]
                     else:
@@ -748,7 +752,7 @@ class GGGCorrelation(BinnedNPCF):
 
         return T0, T3_123, T3_231, T3_312
     
-    def __map3_filtergrid_singleR(self, R1, R2, R3):
+    def __map3_filtergrid_multiR(self, R1, R2, R3):
         return self.__map3_filtergrid_multiR(self, R1, R2, R3, self.bin_edges, self.bin_centers_mean, self.phi, include_measure=True)
     
     @staticmethod
@@ -989,7 +993,7 @@ class GNNCorrelation(BinnedNPCF):
                     Upsilon_n,
                     Norm_n, )
             func = self.clib.alloc_Gammans_doubletree_GNN
-        print("Doing %s"%self.method)
+        #print("Doing %s"%self.method)
         if False:
             for elarg, arg in enumerate(args):
                 toprint = (elarg, type(arg),)
@@ -1099,11 +1103,11 @@ class GNNCorrelation(BinnedNPCF):
             sel_zero = np.isnan(N0)
             _a = self.npcf
             _b = N0.real[:, :, np.newaxis]
-            self.npcf = np.divide(_a, _b, out=np.zeros_like(_a), where=_b>0)
+            self.npcf = np.divide(_a, _b, out=np.zeros_like(_a), where=np.abs(_b)>0)
         else:
             _a = self.npcf
             _b = self.npcf_norm
-            self.npcf = np.divide(_a, _b, out=np.zeros_like(_a), where=_b>0)
+            self.npcf = np.divide(_a, _b, out=np.zeros_like(_a), where=np.abs(_b)>0)
             #self.npcf = self.npcf/self.npcf_norm[0][None, ...].astype(complex)
         self.projection = "X"
             
@@ -1117,7 +1121,9 @@ class GNNCorrelation(BinnedNPCF):
         """
         Compute third-order aperture statistics
         """
-            
+        nb_config.NUMBA_DEFAULT_NUM_THREADS = self.nthreads
+        nb_config.NUMBA_NUM_THREADS = self.nthreads
+        
         if self.npcf is None and self.npcf_multipoles is not None:
             self.multipoles2npcf()
             
@@ -1133,6 +1139,9 @@ class GNNCorrelation(BinnedNPCF):
         for elr1, R1 in enumerate(radii):
             for elr2, R2 in enumerate(radii[:_rcut]):
                 for elr3, R3 in enumerate(radii[:_rcut]):
+                    if not do_multiscale:
+                        R2 = R1
+                        R3 = R1
                     if filtercache is not None:
                         A_NNM = filtercache[tmprcombi]
                     else:
@@ -1145,7 +1154,7 @@ class GNNCorrelation(BinnedNPCF):
         return self.__NNM_filtergrid(R1, R2, R3, self.bin_edges, self.bin_centers_mean, self.phi)
         
     @staticmethod
-    @jit(nopython=True)
+    @jit(nopython=True, parallel=True)
     def __NNM_filtergrid(R1, R2, R3, edges, centers, phis):
         nbinsr = len(centers)
         nbinsphi = len(phis)
@@ -1155,27 +1164,28 @@ class GNNCorrelation(BinnedNPCF):
         Theta4 = 1./3. * (R1**2*R2**2 + R1**2*R3**2 + R2**2*R3**2) 
         a2 = 2./3. * R1**2*R2**2*R3**2 / Theta4
         ANNM = np.zeros((nbinsr,nbinsr,nbinsphi), dtype=nb_complex128)
-        for elb1 in range(nbinsr):
+        for elb in prange(nbinsr*nbinsr):
+            elb1 = int(elb//nbinsr)
+            elb2 = elb%nbinsr
             _y1 = centers[elb1]
             _dbin1 = edges[elb1+1] - edges[elb1]
-            for elb2 in range(nbinsr):
-                _y2 = centers[elb2]
-                _dbin2 = edges[elb2+1] - edges[elb2]
-                _dbinphi = phis[1] - phis[0]
-                b0 = _y1**2/(2*R1**2)+_y2**2/(2*R2**2) - a2/4.*(
-                    _y1**2/R1**4 + 2*_y1*_y2*_cphis/(R1**2*R2**2) + _y2**2/R2**4)
-                g1 = _y1 - a2/2. * (_y1/R1**2 + _y2*_ephisc/R2**2)
-                g2 = _y2 - a2/2. * (_y2/R2**2 + _y1*_ephis/R1**2)
-                g1c = g1.conj()
-                g2c = g2.conj()
-                F1 = 2*R1**2 - g1*g1c
-                F2 = 2*R2**2 - g2*g2c
-                pref = np.e**(-b0)/(72*np.pi*Theta4**2)
-                sum1 = (g1-_y1)*(g2-_y2) * (1/a2*F1*F2 - (F1+F2) + 2*a2 + g1c*g2*_ephisc + g1*g2c*_ephis) 
-                sum2 = ((g2-_y2) + (g1-_y1)*_ephis) * (g1*(F2-2*a2) + g2*(F1-2*a2)*_ephisc)
-                sum3 = 2*g1*g2*a2 
-                _measures = _y1*_dbin1 * _y2*_dbin2 * _dbinphi
-                ANNM[elb1,elb2] = _measures * pref * (sum1-sum2+sum3)
+            _y2 = centers[elb2]
+            _dbin2 = edges[elb2+1] - edges[elb2]
+            _dbinphi = phis[1] - phis[0]
+            b0 = _y1**2/(2*R1**2)+_y2**2/(2*R2**2) - a2/4.*(
+                _y1**2/R1**4 + 2*_y1*_y2*_cphis/(R1**2*R2**2) + _y2**2/R2**4)
+            g1 = _y1 - a2/2. * (_y1/R1**2 + _y2*_ephisc/R2**2)
+            g2 = _y2 - a2/2. * (_y2/R2**2 + _y1*_ephis/R1**2)
+            g1c = g1.conj()
+            g2c = g2.conj()
+            F1 = 2*R1**2 - g1*g1c
+            F2 = 2*R2**2 - g2*g2c
+            pref = np.e**(-b0)/(72*np.pi*Theta4**2)
+            sum1 = (g1-_y1)*(g2-_y2) * (1/a2*F1*F2 - (F1+F2) + 2*a2 + g1c*g2*_ephisc + g1*g2c*_ephis) 
+            sum2 = ((g2-_y2) + (g1-_y1)*_ephis) * (g1*(F2-2*a2) + g2*(F1-2*a2)*_ephisc)
+            sum3 = 2*g1*g2*a2 
+            _measures = _y1*_dbin1 * _y2*_dbin2 * _dbinphi
+            ANNM[elb1,elb2] = _measures * pref * (sum1-sum2+sum3)
 
         return ANNM
     
@@ -1305,7 +1315,7 @@ class NGGCorrelation(BinnedNPCF):
                     Upsilon_n,
                     Norm_n, )
             func = self.clib.alloc_Gammans_doubletree_GNN
-        print("Doing %s"%self.method)
+        #print("Doing %s"%self.method)
         if False:
             for elarg, arg in enumerate(args):
                 toprint = (elarg, type(arg),)
@@ -1347,7 +1357,7 @@ class NGGCorrelation(BinnedNPCF):
         _nvals, nzcombis, ntheta, _ = self.npcf_multipoles_norm.shape
         nvals = int((_nvals-1)/2)
         nmax = nvals-1
-        
+        threepcf_n_corr = np.zeros_like(self.npcf_multipoles)
         if ret_matrices:
             mats = np.zeros((nzcombis,ntheta,ntheta,nvals,nvals))
         for indz in range(nzcombis):
@@ -1362,13 +1372,13 @@ class NGGCorrelation(BinnedNPCF):
                         threepcf_n_corr[el_cf,:,indz,thet1,thet2] = np.matmul(
                             nextM_inv,self.npcf_multipoles[el_cf,:,indz,thet1,thet2])
                         
-        self.npcf_multipoles = threepcf_n_corr[:,nmax:]
+        self.npcf_multipoles = threepcf_n_corr
         self.is_edge_corrected = True
         
         if ret_matrices:
-            return threepcf_n_corr[:,nmax:], mats
+            return threepcf_n_corr, mats
     
-    def multipoles2npcf(self):
+    def multipoles2npcf(self, integrated=False):
         """
         Notes:
         * The Upsilon and norms are only computed for the n>0 multipoles. We recover n<0 multipoles by symmetry
@@ -1384,29 +1394,30 @@ class NGGCorrelation(BinnedNPCF):
             (self.nbinsz_lens,self.nbinsz_source,self.nbinsz_source)).transpose(0,2,1).flatten().astype(np.int32)
         
         # NGG components
-        conjmap = [0,1]
-        # Use * Upsilon_{+,n}(theta_1,theta_2) = Upsilon_{+,-n}(theta_2,theta_1)
-        #     * Upsilon_{-,n}(theta_1,theta_2) = conj(Upsilon_{-,-n}(theta_2,theta_1))
-        for el_cf in range(self.n_cfs):
-            for elphi, phi in enumerate(self.phi):
-                tmp = np.zeros((nzcombis, rbins, rbins),dtype=complex)
-                for n in range(2*self.nmax+1):
-                    _const = 1./(2*np.pi) * np.exp(1J*(n-self.nmax)*phi)
-                    tmp += _const * self.npcf_multipoles[el_cf,n].astype(complex)
-                self.npcf[el_cf,...,elphi] = tmp
-        # Normalization
         for elphi, phi in enumerate(self.phi):
-            tmp = np.zeros((nzcombis, rbins, rbins),dtype=complex)
+            tmp = np.zeros((self.n_cfs, nzcombis, rbins, rbins),dtype=complex)
+            tmpnorm = np.zeros((nzcombis, rbins, rbins),dtype=complex)
             for n in range(2*self.nmax+1):
-                _const = 1./(2*np.pi) * np.exp(1J*(n-self.nmax)*phi)
-                tmp += _const * self.npcf_multipoles_norm[n].astype(complex)
-            self.npcf_norm[...,elphi] = tmp.real
+                dphi = self.phi[1] - self.phi[0]
+                if integrated:
+                    if n==self.nmax:
+                        ifac = dphi
+                    else:
+                        ifac = 2./(n-self.nmax) * np.sin((n-self.nmax)*dphi/2.)
+                else:
+                    ifac = dphi
+                _const = 1./(2*np.pi) * np.exp(1J*(n-self.nmax)*phi) * ifac
+                tmpnorm += _const * self.npcf_multipoles_norm[n].astype(complex)
+                for el_cf in range(self.n_cfs):
+                    tmp[el_cf] += _const * self.npcf_multipoles[el_cf,n].astype(complex)
+            self.npcf[...,elphi] = tmp
+            self.npcf_norm[...,elphi] = tmpnorm.real
             
         if self.is_edge_corrected:
-            N0 = 1./(2*np.pi) * self.npcf_multipoles_norm[self.nmax].astype(complex)
+            N0 = dphi/(2*np.pi) * self.npcf_multipoles_norm[self.nmax].astype(complex)
             sel_zero = np.isnan(N0)
             _a = self.npcf
-            _b = N0.real[:, :, np.newaxis]
+            _b = N0.real[np.newaxis, :, :, :, np.newaxis]
             self.npcf = np.divide(_a, _b, out=np.zeros_like(_a), where=_b>0)
         else:
             _a = self.npcf
@@ -1424,7 +1435,10 @@ class NGGCorrelation(BinnedNPCF):
         """
         Compute third-order aperture statistics
         """
-            
+        
+        nb_config.NUMBA_DEFAULT_NUM_THREADS = self.nthreads
+        nb_config.NUMBA_NUM_THREADS = self.nthreads
+        
         if self.npcf is None and self.npcf_multipoles is not None:
             self.multipoles2npcf()
             
@@ -1440,6 +1454,9 @@ class NGGCorrelation(BinnedNPCF):
         for elr1, R1 in enumerate(radii):
             for elr2, R2 in enumerate(radii[:_rcut]):
                 for elr3, R3 in enumerate(radii[:_rcut]):
+                    if not do_multiscale:
+                        R2 = R1
+                        R3 = R1
                     if filtercache is not None:
                         A_NMM = filtercache[tmprcombi]
                     else:
@@ -1456,7 +1473,7 @@ class NGGCorrelation(BinnedNPCF):
         return self.__NMM_filtergrid(R1, R2, R3, self.bin_edges, self.bin_centers_mean, self.phi)
         
     @staticmethod
-    @jit(nopython=True)
+    @jit(nopython=True, parallel=True)
     def __NMM_filtergrid(R1, R2, R3, edges, centers, phis):
         nbinsr = len(centers)
         nbinsphi = len(phis)
@@ -1466,32 +1483,33 @@ class NGGCorrelation(BinnedNPCF):
         Theta4 = 1./3. * (R1**2*R2**2 + R1**2*R3**2 + R2**2*R3**2) 
         a2 = 2./3. * R1**2*R2**2*R3**2 / Theta4
         ANMM = np.zeros((2,nbinsr,nbinsr,nbinsphi), dtype=nb_complex128)
-        for elb1 in range(nbinsr):
+        for elb in prange(nbinsr*nbinsr):
+            elb1 = int(elb//nbinsr)
+            elb2 = elb%nbinsr
             _y1 = centers[elb1]
             _dbin1 = edges[elb1+1] - edges[elb1]
-            for elb2 in range(nbinsr):
-                _y2 = centers[elb2]
-                _dbin2 = edges[elb2+1] - edges[elb2]
-                _dbinphi = phis[1] - phis[0]
-                # TODO
-                csq = a2**2/4. * (_y1**2/R1**4 + _y2**2/R2**4 + 2*_y1*_y2*_cphis/(R1**2*R2**2))
-                b0 = _y1**2/(2*R1**2)+_y2**2/(2*R2**2) - csq/a2
-                
-                g1 = _y1 - a2/2. * (_y1/R1**2 + _y2*_ephisc/R2**2)
-                g2 = _y2 - a2/2. * (_y2/R2**2 + _y1*_ephis/R1**2)
-                g1c = g1.conj()
-                g2c = g2.conj()
-                pref = np.e**(-b0)/(72*np.pi*Theta4**2)
-                _h1 = 2*(g2c*_y1+g1*_y2-2*g1*g2c)*(g1*g2c+2*a2*_ephisc)
-                _h2 = 2*a2*(2*R3**2-csq-3*a2)*_ephisc*_ephisc
-                _h3 = 4*g1*g2c*(2*R3**2-csq-2*a2)*_ephisc
-                _h4 = (g1*g2c)**2/a2 * (2*R3**2-csq-a2)
-                sum_MMN = pref*g1*g2 * ((R3**2/R1**2+R3**2/R2**2-csq/a2)*g1*g2 + 2*(g2*_y1+g1*_y2-2*g1*g2))
-                sum_MMstarN = pref * (_h1 + _h2 + _h3 + _h4)
-                _measures = _y1*_dbin1 * _y2*_dbin2 * _dbinphi
-                
-                ANMM[0,elb1,elb2] = _measures * sum_MMN
-                ANMM[1,elb1,elb2] = _measures * sum_MMstarN
+            _y2 = centers[elb2]
+            _dbin2 = edges[elb2+1] - edges[elb2]
+            _dbinphi = phis[1] - phis[0]
+            
+            csq = a2**2/4. * (_y1**2/R1**4 + _y2**2/R2**4 + 2*_y1*_y2*_cphis/(R1**2*R2**2))
+            b0 = _y1**2/(2*R1**2)+_y2**2/(2*R2**2) - csq/a2
+
+            g1 = _y1 - a2/2. * (_y1/R1**2 + _y2*_ephisc/R2**2)
+            g2 = _y2 - a2/2. * (_y2/R2**2 + _y1*_ephis/R1**2)
+            g1c = g1.conj()
+            g2c = g2.conj()
+            pref = np.e**(-b0)/(72*np.pi*Theta4**2)
+            _h1 = 2*(g2c*_y1+g1*_y2-2*g1*g2c)*(g1*g2c+2*a2*_ephisc)
+            _h2 = 2*a2*(2*R3**2-csq-3*a2)*_ephisc*_ephisc
+            _h3 = 4*g1*g2c*(2*R3**2-csq-2*a2)*_ephisc
+            _h4 = (g1*g2c)**2/a2 * (2*R3**2-csq-a2)
+            sum_MMN = pref*g1*g2 * ((R3**2/R1**2+R3**2/R2**2-csq/a2)*g1*g2 + 2*(g2*_y1+g1*_y2-2*g1*g2))
+            sum_MMstarN = pref * (_h1 + _h2 + _h3 + _h4)
+            _measures = _y1*_dbin1 * _y2*_dbin2 * _dbinphi
+
+            ANMM[0,elb1,elb2] = _measures * sum_MMN
+            ANMM[1,elb1,elb2] = _measures * sum_MMstarN
                 
         return ANMM
     
@@ -1608,7 +1626,7 @@ class XipmMixedCovariance(BinnedNPCF):
                             np.float64(cat.pix2_start), np.float64(cat.pix2_d), int(cat.pix2_n), )
             args_output = (bin_centers, wwcounts, w2wcounts, w2wwtriplets, wwwtriplets, )
             if self.method=="Tree":
-                print("Doing Tree")
+                #print("Doing Tree")
                 args = (*args_basecat,
                         self.tree_nresos,
                         self.tree_redges,
@@ -1641,10 +1659,10 @@ class XipmMixedCovariance(BinnedNPCF):
                         np.int32(nthreads),
                         *args_output)
                 if self.method=="BaseTree":
-                    print("Doing BaseTree")
+                    #print("Doing BaseTree")
                     func = self.clib.alloc_triplets_basetree_xipxipcov 
                 if self.method=="DoubleTree":
-                    print("Doing DoubleTree")
+                    #print("Doing DoubleTree")
                     func = self.clib.alloc_triplets_doubletree_xipxipcov 
 
         #for elarg, arg in enumerate(args):
@@ -1659,7 +1677,7 @@ class XipmMixedCovariance(BinnedNPCF):
         self.npcf_multipoles_norm = wwwtriplets.reshape(sn)
         self.projection = None 
         
-    def multipoles2npcf(self):
+    def multipoles2npcf(self, integrated=False):
         _, nzcombis, rbins, rbins = np.shape(self.npcf_multipoles[0])
         self.npcf = np.zeros((nzcombis, rbins, rbins, len(self.phi)), dtype=complex)
         self.npcf_norm = np.zeros((nzcombis, rbins, rbins, len(self.phi)), dtype=complex)
@@ -1672,11 +1690,17 @@ class XipmMixedCovariance(BinnedNPCF):
             tmpnorm = np.zeros((nzcombis, rbins, rbins), dtype=complex)
             for eln,n in enumerate(range(self.nmax+1)):
                 _const = 1./(2*np.pi) * np.exp(1J*n*phi)
-                tmp += _const * self.npcf_multipoles[:,eln].astype(complex)
-                tmpnorm += _const * self.npcf_multipoles_norm[:,eln].astype(complex)
+                if integrated:
+                    fac0 = self.phi[1] - self.phi[0]
+                    facn = 2./n * np.sin(n*fac0/2.)
+                else:
+                    fac0 = 1
+                    facn = 1
+                tmp += _const * self.npcf_multipoles[:,eln].astype(complex) * fac0
+                tmpnorm += _const * self.npcf_multipoles_norm[:,eln].astype(complex) * fac0
                 if n>0:
-                    tmp += _const.conj() * self.npcf_multipoles[eln][ztiler].astype(complex).transpose(0,2,1)
-                    tmpnorm += _const.conj() * self.npcf_multipoles_norm[eln][ztiler].astype(complex).transpose(0,2,1)
+                    tmp += _const.conj() * facn * self.npcf_multipoles[eln][ztiler].astype(complex).transpose(0,2,1) 
+                    tmpnorm += _const.conj() * facn * self.npcf_multipoles_norm[eln][ztiler].astype(complex).transpose(0,2,1)
             self.npcf[...,elphi] = tmp
             self.npcf_norm[...,elphi] = tmpnorm
     
