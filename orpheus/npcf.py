@@ -12,13 +12,14 @@ import numpy as np
 from numpy.ctypeslib import ndpointer
 import operator
 from pathlib import Path
+import sys
 from .catalog import Catalog, ScalarTracerCatalog, SpinTracerCatalog, MultiTracerCatalog
 from .utils import get_site_packages_dir, search_file_in_site_package
 
 
 __all__ = ["BinnedNPCF", 
            "GGGCorrelation", "FFFCorrelation", "GNNCorrelation", "NGGCorrelation",
-           "GGGGCorrelation", "XipmMixedCovariance"]
+           "GGGGCorrelation_NoTomo", "GGGGCorrelation", "XipmMixedCovariance"]
 
 ################################################
 ## BASE CLASSES FOR NPCF AND THEIR MULTIPOLES ##
@@ -150,13 +151,18 @@ class BinnedNPCF:
         ## Link compiled libraries ##
         #############################
         # Method that works for LP
-        target_path = __import__('orpheus').__file__
-        self.library_path = str(Path(__import__('orpheus').__file__).parent.parent.absolute())
-        self.clib = ct.CDLL(glob.glob(self.library_path+"/orpheus_clib*.so")[0])
+        #target_path = __import__('orpheus').__file__
+        #self.library_path = str(Path(__import__('orpheus').__file__).parent.parent.absolute())
+        #self.clib = ct.CDLL(glob.glob(self.library_path+"/orpheus_clib*.so")[0])
+        
+        # In case the environment is weird, compile code manually and load it here...
+        self.clib = ct.CDLL("/vol/euclidraid4/data/lporth/HigherOrderLensing/Estimator/orpheus/orpheus/src/discrete.so")
+        
         # Method that works for RR (but not for LP with a local HPC install)
         #self.clib = ct.CDLL(search_file_in_site_package(get_site_packages_dir(),"orpheus_clib"))
         #self.library_path = str(Path(__import__('orpheus').__file__).parent.parent.absolute())
         #print(self.library_path)
+        print(self.clib)
         p_c128 = ndpointer(complex, flags="C_CONTIGUOUS")
         p_f64 = ndpointer(np.float64, flags="C_CONTIGUOUS")
         p_f32 = ndpointer(np.float32, flags="C_CONTIGUOUS")
@@ -255,6 +261,18 @@ class BinnedNPCF:
                 np.ctypeslib.ndpointer(dtype=np.complex128),
                 np.ctypeslib.ndpointer(dtype=np.complex128)] 
         
+            self.clib.alloc_Gammans_doubletree_NGG.restype = ct.c_void_p
+            self.clib.alloc_Gammans_doubletree_NGG.argtypes = [
+                ct.c_int32, ct.c_int32, p_f64, p_f64, p_f64, 
+                ct.c_int32, ct.c_int32, ct.c_int32, 
+                p_i32, p_f64, p_f64, p_f64, p_f64, p_f64, p_i32, p_i32, ct.c_int32,
+                p_i32, p_f64, p_f64, p_f64, p_i32, p_i32, ct.c_int32,
+                ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
+                p_i32, p_i32, p_i32, p_i32, p_i32, p_i32, p_i32, ct.c_int32, 
+                ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
+                np.ctypeslib.ndpointer(dtype=np.float64), 
+                np.ctypeslib.ndpointer(dtype=np.complex128),
+                np.ctypeslib.ndpointer(dtype=np.complex128)] 
         ## Misc third-order statistics ##
         if self.order==3:
             
@@ -300,6 +318,25 @@ class BinnedNPCF:
                 np.ctypeslib.ndpointer(dtype=np.complex128),
                 np.ctypeslib.ndpointer(dtype=np.complex128)] 
             
+        ## Fourth order shear-shear-shear-shear statistics ##
+        if self.order==4 and np.array_equal(self.spins, np.array([2, 2, 2, 2], dtype=np.int32)):
+            
+            # Discrete estimator of non-tomographic fourth-order shear correlation function
+            self.clib.alloc_notomoGammans_discrete_gggg.restype = ct.c_void_p
+            self.clib.alloc_notomoGammans_discrete_gggg.argtypes = [
+                p_i32, p_f64, p_f64, p_f64, p_f64, p_f64, ct.c_int32, 
+                ct.c_int32, ct.c_double, ct.c_double, p_f64, ct.c_int32, ct.c_int32, 
+                p_i32, p_i32, p_i32, ct.c_int32, 
+                ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, 
+                np.ctypeslib.ndpointer(dtype=np.float64), 
+                np.ctypeslib.ndpointer(dtype=np.complex128),
+                np.ctypeslib.ndpointer(dtype=np.complex128)] 
+            
+            self.clib.multipoles2npcf_gggg.restype = ct.c_void_p
+            self.clib.multipoles2npcf_gggg.argtypes = [
+                p_c128, p_c128, p_f64, ct.c_int32, 
+                ct.c_int32, ct.c_int32, ct.c_int32, p_f64, ct.c_int32, p_f64, ct.c_int32, 
+                ct.c_int32, p_c128, p_c128]
 
     ############################################################
     ## Functions that deal with different projections of NPCF ##
@@ -352,7 +389,65 @@ class BinnedNPCF:
             else:
                 thiscat = cats[els]
             assert(thiscat.spin == s)
+            
+            
+    """
+    # TODO: Put stuff from __init__ in here
+    def _update_tree(self, new_resos, new_edges):
         
+        new_resos = np.asarray(new_resos, dtype=np.float64)
+        new_edges = np.asarray(new_edges, dtype=np.float64)
+        nresos = int(len(new_edges))
+        assert(isinstance(new_resos, np.ndarray))
+        assert(isinstance(new_resos[0], np.float64))
+        
+        self.tree_resos = new_resos
+        self.tree_nresos = int(len(self.tree_resos))
+        self.tree_redges = tree_redges
+        
+        # Setup variable for tree estimator
+        if self.tree_redges != None:
+            assert(isinstance(self.tree_redges, np.ndarray))
+            self.tree_redges = self.tree_redges.astype(np.float64)
+            assert(len(self.tree_redges)==self.tree_resos+1)
+            self.tree_redges = np.sort(self.tree_redges)
+            assert(self.tree_redges[0]==self.min_sep)
+            assert(self.tree_redges[-1]==self.max_sep)
+        else:
+            self.tree_redges = np.zeros(len(self.tree_resos)+1)
+            self.tree_redges[-1] = self.max_sep
+            for elreso, reso in enumerate(self.tree_resos):
+                self.tree_redges[elreso] = (reso==0.)*self.min_sep + (reso!=0.)*self.rmin_pixsize*reso
+        _tmpreso = 0
+        self.tree_resosatr = np.zeros(self.nbinsr, dtype=np.int32)
+        for elbin, rbin in enumerate(self.bin_edges[:-1]):
+            if rbin > self.tree_redges[_tmpreso+1]:
+                _tmpreso += 1
+            self.tree_resosatr[elbin] = _tmpreso
+            
+        # Prepare leaf resolutions
+        if np.abs(self.resoshift_leafs)>=self.tree_nresos:
+            self.resoshift_leafs = np.int32((self.tree_nresos-1) * np.sign(self.resoshift_leafs))
+            print("Error: Parameter resoshift_leafs is out of bounds. Set to %i."%self.resoshift_leafs)
+        if self.minresoind_leaf is None:
+            self.minresoind_leaf=0
+        if self.maxresoind_leaf is None:
+            self.maxresoind_leaf=self.tree_nresos-1
+        if self.minresoind_leaf<0:
+            self.minresoind_leaf = 0
+            print("Error: Parameter minreso_leaf is out of bounds. Set to 0.")
+        if self.minresoind_leaf>=self.tree_nresos:
+            self.minresoind_leaf = self.tree_nresos-1
+            print("Error: Parameter minreso_leaf is out of bounds. Set to %i."%self.minresoint_leaf)
+        if self.maxresoind_leaf<0:
+            self.maxresoind_leaf = 0
+            print("Error: Parameter minreso_leaf is out of bounds. Set to 0.")
+        if self.maxresoind_leaf>=self.tree_nresos:
+            self.maxresoind_leaf = self.tree_nresos-1
+            print("Error: Parameter minreso_leaf is out of bounds. Set to %i."%self.maxresoint_leaf) 
+        if self.maxresoind_leaf<self.minresoind_leaf:
+            print("Error: Parameter maxreso_leaf is smaller than minreso_leaf. Set to %i."%self.minreso_leaf) 
+    """
 
 ##############################
 ## THIRD - ORDER STATISTICS ##
@@ -379,7 +474,7 @@ class GGGCorrelation(BinnedNPCF):
         self._initprojections(self)
         self.project["X"]["Centroid"] = self._x2centroid
         
-    def process(self, cat, dotomo=True, apply_edge_correction=False):
+    def process(self, cat, dotomo=True, apply_edge_correction=False, adjust_tree=False):
         self._checkcats(cat, self.spins)
         if not dotomo:
             self.nbinsz = 1
@@ -389,6 +484,9 @@ class GGGCorrelation(BinnedNPCF):
             self.nbinsz = cat.nbinsz
             zbins = cat.zbins
             self.nzcombis = self.nbinsz*self.nbinsz*self.nbinsz
+        if adjust_tree:
+            nbar = cat.ngal/(cat.len1*cat.len2)
+            
         sc = (4,self.nmax+1,self.nzcombis,self.nbinsr,self.nbinsr)
         sn = (self.nmax+1,self.nzcombis,self.nbinsr,self.nbinsr)
         szr = (self.nbinsz, self.nbinsr)
@@ -687,7 +785,7 @@ class GGGCorrelation(BinnedNPCF):
             
         return map3s
     
-    def __map3_filtergrid_singleR(self, R1, R2, R3):
+    def _map3_filtergrid_singleR(self, R1, R2, R3):
         return self.__map3_filtergrid_singleR(R1, R2, R3, self.bin_edges, self.bin_centers_mean, self.phi)
     
     @staticmethod
@@ -1242,7 +1340,7 @@ class NGGCorrelation(BinnedNPCF):
             jointextent = list(cat_source._jointextent([cat_lens], extend=self.tree_resos[-1]))
             cat_source.build_spatialhash(dpix=hash_dpix, extent=jointextent)
             cat_lens.build_spatialhash(dpix=hash_dpix, extent=jointextent)
-            nregions = np.int32(len(np.argwhere(cat_source.index_matcher>-1).flatten()))
+            nregions = np.int32(len(np.argwhere(cat_lens.index_matcher>-1).flatten()))
             args_hash = (cat_source.index_matcher, cat_source.pixs_galind_bounds, cat_source.pix_gals,
                          cat_lens.index_matcher, cat_lens.pixs_galind_bounds, cat_lens.pix_gals, nregions, )
             args_pixgrid = (np.float64(cat_lens.pix1_start), np.float64(cat_lens.pix1_d), np.int32(cat_lens.pix1_n), 
@@ -1314,9 +1412,9 @@ class NGGCorrelation(BinnedNPCF):
                     bin_centers,
                     Upsilon_n,
                     Norm_n, )
-            func = self.clib.alloc_Gammans_doubletree_GNN
+            func = self.clib.alloc_Gammans_doubletree_NGG
         #print("Doing %s"%self.method)
-        if False:
+        if True:
             for elarg, arg in enumerate(args):
                 toprint = (elarg, type(arg),)
                 if isinstance(arg, np.ndarray):
@@ -1525,6 +1623,324 @@ class FFFCorrelation(BinnedNPCF):
 ## FOURTH-ORDER STATISTICS ##
 #############################
 
+class GGGGCorrelation_NoTomo(BinnedNPCF):
+    
+    def __init__(self, min_sep, max_sep, verbose=False, **kwargs):
+        super().__init__(order=4, spins=np.array([2,2,2,2], dtype=np.int32),
+                         n_cfs=8, min_sep=min_sep, max_sep=max_sep, **kwargs)
+        self.verbose = verbose
+        self.projection = None
+        self.projections_avail = [None, "X", "Centroid"]
+        self.proj_dict = {"X":0, "Centroid":1}
+        self.nbinsz = None
+        self.nzcombis = None
+        
+        # (Add here any newly implemented projections)
+        self._initprojections(self)
+        self.project["X"]["Centroid"] = self._x2centroid
+    
+    def process(self, cat, apply_edge_correction=False, basis="Multipoles", projection="Centroid"):
+        assert(basis in ["Multipoles", "NPCF"])
+        assert(projection in self.projections_avail)
+        self._checkcats(cat, self.spins)
+        self.nbinsz = 1
+        self.nzcombis = 1
+        _nmax = self.nmaxs[0]
+        _nnvals = (2*_nmax+1)*(2*_nmax+1)
+        _nbinsr3 = self.nbinsr*self.nbinsr*self.nbinsr
+        sc = (8,2*_nmax+1,2*_nmax+1,self.nzcombis,self.nbinsr,self.nbinsr,self.nbinsr)
+        sn = (2*_nmax+1,2*_nmax+1,self.nzcombis,self.nbinsr,self.nbinsr,self.nbinsr)
+        szr = (self.nbinsz, self.nbinsr)
+        bin_centers = np.zeros(self.nbinsz*self.nbinsr).astype(np.float64)
+        Upsilon_n = np.zeros(self.n_cfs*_nnvals*self.nzcombis*_nbinsr3).astype(np.complex128)
+        N_n = np.zeros(_nnvals*self.nzcombis*_nbinsr3).astype(np.complex128)
+        args_basecat = (cat.isinner.astype(np.int32), cat.weight, cat.pos1, cat.pos2, cat.tracer_1, cat.tracer_2, 
+                        np.int32(cat.ngal), )
+        args_basesetup = (np.int32(_nmax), np.float64(self.min_sep), 
+                          np.float64(self.max_sep), np.array([-1.]).astype(np.float64), 
+                          np.int32(self.nbinsr), np.int32(self.multicountcorr), )
+        if self.method=="Discrete":
+            if not cat.hasspatialhash:
+                cat.build_spatialhash(dpix=max(1.,self.max_sep//10.))
+            nregions = np.int32(len(np.argwhere(cat.index_matcher>-1).flatten()))
+            args_hash = (cat.index_matcher, cat.pixs_galind_bounds, cat.pix_gals, nregions, 
+                         np.float64(cat.pix1_start), np.float64(cat.pix1_d), np.int32(cat.pix1_n), 
+                         np.float64(cat.pix2_start), np.float64(cat.pix2_d), np.int32(cat.pix2_n), )
+            args = (*args_basecat,
+                    *args_basesetup,
+                    *args_hash,
+                    np.int32(self.nthreads),
+                    bin_centers,
+                    Upsilon_n,
+                    N_n)
+            func = self.clib.alloc_notomoGammans_discrete_gggg 
+            
+        func(*args)
+        
+        self.bin_centers = bin_centers.reshape(szr)
+        self.bin_centers_mean = np.mean(self.bin_centers, axis=0)
+        self.npcf_multipoles = Upsilon_n.reshape(sc)
+        self.npcf_multipoles_norm = N_n.reshape(sn)
+        
+        if basis == "NPCF":
+            self.multipoles2npcf_c(projection=projection)
+    
+    def multipoles2npcf(self, integrated=False):
+        _nzero1 = self.nmaxs[0]
+        _nzero2 = self.nmaxs[1]
+        _nphis1 = len(self.phis[0])
+        _nphis2 = len(self.phis[1])
+        ncfs, nnvals, _, nzcombis, nbinsr, _, _ = np.shape(self.npcf_multipoles)
+        self.npcf = np.zeros((self.n_cfs, nzcombis, nbinsr, nbinsr, nbinsr, _nphis1, _nphis2), dtype=complex)
+        self.npcf_norm = np.zeros((nzcombis, nbinsr, nbinsr, nbinsr, _nphis1, _nphis2), dtype=float)
+        # Upsilon components
+        N0 = 1./(2*np.pi) * self.npcf_multipoles_norm[_nzero1,_nzero2].astype(complex)
+        for elm in range(self.n_cfs):
+            for elphi1, phi1 in enumerate(self.phis[0]):
+                for elphi2, phi2 in enumerate(self.phis[1]):
+                    if self.verbose:
+                        sys.stdout.write("\r Done %.2f per cent of Upsilon allocation"%(
+                            (elm*_nphis1*_nphis2+elphi1*_nphis2+elphi2)/(self.n_cfs*_nphis1*_nphis2)))
+                    tmp =  np.zeros((nzcombis, nbinsr, nbinsr, nbinsr), dtype=complex)
+                    for n1 in range(-_nzero1,_nzero1+1):
+                        for n2 in range(-_nzero2,_nzero2+1):
+                            _const = 1./(2*np.pi)**2 * np.exp(1J*n1*phi1) * np.exp(1J*n2*phi2)
+                            tmp += _const * self.npcf_multipoles[elm,_nzero1+n1,_nzero2+n2]
+                    self.npcf[elm,...,elphi1,elphi2] = tmp
+        # Normalization  
+        for elphi1, phi1 in enumerate(self.phis[0]):
+            for elphi2, phi2 in enumerate(self.phis[1]):
+                if self.verbose:
+                    sys.stdout.write("\r Done %.2f per cent of Norm allocation"%(
+                        (elphi1*_nphis2+elphi2)/(_nphis1*_nphis2)))
+                tmpnorm =  np.zeros((nzcombis, nbinsr, nbinsr, nbinsr), dtype=complex)
+                for n1 in range(-_nzero1,_nzero1+1):
+                    for n2 in range(-_nzero2,_nzero2+1):
+                        _const = 1./(2*np.pi)**2 * np.exp(1J*n1*phi1) * np.exp(1J*n2*phi2)
+                        tmpnorm += _const * self.npcf_multipoles_norm[_nzero1+n1,_nzero2+n2]
+                self.npcf_norm[...,elphi1,elphi2] = tmpnorm.real
+        # Finalize     
+        self.npcf = np.divide(self.npcf, self.npcf_norm, 
+                              out=np.zeros_like(self.npcf), where=np.abs(self.npcf_norm)>0)
+        self.projection = "X"  
+        
+    def multipoles2npcf_c(self, projection="Centroid"):
+        assert((projection in self.proj_dict.keys()) and (projection in self.projections_avail))
+        
+        _nzero1 = self.nmaxs[0]
+        _nzero2 = self.nmaxs[1]
+        _phis1 = self.phis[0].astype(np.float64)
+        _phis2 = self.phis[1].astype(np.float64)
+        _nphis1 = len(self.phis[0])
+        _nphis2 = len(self.phis[1])
+        ncfs, nnvals, _, nzcombis, nbinsr, _, _ = np.shape(self.npcf_multipoles)
+        
+        shape_npcf = (self.n_cfs, nzcombis, nbinsr, nbinsr, nbinsr, _nphis1, _nphis2)
+        shape_npcf_norm = (nzcombis, nbinsr, nbinsr, nbinsr, _nphis1, _nphis2)
+        self.npcf = np.zeros(self.n_cfs*nzcombis*nbinsr*nbinsr*nbinsr*_nphis1*_nphis2, dtype=np.complex128)
+        self.npcf_norm = np.zeros(nzcombis*nbinsr*nbinsr*nbinsr*_nphis1*_nphis2, dtype=np.complex128)
+        self.clib.multipoles2npcf_gggg(self.npcf_multipoles.flatten(), self.npcf_multipoles_norm.flatten(), 
+                                       self.bin_centers_mean.astype(np.float64), np.int32(self.proj_dict[projection]),
+                                       8, nbinsr, self.nmaxs[0].astype(np.int32), _phis1, _nphis1, _phis2, _nphis2,
+                                       self.nthreads, self.npcf, self.npcf_norm)
+        self.npcf = self.npcf.reshape(shape_npcf)
+        self.npcf_norm = self.npcf_norm.reshape(shape_npcf_norm)
+        self.projection = projection
+        
+    ## PROJECTIONS ##
+    def projectnpcf(self, projection):
+        super()._projectnpcf(self, projection)
+    
+    def _x2centroid(self):
+        gammas_cen = np.zeros_like(self.npcf)
+        pimod = lambda x: x%(2*np.pi) - 2*np.pi*(x%(2*np.pi)>=np.pi)
+        npcf_cen = np.zeros(self.npcf.shape, dtype=complex)
+        _centers = np.mean(self.bin_centers, axis=0)
+        for elb1, bin1 in enumerate(_centers):
+            for elb2, bin2 in enumerate(_centers):
+                for elb3, bin3 in enumerate(_centers):
+                    phiexp = np.exp(1J*self.phis[0])
+                    phiexp_c = np.exp(-1J*self.phis[0])
+                    phi12grid, phi13grid = np.meshgrid(phiexp, phiexp)
+                    phi12grid_c, phi13grid_c = np.meshgrid(phiexp_c, phiexp_c)
+                    prod1 = (bin1   +bin2*phi12grid_c   + bin3*phi13grid_c)  /(bin1   + bin2*phi12grid   + bin3*phi13grid)   #q1
+                    prod2 = (3*bin1 -bin2*phi12grid_c   - bin3*phi13grid_c)  /(3*bin1 - bin2*phi12grid   - bin3*phi13grid)   #q2
+                    prod3 = (bin1   -3*bin2*phi12grid_c + bin3*phi13grid_c)  /(bin1   - 3*bin2*phi12grid + bin3*phi13grid)   #q3
+                    prod4 = (bin1   +bin2*phi12grid_c   - 3*bin3*phi13grid_c)/(bin1   + bin2*phi12grid   - 3*bin3*phi13grid) #q4
+                    prod1_inv = prod1.conj()/np.abs(prod1)
+                    prod2_inv = prod2.conj()/np.abs(prod2)
+                    prod3_inv = prod3.conj()/np.abs(prod3)
+                    prod4_inv = prod4.conj()/np.abs(prod4)
+                    rot_nom = np.zeros((8,len(self.phis[0]), len(self.phis[1])))
+                    rot_nom[0] = pimod(np.angle(prod1    *prod2    *prod3    *prod4     * phi12grid**2   * phi13grid**3))
+                    rot_nom[1] = pimod(np.angle(prod1_inv*prod2    *prod3    *prod4     * phi12grid**2   * phi13grid**1))
+                    rot_nom[2] = pimod(np.angle(prod1    *prod2_inv*prod3    *prod4     * phi12grid**2   * phi13grid**3))
+                    rot_nom[3] = pimod(np.angle(prod1    *prod2    *prod3_inv*prod4     * phi12grid_c**2 * phi13grid**3))
+                    rot_nom[4] = pimod(np.angle(prod1    *prod2    *prod3    *prod4_inv * phi12grid**2   * phi13grid_c**1))
+                    rot_nom[5] = pimod(np.angle(prod1_inv*prod2_inv*prod3    *prod4     * phi12grid**2   * phi13grid**1))
+                    rot_nom[6] = pimod(np.angle(prod1_inv*prod2    *prod3_inv*prod4     * phi12grid_c**2 * phi13grid**1))
+                    rot_nom[7] = pimod(np.angle(prod1_inv*prod2    *prod3    *prod4_inv * phi12grid**2   * phi13grid_c**3))
+                    gammas_cen[:,:,elb1,elb2,elb3] = self.npcf[:,:,elb1,elb2,elb3]*np.exp(1j*rot_nom)[:,np.newaxis,:,:]
+        return gammas_cen
+    
+    
+    def computeMap4(self, radii, do_multiscale=False, tofile=False, filtercache=None):
+        """
+        Compute fourth-order aperture statistics
+        """
+        
+        if self.npcf is None and self.npcf_multipoles is not None:
+            self.multipoles2npcf()
+            
+        if self.projection != "Centroid":
+            self.projectnpcf("Centroid")
+        
+        nradii = len(radii)
+        if not do_multiscale:
+            nrcombis = nradii
+            filterfunc = self._map4_filtergrid_singleR
+            _rcut = 1 
+        else:
+            nrcombis = nradii*nradii*nradii
+            _rcut = nradii
+            raise NotImplementedError
+            
+        map4s = np.zeros((16, self.nzcombis, nrcombis), dtype=complex)
+        M4 = np.zeros((self.nzcombis, nrcombis), dtype=complex)
+        M3Mc_0 = np.zeros((self.nzcombis, nrcombis), dtype=complex)
+        M3Mc_1 = np.zeros((self.nzcombis, nrcombis), dtype=complex)
+        M3Mc_2 = np.zeros((self.nzcombis, nrcombis), dtype=complex)
+        M3Mc_3 = np.zeros((self.nzcombis, nrcombis), dtype=complex)
+        M2M2_01 = np.zeros((self.nzcombis, nrcombis), dtype=complex)
+        M2M2_02 = np.zeros((self.nzcombis, nrcombis), dtype=complex)
+        M2M2_03 = np.zeros((self.nzcombis, nrcombis), dtype=complex)
+        tmprcombi = 0
+        for elr1, R1 in enumerate(radii):
+            for elr2, R2 in enumerate(radii[:_rcut]):
+                for elr3, R3 in enumerate(radii[:_rcut]):
+                    for elr4, R4 in enumerate(radii[:_rcut]):
+                        if self.verbose:
+                            sys.stdout.write("\r Doing %.i/%i aperture radii"%(elr1,nradii))
+                        if not do_multiscale:
+                            R2 = R1
+                            R3 = R1
+                            R4 = R1
+                        if filtercache is not None:
+                            F1, F1, F2, F3, F4, F5, F6, F7 = (filtercache[tmprcombi][i] for i in range(8))
+                        else:
+                            F0, F1, F2, F3, F4, F5, F6, F7 = filterfunc(R1, R2, R3, R4)
+                        M4[:,tmprcombi] = np.nansum(F0*self.npcf[0,...],axis=(1,2,3,4,5))
+                        M3Mc_0[:,tmprcombi] = np.nansum(F1*self.npcf[1,...],axis=(1,2,3,4,5))
+                        M3Mc_1[:,tmprcombi] = np.nansum(F2*self.npcf[2,...],axis=(1,2,3,4,5))
+                        M3Mc_2[:,tmprcombi] = np.nansum(F3*self.npcf[3,...],axis=(1,2,3,4,5))
+                        M3Mc_3[:,tmprcombi] = np.nansum(F4*self.npcf[4,...],axis=(1,2,3,4,5))
+                        M2M2_01[:,tmprcombi] = np.nansum(F5*self.npcf[5,...],axis=(1,2,3,4,5))
+                        M2M2_02[:,tmprcombi] = np.nansum(F6*self.npcf[6,...],axis=(1,2,3,4,5))
+                        M2M2_03[:,tmprcombi] = np.nansum(F7*self.npcf[7,...],axis=(1,2,3,4,5))
+                        tmprcombi += 1            
+        map4s[0]  = 1./8. * (+ M4 + M3Mc_0 + M3Mc_1 + M3Mc_2 + M3Mc_3 + M2M2_01 + M2M2_02 + M2M2_03).real # Map Map Map Map
+        map4s[1]  = 1./8. * (+ M4 - M3Mc_0 + M3Mc_1 + M3Mc_2 + M3Mc_3 - M2M2_01 - M2M2_02 - M2M2_03).imag # Mx Map Map Map
+        map4s[2]  = 1./8. * (+ M4 + M3Mc_0 - M3Mc_1 + M3Mc_2 + M3Mc_3 - M2M2_01 + M2M2_02 + M2M2_03).imag # Map Mx Map Map
+        map4s[3]  = 1./8. * (+ M4 + M3Mc_0 + M3Mc_1 - M3Mc_2 + M3Mc_3 + M2M2_01 - M2M2_02 + M2M2_03).imag # Map Map Mx Map
+        map4s[4]  = 1./8. * (+ M4 + M3Mc_0 + M3Mc_1 + M3Mc_2 - M3Mc_3 + M2M2_01 + M2M2_02 - M2M2_03).imag # Map Map Map Mx
+        map4s[5]  = 1./8. * (- M4 - M3Mc_0 - M3Mc_1 + M3Mc_2 + M3Mc_3 - M2M2_01 + M2M2_02 + M2M2_03).real # Map Map Mx  Mx
+        map4s[6]  = 1./8. * (- M4 - M3Mc_0 + M3Mc_1 - M3Mc_2 + M3Mc_3 + M2M2_01 - M2M2_02 + M2M2_03).real # Map Mx  Map Mx
+        map4s[7]  = 1./8. * (- M4 - M3Mc_0 + M3Mc_1 + M3Mc_2 - M3Mc_3 + M2M2_01 + M2M2_02 - M2M2_03).real # Map Mx  Mx  Map
+        map4s[8]  = 1./8. * (- M4 + M3Mc_0 - M3Mc_1 - M3Mc_2 + M3Mc_3 + M2M2_01 + M2M2_02 - M2M2_03).real # Mx  Map Map Mx
+        map4s[9]  = 1./8. * (- M4 + M3Mc_0 - M3Mc_1 + M3Mc_2 - M3Mc_3 + M2M2_01 - M2M2_02 + M2M2_03).real # Mx  Map Mx  Map
+        map4s[10] = 1./8. * (- M4 + M3Mc_0 + M3Mc_1 - M3Mc_2 - M3Mc_3 - M2M2_01 + M2M2_02 + M2M2_03).real # Mx  Mx  Map Map
+        map4s[11] = 1./8. * (- M4 - M3Mc_0 + M3Mc_1 + M3Mc_2 + M3Mc_3 + M2M2_01 + M2M2_02 + M2M2_03).imag # Map Map Map Map
+        map4s[12] = 1./8. * (- M4 + M3Mc_0 - M3Mc_1 + M3Mc_2 + M3Mc_3 + M2M2_01 - M2M2_02 - M2M2_03).imag # Map Map Map Map
+        map4s[13] = 1./8. * (- M4 + M3Mc_0 + M3Mc_1 - M3Mc_2 + M3Mc_3 - M2M2_01 + M2M2_02 - M2M2_03).imag # Map Map Map Map
+        map4s[14] = 1./8. * (- M4 + M3Mc_0 + M3Mc_1 + M3Mc_2 - M3Mc_3 - M2M2_01 - M2M2_02 + M2M2_03).imag # Map Map Map Map
+        map4s[15] = 1./8. * (+ M4 - M3Mc_0 - M3Mc_1 - M3Mc_2 - M3Mc_3 + M2M2_01 + M2M2_02 + M2M2_03).real # Mx  Mx  Mx  Mx
+                                            
+        if tofile:
+            # Write to file
+            pass
+            
+        return map4s
+    
+    def _map4_filtergrid_singleR(self, R1, R2, R3, R4):
+        return self.__map4_filtergrid_singleR(R1, R2, R3, R4, self.bin_edges, self.bin_centers_mean, self.phis[0])
+    
+    @staticmethod
+    @jit(nopython=True, parallel=True)
+    def __map4_filtergrid_singleR(R1, R2, R3, R4, normys_edges, normys_centers, phis):
+        R_ap = R1
+        R_ap2 = R_ap**2
+        R_ap4 = R_ap**4
+        R_ap6 = R_ap**6
+        R_ap8 = R_ap**8
+        nbinsr = len(normys_centers)
+        nbinsphi = len(phis)
+        F0 = np.zeros((nbinsr, nbinsr, nbinsr, nbinsphi, nbinsphi), dtype=nb_complex128)
+        F1 = np.zeros((nbinsr, nbinsr, nbinsr, nbinsphi, nbinsphi), dtype=nb_complex128)
+        F2 = np.zeros((nbinsr, nbinsr, nbinsr, nbinsphi, nbinsphi), dtype=nb_complex128)
+        F3 = np.zeros((nbinsr, nbinsr, nbinsr, nbinsphi, nbinsphi), dtype=nb_complex128)
+        F4 = np.zeros((nbinsr, nbinsr, nbinsr, nbinsphi, nbinsphi), dtype=nb_complex128)
+        F5 = np.zeros((nbinsr, nbinsr, nbinsr, nbinsphi, nbinsphi), dtype=nb_complex128)
+        F6 = np.zeros((nbinsr, nbinsr, nbinsr, nbinsphi, nbinsphi), dtype=nb_complex128)
+        F7 = np.zeros((nbinsr, nbinsr, nbinsr, nbinsphi, nbinsphi), dtype=nb_complex128)
+        # This is equal to phis12, phis13 = np.meshgrid(phis, phis), 
+        # but made st it compiles with numba
+        phis12 = np.empty((nbinsphi, nbinsphi))
+        phis13 = np.empty((nbinsphi, nbinsphi))
+        for i in range(nbinsphi):
+            for j in range(nbinsphi):
+                phis12[i, j] = phis[j]
+                phis13[i, j] = phis[i]
+        for elb in prange(nbinsr*nbinsr*nbinsr):
+            elb1 = int(elb//(nbinsr*nbinsr))
+            elb2 = int((elb-elb1*nbinsr*nbinsr)//nbinsr)
+            elb3 = elb%nbinsr
+            _y1 = normys_centers[elb1]
+            _dbin1 = normys_edges[elb1+1] - normys_edges[elb1]
+            _y2 = normys_centers[elb2]
+            _dbin2 = normys_edges[elb2+1] - normys_edges[elb2]
+            _y3 = normys_centers[elb3]
+            _dbin3 = normys_edges[elb3+1] - normys_edges[elb3]
+            _dbinphi = phis[1] - phis[0]
+            q1 = - 1./4. * ( + 1*_y1 + 1*_y2*np.exp(1j*phis12) + 1*_y3*np.exp(1j*phis13) )
+            q2 = + 1./4. * ( + 3*_y1 - 1*_y2*np.exp(1j*phis12) - 1*_y3*np.exp(1j*phis13) )
+            q3 = + 1./4. * ( - 1*_y1 + 3*_y2*np.exp(1j*phis12) - 1*_y3*np.exp(1j*phis13) )
+            q4 = + 1./4. * ( - 1*_y1 - 1*_y2*np.exp(1j*phis12) + 3*_y3*np.exp(1j*phis13) )
+            q1c=q1.conj(); q2c=q2.conj(); q3c=q3.conj(); q4c=q4.conj()
+            absq1_sq=np.abs(q1)**2; absq2_sq=np.abs(q2)**2; absq3_sq=np.abs(q3)**2; absq4_sq=np.abs(q4)**2
+            absq12_sq=absq1_sq*absq2_sq; absq13_sq=absq1_sq*absq3_sq; absq14_sq=absq1_sq*absq4_sq
+            absq23_sq=absq2_sq*absq3_sq; absq24_sq=absq2_sq*absq4_sq; absq34_sq=absq3_sq*absq4_sq
+            absq1p2_sq=np.abs(q1+q2)**2; absq1p3_sq=np.abs(q1+q3)**2; absq1p4_sq=np.abs(q1+q4)**2
+            q12c=q1c*q2c; q13c=q1c*q3c; q14c=q1c*q4c; q23c=q2c*q3c; q24c=q2c*q4c; q34c=q3c*q4c
+            _2p1=q1**2/absq1_sq; _2p2=q2**2/absq2_sq; _2p3=q3**2/absq3_sq; _2p4=q4**2/absq4_sq
+            q123=q1*q2*q3; q124=q1*q2*q4; q134=q1*q3*q4; q234=q2*q3*q4
+            _measures = _y1*_y2*_y3*_dbin1*_dbin2*_dbin3/(R_ap6) * (_dbinphi/(2*np.pi))**2
+            _exp = np.exp(-(absq1_sq+absq2_sq+absq3_sq+absq4_sq)/(2*R_ap2))
+            nextF0 = absq1_sq*absq2_sq*absq3_sq*absq4_sq/(64*R_ap8)
+            nextF1_1 = (q1c*q234*(q23c+q24c+q34c))/(32*R_ap6)
+            nextF2_1 = (q2c*q134*(q13c+q14c+q34c))/(32*R_ap6)
+            nextF3_1 = (q3c*q124*(q12c+q24c+q14c))/(32*R_ap6)
+            nextF4_1 = (q4c*q123*(q23c+q12c+q13c))/(32*R_ap6)
+            nextF1_2 = _2p1.conj()/(128*R_ap4) * ( absq23_sq*_2p4 + absq24_sq*_2p3 + absq34_sq*_2p2 -4*q1c*q234 )
+            nextF2_2 = _2p2.conj()/(128*R_ap4) * ( absq13_sq*_2p4 + absq14_sq*_2p3 + absq34_sq*_2p1 -4*q2c*q134 )
+            nextF3_2 = _2p3.conj()/(128*R_ap4) * ( absq12_sq*_2p4 + absq24_sq*_2p1 + absq14_sq*_2p2 -4*q3c*q124 )
+            nextF4_2 = _2p4.conj()/(128*R_ap4) * ( absq23_sq*_2p1 + absq12_sq*_2p3 + absq13_sq*_2p2 -4*q4c*q123 )
+            nextF5_1 = - q12c*q3*q4*absq1p2_sq/(32*R_ap6)
+            nextF6_1 = - q13c*q2*q4*absq1p3_sq/(32*R_ap6)
+            nextF7_1 = - q14c*q3*q2*absq1p4_sq/(32*R_ap6)
+            nextF5_2 = (_2p1*_2p2).conj()*_2p3*_2p4/(128*R_ap4) * ( absq1p2_sq**2 - 6*R_ap2*absq1p2_sq + 3*R_ap4 )
+            nextF6_2 = (_2p1*_2p3).conj()*_2p2*_2p4/(128*R_ap4) * ( absq1p3_sq**2 - 6*R_ap2*absq1p3_sq + 3*R_ap4 )
+            nextF7_2 = (_2p1*_2p4).conj()*_2p3*_2p2/(128*R_ap4) * ( absq1p4_sq**2 - 6*R_ap2*absq1p4_sq + 3*R_ap4 )
+            F0[elb1,elb2,elb3] = _measures * _exp * nextF0
+            F1[elb1,elb2,elb3] = _measures * _exp * (nextF0 + nextF1_1 + nextF1_2)
+            F2[elb1,elb2,elb3] = _measures * _exp * (nextF0 + nextF2_1 + nextF2_2)
+            F3[elb1,elb2,elb3] = _measures * _exp * (nextF0 + nextF3_1 + nextF3_2)
+            F4[elb1,elb2,elb3] = _measures * _exp * (nextF0 + nextF4_1 + nextF4_2)
+            F5[elb1,elb2,elb3] = _measures * _exp * (nextF0 + nextF5_1 + nextF5_2)
+            F6[elb1,elb2,elb3] = _measures * _exp * (nextF0 + nextF6_1 + nextF6_2)
+            F7[elb1,elb2,elb3] = _measures * _exp * (nextF0 + nextF7_1 + nextF7_2)
+                    
+        return F0, F1, F2, F3, F4, F5, F6, F7
+
 class GGGGCorrelation(BinnedNPCF):
     """ This class stores the natural components of the shear four point correlation functions.""
     
@@ -1556,7 +1972,7 @@ class GGGGCorrelation(BinnedNPCF):
             # Write to file
             pass
             
-        return map3  
+        return map4 
     
 ###########################
 ## COVARIANCE STATISTICS ##
@@ -1703,489 +2119,3 @@ class XipmMixedCovariance(BinnedNPCF):
                     tmpnorm += _const.conj() * facn * self.npcf_multipoles_norm[eln][ztiler].astype(complex).transpose(0,2,1)
             self.npcf[...,elphi] = tmp
             self.npcf_norm[...,elphi] = tmpnorm
-    
-#################
-### PURGATORY ###
-#################
-if False:
-
-    class ThreePCF:
-
-        """
-        Config file has the following keys:
-        - rmin: Smallest radius of 3pcf.
-                (Only needs to be specified if we want to emply the discrete estimator at some point.)
-        - rmax: Largest radius of 3pcf.
-        - nbins_discrete: how many rbins we compute via the discrete estimator
-        - nbins_baseres: how many rbins we compute via the FFT-estimator of the lowest resolution
-        - discrete: Use discrete estimator all the way
-
-        Config file is given as follows:
-        - 
-        """
-
-        def __init__(self, modes="GGG", rmin=None, rmax=None, nrbins=None, nphibins=None, 
-                     do_tomography_auto=False, do_tomography_full=False, 
-                     method="Mixed", cache=True, ngal_in_maxres=1, ngal_in_minres=50, 
-                     config=None):
-
-            """
-            Method could be in (ordered from slow to fast execution time - "Mixed" is recommended)
-            - "Discrete":
-               * Uses discrete estimator for every scale
-            - "SingleFFT"
-               * Uses FFT on fixed gridsize
-               * Gridsize determined by ngal_in_maxres
-            - "FFT":
-               * Uses FFT estimator on different gridsizes
-               * Gridsizes are determined by ngal_in_maxres, ngal_in_minres & rbinning
-            - "Mixed"
-               Use "Discrete" on small scales and "FFT" on larger scales (determined by rmin, ngal_in_maxres, ngal_in_minres, rmax)
-            """
-
-            ## Initialize arguments from init ##
-            # Note that we autbuild the config file only after a catalog is given as
-            # only in this case one can find suitable settings.
-            self.methods_avail = ["Discrete", "FFT", "SingleFFT", "Mixed"]
-            self.modes_avail = ["KKK", "KGG", "GKK", "GGG"]
-            if config is not None:
-                self._check_config(config)
-            else:
-                assert(method in self.methods_avail)
-                assert(modes in self.modes_avail)
-                self.method = method
-                self.modes = modes
-                self.rmin = rmin
-                self.rmax = rmax
-                self.nrbins = nrbins
-                self.nphibins = nphibins
-                self.do_tomography_auto = do_tomography_auto
-                self.do_tomography_full = do_tomography_full
-                self.ngal_in_maxres = ngal_in_maxres
-                self.ngal_in_minres=ngal_in_minres
-                self.cache = cache
-                self.config = None
-
-                self.cat = None
-                self.hasthreepcf = False
-                self.threepcf = None
-                self.threepcf_norm = None
-                self.projection = None 
-
-            ## Link compiled libraries ##
-            self.library_path = str(Path(__file__).parent.absolute()) + "/src/"
-            discrete_library_fpath = self.library_path + "discrete.so"
-            hash_library_fpath = self.library_path + "spatialhash.so"
-            hash_library = ct.CDLL(hash_library_fpath)
-            discrete_library = ct.CDLL(discrete_library_fpath)
-            p_c128 = ndpointer(complex, flags="C_CONTIGUOUS")
-            p_f64 = ndpointer(float, flags="C_CONTIGUOUS")
-            p_f32 = ndpointer(np.float32, flags="C_CONTIGUOUS")
-            p_i32 = ndpointer(int, flags="C_CONTIGUOUS")
-
-            # Generate pixel --> galaxy mapping
-            # Safely called within other wrapped functions
-            hash_library._gen_pixeltable.restype = ct.c_void_p
-            hash_library._gen_pixeltable.argtypes = [
-                p_f64, p_f64, ct.c_int32, ct.c_double, ct.c_double, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
-                np.ctypeslib.ndpointer(dtype=np.intc)]
-
-            """# Allocates Gns and Gammans for discrete data such that one can evaluate all Gamman in [nmin, nmax]
-            # Use 'alloc_Gns_discrete' to safely call this function
-            discrete_library.alloc_GnsGammans_discrete_basic.restype = ct.c_void_p
-            discrete_library.alloc_GnsGammans_discrete_basic.argtypes = [
-                p_f64, p_f64, p_f64, p_f64, p_f64, p_i32, ct.c_int32, ct.c_int32,
-                ct.c_int32, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, 
-                p_i32, p_i32, p_i32,
-                ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, 
-                ct.c_int32, 
-                np.ctypeslib.ndpointer(dtype=np.float64), np.ctypeslib.ndpointer(dtype=np.int32), 
-                np.ctypeslib.ndpointer(dtype=np.complex128), np.ctypeslib.ndpointer(dtype=np.complex128),
-                np.ctypeslib.ndpointer(dtype=np.complex128)]  
-            """
-
-            # Allocates Gns for discrete data such that one can evaluate all Gamman in [nmin, nmax]
-            # Use 'alloc_Gns_discrete' to safely call this function
-            discrete_library.alloc_Gns_discrete_basic.restype = ct.c_void_p
-            discrete_library.alloc_Gns_discrete_basic.argtypes = [
-                p_f64, p_f64, p_f64, p_f64, p_f64, p_i32, ct.c_int32, ct.c_int32,
-                ct.c_int32, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, 
-                p_i32, p_i32, p_i32,
-                ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, 
-                ct.c_int32, 
-                np.ctypeslib.ndpointer(dtype=np.float64), np.ctypeslib.ndpointer(dtype=np.int32), 
-                np.ctypeslib.ndpointer(dtype=np.complex128), np.ctypeslib.ndpointer(dtype=np.complex128)]    
-
-            # Allocate Gamman from Gns obtained via the discrete estimator
-            # Use 'alloc_Gamman_discrete' to safely call this function
-            discrete_library.alloc_Gamman_discrete_basic.restype = ct.c_void_p
-            discrete_library.alloc_Gamman_discrete_basic.argtypes = [
-                p_c128, p_c128, p_f64, p_f64, p_f64, p_i32, ct.c_int32, ct.c_int32,
-                ct.c_int32, ct.c_int32, ct.c_int32, 
-                np.ctypeslib.ndpointer(dtype=np.complex128), np.ctypeslib.ndpointer(dtype=np.complex128)]
-
-        ###########################################################################
-        ## Functions that deal with the the config file for the 3pcf computation ##
-        ###########################################################################
-        #config = {}
-        #config["rmax"] = 120.
-        #config["do_tomography_auto"] = False # Only use autotomographic bins
-        #config["do_tomography_full"] = False # Use all available tomographic bins
-        #config["npix"] = [2048,1024,512] # All resolution of grids for FFT - they give npix in y-direction
-        #config["nbins_baseres"] = 12 # How many rbins we compute in the base resolution
-        #config["supperres_rshells"] = [[5,6,8,10,12,14,17,20],[10,12,14,17,20,24,29,34,40]] # Bin edges in number of pixels of resolutions
-        #config["nmax"] = [[30]*7,[30]*8,30] # Largest multipole to choose for each multipole [(discrete), [superres], .., baseres]
-        #config["cache"] = [[True]*7,[True]*8,30] # Whether to cache the Gns [(discrete), [superres], .., baseres]
-        #config["edges_baseres"] # Optional - only required if method==SingleFFT
-        #config["rmin"] = 1. # Optional - only required if method in [Discrete, Mixed]
-        #config["nbins_discrete"] = 5 # How many radial bins we have in the discrete estimator (Optional - only required if method in [Discrete, Mixed])
-        #config["nalloc_discrete"] = [10,20,30] # How to batch the n for disrete estimator allocation (Optional - only required if method in [Discrete, Mixed])
-        #config["dpix_min"] = 0.2 # Optional - only required if method==Mixed
-        #config["method"] = "Mixed" # What method to use 
-        def _check_config(self, config):
-
-            ## Check which method to choose
-            if "method" not in config.keys():
-                config["method"] = "Mixed"
-                self.method="Mixed"
-            else:
-                assert(config["method"] in self.methods_avail)
-                self.method = config["method"]  
-
-            ## Check for method  "Discrete"
-            if config["method"] == "Discrete":
-                assert("nbins_discrete" in config.keys())
-                assert(len(config["nmax"]) in [1,config["nbins_discrete"]])
-                assert(len(config["cache"]) in [1,config["nbins_discrete"]])
-                config.pop('npix', None)
-                config.pop('nbins_baseres', None)
-                config.pop('supperres_rshells', None)
-                config.pop('edges_baseres', None)
-                config.pop('nbins_discrete', None)
-                config.pop('dpix_min', None)
-
-            ## Check for method "SingleFFT"
-            if config["method"] == "SingleFFT":
-                assert("nbins_baseres" in config.keys())
-                assert(len(config["npix"])==1)
-                assert(len(config["nmax"]) in [1,config["nbins_baseres"]])
-                assert(len(config["cache"]) in [1,config["nbins_baseres"]])
-                config.pop('supperres_rshells', None)
-                config.pop('rmin', None)
-                config.pop('nbins_discrete', None)
-                config.pop('dpix_min', None)
-
-            ## Check for method "Mixed" and method "FFT"
-            # Check if we need discrete
-            if self.method in ["Mixed", "FFT"]:
-                hasdiscrete = False
-                if self.method=="Mixed":
-                    if "rmin" in config.keys() and "nbins_discrete" in config.keys() and "dpix_min" in config.keys():
-                        if config["supperres_rshells"][0][0]*config["dpix_min"] > config["rmin"]:
-                            hasdiscrete = True
-                        else:
-                            config["nmax"].pop(0)
-                            config["cache"].pop(0)
-
-                            print("Discretee estimation not required - removed from config.")
-
-                if not hasdiscrete:
-                    config["method"] = "FFT"
-                    self.method="FFT"
-                    config.pop('rmin', None)
-                    config.pop('nbins_discrete', None)
-                    config.pop('dpix_min', None)
-
-                # Check if config is valid
-                assert(len(config["supperres_rshells"]) == len(config["nmax"])-1-hasdiscrete)
-                assert(len(config["supperres_rshells"]) == len(config["npix"])-1)
-                assert(len(config["cache"]) == len(config["npix"])+hasdiscrete)
-                for elsuperres in range(len(config["supperres_rshells"])):
-                    assert(len(config["supperres_rshells"][elsuperres]) == len(config["nmax"][elsuperres+hasdiscrete])+1)
-                    assert(len(config["supperres_rshells"][elsuperres]) == len(config["cache"][elsuperres+hasdiscrete])+1)
-                for elres in range(len(config["npix"])-1):
-                    assert(config["npix"][elres]/config["npix"][elres+1]==2)
-
-            ## Add optional parameters:
-            # Tomography: Make sure that at most one of auto/full tomography is selected
-            if "do_tomography_auto" not in config.keys():
-                config["do_tomography_auto"] = False
-            if "do_tomography_full" not in config.keys():
-                config["do_tomography_full"] = False
-            if config["do_tomography_auto"] and config["do_tomography_full"]:
-                config["do_tomography_auto"] = False
-
-            self.config = config
-
-        def _build_config(self, cat):
-            """
-            rmin=None, rmax=None, nrbins=None, nphibins=None, cache=True, ngal_in_maxres=1, ngal_in_minres=50
-            # 1st step: Figure out allowed scales for FFTgrid
-            #
-            """
-
-            # Estimate number density of galaxies across footprint
-            # --> Get smallest pixelization element
-            if self.method in ["Mixed", "FFT", "SingleFFT"]:
-                pass
-
-            # Figure out allowed scales for FFT grids
-            pass
-
-        # Also includes how ns are batched for discrete estimator
-        def _build_plan(self, thisconfig, cat, modes, 
-                        nthreads, mem_avail):
-            finalconfig = deepcopy(thisconfig)
-            memreq_base = self._memoryreq(newconfig, modes, do_tomography_auto, do_tomography_full)
-
-            return docompute, finalconfig, catlims, memreq_base, memreq_final
-
-        def _memoryreq(self, ):
-            _ = self._gencounters(config, ngals, modes)
-            pass
-
-        def _gencounters(self, config, ngals, modes):
-            pass
-
-
-        ##########################################################
-        ## Functions that deal with the computation of the 3pcf ##
-        ##########################################################
-        def compute(self, cat, modes="GGG", do_tomography_auto=False, do_tomography_full=False, nthreads=1, 
-                    tofile=False, mem_avail="10G", dry=False, override=False):
-
-            # Compute memory that will be allocated and print options to reduce it
-            if self.config is None:
-                thisconfig = self._build_config(cat, do_tomography_auto, do_tomography_full, mem_avail)
-            else:
-                thisconfig = self.config
-
-            planout = self._build_plan(thisconfig, cat, modes, do_tomography_auto, do_tomography_full, nthreads, mem_avail)
-            docompute, finalconfig, catlims, memreq_base, memreq_final = planout
-            if dry:
-                print("Optimized config file requires")
-                return finalconfig
-            if not docompute:
-                if not override:
-                    print("Error: Computation will exceed specified available memory (%.2f Gb)"%mem_required)
-                    return mem_required, thisconfig
-                if override:
-                    print("Warning: Computation will exceed specified available memory (%.2f Gb)"%mem_required)
-
-            ## DO COMPUTATION ##  
-
-            ## Allocate FFTNPCF instances for the different resolutions ##
-            allinst = {}
-            weightmask = {}
-            rescale = {}
-            gridsizes = {}
-            Gncache_FFT = {}
-            Gncache_disc = {}
-            for npix in config["npix"]:
-                if npix != "discrete":
-                    cat = WLData(fieldsize, npix, hascat=True, 
-                                 pos1=pos1, pos2=pos2, weight=weights, shear=(-1)**flip_1*shape1 + (-1)**flip_2*1J*shape2)
-                    cat.cat2grid(do_cic=True)
-                    allinst[npix] = FFTNPCF(cat.fieldsize, [cat.npix_x, cat.npix], 
-                                            shear=cat.sheargrid, weight=cat.weightgrid)
-                    lim_mask = 1e-5
-                    weightmask[npix] = (allinst[npix].weight > lim_mask)
-                    rescale[npix] = (allinst[npix].npix_y*allinst[npix].npix_x)/np.sum(weightmask[npix])
-                    gridsizes[npix] = allinst[npix].weight.shape
-                    print(npix, gridsizes[npix], np.sum(weightmask[npix])/cat.npix_x/cat.npix)
-            del cat
-
-            ## Initialize counters ##
-            nzbins = len(np.unique(cat.zbins))
-            nnpix = len(self.config["npix"])
-
-            nradii = 0
-            if config["rmin"] is not None and config["nbins_discrete"] is not None:
-                nradii += config["nbins_discrete"]
-            for _ in config["supperres_rshells"]:
-                nradii += len(_)-1
-            nradii += config["nbins_baseres"]
-
-            ndata_pix = np.zeros(nnpix, dtype=np.int32)
-            cumndata_pix = np.zeros(nnpix+1, dtype=np.int32)
-            if config["npix"][0]=="discrete":
-                ndata_pix.append(len(pos1))
-            for npix in config["npix"]:
-                if npix != "discrete":
-                    ndata_pix.append(np.sum(weightmask[npix]))
-            cumndata_pix[1:np.cumsum(ndata_pix)]
-
-            ## Return corresponding 3pcf object
-            if modes=="GGG":
-                return GGGCorrelation(thisconfig, bin_edges, bin_centers, threepcf_n, threepcf_n_norm)
-            if modes=="NNN":
-                return NNNCorrelation(thisconfig, bin_edges, bin_centers, threepcf_n, threepcf_n_norm)
-
-            self.cat = cat.info
-            self.hasthreepcf = True
-            self.threepcf = None
-            self.projection = "X"    
-
-
-        def _compareGn(self, cat, rmin, rmax, dpix, dipix2=None, n=0, method="CIC"):
-            """ Computes Gn using discrete and Grid based estimator. Cat should be PolarCatalog """
-
-            grid = cat.togrid(method)
-
-
-    class KKKCorrelation(ThreePCF):
-        """ ThreePCF of scalar fields (i.e. number counts, conver  """
-
-        def __init__(self, rmin=None, rmax=None, nrbins=None, nphibins=None, 
-                     do_tomography_auto=False, do_tomography_full=False, 
-                     method="Mixed", cache=True, ngal_in_maxres=1, ngal_in_minres=50, 
-                     config=None):
-            super().__init__(modes="KKK", rmin=rmin, rmax=rmax, nrbins=nrbins, nphibins=nphibins, 
-                             do_tomography_auto=do_tomography_auto, do_tomography_full=do_tomography_full, 
-                             method=method, cache=cache, ngal_in_maxres=ngal_in_maxres, ngal_in_minres=ngal_in_minres, 
-                             config=config)
-
-        def compute_3pcf(self, cat, nthreads=1, tofile=False, mem_avail="10G", dry=False, override=False):
-            self.hasthreepcf = True
-
-
-    class GKKCorrelation(ThreePCF):
-        """ Shear-Lens-Lens (G3L) correlatioin function """
-
-        def __init__(self, rmin=None, rmax=None, nrbins=None, nphibins=None, 
-                     do_tomography_auto=False, do_tomography_full=False, 
-                     method="Mixed", cache=True, ngal_in_maxres=1, ngal_in_minres=50, 
-                     config=None):
-            super().__init__(modes="GKK", rmin=rmin, rmax=rmax, nrbins=nrbins, nphibins=nphibins, 
-                             do_tomography_auto=do_tomography_auto, do_tomography_full=do_tomography_full, 
-                             method=method, cache=cache, ngal_in_maxres=ngal_in_maxres, ngal_in_minres=ngal_in_minres, 
-                             config=config)
-
-        def compute_3pcf(self, cat, nthreads=1, tofile=False, mem_avail="10G", dry=False, override=False):
-            self.hasthreepcf = True
-
-        def compute_NNMap(self, radii, do_multiscale=False, fname=None):
-            pass
-
-    class KGGCorrelation(ThreePCF):
-        """ Shear-Lens-Lens (G3L) correlatioin function """
-
-        def __init__(self, rmin=None, rmax=None, nrbins=None, nphibins=None, 
-                     do_tomography_auto=False, do_tomography_full=False, 
-                     method="Mixed", cache=True, ngal_in_maxres=1, ngal_in_minres=50, 
-                     config=None):
-            super().__init__(modes="KGG", rmin=rmin, rmax=rmax, nrbins=nrbins, nphibins=nphibins, 
-                             do_tomography_auto=do_tomography_auto, do_tomography_full=do_tomography_full, 
-                             method=method, cache=cache, ngal_in_maxres=ngal_in_maxres, ngal_in_minres=ngal_in_minres, 
-                             config=config)
-
-        def compute_3pcf(self, cat, nthreads=1, tofile=False, mem_avail="10G", dry=False, override=False):
-            self.hasthreepcf = True
-
-        def compute_NMapMap(self, radii, do_multiscale=False, fname=None):
-            pass
-
-    class GGGCorrelation(ThreePCF):
-
-        def __init__(self, rmin=None, rmax=None, nrbins=None, nmax=None, nphibins=None, 
-                     do_tomography_auto=False, do_tomography_full=False, 
-                     method="Mixed", cache=True, ngal_in_maxres=1, ngal_in_minres=50, 
-                     config=None):
-            super().__init__(modes="GGG", rmin=rmin, rmax=rmax, nrbins=nrbins, nphibins=nphibins, 
-                             do_tomography_auto=do_tomography_auto, do_tomography_full=do_tomography_full, 
-                             method=method, cache=cache, ngal_in_maxres=ngal_in_maxres, ngal_in_minres=ngal_in_minres, 
-                             config=config)
-
-            ## Collect which projections we can do right now
-            self.projections_avail = ["X", "Centroid"]
-            self.project = {}
-            for proj in self.projections_avail:
-                self.project[proj] = {}
-                for proj2 in self.projections_avail:
-                    if proj==proj2:
-                        self.project[proj][proj2] = lambda: self.threepcf
-                    else:
-                        self.project[proj][proj2] = None
-            # (Add here any newly implemented projections)
-            self.project["X"]["Centroid"] = self.x2centroid
-
-        def load(fname):
-            pass
-
-        def process(self, cat, nthreads=1, tofile=False, mem_avail="10G", dry=False, override=False):
-            self.hasthreepcf = True
-
-        ###################################################################
-        ## Functions that deal with integral transformations of the 3pcf ##
-        ###################################################################
-
-        def computeMap3(self, radii, do_multiscale=False, tofile=False):
-            assert(self.hasthreepcf)
-            # Check radii and range of 3pcf and print up to where we would trust it
-            # also print if 3pcf is on too small resolution to give stable results
-            centroid3pcf = self.project3pcf("Centroid", in_class=False)
-            pass
-
-        def computeRingStatistics(self, radii, do_multiscale=False, tofile=False):
-            assert(self.hasthreepcf)
-            # Check radii and range of 3pcf and print up to where we would trust it
-            # also print if 3pcf is on too small resolution to give stable results
-            centroid3pcf = self.project3pcf("Centroid", in_class=False)
-            pass
-
-        ##################################################################
-        ## Functions that deal with different projections of polar 3PCF ##
-        ##################################################################
-        def project3pcf(self, projection, in_class=False):
-            """
-            Projects threepcf in a new basis.
-            """
-            assert(self.hasthreepcf)
-            if projection not in self.projections_avail:
-                print("Projection %s is not yet supported."%(projection))
-                self.gen_3pcfprojections_avail()
-                return None
-
-            assert(in_class in [True, False])
-            if self.project[self.projection][projection] is not None:
-                projected3pcf = self.project[self.projection][projection]()
-                if not in_class:
-                    return projected3pcf
-                else:
-                    self.threepcf = projected3pcf
-                    self.projection = projection
-                    return None
-            else:
-                print("Projection from %s to %s is not yet implemented."%(self.projection,projection))
-                self.gen_3pcfprojections_avail()
-                return None
-
-
-        def gen_3pcfprojections_avail(self):
-            print("The following projections for the 3pcf are available:")
-            for proj in self.projections_avail:
-                for proj2 in self.projections_avail:
-                    if self.project[proj][proj2] is not None:
-                        print("  %s --> %s"%(proj,proj2))
-
-        def x2centroid(self):
-            return self.threepcf
-
-
-    class XipMixedCovariance(ThreePCF):
-        """ ThreePCF of scalar fields (i.e. number counts, conver  """
-
-        def __init__(self, rmin=None, rmax=None, nrbins=None, nphibins=None, 
-                     do_tomography_auto=False, do_tomography_full=False, 
-                     method="Mixed", cache=True, ngal_in_maxres=1, ngal_in_minres=50, 
-                     config=None):
-            super().__init__(modes="KKK", rmin=rmin, rmax=rmax, nrbins=nrbins, nphibins=nphibins, 
-                             do_tomography_auto=do_tomography_auto, do_tomography_full=do_tomography_full, 
-                             method=method, cache=cache, ngal_in_maxres=ngal_in_maxres, ngal_in_minres=ngal_in_minres, 
-                             config=config)
-            self.hasthreepcf = False
-            self.threepcf = None
-            self.threepcf_norm = None
-
-        def compute_3pcf(self, cat, nthreads=1, tofile=False, mem_avail="10G", dry=False, override=False):
-            self.hasthreepcf = True

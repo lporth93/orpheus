@@ -1,3 +1,6 @@
+// In case the machines are acting up, compile with 
+// gcc-12 -fopenmp $(gsl-config --cflags) -fPIC -shared -o discrete.so discrete.c $(gsl-config --libs) -std=c99
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,7 +17,8 @@
 
 #define mymin(x,y) ((x) <= (y)) ? (x) : (y)
 #define mymax(x,y) ((x) >= (y)) ? (x) : (y)
-#define M_PI           3.14159265358979323846
+#define M_PI      3.14159265358979323846
+#define INV_2PI   0.15915494309189534561
 //#define int int32_t
 
 void alloc_negone_int(int *arr, int length){
@@ -932,7 +936,7 @@ void alloc_Gammans_doubletree_ggg(
             double pos1_gal, pos2_gal;
             elregion_fullhash = index_matcher_hash[elregion];
             hashpix_start1 = pix1_start + (elregion_fullhash%pix1_n)*pix1_d;
-            hashpix_start2 = pix2_start + (elregion_fullhash/pix2_n)*pix2_d;
+            hashpix_start2 = pix2_start + (elregion_fullhash/pix1_n)*pix2_d;
             if (elregion==region_debug){
                 printf("pix1_start=%.2f pix2_start=%.2f \n", pix1_start,pix2_start);
                 printf("hashpix_start1=%.2f hashpix_start2=%.2f \n", hashpix_start1,hashpix_start2);}
@@ -2460,7 +2464,7 @@ void alloc_Gammans_discrete_GNN(
     for(int elthread=0;elthread<nthreads;elthread++){
         int nregions_per_thread = nregions/nthreads;
         int nnvals_Gn = nmax+3; // Need [-1, ..., nmax+1]
-        int nnvals_Wn = nmax+1; // Need [0, ..., nmax]
+        //int nnvals_Wn = nmax+1; // Need [0, ..., nmax]
         int nnvals_Ups = nmax+1;
         int nzcombis = nbinsz_source*nbinsz_lens*nbinsz_lens;
         int upsilon_zshift = nbinsr*nbinsr;
@@ -2480,7 +2484,8 @@ void alloc_Gammans_discrete_GNN(
             // printf("Region %d is in thread %d\n",elregion,elthread);
             if (elregion==region_debug){printf("Region %d is in thread %d\n",elregion,elthread);}
             if (elthread==nthreads/2){
-                printf("\rDone %.2f per cent",100*((double) elregion-nregions_per_thread*(int)(nthreads/2))/nregions_per_thread);
+                int elreg_inthread = elregion-nregions_per_thread*(nthreads/2);
+                printf("\rDone %.2f per cent",100*((double) elreg_inthread/nregions_per_thread));
             }
             
             int zbin_gal1, zbin_gal2;
@@ -2553,7 +2558,7 @@ void alloc_Gammans_discrete_GNN(
                             thisncounts[z2rshift] += 1;
                             tmpwcounts[ind_counts] += w_gal1*w_gal2*dist; 
                             tmpwnorms[ind_counts] += w_gal1*w_gal2; 
-                            thisG2ns[z2rshift] += wshape_gal1*w_gal2*w_gal2*phirot*phirot;
+                            thisG2ns[z2rshift] += wshape_gal1*w_gal2*w_gal2*phirotc*phirotc;
                             thisW2ns[z2rshift] += w_gal1*w_gal2*w_gal2;
                             
                             ind_Wn = z2rshift;
@@ -2718,12 +2723,11 @@ void alloc_Gammans_doubletree_GNN(
         int threadshift_counts = elthread*nbinsz_source*nbinsz_lens*nbinsr;
         double drbin = log(rmax/rmin)/nbinsr;
         
-        
         // Find largest possible nshift
         int size_max_nshift = 0;
         int size_max_nshift_theo = (int) ((1+hasdiscrete+0.34)*((float)mymax(nbinsz_lens,nbinsz_source))*nbinsr*pow(4,nresos_grid));
         for (int elregion=0; elregion<nregions; elregion++){
-            int region_debug=-1;
+            int region_debug=nregions/2;
             // Check if this thread is responsible for the region
             int nthread_target = mymin(elregion/nregions_per_thread, nthreads-1);
             if (nthread_target!=elthread){continue;}
@@ -2735,7 +2739,6 @@ void alloc_Gammans_doubletree_GNN(
             
             // Check which sets of radii are evaluated for each resolution
             int *reso_rindedges = calloc(nresos+1, sizeof(int));
-            double logrmin = log(rmin);
             int tmpreso = 0;
             double thisredge = 0;
             double tmpr = rmin;
@@ -2779,7 +2782,7 @@ void alloc_Gammans_doubletree_GNN(
             }
             
             // Shift variables for the matching between the pixel grids (only needed for sources!)
-            int lower, upper, lower1, upper1, lower2, upper2, ind_inpix, ind_gal, zbin_gal;
+            int lower, upper, ind_inpix, ind_gal, zbin_gal;
             int npix_side, thisreso, elreso_grid, len_matcher;
             int *matchers_resoshift = calloc(nresos_grid+1, sizeof(int));
             int *ngal_in_pix = calloc(nresos*nbinsz_source, sizeof(int));
@@ -2811,12 +2814,12 @@ void alloc_Gammans_doubletree_GNN(
             double pos1_gal, pos2_gal;
             elregion_fullhash = index_matcher_hash[elregion];
             hashpix_start1 = pix1_start + (elregion_fullhash%pix1_n)*pix1_d;
-            hashpix_start2 = pix2_start + (elregion_fullhash/pix2_n)*pix2_d;
+            hashpix_start2 = pix2_start + (elregion_fullhash/pix1_n)*pix2_d;
             if (elregion==region_debug){
                 printf("elregion=%d, elregion_fullhash=%d, pix1_start=%.2f pix2_start=%.2f \n", elregion,elregion_fullhash,pix1_start,pix2_start);
                 printf("hashpix_start1=%.2f hashpix_start2=%.2f \n", hashpix_start1,hashpix_start2);}
             int *pix2redpix = calloc(nbinsz_source*len_matcher, sizeof(int)); // For each z matches pixel in unreduced grid to index in reduced grid
-            
+            if (elregion==region_debug){printf("pix2redpix has length = %d \n",nbinsz_source*len_matcher);}
             for (int elreso=0;elreso<nresos_grid;elreso++){
                 thisreso = elreso + hasdiscrete;
                 lower = pixs_galind_bounds_source[rshift_pixs_galind_bounds_source[thisreso]+elregion];
@@ -2834,8 +2837,11 @@ void alloc_Gammans_doubletree_GNN(
                     pix2redpix[zbin_gal*len_matcher+matchers_resoshift[elreso]+elhashpix] = tmpcounts[zbin_gal];
                     tmpcounts[zbin_gal] += 1;
                     if (elregion==region_debug){
-                        printf("elreso=%d, lower=%d, thispix=%d, elhashpix=%d %d %d, zgal=%d: pix2redpix[%d]=%d  \n",
-                               elreso,lower,ind_inpix,elhashpix_1,elhashpix_2,elhashpix,zbin_gal,zbin_gal*len_matcher+matchers_resoshift[elreso]+elhashpix,ind_inpix-lower);
+                        printf("elreso=%d, lower=%d, thispix=%d, elhashpix=%d %d %d, zgal=%d: pix2redpix[%d=%d+%d+%d*%d+%d]=%d  \n", 
+                               elreso, lower,ind_inpix,elhashpix_1,elhashpix_2,elhashpix, zbin_gal,
+                               zbin_gal*len_matcher+matchers_resoshift[elreso]+elhashpix,
+                               zbin_gal*len_matcher,matchers_resoshift[elreso],elhashpix_2,npix_side,elhashpix_1,
+                               ind_inpix-lower);
                     }
                 }
                 free(tmpcounts);
@@ -2877,13 +2883,12 @@ void alloc_Gammans_doubletree_GNN(
             free(rshift_pix_gals_lens);
             free(matchers_resoshift);
             free(ngal_in_pix);
-            free(pix2redpix);  
+            free(pix2redpix);
             free(cumresoshift_z);
             free(thetashifts_z);
             free(zbinshifts);
         }
         printf("Thread %i: nshift=%i, nshift_theo=%i",elthread,size_max_nshift,size_max_nshift_theo);
-        
             
         // Largest possible nshift: each zbin does completely fill out the lowest reso grid.
         // The remaining grids then have 1/4 + 1/16 + ... --> 0.33.... times the data of the largest grid. 
@@ -2984,7 +2989,7 @@ void alloc_Gammans_doubletree_GNN(
             double pos1_gal, pos2_gal;
             elregion_fullhash = index_matcher_hash[elregion];
             hashpix_start1 = pix1_start + (elregion_fullhash%pix1_n)*pix1_d;
-            hashpix_start2 = pix2_start + (elregion_fullhash/pix2_n)*pix2_d;
+            hashpix_start2 = pix2_start + (elregion_fullhash/pix1_n)*pix2_d;
             if (elregion==region_debug){
                 printf("elregion=%d, elregion_fullhash=%d, pix1_start=%.2f pix2_start=%.2f \n", elregion,elregion_fullhash,pix1_start,pix2_start);
                 printf("hashpix_start1=%.2f hashpix_start2=%.2f \n", hashpix_start1,hashpix_start2);}
@@ -3138,7 +3143,7 @@ void alloc_Gammans_doubletree_GNN(
                                 nextncounts[z2rshift] += 1;
                                 tmpwcounts[ind_counts] += w_gal1*w_gal2*dist; 
                                 tmpwnorms[ind_counts] += w_gal1*w_gal2; 
-                                thisG2ns[z2rshift] += wshape_gal1*w_gal2*w_gal2*phirot*phirot;
+                                thisG2ns[z2rshift] += wshape_gal1*w_gal2*w_gal2*phirotc*phirotc;
                                 thisW2ns[z2rshift] += w_gal1*w_gal2*w_gal2;
                                 
                                 ind_Wn = z2rshift;
@@ -3270,6 +3275,7 @@ void alloc_Gammans_doubletree_GNN(
                 free(allowedzinds);
             }
             
+            
             // Allocate the Upsilon/Norms for different grid resolutions from all the cached arrays 
             //
             // Note that for different configurations of the resolutions we do the Gamman
@@ -3354,7 +3360,8 @@ void alloc_Gammans_doubletree_GNN(
                         }
                     }
                 }
-            }  
+            }
+            
             free(reso_rindedges);
             free(rshift_index_matcher_source);
             free(rshift_pixs_galind_bounds_source);
@@ -3369,6 +3376,11 @@ void alloc_Gammans_doubletree_GNN(
             free(thetashifts_z);
             free(zbinshifts);
         }
+        free(Gncache);
+        free(wGncache);
+        free(cwGncache);
+        free(Wncache);
+        free(wWncache);
     }
     
     // Accumulate the Upsilon_n / N_n
@@ -3460,7 +3472,6 @@ void alloc_Gammans_discrete_NGG(
         int threadshift_upsilon = 2*elthread*nnvals_Ups*upsilon_nshift;
         int norm_zshift = nbinsr*nbinsr;
         int norm_nshift = norm_zshift*nzcombis;
-        int norm_compshift = nnvals_Norm*norm_nshift;
         int threadshift_norm = elthread*nnvals_Norm*norm_nshift;
         int threadshift_counts = elthread*nbinsz_lens*nbinsz_source*nbinsr;
         int nbinszr_Gn = nbinsz_source*nbinsr;
@@ -3470,15 +3481,15 @@ void alloc_Gammans_discrete_NGG(
         double drbin = log(rmax/rmin)/nbinsr;
         
         for (int elregion=0; elregion<nregions; elregion++){
-            int region_debug=(int) (nthreads/2) * nregions_per_thread;//99999;
+            int region_debug=(int) (nthreads/2) * nregions_per_thread;
             //int region_debug=99999;
             // Check if this thread is responsible for the region
             int nthread_target = mymin(elregion/nregions_per_thread, nthreads-1);
             if (nthread_target!=elthread){continue;}
-            // printf("Region %d is in thread %d\n",elregion,elthread);
-            if (elregion==region_debug){printf("Region %d is in thread %d\n",elregion,elthread);}
+            //if (elregion==region_debug){printf("Region %d is in thread %d\n",elregion,elthread);}
             if (elthread==nthreads/2){
-                printf("\rDone %.2f per cent",100*((double) elregion-nregions_per_thread*(int)(nthreads/2))/nregions_per_thread);
+                int elreg_inthread = elregion-nregions_per_thread*(nthreads/2);
+                printf("\rDone %.2f per cent",100*((double) elreg_inthread)/nregions_per_thread);
             }
             
             int zbin_gal1, zbin_gal2;
@@ -3656,7 +3667,6 @@ void alloc_Gammans_discrete_NGG(
                         }
                     }
                 }
-                
                 free(thisWns);
                 free(thisGns);
                 free(thisG2ns);
@@ -3669,6 +3679,7 @@ void alloc_Gammans_discrete_NGG(
     }
     
     // Accumulate the Upsilon_n / N_n
+    printf("Accumulate Upsilon\n");
     #pragma omp parallel for num_threads(nthreads)
     for (int thisn=0; thisn<2*nmax+1; thisn++){
         int iUps;
@@ -3689,6 +3700,7 @@ void alloc_Gammans_discrete_NGG(
     }
     
     // Accumulate the bin distances and weights
+    printf("Accumulate bin centers \n");
     for (int thisthread=0; thisthread<nthreads; thisthread++){
         int tmpind;
         int thisthreadshift = thisthread*nbinsz_source*nbinsz_lens*nbinsr; 
@@ -3702,6 +3714,7 @@ void alloc_Gammans_discrete_NGG(
     }
     
     // Get bin centers
+    printf("Finalize bin centers \n");
     for (int elbinz=0; elbinz<nbinsz_source*nbinsz_lens; elbinz++){
         for (int elbinr=0; elbinr<nbinsr; elbinr++){
             int tmpind = elbinz*nbinsr + elbinr;
@@ -3718,7 +3731,6 @@ void alloc_Gammans_discrete_NGG(
     free(totnorms);
 }
 
-/*
 // DoubleTree based estimtor of Lens-Source-Source Correlator
 void alloc_Gammans_doubletree_NGG(
     int nresos, int nresos_grid, double *dpix1_resos,  double *dpix2_resos, double *reso_redges, 
@@ -3748,7 +3760,7 @@ void alloc_Gammans_doubletree_NGG(
     double *totcounts = calloc(nbinsz_lens*nbinsz_source*nbinsr, sizeof(double));
     double *totnorms  = calloc(nbinsz_lens*nbinsz_source*nbinsr, sizeof(double));
     // Temporary arrays that are allocated in parallel and later reduced
-    // Shape of tmpUpsilon ~ (nthreads, nnvals, nz_source, nz_lens, nz_lens, nbinsr, nbinsr)
+    // Shape of tmpUpsilon ~ (nthreads, 2, nnvals, nz_source, nz_lens, nz_lens, nbinsr, nbinsr)
     double complex *tmpUpsilon = calloc(nthreads*_upsilonthreadshift, sizeof(double complex));
     double complex *tmpNorm = calloc(nthreads*_normthreadshift, sizeof(double complex));
     #pragma omp parallel for num_threads(nthreads)
@@ -3764,12 +3776,12 @@ void alloc_Gammans_doubletree_NGG(
         int upsilon_zshift = nbinsr*nbinsr;
         int upsilon_nshift = upsilon_zshift*nzcombis;
         int upsilon_compshift = nnvals_Ups*upsilon_nshift;
-        int threadshift_upsilon = ncomp_Upsilon*elthread*nnvals_Ups*upsilon_nshift;
+        int upsilon_threadshift = elthread*ncomp_Upsilon*upsilon_compshift;
         int norm_zshift = nbinsr*nbinsr;
         int norm_nshift = norm_zshift*nzcombis;
         int norm_compshift = nnvals_Norm*norm_nshift;
-        int threadshift_norm = elthread*nnvals_Norm*norm_nshift;
-        int threadshift_counts = elthread*nbinsz_lens*nbinsz_source*nbinsr;
+        int norm_threadshift = elthread*nnvals_Norm*norm_nshift;
+        int counts_threadshift = elthread*nbinsz_lens*nbinsz_source*nbinsr;
         int nbinszr_Gn = nbinsz_source*nbinsr;
         int nbinszr_Wn = nbinsz_source*nbinsr;
         double rmin_sq = rmin*rmin;
@@ -3787,7 +3799,7 @@ void alloc_Gammans_doubletree_NGG(
         double complex *wWncache = calloc(nnvals_Wn*size_max_nshift, sizeof(double complex));
         int *Wncache_updates = calloc(size_max_nshift, sizeof(int));
         for (int elregion=0; elregion<nregions; elregion++){
-            int region_debug=-1;
+            int region_debug=0;
             // Check if this thread is responsible for the region
             int nthread_target = mymin(elregion/nregions_per_thread, nthreads-1);
             if (nthread_target!=elthread){continue;}
@@ -3875,7 +3887,7 @@ void alloc_Gammans_doubletree_NGG(
             double pos1_gal, pos2_gal;
             elregion_fullhash = index_matcher_hash[elregion];
             hashpix_start1 = pix1_start + (elregion_fullhash%pix1_n)*pix1_d;
-            hashpix_start2 = pix2_start + (elregion_fullhash/pix2_n)*pix2_d;
+            hashpix_start2 = pix2_start + (elregion_fullhash/pix1_n)*pix2_d;
             if (elregion==region_debug){
                 printf("elregion=%d, elregion_fullhash=%d, pix1_start=%.2f pix2_start=%.2f \n", elregion,elregion_fullhash,pix1_start,pix2_start);
                 printf("hashpix_start1=%.2f hashpix_start2=%.2f \n", hashpix_start1,hashpix_start2);}
@@ -3912,7 +3924,7 @@ void alloc_Gammans_doubletree_NGG(
             int *cumresoshift_z = calloc(nbinsz_lens*(nresos+1), sizeof(int)); // Cumulative shift index for resolution at z1
             int *thetashifts_z = calloc(nbinsz_lens, sizeof(int)); // Shift index for theta given z1
             int *zbinshifts = calloc(nbinsz_lens+1, sizeof(int)); // Cumulative shift index for z1
-            int zbin2shift, nshift; // Shifts for z2 index and n index
+            int zbin2shift, nshift_cache; // Shifts for z2 index and n index
             for (int elz=0; elz<nbinsz_lens; elz++){
                 if (elregion==region_debug){printf("z=%d/%d: \n", elz,nbinsz_lens);}
                 for (int elreso=0; elreso<nresos; elreso++){
@@ -3930,12 +3942,12 @@ void alloc_Gammans_doubletree_NGG(
                 if ((elregion==region_debug)){printf("thetashifts_z[z]=%d: \nzbinshifts[z+1]=%d: \n", thetashifts_z[elz],  zbinshifts[elz+1]);}
             }            
             zbin2shift = zbinshifts[nbinsz_lens];
-            nshift = nbinsz_source*zbin2shift;
+            nshift_cache = nbinsz_source*zbin2shift;
             // Set all the cache indices that are updated in this region to zero
-            if ((elregion==region_debug)){printf("zbin2shift=%d: nshift=%d: size_max_nshift=%d \n", zbin2shift, nshift, size_max_nshift);}
-            for (int _i=0; _i<nnvals_Gn*nshift; _i++){Gncache[_i] = 0; wGncache[_i] = 0; cwGncache[_i] = 0;}
-            for (int _i=0; _i<nnvals_Wn*nshift; _i++){ Wncache[_i] = 0; wWncache[_i] = 0;}
-            for (int _i=0; _i<nshift; _i++){ Wncache_updates[_i] = 0;}
+            if ((elregion==region_debug)){printf("zbin2shift=%d: nshift_cache=%d: size_max_nshift=%d \n", zbin2shift, nshift_cache, size_max_nshift);}
+            for (int _i=0; _i<nnvals_Gn*nshift_cache; _i++){Gncache[_i] = 0; wGncache[_i] = 0; cwGncache[_i] = 0;}
+            for (int _i=0; _i<nnvals_Wn*nshift_cache; _i++){ Wncache[_i] = 0; wWncache[_i] = 0;}
+            for (int _i=0; _i<nshift_cache; _i++){ Wncache_updates[_i] = 0;}
             int Wncache_totupdates=0;
             
             
@@ -3971,7 +3983,8 @@ void alloc_Gammans_doubletree_NGG(
                 nbinszr_reso = nbinsz_source*nbinsr_reso;
                 lower1 = pixs_galind_bounds_lens[rshift_pixs_galind_bounds_lens[elreso]+elregion];
                 upper1 = pixs_galind_bounds_lens[rshift_pixs_galind_bounds_lens[elreso]+elregion+1];
-                double complex *thisWns =  calloc(nnvals_Gn*nbinszr_reso, sizeof(double complex));
+                double complex *thisWns =  calloc(nnvals_Wn*nbinszr_reso, sizeof(double complex));
+                double complex *thisGns =  calloc(nnvals_Gn*nbinszr_reso, sizeof(double complex));
                 double complex *thisG2ns =  calloc(2*nbinszr_reso, sizeof(double complex));
                 double complex *thisW2ns =  calloc(nbinszr_reso, sizeof(double complex));
                 int *thisncounts = calloc(nbinszr_reso, sizeof(int));
@@ -3987,8 +4000,6 @@ void alloc_Gammans_doubletree_NGG(
                     pos1_gal1 = pos1_lens_resos[ind_gal1];
                     pos2_gal1 = pos2_lens_resos[ind_gal1];
                     w_gal1 = w_lens_resos[ind_gal1];
-                    e1_gal1 = e1_lens_resos[ind_gal1];
-                    e2_gal1 = e2_lens_resos[ind_gal1];
                     z1shift = z_gal1*nbinsz_source*nbinsr;
                     
                     int pix1_lower = mymax(0, (int) floor((pos1_gal1 - (rmax_reso+pix1_d) - pix1_start)/pix1_d));
@@ -4012,28 +4023,28 @@ void alloc_Gammans_doubletree_NGG(
                                 if(dist < rmin_reso_sq || dist >= rmax_reso_sq) continue;
                                 w_gal2 = w_source_resos[ind_gal2];
                                 z_gal2 = zbin_source_resos[ind_gal2];
-                                e1_gal2 = e1_source[ind_gal2];
-                                e2_gal2 = e2_source[ind_gal2];
+                                e1_gal2 = e1_source_resos[ind_gal2];
+                                e2_gal2 = e2_source_resos[ind_gal2];
                                 wshape_gal2 = w_gal2*(e1_gal2+I*e2_gal2);
                                 
                                 dist = sqrt(dist);
                                 rbin = (int) floor((log(dist)-logrmin)/drbin);
                                 z2rshift = z_gal2*nbinsr_reso + rbin - rbinmin;
-                                ind_counts = threadshift_counts + z1shift + z_gal2*nbinsr + rbin;
+                                ind_counts = counts_threadshift + z1shift + z_gal2*nbinsr + rbin;
                                 
                                 // New
                                 phirot = (rel1+I*rel2)/dist;
                                 thisncounts[z2rshift] += 1;
                                 tmpwcounts[ind_counts] += w_gal1*w_gal2*dist; 
                                 tmpwnorms[ind_counts] += w_gal1*w_gal2; 
-                                thisG2ns[z2rshift] += w_gal1*wshape_gal2*wshape_gal2*phirot*phirot*phirot*phirot;
-                                thisG2ns[nbinszr_Gn+z2rshift] += w_gal1*wshape_gal2*conj(wshape_gal2);
+                                thisG2ns[z2rshift] += w_gal1*wshape_gal2*wshape_gal2*conj(phirot*phirot*phirot*phirot);
+                                thisG2ns[nbinszr_reso+z2rshift] += w_gal1*wshape_gal2*conj(wshape_gal2);
                                 thisW2ns[z2rshift] += w_gal1*w_gal2*w_gal2;
-
+                                
                                 // n=0
-                                ind_Wnp = nmax*nbinszr_Wn + z2rshift;
+                                ind_Wnp = nmax*nbinszr_reso + z2rshift;
                                 ind_Wnm = ind_Wnp;
-                                ind_Gnp = (nmax+2)*nbinszr_Gn+z2rshift;
+                                ind_Gnp = (nmax+2)*nbinszr_reso+z2rshift;
                                 ind_Gnm = ind_Gnp;
                                 nphirot = 1;
                                 thisGns[ind_Gnp] += wshape_gal2;
@@ -4041,36 +4052,36 @@ void alloc_Gammans_doubletree_NGG(
                                 // n \in {-nmax, ..., -1, 1, ...,  nmax}
                                 for (int nextn=1;nextn<=nmax;nextn++){
                                     nphirot *= phirot; 
-                                    ind_Wnp += nbinszr_Wn;
-                                    ind_Wnm -= nbinszr_Wn;
-                                    ind_Gnp += nbinszr_Gn;
-                                    ind_Gnm -= nbinszr_Gn;
+                                    ind_Wnp += nbinszr_reso;
+                                    ind_Wnm -= nbinszr_reso;
+                                    ind_Gnp += nbinszr_reso;
+                                    ind_Gnm -= nbinszr_reso;
                                     thisGns[ind_Gnp] += wshape_gal2*nphirot;
                                     thisGns[ind_Gnm] += wshape_gal2*conj(nphirot);
                                     thisWns[ind_Wnp] += w_gal2*nphirot;
                                     thisWns[ind_Wnm] += w_gal2*conj(nphirot);
                                 }
-
                                 // n \in {-nmax-2, -nmax-1, nmax+1, nmax+2}
                                 nphirot *= phirot; 
-                                ind_Gnp += nbinszr_Gn;
-                                ind_Gnm -= nbinszr_Gn;
+                                ind_Gnp += nbinszr_reso;
+                                ind_Gnm -= nbinszr_reso;
                                 thisGns[ind_Gnp] += wshape_gal2*nphirot;
                                 thisGns[ind_Gnm] += wshape_gal2*conj(nphirot);
                                 nphirot *= phirot; 
-                                ind_Gnp += nbinszr_Gn;
-                                ind_Gnm -= nbinszr_Gn;
+                                ind_Gnp += nbinszr_reso;
+                                ind_Gnm -= nbinszr_reso;
                                 thisGns[ind_Gnp] += wshape_gal2*nphirot;
                                 thisGns[ind_Gnm] += wshape_gal2*conj(nphirot);
                             }
                         }
                     }
+                    
                     // Update the Gncache and Gnnormcache
                     // Gncache in range [-1, .., nmax+1]
                     // Nncache in range [0, ..., nmax]
                     int red_reso2, npix_side_reso2, elhashpix_1_reso2, elhashpix_2_reso2, elhashpix_reso2, redpix_reso2;
                     double complex thisGn, thisNn;
-                    int _tmpindcache, _tmpindGn, zrshift;
+                    int _tmpindcache, _tmpindGn, _tmpindWn, zrshift;
                     for (int elreso2=elreso; elreso2<nresos; elreso2++){
                         red_reso2 = elreso2 - hasdiscrete;
                         if (hasdiscrete==1 && elreso==0 && elreso2==0){red_reso2 += hasdiscrete;}
@@ -4080,17 +4091,18 @@ void alloc_Gammans_doubletree_NGG(
                         elhashpix_reso2 = elhashpix_2_reso2*npix_side_reso2 + elhashpix_1_reso2;
                         redpix_reso2 = pix2redpix[z_gal1*len_matcher+matchers_resoshift[red_reso2]+elhashpix_reso2];
                         for (int zbin2=0; zbin2<nbinsz_source; zbin2++){
-                            if (elregion==region_debug){
-                                printf("Gnupdates for reso1=%d reso2=%d red_reso2=%d, galindex=%d, z1=%d, z2=%d:%d radial updates; shiftstart %d = %d+%d+%d+%d+%d \n"
-                                       ,elreso,elreso2,red_reso2,ind_gal1,z_gal1,zbin2,rbinmax-rbinmin,
+                            if (elregion==-1){
+                                printf("Gnupdates for elregion=%d reso1=%d reso2=%d red_reso2=%d, galindex=%d, z1=%d, z2=%d:%d radial updates; shiftstart %d = %d+%d+%d+%d+%d, size_max_nshift=%d\n"
+                                       ,elregion,elreso,elreso2,red_reso2,ind_gal1,z_gal1,zbin2,rbinmax-rbinmin,
                                        zbin2*zbin2shift + zbinshifts[z_gal1] + rbinmin*thetashifts_z[z_gal1] + 
                                        cumresoshift_z[z_gal1*(nresos+1) + elreso2] + redpix_reso2,
                                        zbin2*zbin2shift, zbinshifts[z_gal1], rbinmin*thetashifts_z[z_gal1],
-                                       cumresoshift_z[z_gal1*(nresos+1) + elreso2], redpix_reso2);
+                                       cumresoshift_z[z_gal1*(nresos+1) + elreso2], redpix_reso2, size_max_nshift);
                             }
                             for (int thisrbin=rbinmin; thisrbin<rbinmax; thisrbin++){
                                 zrshift = zbin2*nbinsr_reso + thisrbin-rbinmin;
                                 if (cabs(thisWns[nbinszr_reso+zrshift])<1e-10){continue;}
+                                //printf("Doing Gns/Nns for rbin %i/%i",thisrbin,rbinmax-rbinmin);
                                 ind_Gncacheshift = zbin2*zbin2shift + zbinshifts[z_gal1] + thisrbin*thetashifts_z[z_gal1] + 
                                     cumresoshift_z[z_gal1*(nresos+1) + elreso2] + redpix_reso2;
                                 _tmpindGn = zrshift;
@@ -4098,27 +4110,28 @@ void alloc_Gammans_doubletree_NGG(
                                 for(int thisn=0; thisn<nnvals_Gn; thisn++){
                                     thisGn = thisGns[_tmpindGn];
                                     Gncache[_tmpindcache] += thisGn;
-                                    wGncache[_tmpindcache] += wshape_gal1*thisGn;
-                                    cwGncache[_tmpindcache] += conj(wshape_gal1)*thisGn;
+                                    wGncache[_tmpindcache] += w_gal1*thisGn;
+                                    //cwGncache[_tmpindcache] += conj(w_gal1)*thisGn;
                                     _tmpindGn += nbinszr_reso;
-                                    _tmpindcache += nshift;
+                                    _tmpindcache += nshift_cache;
                                 }
-                                _tmpindGn = zrshift+nbinszr_reso;
+                                _tmpindWn = zrshift;
                                 _tmpindcache = ind_Gncacheshift;
                                 for(int thisn=0; thisn<nnvals_Wn; thisn++){
-                                    thisNn = thisWns[_tmpindGn];
+                                    thisNn = thisWns[_tmpindWn];
                                     Wncache[_tmpindcache] += thisNn;
                                     wWncache[_tmpindcache] += w_gal1*thisNn;
-                                    _tmpindGn += nbinszr_reso;
-                                    _tmpindcache += nshift;
+                                    _tmpindWn += nbinszr_reso;
+                                    _tmpindcache += nshift_cache;
                                 }
                                 Wncache_updates[ind_Gncacheshift] += 1;
                                 Wncache_totupdates += 1;
+                                //printf("Done Gns/Nns for rbin %d/%d",thisrbin,rbinmax-rbinmin);
                             }
-                            
                         } 
                     }
                     
+                    if (elregion==region_debug){printf("Doing rbin-thinning (same reso)");}
                     // Allocate same reso Upsilon
                     // First check for zero count bins (most likely only in discrete-discrete bit)
                     int nallowedcounts = 0;
@@ -4132,18 +4145,20 @@ void alloc_Gammans_doubletree_NGG(
                             }
                         }
                     }
-                    // TODO: UPSILON UPDATE DEBUG
+                    
+                    if (elregion==region_debug){printf("Doing Upsilon update (same reso, ncounts=%d)",nallowedcounts);}
                     // Now update the Upsilon_n
-                    // tmpUpsilon have shape (nthreads, 2, nmax+1, nz_source, nz_lens, nz_lens, nbinsr, nbinsr)
+                    // tmpUpsilon have shape (nthreads, 2, 2*nmax+1, nz_lens, nz_source, nz_source, nbinsr, nbinsr)
                     // Gns have shape (nmax+5, nbinsz_source, nbinsr)
                     // Upsilon_-(thet1, thet2) ~ w * G_{+n-2}(thet1) * G_{-n-2}(thet2) + delta^K_{thet1,thet2} * (w * (we)^2*exp(4*phi))
                     // Upsilon_+(thet1, thet2) ~ w * G_{+n-2}(thet1) * conj(G_{+n-2})(thet2) + delta^K_{thet1,thet2} * (w * |we|^2)
                     // Norm(thet1, thet2)    ~   w  * W_{n}(thet1)   * W_{-n}(thet2)   - delta^K_{thet1,thet2} * (w  * w*w)
-                    for (int thisn=0; thisn<nmax+1; thisn++){
-                        int elb1_full, elb2_full, _gammashift, gammashift;
-                        int _wind, zrshift, _zcombi, zcombi, elb1, zbin2, elb2, zbin3;
+                    for (int thisn=-nmax; thisn<=nmax; thisn++){
+                        int elb1_full, elb2_full, z3r2shift, gammashift_ups, gammashift_norm;
+                        int _wind, _upsind1, _upsind2p, _upsind2m, zrshift, _zcombi, zcombi, elb1, zbin2, elb2, zbin3;
                         double complex nextUps, nextN;
-                        int thisnshift = elthread*upsilon_threadshift + thisn*upsilon_nshift;
+                        int thisnshift_ups = upsilon_threadshift + (nmax+thisn)*upsilon_nshift;
+                        int thisnshift_norm = norm_threadshift + (nmax+thisn)*upsilon_nshift;
                         for (int zrcombis1=0; zrcombis1<nallowedcounts; zrcombis1++){
                             elb1 = allowedrinds[zrcombis1];
                             zbin2 = allowedzinds[zrcombis1];
@@ -4152,33 +4167,45 @@ void alloc_Gammans_doubletree_NGG(
                             // Double counting correction
                             if (dccorr==1){
                                 zcombi = z_gal1*nbinsz_source*nbinsz_source + zbin2*nbinsz_source + zbin2;
-                                gammashift = thisnshift + zcombi*upsilon_zshift + elb1_full*nbinsr+elb1_full;
-                                tmpUpsilon[gammashift] += thisG2ns[zrshift];
-                                tmpNorm[gammashift] -= thisW2ns[zrshift];  
+                                gammashift_ups = thisnshift_ups + zcombi*upsilon_zshift + elb1_full*nbinsr+elb1_full;
+                                gammashift_norm = thisnshift_norm + zcombi*upsilon_zshift + elb1_full*nbinsr+elb1_full;
+                                tmpUpsilon[gammashift_ups] -= thisG2ns[zrshift];
+                                tmpUpsilon[upsilon_compshift+gammashift_ups] -= thisG2ns[nbinszr_reso+zrshift];
+                                tmpNorm[gammashift_norm] -= thisW2ns[zrshift];  
                             }
                             _zcombi = z_gal1*nbinsz_source*nbinsz_source + zbin2*nbinsz_source;
-                            _wind = (thisn+1)*nbinszr_reso+zrshift;
-                            _gammashift = thisnshift + elb1_full*nbinsr;
-                            nextUps = -wshape_gal1*thisWns[_wind-nbinszr_reso];
+                            _wind = (nmax+thisn)*nbinszr_reso+zrshift;
+                            _upsind1 = (nmax+0+thisn)*nbinszr_reso+zrshift;
+                            nextUps = w_gal1*thisGns[_upsind1];
                             nextN = w_gal1*thisWns[_wind];
                             for (int zrcombis2=0; zrcombis2<nallowedcounts; zrcombis2++){
                                 elb2 = allowedrinds[zrcombis2];
                                 zbin3 = allowedzinds[zrcombis2];
                                 elb2_full = elb2 + rbinmin;
+                                zrshift = zbin3*nbinsr_reso + elb2;
                                 zcombi = _zcombi + zbin3;
-                                gammashift = _gammashift + zcombi*upsilon_zshift + elb2_full;
-                                _wind = (thisn+1)*nbinszr_reso + zbin3*nbinsr_reso + elb2;
-                                tmpUpsilon[gammashift] += nextUps*conj(thisWns[_wind+nbinszr_reso]);
-                                tmpNorm[gammashift] += nextN*conj(thisWns[_wind]);
+                                z3r2shift = zcombi*upsilon_zshift + elb1_full*nbinsr + elb2_full;
+                                gammashift_ups = thisnshift_ups + z3r2shift;
+                                gammashift_norm = thisnshift_norm + z3r2shift;
+                                _wind =     (nmax-thisn)*nbinszr_reso + zrshift;
+                                _upsind2p = (nmax-thisn)*nbinszr_reso + zrshift;
+                                _upsind2m = (nmax+thisn)*nbinszr_reso + zrshift;
+                                tmpUpsilon[gammashift_ups] += nextUps*thisGns[_upsind2p];
+                                tmpUpsilon[upsilon_compshift+gammashift_ups] += nextUps*conj(thisGns[_upsind2m]);
+                                tmpNorm[gammashift_norm] += nextN*thisWns[_wind];
                             }
                         }
                     }
-                    
-                    for (int _i=0;_i<nnvals_Gn*nbinszr_reso;_i++){thisWns[_i]=0;}
-                    for (int _i=0;_i<nbinszr_reso;_i++){thisG2ns[_i]=0;}
+                    if(elregion%100==0){printf("Setting stuff to 0 for region %d",elregion);}
+                    for (int _i=0;_i<nnvals_Wn*nbinszr_reso;_i++){thisWns[_i]=0;}
+                    for (int _i=0;_i<nnvals_Gn*nbinszr_reso;_i++){thisGns[_i]=0;}
+                    for (int _i=0;_i<2*nbinszr_reso;_i++){thisG2ns[_i]=0;}
                     for (int _i=0;_i<nbinszr_reso;_i++){
                         thisW2ns[_i]=0; thisncounts[_i]=0; allowedrinds[_i]=0; allowedzinds[_i]=0;}
+                    if(elregion%100==0){printf("Finished stuff to 0 for region %d",elregion);}
                 }
+                if(elregion%100==0)printf("Freeing stuff for region %d",elregion);
+                free(thisGns);
                 free(thisWns);
                 free(thisG2ns);
                 free(thisW2ns);
@@ -4186,7 +4213,6 @@ void alloc_Gammans_doubletree_NGG(
                 free(allowedrinds);
                 free(allowedzinds);
             }
-            
             // Allocate the Upsilon/Norms for different grid resolutions from all the cached arrays 
             //
             // Note that for different configurations of the resolutions we do the Gamman
@@ -4200,16 +4226,18 @@ void alloc_Gammans_doubletree_NGG(
             // where wW_xxx := w(shape)*W_xxx and cwG_xxx := conj(w(shape))*G_xxx
             double complex nextUps, nextN;
             int zcombi;
-            for (int thisn=0; thisn<nmax+1; thisn++){
-                int _upsshift;
-                int thisnshift = elthread*upsilon_threadshift + thisn*upsilon_nshift;
+            if(elregion%100==0)printf("Allocating different reso stuff for region %d",elregion);
+            for (int thisn=-nmax; thisn<=nmax; thisn++){
+                int _upsshift, _normshift;
+                //int thisnshift = upsilon_threadshift + (nmax+thisn)*upsilon_nshift;
+                int thisnshift_ups = upsilon_threadshift + (nmax+thisn)*upsilon_nshift;
+                int thisnshift_norm = norm_threadshift + (nmax+thisn)*upsilon_nshift;
                 for (int zbin1=0; zbin1<nbinsz_lens; zbin1++){
                     for (int zbin2=0; zbin2<nbinsz_source; zbin2++){
                         for (int zbin3=0; zbin3<nbinsz_source; zbin3++){
                             zcombi = zbin1*nbinsz_source*nbinsz_source + zbin2*nbinsz_source + zbin3;
                             int _thetashift_z = thetashifts_z[zbin1]; // This is basically shift for theta_i --> theta_{i+1}
                             //if (zcombis_allowed[zcombi]==0){continue;}
-                            
                             // Case max(reso1, reso2) = reso2
                             for (int thisreso1=0; thisreso1<nresos; thisreso1++){
                                 rbinmin1 = reso_rindedges[thisreso1];
@@ -4219,21 +4247,23 @@ void alloc_Gammans_doubletree_NGG(
                                     rbinmax2 = reso_rindedges[thisreso2+1];
                                     for (int elgal=0; elgal<ngal_in_pix[zbin1*nresos+thisreso2]; elgal++){
                                         for (int elb1=rbinmin1; elb1<rbinmax1; elb1++){
-                                            // n --> zbin2 --> zbin1 --> radius --> [ [0]*ngal_zbin1_reso1 | ... | [0]*ngal_zbin1_reson ]
-                                            
-                                            
-                                            ind_Wncacheshift = zbin2*zbin2shift + zbinshifts[zbin1] + elb1*thetashifts_z[zbin1] +
+                                            // n --> zbin2 --> zbin1 --> radius --> [ [0]*ngal_zbin1_reso1 | ... |
+                                            //                                        | ...  | [0]*ngal_zbin1_reson ]
+                                            ind_Wncacheshift = zbin2*zbin2shift + zbinshifts[zbin1] + elb1*thetashifts_z[zbin1]+
                                                 cumresoshift_z[zbin1*(nresos+1) + thisreso2] + elgal;
-                                            nextUps = -wGncache[(thisn+0)*nshift+ind_Wncacheshift];
-                                            nextN = wWncache[thisn*nshift+ind_Wncacheshift];
-                                            _upsshift = thisnshift + zcombi*upsilon_zshift + elb1*nbinsr;
-                                            ind_Wncacheshift = zbin3*zbin2shift + zbinshifts[zbin1] + rbinmin2*thetashifts_z[zbin1] +
-                                                    cumresoshift_z[zbin1*(nresos+1) + thisreso2] + elgal;
+                                            nextUps = wGncache[(nmax+thisn)*nshift_cache+ind_Wncacheshift];
+                                            nextN = wWncache[(nmax+thisn)*nshift_cache+ind_Wncacheshift];
+                                            _upsshift = thisnshift_ups + zcombi*upsilon_zshift + elb1*nbinsr;
+                                            _normshift = thisnshift_norm+ zcombi*upsilon_zshift + elb1*nbinsr;
+                                            ind_Wncacheshift = zbin3*zbin2shift+zbinshifts[zbin1]+rbinmin2*thetashifts_z[zbin1]+
+                                                cumresoshift_z[zbin1*(nresos+1) + thisreso2] + elgal;
                                             for (int elb2=rbinmin2; elb2<rbinmax2; elb2++){
-                                                //ind_Wncacheshift = zbin3*zbin2shift + zbinshifts[zbin1] + elb2*thetashifts_z[zbin1] +
-                                                //    cumresoshift_z[zbin1*(nresos+1) + thisreso2] + elgal;
-                                                tmpUpsilon[_upsshift+elb2] += nextUps*conj(Gncache[(thisn+2)*nshift+ind_Wncacheshift]);
-                                                tmpNorm[_upsshift+elb2] += nextN*conj(Wncache[thisn*nshift+ind_Wncacheshift]);
+                                                tmpUpsilon[_upsshift+elb2] += nextUps *  
+                                                    Gncache[(nmax-thisn)*nshift_cache+ind_Wncacheshift];
+                                                tmpUpsilon[_upsshift+upsilon_compshift+elb2] += nextUps *  
+                                                    conj(Gncache[(nmax+thisn)*nshift_cache+ind_Wncacheshift]);
+                                                tmpNorm[_normshift+elb2] += nextN * 
+                                                    conj(Wncache[(nmax+thisn)*nshift_cache+ind_Wncacheshift]);
                                                 ind_Wncacheshift += _thetashift_z;
                                                 ind_Gncacheshift += _thetashift_z;
                                             }
@@ -4241,6 +4271,7 @@ void alloc_Gammans_doubletree_NGG(
                                     }
                                 }
                             }
+                            
                             
                             // Case max(reso1, reso2) = reso1
                             for (int thisreso2=0; thisreso2<nresos; thisreso2++){
@@ -4251,16 +4282,21 @@ void alloc_Gammans_doubletree_NGG(
                                     rbinmax1 = reso_rindedges[thisreso1+1];
                                     for (int elgal=0; elgal<ngal_in_pix[zbin1*nresos+thisreso1]; elgal++){
                                         for (int elb1=rbinmin1; elb1<rbinmax1; elb1++){
-                                            ind_Wncacheshift = zbin2*zbin2shift + zbinshifts[zbin1] + elb1*thetashifts_z[zbin1] +
+                                            ind_Wncacheshift = zbin2*zbin2shift + zbinshifts[zbin1] + elb1*thetashifts_z[zbin1]+
                                                 cumresoshift_z[zbin1*(nresos+1) + thisreso1] + elgal;
-                                            nextUps = -Gncache[(thisn+0)*nshift+ind_Wncacheshift];
-                                            nextN = Wncache[thisn*nshift+ind_Wncacheshift];
-                                            _upsshift = thisnshift + zcombi*upsilon_zshift + elb1*nbinsr;
-                                            ind_Wncacheshift = zbin3*zbin2shift + zbinshifts[zbin1] + rbinmin2*thetashifts_z[zbin1] +
-                                                    cumresoshift_z[zbin1*(nresos+1) + thisreso1] + elgal;
+                                            nextUps = Gncache[(nmax+thisn)*nshift_cache+ind_Wncacheshift];
+                                            nextN = Wncache[(nmax+thisn)*nshift_cache+ind_Wncacheshift];
+                                            _upsshift = thisnshift_ups + zcombi*upsilon_zshift + elb1*nbinsr;
+                                            _normshift = thisnshift_norm+ zcombi*upsilon_zshift + elb1*nbinsr;
+                                            ind_Wncacheshift = zbin3*zbin2shift+zbinshifts[zbin1]+rbinmin2*thetashifts_z[zbin1]+
+                                                cumresoshift_z[zbin1*(nresos+1) + thisreso1] + elgal;
                                             for (int elb2=rbinmin2; elb2<rbinmax2; elb2++){
-                                                tmpUpsilon[_upsshift+elb2] += nextUps*conj(cwGncache[thisn*nshift+ind_Wncacheshift]);
-                                                tmpNorm[_upsshift+elb2] += nextN*conj(wWncache[(thisn+2)*nshift+ind_Wncacheshift]);
+                                                tmpUpsilon[_upsshift+elb2] += nextUps *
+                                                    wGncache[(nmax-thisn)*nshift_cache+ind_Wncacheshift];
+                                                tmpUpsilon[_upsshift+upsilon_compshift+elb2] += nextUps *
+                                                    conj(wGncache[(nmax+thisn)*nshift_cache+ind_Wncacheshift]);
+                                                tmpNorm[_normshift+elb2] += nextN * 
+                                                    conj(wWncache[(nmax+thisn)*nshift_cache+ind_Wncacheshift]);
                                                 ind_Wncacheshift += _thetashift_z;
                                                 ind_Gncacheshift += _thetashift_z;
                                             }
@@ -4268,10 +4304,11 @@ void alloc_Gammans_doubletree_NGG(
                                     }
                                 }
                             }
+                            
                         }
                     }
                 }
-            }  
+            } 
             free(reso_rindedges);
             free(rshift_index_matcher_source);
             free(rshift_pixs_galind_bounds_source);
@@ -4286,11 +4323,17 @@ void alloc_Gammans_doubletree_NGG(
             free(thetashifts_z);
             free(zbinshifts);
         }
+        free(Gncache);
+        free(wGncache);
+        free(cwGncache);
+        free(Wncache);
+        free(wWncache);
+        free(Wncache_updates);
     }
     
     // Accumulate the Upsilon_n / N_n
     #pragma omp parallel for num_threads(nthreads)
-    for (int thisn=0; thisn<nmax+1; thisn++){
+    for (int thisn=0; thisn<2*nmax+1; thisn++){
         int iUps;
         for (int thisthread=0; thisthread<nthreads; thisthread++){
             int thisthreadshift = thisthread*_upsilonthreadshift;
@@ -4299,7 +4342,8 @@ void alloc_Gammans_doubletree_NGG(
                     for (int elb2=0; elb2<nbinsr; elb2++){
                         iUps = thisn*_upsilonnshift + zcombi*_upsilonzshift + elb1*nbinsr + elb2;
                         Upsilon_n[iUps] += tmpUpsilon[thisthreadshift+iUps];
-                        Norm_n[iUps] += tmpNorm[thisthreadshift+iUps];
+                        Upsilon_n[_upsiloncompshift+iUps] += tmpUpsilon[thisthreadshift+_upsiloncompshift+iUps];
+                        Norm_n[iUps] += tmpNorm[thisthread*_normthreadshift+iUps];
                     }
                 }
             }
@@ -4335,27 +4379,22 @@ void alloc_Gammans_doubletree_NGG(
     free(totcounts);
     free(totnorms);
 }
-*/
-      
-/*
-
-// Non-tomo 4pcf
+    
+// Non-tomo 4pcf using discrete estimator
+// Very basic, no use of symmetry properties
 void alloc_notomoGammans_discrete_gggg(
     int *isinner, double *weight, double *pos1, double *pos2, double *e1, double *e2, int ngal, 
     int nmax, double rmin, double rmax, double *rbins, int nbinsr, int dccorr,
     int *index_matcher_hash, int *pixs_galind_bounds, int *pix_gals, int nregions, 
     double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n, 
-    int nthreads, double *bin_centers, double complex *Gammans, double complex *Gammans_norm){
-    
-    int _gamma_nshift = nbinsr*nbinsr*nbinsr;
-    int _gamma_compshift = (4*nmax+3)*(4*nmax+3)*_gamma_nshift;
-
-    double *totcounts = calloc(nbinsr, sizeof(double));
-    double *totnorms = calloc(nbinsr, sizeof(double));
+    int nthreads, double *bin_centers, double complex *Upsilon_n, double complex *N_n){
     
     // Temporary arrays that are allocated in parallel and later reduced
     double *tmpwcounts = calloc(nthreads*nbinsr, sizeof(double));
     double *tmpwnorms = calloc(nthreads*nbinsr, sizeof(double));
+    
+    double *totcounts = calloc(nbinsr, sizeof(double));
+    double *totnorms = calloc(nbinsr, sizeof(double));
     
     #pragma omp parallel for num_threads(nthreads)
     for(int elthread=0;elthread<nthreads;elthread++){
@@ -4363,28 +4402,39 @@ void alloc_notomoGammans_discrete_gggg(
         int nbinsz = 1;
         int ncomp = 8;
         int nnvals_Gn = 4*nmax+3; // Need to cover [-n1-n2-3, n1+n2-1]
-        int nnvals_G2n = 4*nmax+3; // Need to cover [-n1-n2-5, n1+n2-3]
-        int nnvals_Nn = 4*nmax+1; // Need to cover [-n1-n2, n1+n2]
-        int nnvals_Upsn = 2*nmax+3; // Need tocover [-nmax,+nmax]
+        int nnvals_G2n = 4*nmax+7; // Need to cover [-n1-n2-5, n1+n2+1]
+        int nnvals_Wn = 4*nmax+1; // Need to cover [-n1-n2, n1+n2]
+        int nnvals_Upsn = 2*nmax+1; // Need tocover [-nmax,+nmax]
         int nzero_Gn = 2*nmax+3;
         int nzero_G2n = 2*nmax+5;
-        int nzero_Nn = 2*nmax;
+        int nzero_Wn = 2*nmax;
         int nzero_Ups = nmax;
         
-        double complex *tmpUpsilonsn = calloc(8*_gamma_compshift, sizeof(double complex));
-        double complex *tmpGammans_norm = calloc(_gamma_compshift, sizeof(double complex));
+        int ups_nshift = nbinsr*nbinsr*nbinsr;
+        int n2n3combis = nnvals_Upsn*nnvals_Upsn;
+        int ups_compshift = n2n3combis*ups_nshift;
+        double complex *tmpUpsilon_n = calloc(8*ups_compshift, sizeof(double complex));
+        double complex *tmpN_n = calloc(ups_compshift, sizeof(double complex));
         
         for (int elregion=0; elregion<nregions; elregion++){
-            
+            int region_debug = mymin(500,nregions-1);
             // Check if this thread is responsible for the region
             int nthread_target = mymin(elregion/nregions_per_thread, nthreads-1);
             if (nthread_target!=elthread){continue;}
             // printf("Region %d is in thread %d\n",elregion,elthread);
             
-            for (int ind_gal=0; ind_gal<ngal; ind_gal++){
-                // Check if galaxy falls in stripe used in this process
+            if (elregion==region_debug){printf("Region %d is in thread %d (%i regions in total)\n",
+                                               elregion,elthread,nregions);}
+            if (elthread==nthreads/2){
+                printf("\rDone %.2f per cent",
+                       100*((double) elregion-nregions_per_thread*(int)(nthreads/2))/nregions_per_thread);
+            }
+            int lower1 = pixs_galind_bounds[elregion];
+            int upper1 = pixs_galind_bounds[elregion+1];
+            for (int ind_inpix1=lower1; ind_inpix1<upper1; ind_inpix1++){
+                int ind_gal = pix_gals[ind_inpix1];
                 double p11, p12, w1, e11, e12;
-                int zbin1, innergal;
+                int innergal;
                 #pragma omp critical
                 {p11 = pos1[ind_gal];
                 p12 = pos2[ind_gal];
@@ -4394,49 +4444,43 @@ void alloc_notomoGammans_discrete_gggg(
                 innergal = isinner[ind_gal];}
                 if (innergal==0){continue;}
                 
-                int ind_pix1, ind_pix2, ind_inpix, ind_gal2;
+                int ind_gal2;
                 int ind_red, lower, upper; 
-                double  p21, p22, w2, z2, e21, e22;
-                double rel1, rel2, dist;
-                double complex wshape, wshapewshape, wshapewshapec, wshapecwshapec;
-                int nextn, nzero;
-                double complex nphirot, twophirotc, nphirotc, phirot, phirotc, phirotm, phirotp, phirotn;
+                double  p21, p22, w2, w2_sq, e21, e22, rel1, rel2, dist, dphi;
+                double complex wshape1, wshape1c, wshape2, wshape_sq, wshape_cube, wshapewshapec, wshapesqwshapec;
+                double complex phirot, phirotc, twophirotc, fourphirotc, nphirot, nphirotc;
                 
                 // Check how many ns we need for Gn
                 // Gns have shape (nnvals, nbinsz, nbinsr)
                 // where the ns are ordered as 
                 // [-nmax_1-nmax_2-3, ..., nmax_1+nmax_2+3]
-                double complex *nextGns =  calloc(ncomp*nnvals_Gn*nbinsz*nbinsr, sizeof(double complex));
-                double complex *nextNns =  calloc(nnvals_Nn*nbinsz*nbinsr, sizeof(double complex));
-                double complex *nextG2ns =  calloc(nnvals_G2n*nbinsz*nbinsr, sizeof(double complex));
-                double complex *nextGGcns =  calloc(nnvals_G2n*nbinsz*nbinsr, sizeof(double complex));
-                double complex *nextGc2ns =  calloc(nnvals_G2n*nbinsz*nbinsr, sizeof(double complex));
-                double complex *nextN2ns =  calloc(nbinsr*nbinsz, sizeof(double complex));
-                double complex *nextG3ns =  calloc(3*nbinsr*nbinsz, sizeof(double complex));
-                double complex *nextN3ns =  calloc(nbinsr*nbinsz, sizeof(double complex));
-
-                int ind_rbin, rbin;
-                int ind_Gn, ind_Nn, zrshift, nextnshift;
                 int nbinszr = nbinsz*nbinsr;
+                double complex *nextGns =  calloc(ncomp*nnvals_Gn*nbinszr, sizeof(double complex));
+                double complex *nextG2ns_gg =  calloc(nnvals_G2n*nbinszr, sizeof(double complex));
+                double complex *nextG2ns_ggc =  calloc(nnvals_G2n*nbinszr, sizeof(double complex));
+                double complex *nextG3ns_ggg = calloc(2*nbinszr, sizeof(double complex));
+                double complex *nextG3ns_gggc = calloc(2*nbinszr, sizeof(double complex));
+                double complex *nextWns = calloc(nnvals_Wn*nbinszr, sizeof(double complex));
+                double complex *nextW2ns = calloc(nnvals_Wn*nbinszr, sizeof(double complex));
+                double complex *nextW3ns = calloc(nbinszr, sizeof(double complex));
+
+                int ind_rbin, rbin, zrshift, nextnshift, ind_Gn, ind_G2n, ind_Wn;
                 double drbin = (log(rmax)-log(rmin))/(nbinsr);
-                
                 int pix1_lower = mymax(0, (int) floor((p11 - (rmax+pix1_d) - pix1_start)/pix1_d));
                 int pix2_lower = mymax(0, (int) floor((p12 - (rmax+pix2_d) - pix2_start)/pix2_d));
                 int pix1_upper = mymin(pix1_n-1, (int) floor((p11 + (rmax+pix1_d) - pix1_start)/pix1_d));
                 int pix2_upper = mymin(pix2_n-1, (int) floor((p12 + (rmax+pix2_d) - pix2_start)/pix2_d));
-
-                for (ind_pix1=pix1_lower; ind_pix1<pix1_upper; ind_pix1++){
-                    for (ind_pix2=pix2_lower; ind_pix2<pix2_upper; ind_pix2++){
-                        ind_red = index_matcher[ind_pix2*pix1_n + ind_pix1];
+                for (int ind_pix1=pix1_lower; ind_pix1<pix1_upper; ind_pix1++){
+                    for (int ind_pix2=pix2_lower; ind_pix2<pix2_upper; ind_pix2++){
+                        ind_red = index_matcher_hash[ind_pix2*pix1_n + ind_pix1];
                         if (ind_red==-1){continue;}
                         lower = pixs_galind_bounds[ind_red];
                         upper = pixs_galind_bounds[ind_red+1];
-                        for (ind_inpix=lower; ind_inpix<upper; ind_inpix++){
+                        for (int ind_inpix=lower; ind_inpix<upper; ind_inpix++){
                             ind_gal2 = pix_gals[ind_inpix];
                             p21 = pos1[ind_gal2];
                             p22 = pos2[ind_gal2];
                             w2 = weight[ind_gal2];
-                            z2 = zbins[ind_gal2];
                             e21 = e1[ind_gal2];
                             e22 = e2[ind_gal2];
 
@@ -4449,69 +4493,384 @@ void alloc_notomoGammans_discrete_gggg(
                             }
                             else{
                                 rbin=0;
-                                while(rbins[rbin+1] < dist){rbin+=1;}
+                                while(rbins[rbin+1] <= dist){rbin+=1;}
                             }
-                            wshape = (double complex) w2 * (e21+I*e22);
-                            wshapewshape = wshape*wshape;
-                            wshapewshapec = wshape*conj(wshape);
-                            wshapecwshapec = conj(wshape)*conj(wshape);
-                            double dphi = atan2(rel2,rel1);
+                            w2_sq = w2*w2;
+                            wshape2 = (double complex) w2 * (e21+I*e22);
+                            wshape_sq = wshape2*wshape2;
+                            wshape_cube = wshape_sq*wshape2;
+                            wshapewshapec = wshape2*conj(wshape2);
+                            wshapesqwshapec = wshape_sq*conj(wshape2);
+                            dphi = atan2(rel2,rel1);
                             phirot = cexp(I*dphi);
                             phirotc = conj(phirot);
                             twophirotc = phirotc*phirotc;
+                            fourphirotc = twophirotc*twophirotc;
                             zrshift = 0*nbinsr + rbin;
-                            ind_rbin = thisthread*nbinszr + zrshift;
+                            ind_rbin = elthread*nbinszr + zrshift;
                             ind_Gn = nzero_Gn*nbinszr + zrshift;
                             ind_G2n = nzero_G2n*nbinszr + zrshift;
-                            ind_Nn = nzero_Nn*nbinszr + zrshift;
+                            ind_Wn = nzero_Wn*nbinszr + zrshift;
                             nphirot = 1+I*0;
                             nphirotc = 1+I*0;
-
+                            
+                            // Triple-counting corr
+                            nextW3ns[zrshift] += w2_sq*w2;
+                            nextG3ns_ggg[zrshift] += wshape_cube*fourphirotc;
+                            nextG3ns_ggg[nbinszr + zrshift] += wshape_cube*fourphirotc*fourphirotc;
+                            nextG3ns_gggc[zrshift] += wshapesqwshapec;
+                            nextG3ns_gggc[nbinszr + zrshift] += wshapesqwshapec*fourphirotc;                            
+                            
+                            // Nominal G and double-counting corr
                             // n = 0
                             tmpwcounts[ind_rbin] += w1*w2*dist; 
                             tmpwnorms[ind_rbin] += w1*w2; 
-                            nextGns[ind_Gn] += wshape*nphirot;
-                            nextNns[ind_Gnnorm] += w2*nphirot;  
-                            nextG2ns[ind_G2n] += wshapewshape*nphirot;
-                            nextGGcns[ind_G2n] += wshapewshapec*nphirot;
-                            nextG2ns[ind_G2n] += wshapecwshapec*nphirot;
-                            nextN2ns[ind_N2n] = w2*w2
-                            nextG3ns_norm[zrshift] += w2*w2*w2;
-                            
-                            
-                            
-                            nextG2ns_norm[zrshift] += w2*w2;
-                            nextG3ns_norm[zrshift] += w2*w2*w2;
+                            nextGns[ind_Gn] += wshape2*nphirot;
+                            nextG2ns_gg[ind_G2n] += wshape_sq*nphirot;
+                            nextG2ns_ggc[ind_G2n] += wshapewshapec*nphirot;
+                            nextWns[ind_Wn] += w2*nphirot;  
+                            nextW2ns[ind_Wn] += w2_sq*nphirot;
+                            // /*
+                            // n \in [-2*nmax+1,2*nmax-1]                          
                             nphirot *= phirot;
                             nphirotc *= phirotc; 
                             // n in [1, ..., nmax-1] x {+1,-1}
-                            for (nextn=1;nextn<nmax;nextn++){
+                            for (int nextn=1;nextn<2*nmax;nextn++){
                                 nextnshift = nextn*nbinszr;
-                                nextGns[ind_Gn+nextnshift] += wshape*nphirot;
-                                nextGns[ind_Gn-nextnshift] += wshape*nphirotc;
-                                nextGns_norm[ind_Gnnorm+nextnshift] += w2*nphirot;  
+                                nextGns[ind_Gn+nextnshift] += wshape2*nphirot;
+                                nextGns[ind_Gn-nextnshift] += wshape2*nphirotc;
+                                nextG2ns_gg[ind_G2n+nextnshift] += wshape_sq*nphirot;
+                                nextG2ns_gg[ind_G2n-nextnshift] += wshape_sq*nphirotc;
+                                nextG2ns_ggc[ind_G2n+nextnshift] += wshapewshapec*nphirot;
+                                nextG2ns_ggc[ind_G2n-nextnshift] += wshapewshapec*nphirotc;
+                                nextWns[ind_Wn+nextnshift] += w2*nphirot;
+                                nextWns[ind_Wn-nextnshift] += w2*nphirotc;
+                                nextW2ns[ind_Wn+nextnshift] += w2_sq*nphirot;
+                                nextW2ns[ind_Wn-nextnshift] += w2_sq*nphirotc;
                                 nphirot *= phirot;
                                 nphirotc *= phirotc; 
                             }
-                            // n in [nmax, -nmax, -nmax-1, -nmax-2, -nmax-3]
-                            nextGns_norm[ind_Gnnorm+nextnshift+nbinszr] += w2*nphirot;  
-                            nextGns[zrshift+3*nbinszr] += wshape*nphirotc;
+                            
+                            // n = \pm 2*nmax
+                            nextnshift += nbinszr;
+                            nextGns[ind_Gn-nextnshift] += wshape2*nphirotc;
+                            nextG2ns_gg[ind_G2n+nextnshift] += wshape_sq*nphirot;
+                            nextG2ns_gg[ind_G2n-nextnshift] += wshape_sq*nphirotc;
+                            nextG2ns_ggc[ind_G2n+nextnshift] += wshapewshapec*nphirot;
+                            nextG2ns_ggc[ind_G2n-nextnshift] += wshapewshapec*nphirotc;
+                            nextWns[ind_Wn+nextnshift] += w2*nphirot;
+                            nextWns[ind_Wn-nextnshift] += w2*nphirotc;
+                            nextW2ns[ind_Wn+nextnshift] += w2_sq*nphirot;
+                            nextW2ns[ind_Wn-nextnshift] += w2_sq*nphirotc;
+                            nphirot *= phirot;
                             nphirotc *= phirotc; 
-                            nextGns[zrshift+2*nbinszr] += wshape*nphirotc;
-                            nphirotc *= phirotc; 
-                            nextGns[zrshift+nbinszr] += wshape*nphirotc;
-                            nphirotc *= phirotc; 
-                            nextGns[zrshift] += wshape*nphirotc;
+                            
+                            // n = \pm 2*nmax+1 
+                            nextnshift += nbinszr;
+                            nextGns[ind_Gn-nextnshift] += wshape2*nphirotc;
+                            nextG2ns_gg[ind_G2n+nextnshift] += wshape_sq*nphirot;
+                            nextG2ns_gg[ind_G2n-nextnshift] += wshape_sq*nphirotc;
+                            nextG2ns_ggc[ind_G2n+nextnshift] += wshapewshapec*nphirot;
+                            nextG2ns_ggc[ind_G2n-nextnshift] += wshapewshapec*nphirotc;
+                            nphirotc *= phirotc;
+                            // n =  -2*nmax-2
+                            nextnshift += nbinszr;
+                            nextGns[ind_Gn-nextnshift] += wshape2*nphirotc;
+                            nextG2ns_gg[ind_G2n-nextnshift] += wshape_sq*nphirotc;
+                            nextG2ns_ggc[ind_G2n-nextnshift] += wshapewshapec*nphirotc;
+                            nphirotc *= phirotc;
+                            // n =  -2*nmax-3
+                            nextnshift += nbinszr;
+                            nextGns[ind_Gn-nextnshift] += wshape2*nphirotc;
+                            nextG2ns_gg[ind_G2n-nextnshift] += wshape_sq*nphirotc;
+                            nextG2ns_ggc[ind_G2n-nextnshift] += wshapewshapec*nphirotc;
+                            nphirotc *= phirotc;
+                            // n =  -2*nmax-4
+                            nextnshift += nbinszr;
+                            nextG2ns_gg[ind_G2n-nextnshift] += wshape_sq*nphirotc;
+                            nextG2ns_ggc[ind_G2n-nextnshift] += wshapewshapec*nphirotc;
+                            nphirotc *= phirotc;
+                            // n =  -2*nmax-5
+                            nextnshift += nbinszr;
+                            nextG2ns_gg[ind_G2n-nextnshift] += wshape_sq*nphirotc;
+                            nextG2ns_ggc[ind_G2n-nextnshift] += wshapewshapec*nphirotc; 
                         }
                     }
                 }
+                
                 // Allocate Upsilon
+                // Upsilon have shape 
+                // (8,(2*nmax+1),(2*nmax+1),nbinsr,nbinsr,nbinsr)
+                // Ups_0 ~ wgamma  *  G_{n2+n3-3}  *  G_{-n2-2}  *  G_{-n3-3}
+                // Ups_1 ~ wgammac *  G_{n2+n3-1}  *  G_{-n2-2}  *  G_{-n3-1}
+                double complex gGG0, gGG1, gGG2, gGG3, gGG4, gGG5, gGG6, gGG7, wNN;
+                int thisn, thisnshift, thisnrshift;
+                int thisGshift_mn2m2, thisGshift_n2m2, thisWshift_n2;
+                int thisGshift_mn3m3, thisGshift_mn3m1, thisGshift_n3m3, thisGshift_n3m1, thisWshift_n3;
+                int thisGshift_mn2mn3m3, thisGshift_mn2mn3m1, thisGshift_n2n3m3, thisGshift_n2n3m1, thisWshift_n2n3;
+                wshape1 = w1 * (e11+I*e12);  
+                wshape1c = conj(wshape1);
+                for (int thisn2=-nmax; thisn2<=nmax; thisn2++){
+                    thisGshift_mn2m2 = (nzero_Gn-thisn2-2)*nbinsr;
+                    thisGshift_n2m2 = (nzero_Gn+thisn2-2)*nbinsr;
+                    thisWshift_n2 = (nzero_Wn+thisn2)*nbinsr;
+                    for (int thisn3=-nmax; thisn3<=nmax; thisn3++){
+                        thisn = thisn2+thisn3;
+                        thisGshift_mn3m3 = (nzero_Gn-thisn3-3)*nbinsr;
+                        thisGshift_mn3m1 = (nzero_Gn-thisn3-1)*nbinsr;
+                        thisGshift_n3m3 = (nzero_Gn+thisn3-3)*nbinsr;
+                        thisGshift_n3m1 = (nzero_Gn+thisn3-1)*nbinsr;
+                        thisWshift_n3 = (nzero_Wn+thisn3)*nbinsr;
+                        thisGshift_mn2mn3m3 = (nzero_Gn-thisn-3)*nbinsr;
+                        thisGshift_mn2mn3m1 = (nzero_Gn-thisn-1)*nbinsr;
+                        thisGshift_n2n3m3 = (nzero_Gn+thisn-3)*nbinsr;
+                        thisGshift_n2n3m1 = (nzero_Gn+thisn-1)*nbinsr;
+                        thisWshift_n2n3 = (nzero_Wn+thisn)*nbinsr;
+                        thisnshift = ((thisn2+nzero_Ups)*nnvals_Upsn + (thisn3+nzero_Ups)) * ups_nshift;
+                        for (int elb1=0; elb1<nbinsr; elb1++){
+                            // Triple-counting corr
+                            // Double-counting corr for theta1==theta2
+                            // Double-counting corr for theta1==theta3 
+                            for (int elb2=0; elb2<nbinsr; elb2++){
+                                // Double-counting corr for theta2==theta3
+                                // Allocation of first three complex products for Upsilon/Norm updates
+                                gGG0 = wshape1*nextGns[thisGshift_n2n3m3+elb1]*nextGns[thisGshift_mn2m2+elb2];
+                                gGG1 = wshape1c*nextGns[thisGshift_n2n3m1+elb1]*nextGns[thisGshift_mn2m2+elb2];
+                                gGG2 = wshape1*conj(nextGns[thisGshift_mn2mn3m1+elb1])*nextGns[thisGshift_mn2m2+elb2];
+                                gGG3 = wshape1*nextGns[thisGshift_n2n3m3+elb1]*conj(nextGns[thisGshift_n2m2+elb2]);
+                                gGG4 = wshape1*nextGns[thisGshift_n2n3m3+elb1]*nextGns[thisGshift_mn2m2+elb2];
+                                gGG5 = wshape1c*conj(nextGns[thisGshift_mn2mn3m3+elb1])*nextGns[thisGshift_mn2m2+elb2];
+                                gGG6 = wshape1c*nextGns[thisGshift_n2n3m1+elb1]*conj(nextGns[thisGshift_n2m2+elb2]);
+                                gGG7 = wshape1c*nextGns[thisGshift_n2n3m1+elb1]*nextGns[thisGshift_mn2m2+elb2];
+                                wNN = w1*nextWns[thisWshift_n2n3+elb1]*conj(nextWns[thisWshift_n2+elb2]);
+                                for (int elb3=0; elb3<nbinsr; elb3++){
+                                    thisnrshift = thisnshift + elb1*nbinsr*nbinsr + elb2*nbinsr + elb3;
+                                    // Allocation of Upsilon and Norm
+                                    tmpUpsilon_n[0*ups_compshift+thisnrshift] += gGG0*nextGns[thisGshift_mn3m3+elb3];
+                                    tmpUpsilon_n[1*ups_compshift+thisnrshift] += gGG1*nextGns[thisGshift_mn3m1+elb3];
+                                    tmpUpsilon_n[2*ups_compshift+thisnrshift] += gGG2*nextGns[thisGshift_mn3m3+elb3];
+                                    tmpUpsilon_n[3*ups_compshift+thisnrshift] += gGG3*nextGns[thisGshift_mn3m3+elb3];
+                                    tmpUpsilon_n[4*ups_compshift+thisnrshift] += gGG4*conj(nextGns[thisGshift_n3m1+elb3]);
+                                    tmpUpsilon_n[5*ups_compshift+thisnrshift] += gGG5*nextGns[thisGshift_mn3m1+elb3];
+                                    tmpUpsilon_n[6*ups_compshift+thisnrshift] += gGG6*nextGns[thisGshift_mn3m1+elb3];
+                                    tmpUpsilon_n[7*ups_compshift+thisnrshift] += gGG7*conj(nextGns[thisGshift_n3m3+elb3]);
+                                    tmpN_n[thisnrshift] += wNN*conj(nextWns[thisWshift_n3+elb3]);
+                                }
+                            }
+                        }
+                    }
+                }
+                free(nextGns);
+                free(nextG2ns_gg);
+                free(nextG2ns_ggc);
+                free(nextG3ns_ggg);
+                free(nextG3ns_gggc);
+                free(nextWns);
+                free(nextW2ns);
+                free(nextW3ns);
+                nextGns = NULL;
+                nextG2ns_gg = NULL;
+                nextG2ns_ggc = NULL;
+                nextG3ns_ggg = NULL;
+                nextG3ns_gggc = NULL;
+                nextWns = NULL;
+                nextW2ns = NULL;
+                nextW3ns = NULL;
             }
-        }        
+        }
+        
+        // Accumulate Upsilon_n and N_n
+        // Given the openmp implementation this needs to be done sequentially...however,
+        // as the threads will reach this step at different points in time, it will
+        // most likely not be a severe bottleneck.
+        #pragma omp critical
+        {
+            int thisn_thread, thisn2, thisn3, thisnshift, thisnrshift;
+            for (int thisn=0; thisn<n2n3combis; thisn++){
+                thisn_thread = (thisn+elthread)%n2n3combis;
+                thisn2 = thisn_thread/nnvals_Upsn;
+                thisn3 = thisn_thread%nnvals_Upsn;
+                thisnshift = (thisn2*nnvals_Upsn + thisn3) * ups_nshift;
+                for (int elb1=0; elb1<nbinsr; elb1++){
+                    for (int elb2=0; elb2<nbinsr; elb2++){
+                        for (int elb3=0; elb3<nbinsr; elb3++){
+                            thisnrshift = thisnshift + elb1*nbinsr*nbinsr + elb2*nbinsr + elb3;
+                            N_n[thisnrshift] += tmpN_n[thisnrshift];
+                            for (int elcomp=0; elcomp<8; elcomp++){
+                                Upsilon_n[elcomp*ups_compshift+thisnrshift] += tmpUpsilon_n[elcomp*ups_compshift+thisnrshift];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        free(tmpUpsilon_n);
+        free(tmpN_n);
+    }
+    // Accumulate the bin distances and weights
+    for (int thisthread=0; thisthread<nthreads; thisthread++){
+        for (int elbinr=0; elbinr<nbinsr; elbinr++){
+            totcounts[elbinr] += tmpwcounts[thisthread*nbinsr+elbinr];
+            totnorms[elbinr] += tmpwnorms[thisthread*nbinsr+elbinr];
+        }
+    }
+    // Get bin centers
+    for (int elbinr=0; elbinr<nbinsr; elbinr++){
+        if (totnorms[elbinr] != 0){
+            bin_centers[elbinr] = totcounts[elbinr]/totnorms[elbinr];
+        }
+    }
+    
+    free(tmpwcounts);
+    free(tmpwnorms);
+    free(totcounts);
+    free(totnorms);
+}
+
+// No zbins as in most circumstances this will exceed the 2^32 elements barrier in the arrays...
+// Additionally, we only subselect certain (phi12,phi13) bin combinations to make sure that 
+// the individual chunks will never exceed 1e9 elements
+// I.e. nbinsr=nbinsphi=50 --> len_arr = 8*nbinsr^3*nbinsphi^2 ~ 2.5e9
+// Projections: 0:x, 1:centroid
+void multipoles2npcf_gggg(double complex *upsilon_n, double complex *N_n, double *rcenters, int projection,
+                          int n_cfs, int nbinsr, int nmax, double *phis12, int nbinsphi12, double *phis13, int nbinsphi13,
+                          int nthreads, double complex *npcf, double complex *npcf_norm){
+    // Shape of upsilon_n: (n_cfs,2*_nmax+1,2*_nmax+1,1,nbinsr,nbinsr,nbinsr) ~ (elcomp, n1, n2, elb1, elb2, elb3)
+    //          npcf     : (n_cfs,1,nbinsr,nbinsr,nbinsr,nbinsphi,nbinsphi)   ~ (elcomp, elb1, elb2, elb3, elphi12, elphi13)
+    
+    // We parallelize over the different phi combis
+    int nrcombis = nbinsr*nbinsr*nbinsr;
+    #pragma omp parallel for num_threads(nthreads)
+    for (int nrcombi=0; nrcombi<nrcombis; nrcombi++){
+        
+        int nbinsr2 = nbinsr*nbinsr;
+        int nbinsr3 = nbinsr*nbinsr*nbinsr;
+        int mult_n2shift = nbinsr3;
+        int mult_n1shift = (2*nmax+1)*mult_n2shift;
+        int mult_compshift = (2*nmax+1)*mult_n1shift;
+        int npcf_r3shift = nbinsphi12*nbinsphi13;
+        int npcf_r2shift = nbinsr*npcf_r3shift;
+        int npcf_r1shift = nbinsr*npcf_r2shift;
+        int npcf_compshift = nbinsr*npcf_r1shift;
+        
+        int elr1 = nrcombi/nbinsr2;
+        int elr2 = (nrcombi-elr1*nbinsr2)/nbinsr;
+        int elr3 = nrcombi%nbinsr;
+        double rcenter1, rcenter2, rcenter3;
+        double complex *expphi12s = calloc(2*nmax+1, sizeof(double complex));
+        double complex *expphi13s = calloc(2*nmax+1, sizeof(double complex));
+        double complex *projdir = calloc(n_cfs, sizeof(double complex));
+        double complex nextang;
+        int ind_multi, ind_npcf;
+        double complex q1, q2, q3, q4;
+        double complex qcbyq_1, qcbyq_2, qcbyq_3, qcbyq_4;
+        double complex qbyqc_1, qbyqc_2, qbyqc_3, qbyqc_4;
+        double complex p1, p2, p3, p4, p1_inv, p2_inv, p3_inv, p4_inv;
+        
+        #pragma omp critical
+        {rcenter1 = rcenters[elr1]; rcenter2 = rcenters[elr2]; rcenter3 = rcenters[elr3];}
+        
+        for (int elphi12=0; elphi12<nbinsphi12; elphi12++){
+            for (int elphi13=0; elphi13<nbinsphi13; elphi13++){
+                // Convert multipoles to npcf
+                for (int nextn=0; nextn<2*nmax+1; nextn++){ 
+                    expphi12s[nextn] = cexp(I*(nextn-nmax)*phis12[elphi12]);
+                    expphi13s[nextn] = cexp(I*(nextn-nmax)*phis13[elphi13]);
+                }
+                ind_npcf = elr1*npcf_r1shift + elr2*npcf_r2shift + elr3*npcf_r3shift + elphi12*nbinsphi13 + elphi13;
+                for (int nextn1=0; nextn1<2*nmax+1; nextn1++){
+                    for (int nextn2=0; nextn2<2*nmax+1; nextn2++){ 
+                        nextang = INV_2PI * expphi12s[nextn1] * expphi13s[nextn2];
+                        ind_multi = nextn1*mult_n2shift + nextn2*mult_n1shift + elr1*nbinsr2 + elr2*nbinsr + elr3;
+                        npcf_norm[ind_npcf] += N_n[ind_multi]*nextang;
+                        for (int elcf=0; elcf<n_cfs; elcf++){ 
+                            npcf[elcf*npcf_compshift + ind_npcf] += upsilon_n[elcf*mult_compshift + ind_multi]*nextang;
+                        }
+                    }
+                }
+                // Normalize: Gamma=Upsilon/N --> Make sure that we have counts, i.e. N >~ 1.
+                for (int elcf=0; elcf<n_cfs; elcf++){ 
+                    if (cabs(npcf_norm[ind_npcf]) > 0.1){npcf[elcf*npcf_compshift + ind_npcf] /= cabs(npcf_norm[ind_npcf]);}
+                    else{npcf[elcf*npcf_compshift + ind_npcf] = 0;}
+                }
+                // Now transform to some projection
+                if (projection==0){//X projection
+                    for (int elcf=0; elcf<n_cfs; elcf++){projdir[elcf] = 1;}
+                }
+                else if (projection==1){//Centroid projection
+                    q1 = -0.25*( 1*rcenter1 + 1*rcenter2*expphi12s[nmax+1] + 1*rcenter3*expphi13s[nmax+1]);
+                    q2 = +0.25*( 3*rcenter1 - 1*rcenter2*expphi12s[nmax+1] - 1*rcenter3*expphi13s[nmax+1]);
+                    q3 = +0.25*(-1*rcenter1 + 3*rcenter2*expphi12s[nmax+1] - 1*rcenter3*expphi13s[nmax+1]);
+                    q4 = +0.25*(-1*rcenter1 - 1*rcenter2*expphi12s[nmax+1] + 3*rcenter3*expphi13s[nmax+1]);
+                    qcbyq_1=conj(q1)/q1; qcbyq_2=conj(q2)/q2; qcbyq_3=conj(q3)/q3; qcbyq_4=conj(q4)/q4;
+                    qbyqc_1=q1/conj(q1); qbyqc_2=q2/conj(q2); qbyqc_3=q3/conj(q3); qbyqc_4=q4/conj(q4); 
+                    projdir[0] = qcbyq_1*qcbyq_2*qcbyq_3*qcbyq_4 * expphi12s[nmax+2] * expphi13s[nmax+3];
+                    projdir[1] = qbyqc_1*qcbyq_2*qcbyq_3*qcbyq_4 * expphi12s[nmax+2] * expphi13s[nmax+1];
+                    projdir[2] = qcbyq_1*qbyqc_2*qcbyq_3*qcbyq_4 * expphi12s[nmax+2] * expphi13s[nmax+3];
+                    projdir[3] = qcbyq_1*qcbyq_2*qbyqc_3*qcbyq_4 * expphi12s[nmax-2] * expphi13s[nmax+3];
+                    projdir[4] = qcbyq_1*qcbyq_2*qcbyq_3*qbyqc_4 * expphi12s[nmax+2] * expphi13s[nmax-1];
+                    projdir[5] = qbyqc_1*qbyqc_2*qcbyq_3*qcbyq_4 * expphi12s[nmax+2] * expphi13s[nmax+1];
+                    projdir[6] = qbyqc_1*qcbyq_2*qbyqc_3*qcbyq_4 * expphi12s[nmax-2] * expphi13s[nmax+1];
+                    projdir[7] = qbyqc_1*qcbyq_2*qcbyq_3*qbyqc_4 * expphi12s[nmax+2] * expphi13s[nmax-3];
+                    
+                    /*
+                    p1 = (+1*rcenter1 + 1*rcenter2*expphi12s[nmax-1] + 1*rcenter3*expphi13s[nmax-1]) /
+                         (+1*rcenter1 + 1*rcenter2*expphi12s[nmax+1] + 1*rcenter3*expphi13s[nmax+1]);
+                    p2 = (+3*rcenter1 - 1*rcenter2*expphi12s[nmax-1] - 1*rcenter3*expphi13s[nmax-1]) /
+                         (+3*rcenter1 - 1*rcenter2*expphi12s[nmax+1] - 1*rcenter3*expphi13s[nmax+1]);
+                    p3 = (-1*rcenter1 + 3*rcenter2*expphi12s[nmax-1] - 1*rcenter3*expphi13s[nmax-1]) /
+                         (-1*rcenter1 + 3*rcenter2*expphi12s[nmax+1] - 1*rcenter3*expphi13s[nmax+1]);
+                    p4 = (-1*rcenter1 - 1*rcenter2*expphi12s[nmax-1] + 3*rcenter3*expphi13s[nmax-1]) /
+                         (-1*rcenter1 - 1*rcenter2*expphi12s[nmax+1] + 3*rcenter3*expphi13s[nmax+1]);
+                    p1_inv = conj(p1)/cabs(p1); p2_inv = conj(p2)/cabs(p2); 
+                    p3_inv = conj(p3)/cabs(p3); p4_inv = conj(p4)/cabs(p4); 
+                    projdir[0] = p1     * p2      * p3      * p4       * expphi12s[nmax+2] * expphi13s[nmax+3];
+                    projdir[1] = p1_inv * p2      * p3      * p4       * expphi12s[nmax+2] * expphi13s[nmax+1];
+                    projdir[2] = p1     * p2_inv  * p3      * p4       * expphi12s[nmax+2] * expphi13s[nmax+3];
+                    projdir[3] = p1     * p2      * p3_inv  * p4       * expphi12s[nmax-2] * expphi13s[nmax+3];
+                    projdir[4] = p1     * p2      * p3      * p4_inv   * expphi12s[nmax+2] * expphi13s[nmax-1];
+                    projdir[5] = p1_inv * p2_inv  * p3      * p4       * expphi12s[nmax+2] * expphi13s[nmax+1];
+                    projdir[6] = p1_inv * p2      * p3_inv  * p4       * expphi12s[nmax-2] * expphi13s[nmax+1];
+                    projdir[7] = p1_inv * p2      * p3      * p4_inv   * expphi12s[nmax+2] * expphi13s[nmax-3];
+                    */
+                    
+                }
+                for (int elcf=0; elcf<n_cfs; elcf++){npcf[elcf*npcf_compshift + ind_npcf] *= projdir[elcf];}
+            }
+        }
+        free(expphi12s);
+        free(expphi13s);
+        free(projdir);
     }
 }
-*/    
-  
+
+
+// Compute Map4 given npcf in centroid projection
+void computeMap4(double *mapradii, int nmapradii, 
+                 double *rbins_centers, double *rbins_edges, int nbinsr,
+                 double *phi12bins, double *phi13bins, int nphi12bins, int nphi13bins,
+                 int nthreads, double complex *npcf, double *map4){
+}
+
+
+// Directly go from catalog to map4
+// * This can be done in low-mem as we never store the full npcf, but directly
+//   convert the individual Upsilon_n(theta1,theta2,theta3) to contributions towards the Map4 integral
+// * However, this also requires the catalogs and the hashes to be private and also we will have to
+//   compute the Gns for a couple of times, i.e. it will not be super efficient. For a very fine binning
+//   this might not be a crazy bottleneck. 
+// * Possible optimization: Use blocks of x radial bin combinations s.t. Ups_n(n1,n2,z1,z2,z3,z4,{theta_i})
+//   has ~1e7 components
+// do repeated
+void alloc_Map4_discrete_gggg(
+    int *isinner, double *weight, double *pos1, double *pos2, double *e1, double *e2, int ngal, 
+    int nmax, double rmin, double rmax, double *rbins, int nbinsr, int dccorr,
+    int *index_matcher_hash, int *pixs_galind_bounds, int *pix_gals, int nregions, 
+    double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n, 
+    int nthreads, double *bin_centers, double complex *Upsilon_n, double complex *N_n){
+}
+    
+
 /*
 // 4pcf
 // We only allocate a single zcombination Upsilon(z1,z2,z3,z4) 

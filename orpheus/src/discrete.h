@@ -77,6 +77,17 @@ void alloc_Gammans_discrete_NGG(
     double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n,
     int nthreads, double *bin_centers, double complex *Upsilon_n, double complex *Norm_n);
 
+void alloc_notomoGammans_discrete_gggg(
+    int *isinner, double *weight, double *pos1, double *pos2, double *e1, double *e2, int ngal, 
+    int nmax, double rmin, double rmax, double *rbins, int nbinsr, int dccorr,
+    int *index_matcher_hash, int *pixs_galind_bounds, int *pix_gals, int nregions, 
+    double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n, 
+    int nthreads, double *bin_centers, double complex *Upsilon_n, double complex *N_n);
+
+void multipoles2npcf_gggg(double complex *upsilon_n, double complex *N_n, double *rcenters, int projection,
+                          int n_cfs, int nbinsr, int nmax, double *phis12, int nbinsphi12, double *phis13, int nbinsphi13,
+                          int nthreads, double complex *npcf, double complex *npcf_norm);
+
 void alloc_triplets_tree_xipxipcov(
     int *isinner, double *weight, double *pos1, double *pos2, int *zbins, int nbinsz, int ngal, 
     int nresos, double *reso_redges, int *ngal_resos, 

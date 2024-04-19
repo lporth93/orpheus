@@ -24,21 +24,22 @@ w_lenses = np.array([])
 z_lenses = np.array([])
 
 nbar_sources = 8.
-for i in range(16):
-    sys.stdout.write("%i "%i)
-    nextsources = pd.read_csv("/cosma7/data/dp004/dc-port3/Data/Millenium/G3L/smallTiles/tile%i_LOS_%i.sources.dat"%(i,800), header=None, sep=' ')
-    nextlenses = pd.read_csv("/cosma7/data/dp004/dc-port3/Data/Millenium/G3L/smallTiles/tile%i_LOS_%i.objects.dat"%(i,800), header=None, sep=' ')
-    source_inds = np.random.choice(nextsources.shape[0], size=int(nbar_sources*60*60), replace=False)
-    x_lenses = np.append(x_lenses, np.array(nextlenses[0]))
-    y_lenses = np.append(y_lenses, np.array(nextlenses[1]))
-    z_lenses = np.append(z_lenses, np.array(nextlenses[4]))
-    w_lenses = np.append(w_lenses, np.array(nextlenses[5]))
-    x_sources = np.append(x_sources, np.array(nextsources[0])[source_inds])
-    y_sources = np.append(y_sources, np.array(nextsources[1])[source_inds])
-    e1_sources = np.append(e1_sources, np.array(nextsources[2])[source_inds])
-    e2_sources = np.append(e2_sources, np.array(nextsources[3])[source_inds])
-    z_sources = np.append(z_sources, np.array(nextsources[4])[source_inds])
-    w_sources = np.append(w_sources, np.array(nextsources[5])[source_inds])
+eltile = 6
+basemillenium = "/vol/euclidraid4/data/lporth/HigherOrderLensing/Mocks/millenium_catalogs/"
+nextsources = pd.read_csv(basemillenium + "tile%i_LOS_%i.sources.dat"%(eltile,800), header=None, sep=' ')
+nextlenses  = pd.read_csv(basemillenium + "tile%i_LOS_%i.objects.dat"%(eltile,800), header=None, sep=' ')
+
+source_inds = np.random.choice(nextsources.shape[0], size=int(nbar_sources*60*60), replace=False)
+x_lenses = np.append(x_lenses, np.array(nextlenses[0]))
+y_lenses = np.append(y_lenses, np.array(nextlenses[1]))
+z_lenses = np.append(z_lenses, np.array(nextlenses[4]))
+w_lenses = np.append(w_lenses, np.array(nextlenses[5]))
+x_sources = np.append(x_sources, np.array(nextsources[0])[source_inds])
+y_sources = np.append(y_sources, np.array(nextsources[1])[source_inds])
+e1_sources = np.append(e1_sources, np.array(nextsources[2])[source_inds])
+e2_sources = np.append(e2_sources, np.array(nextsources[3])[source_inds])
+z_sources = np.append(z_sources, np.array(nextsources[4])[source_inds])
+w_sources = np.append(w_sources, np.array(nextsources[5])[source_inds])
 zbin_lenses = np.zeros(len(w_lenses), dtype=int)
 zbin_sources = np.zeros(len(w_sources), dtype=int)
 
@@ -53,8 +54,8 @@ method = "DoubleTree"
 shuffle_pix = 1
 resoshift_leafs = 0
 nthreads = 16
-dotomo_lens=True
-dotomo_source=True
+dotomo_lens=False
+dotomo_source=False
 
 # Some adhoc zbins
 if dotomo_lens:
@@ -75,4 +76,7 @@ t1 = time.time()
 g3l.process(sources, lenses, nthreads=16, dotomo_lens=dotomo_lens, dotomo_source=dotomo_source)
 t2 = time.time()
 print("Needed %.2f seconds"%(t2-t1))
-    
+NNMap_disc = g3l.computeNNM(np.geomspace(1,10,10))
+print(NNMap_disc.shape)
+print(NNMap_disc.real)
+print(NNMap_disc.imag)
