@@ -3171,7 +3171,7 @@ void alloc_Gammans_doubletree_GNN(
                         elhashpix_reso2 = elhashpix_2_reso2*npix_side_reso2 + elhashpix_1_reso2;
                         redpix_reso2 = pix2redpix[z_gal1*len_matcher+matchers_resoshift[red_reso2]+elhashpix_reso2];
                         for (int zbin2=0; zbin2<nbinsz_lens; zbin2++){
-                            if (elregion==region_debug){
+                            if (elregion==-1){
                                 printf("Gnupdates for reso1=%d reso2=%d red_reso2=%d, galindex=%d, z1=%d, z2=%d:%d radial updates; shiftstart %d = %d+%d+%d+%d+%d \n"
                                        ,elreso,elreso2,red_reso2,ind_gal1,z_gal1,zbin2,rbinmax-rbinmin,
                                        zbin2*zbin2shift + zbinshifts[z_gal1] + rbinmin*thetashifts_z[z_gal1] + 
@@ -3308,16 +3308,16 @@ void alloc_Gammans_doubletree_GNN(
                                     rbinmax2 = reso_rindedges[thisreso2+1];
                                     for (int elgal=0; elgal<ngal_in_pix[zbin1*nresos+thisreso2]; elgal++){
                                         for (int elb1=rbinmin1; elb1<rbinmax1; elb1++){
-                                            // n --> zbin2 --> zbin1 --> radius --> [ [0]*ngal_zbin1_reso1 | ... | [0]*ngal_zbin1_reson ]
-                                            
-                                            
-                                            ind_Wncacheshift = zbin2*zbin2shift + zbinshifts[zbin1] + elb1*thetashifts_z[zbin1] +
-                                                cumresoshift_z[zbin1*(nresos+1) + thisreso2] + elgal;
+                                            // n --> zbin2 --> zbin1 --> radius --> [ [0]*ngal_zbin1_reso1 | ... |
+                                            //                                        [0]*ngal_zbin1_reson ]
+                                            ind_Wncacheshift = zbin2*zbin2shift + zbinshifts[zbin1] + elb1*thetashifts_z[zbin1] 
+                                                + cumresoshift_z[zbin1*(nresos+1) + thisreso2] + elgal;
                                             nextUps = -wGncache[(thisn+0)*nshift+ind_Wncacheshift];
                                             nextN = wWncache[thisn*nshift+ind_Wncacheshift];
                                             _upsshift = thisnshift + zcombi*upsilon_zshift + elb1*nbinsr;
-                                            ind_Wncacheshift = zbin3*zbin2shift + zbinshifts[zbin1] + rbinmin2*thetashifts_z[zbin1] +
-                                                    cumresoshift_z[zbin1*(nresos+1) + thisreso2] + elgal;
+                                            ind_Wncacheshift = zbin3*zbin2shift + zbinshifts[zbin1] + 
+                                                rbinmin2*thetashifts_z[zbin1] + cumresoshift_z[zbin1*(nresos+1) + thisreso2] + 
+                                                elgal;
                                             for (int elb2=rbinmin2; elb2<rbinmax2; elb2++){
                                                 //ind_Wncacheshift = zbin3*zbin2shift + zbinshifts[zbin1] + elb2*thetashifts_z[zbin1] +
                                                 //    cumresoshift_z[zbin1*(nresos+1) + thisreso2] + elgal;
@@ -3340,13 +3340,14 @@ void alloc_Gammans_doubletree_GNN(
                                     rbinmax1 = reso_rindedges[thisreso1+1];
                                     for (int elgal=0; elgal<ngal_in_pix[zbin1*nresos+thisreso1]; elgal++){
                                         for (int elb1=rbinmin1; elb1<rbinmax1; elb1++){
-                                            ind_Wncacheshift = zbin2*zbin2shift + zbinshifts[zbin1] + elb1*thetashifts_z[zbin1] +
-                                                cumresoshift_z[zbin1*(nresos+1) + thisreso1] + elgal;
+                                            ind_Wncacheshift = zbin2*zbin2shift + zbinshifts[zbin1] + elb1*thetashifts_z[zbin1]
+                                                + cumresoshift_z[zbin1*(nresos+1) + thisreso1] + elgal;
                                             nextUps = -Gncache[(thisn+0)*nshift+ind_Wncacheshift];
                                             nextN = Wncache[thisn*nshift+ind_Wncacheshift];
                                             _upsshift = thisnshift + zcombi*upsilon_zshift + elb1*nbinsr;
-                                            ind_Wncacheshift = zbin3*zbin2shift + zbinshifts[zbin1] + rbinmin2*thetashifts_z[zbin1] +
-                                                    cumresoshift_z[zbin1*(nresos+1) + thisreso1] + elgal;
+                                            ind_Wncacheshift = zbin3*zbin2shift + zbinshifts[zbin1] +
+                                                rbinmin2*thetashifts_z[zbin1] +
+                                                cumresoshift_z[zbin1*(nresos+1) + thisreso1] + elgal;
                                             for (int elb2=rbinmin2; elb2<rbinmax2; elb2++){
                                                 tmpUpsilon[_upsshift+elb2] += nextUps*conj(cwGncache[(thisn+2)*nshift+ind_Wncacheshift]);
                                                 tmpNorm[_upsshift+elb2] += nextN*conj(wWncache[thisn*nshift+ind_Wncacheshift]);
@@ -3731,6 +3732,692 @@ void alloc_Gammans_discrete_NGG(
     free(totnorms);
 }
 
+// Discrete estimator of Lens-Source-Source Correlator using a fixed grid of angles within the annuli
+// This helps keeping a good angular resolution while not having to care much about the radial resolution
+// The problem is that we still need to assign the full catlalog to the phigrid at runtime. This means 
+// that while the Gn allocation only happens on the `reduced' catalog, the preparation of this `reduced'
+// catalog still scales as O(N_gal). Even worse, the size of the reduced catalog is nbinsr*nphi*nbinsz which
+// can very well approach the size of the full catalog....thus, this is not intended to be used.
+void alloc_Gammans_phitree_NGG(
+    double *w_source, double *pos1_source, double *pos2_source, double *e1_source, double *e2_source, int *zbin_source, int nbinsz_source, int ngal_source,
+    int *isinner_lens, double *w_lens, double *pos1_lens, double *pos2_lens, int *zbin_lens, int nbinsz_lens, int ngal_lens, 
+    int nmax, double rmin, double rmax, int nbinsr, int dccorr,
+    int *index_matcher_source, int *pixs_galind_bounds_source, int *pix_gals_source, 
+    int *index_matcher_lens, int *pixs_galind_bounds_lens, int *pix_gals_lens, int nregions, 
+    double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n,
+    int *phitree_bins, int phitree_nphi, int phitree_nx, int phitree_ny,
+    int nthreads, double *bin_centers, double complex *Upsilon_n, double complex *Norm_n){
+    
+    int _nzcombis = nbinsz_lens*nbinsz_source*nbinsz_source;
+    int _upsilonzshift = nbinsr*nbinsr;
+    int _upsilonnshift = _upsilonzshift*_nzcombis;
+    int _upsiloncompshift = (2*nmax+1)*_upsilonnshift;
+    int _upsilonthreadshift = 2*_upsiloncompshift;
+    int _normzshift = nbinsr*nbinsr;
+    int _normnshift = _normzshift*_nzcombis;
+    int _normthreadshift = (2*nmax+1)*_normnshift;    
+    
+    double *tmpwcounts = calloc(nthreads*nbinsz_lens*nbinsz_source*nbinsr, sizeof(double));
+    double *tmpwnorms  = calloc(nthreads*nbinsz_lens*nbinsz_source*nbinsr, sizeof(double));
+    double *totcounts = calloc(nbinsz_lens*nbinsz_source*nbinsr, sizeof(double));
+    double *totnorms  = calloc(nbinsz_lens*nbinsz_source*nbinsr, sizeof(double));
+    // Temporary arrays that are allocated in parallel and later reduced
+    // Shape of tmpUpsilon ~ (nthreads, nnvals, nz_source, nz_lens, nz_lens, nbinsr, nbinsr)
+    double complex *tmpUpsilon = calloc(nthreads*_upsilonthreadshift, sizeof(double complex));
+    double complex *tmpNorm = calloc(nthreads*_normthreadshift, sizeof(double complex));
+    #pragma omp parallel for num_threads(nthreads)
+    for(int elthread=0;elthread<nthreads;elthread++){
+        int nregions_per_thread = nregions/nthreads;
+        int nnvals_Gn = 2*nmax+5; // Need [-nmax-2, ..., nmax+2]
+        int nnvals_Wn = 2*nmax+1; // Need [-nmax, ..., nmax]
+        int nnvals_Ups = 2*nmax+1;
+        int nnvals_Norm = 2*nmax+1;
+        int nzcombis = nbinsz_lens*nbinsz_source*nbinsz_source;
+        int upsilon_zshift = nbinsr*nbinsr;
+        int upsilon_nshift = upsilon_zshift*nzcombis;
+        int upsilon_compshift = nnvals_Ups*upsilon_nshift;
+        int threadshift_upsilon = 2*elthread*nnvals_Ups*upsilon_nshift;
+        int norm_zshift = nbinsr*nbinsr;
+        int norm_nshift = norm_zshift*nzcombis;
+        int threadshift_norm = elthread*nnvals_Norm*norm_nshift;
+        int threadshift_counts = elthread*nbinsz_lens*nbinsz_source*nbinsr;
+        int nbinszr_Gn = nbinsz_source*nbinsr;
+        int nbinszr_Wn = nbinsz_source*nbinsr;
+        double rmin_sq = rmin*rmin;
+        double rmax_sq = rmax*rmax;
+        double drbin = log(rmax/rmin)/nbinsr;
+        int ngalmax_ap = nbinsz_source*nbinsr*phitree_nphi;
+        
+        int *inds_galinap = calloc(ngalmax_ap, sizeof(int));
+        double *apgals_w = calloc(ngalmax_ap, sizeof(double));
+        double *apgals_rel1 = calloc(ngalmax_ap, sizeof(double));
+        double *apgals_rel2 = calloc(ngalmax_ap, sizeof(double));
+        double complex *apgals_wshape = calloc(ngalmax_ap, sizeof(double complex));                                
+        
+        for (int elregion=0; elregion<nregions; elregion++){
+            int region_debug=(int) (nthreads/2) * nregions_per_thread;
+            //int region_debug=99999;
+            // Check if this thread is responsible for the region
+            int nthread_target = mymin(elregion/nregions_per_thread, nthreads-1);
+            if (nthread_target!=elthread){continue;}
+            //if (elregion==region_debug){printf("Region %d is in thread %d\n",elregion,elthread);}
+            if (elthread==nthreads/2){
+                int elreg_inthread = elregion-nregions_per_thread*(nthreads/2);
+                printf("\rDone %.2f per cent",100*((double) elreg_inthread)/nregions_per_thread);
+            }
+            
+            int zbin_gal1, zbin_gal2;
+            double pos1_gal1, pos2_gal1, w_gal1;
+            double pos1_gal2, pos2_gal2, w_gal2, e1_gal2, e2_gal2;
+            double complex wshape_gal2;
+            int ind_red, ind_gal1, ind_gal2, lower1, upper1, isinner_gal1, lower2, upper2;
+            int pix1_lower, pix2_lower, pix1_upper, pix2_upper;
+            lower1 = pixs_galind_bounds_lens[elregion];
+            upper1 = pixs_galind_bounds_lens[elregion+1];
+            for (int ind_inpix1=lower1; ind_inpix1<upper1; ind_inpix1++){
+                
+                // Load lens galaxy info
+                ind_gal1 = pix_gals_lens[ind_inpix1];
+                #pragma omp critical
+                {pos1_gal1 = pos1_lens[ind_gal1];
+                pos2_gal1 = pos2_lens[ind_gal1];
+                w_gal1 = w_lens[ind_gal1];
+                zbin_gal1 = zbin_lens[ind_gal1];
+                zbin_gal1 = zbin_lens[ind_gal1];
+                isinner_gal1 = isinner_lens[ind_gal1];}
+                if(isinner_gal1==0){continue;}
+                
+                // Allocate the G_n and W_n coefficients + Double-counting correction factors
+                double complex phirot, nphirot;
+                double rel1, rel2, dist;
+                int ind_Wnp, ind_Wnm, ind_Gnp, ind_Gnm, ind_counts, z1shift, z2rshift, rbin, rbin_gal2;
+                int phibin1, phibin2, phibin, ind_galinap;
+                double complex *thisGns = calloc(nnvals_Gn*nbinszr_Gn, sizeof(double complex)); 
+                double complex *thisWns = calloc(nnvals_Wn*nbinszr_Wn, sizeof(double complex)); 
+                double complex *thisG2ns = calloc(2*nbinszr_Gn, sizeof(double complex));
+                double complex *thisW2ns = calloc(nbinszr_Wn, sizeof(double complex));
+                int *thisncounts = calloc(nbinszr_Wn, sizeof(int));
+                int *allowedrinds = calloc(nbinszr_Wn, sizeof(int));
+                int *allowedzinds = calloc(nbinszr_Wn, sizeof(int));
+                z1shift = zbin_gal1*nbinsz_source*nbinsr;
+                
+                // First step: Put individual galaxies in phi bins
+                pix1_lower = mymax(0, (int) floor((pos1_gal1 - (rmax+pix1_d) - pix1_start)/pix1_d));
+                pix2_lower = mymax(0, (int) floor((pos2_gal1 - (rmax+pix2_d) - pix2_start)/pix2_d));
+                pix1_upper = mymin(pix1_n-1, (int) floor((pos1_gal1 + (rmax+pix1_d) - pix1_start)/pix1_d));
+                pix2_upper = mymin(pix2_n-1, (int) floor((pos2_gal1 + (rmax+pix2_d) - pix2_start)/pix2_d));
+                for (int ind_pix1=pix1_lower; ind_pix1<pix1_upper; ind_pix1++){
+                    for (int ind_pix2=pix2_lower; ind_pix2<pix2_upper; ind_pix2++){
+                        ind_red = index_matcher_source[ind_pix2*pix1_n + ind_pix1];
+                        if (ind_red==-1){continue;}
+                        lower2 = pixs_galind_bounds_source[ind_red];
+                        upper2 = pixs_galind_bounds_source[ind_red+1];
+                        for (int ind_inpix=lower2; ind_inpix<upper2; ind_inpix++){
+                            ind_gal2 = pix_gals_source[ind_inpix];
+                            pos1_gal2 = pos1_source[ind_gal2];
+                            pos2_gal2 = pos2_source[ind_gal2];
+                            rel1 = pos1_gal2 - pos1_gal1;
+                            rel2 = pos2_gal2 - pos2_gal1;
+                            dist = rel1*rel1 + rel2*rel2;
+                            if(dist < rmin_sq || dist >= rmax_sq) continue;
+                            dist = sqrt(dist);
+                            rbin = (int) floor(log(dist/rmin)/drbin);
+                            w_gal2 = w_source[ind_gal2];
+                            zbin_gal2 = zbin_source[ind_gal2];
+                            e1_gal2 = e1_source[ind_gal2];
+                            e2_gal2 = e2_source[ind_gal2];
+                            phibin1 = (int) ((rel1/dist)*phitree_nx);
+                            phibin2 = (int) ((rel2/dist)*phitree_ny);
+                            phibin = phitree_bins[phibin2*phitree_nx+phibin1];
+                            // Add to galaxy in phibin
+                            ind_galinap = zbin_gal2*nbinsr*phitree_nphi + rbin*phitree_nphi + phibin;
+                            apgals_w[ind_galinap] += w_gal2;
+                            apgals_rel1[ind_galinap] += w_gal2*rel1;
+                            apgals_rel2[ind_galinap] += w_gal2*rel2;
+                            apgals_wshape[ind_galinap] += w_gal2*(e1_gal2+I*e2_gal2);
+                        }
+                    }
+                }
+                // Second step: Filter for nonempty bins
+                int nnonempty = 0;
+                for (int elbinz=0; elbinz<nbinsz_source; elbinz++){ 
+                    for (int rbin=0; rbin<nbinsr; rbin++){ 
+                        for (int phibin=0; phibin<phitree_nphi; phibin++){ 
+                            ind_galinap = elbinz*nbinsr*phitree_nphi + rbin*phitree_nphi + phibin;
+                            if (apgals_w>0){
+                                inds_galinap[nnonempty] = ind_galinap;
+                                apgals_rel1[ind_galinap] /= apgals_w[ind_galinap];
+                                apgals_rel2[ind_galinap] /= apgals_w[ind_galinap];
+                                nnonempty += 1;
+                            }
+                        }
+                    }
+                }
+                // Third step: Allocate the Gn
+                for (int elgal=0; elgal<nnonempty; elgal++){
+                    ind_galinap = inds_galinap[elgal];
+                    zbin_gal2 = (int) (ind_galinap/(nbinsr*phitree_nphi));
+                    rbin_gal2 = (int) ((ind_galinap-zbin_gal2*nbinsr*phitree_nphi)/phitree_nphi);
+                    
+                    rel1 = apgals_rel1[ind_galinap];
+                    rel2 = apgals_rel2[ind_galinap];
+                    dist = sqrt(rel1*rel1 + rel2*rel2);
+                    w_gal2 = apgals_w[ind_galinap];
+                    wshape_gal2 = apgals_wshape[ind_galinap];
+                    z2rshift = zbin_gal2*nbinsr + rbin;
+                    ind_counts = threadshift_counts + z1shift + z2rshift;
+                    
+                    phirot = (rel1+I*rel2)/dist;
+                    thisncounts[z2rshift] += 1;
+                    tmpwcounts[ind_counts] += w_gal1*w_gal2*dist; 
+                    tmpwnorms[ind_counts] += w_gal1*w_gal2; 
+                    thisG2ns[z2rshift] += w_gal1*wshape_gal2*wshape_gal2*conj(phirot*phirot*phirot*phirot);
+                    thisG2ns[nbinszr_Gn+z2rshift] += w_gal1*wshape_gal2*conj(wshape_gal2);
+                    thisW2ns[z2rshift] += w_gal1*w_gal2*w_gal2;
+
+                    // n=0
+                    ind_Wnp = nmax*nbinszr_Wn + z2rshift;
+                    ind_Wnm = ind_Wnp;
+                    ind_Gnp = (nmax+2)*nbinszr_Gn+z2rshift;
+                    ind_Gnm = ind_Gnp;
+                    nphirot = 1;
+                    thisGns[ind_Gnp] += wshape_gal2;
+                    thisWns[ind_Wnp] += w_gal2;
+                    // n \in {-nmax, ..., -1, 1, ...,  nmax}
+                    for (int nextn=1;nextn<=nmax;nextn++){
+                        nphirot *= phirot; 
+                        ind_Wnp += nbinszr_Wn;
+                        ind_Wnm -= nbinszr_Wn;
+                        ind_Gnp += nbinszr_Gn;
+                        ind_Gnm -= nbinszr_Gn;
+                        thisGns[ind_Gnp] += wshape_gal2*nphirot;
+                        thisGns[ind_Gnm] += wshape_gal2*conj(nphirot);
+                        thisWns[ind_Wnp] += w_gal2*nphirot;
+                        thisWns[ind_Wnm] += w_gal2*conj(nphirot);
+                    }
+
+                    // n \in {-nmax-2, -nmax-1, nmax+1, nmax+2}
+                    nphirot *= phirot; 
+                    ind_Gnp += nbinszr_Gn;
+                    ind_Gnm -= nbinszr_Gn;
+                    thisGns[ind_Gnp] += wshape_gal2*nphirot;
+                    thisGns[ind_Gnm] += wshape_gal2*conj(nphirot);
+                    nphirot *= phirot; 
+                    ind_Gnp += nbinszr_Gn;
+                    ind_Gnm -= nbinszr_Gn;
+                    thisGns[ind_Gnp] += wshape_gal2*nphirot;
+                    thisGns[ind_Gnm] += wshape_gal2*conj(nphirot);
+                }
+                
+                // Update the Upsilon_n & N_n for this galaxy
+                // shape (nthreads, nmax+1, nbinsz_lens, nbinsz_source, nbinsz_source, nbinsr, nbinsr)
+                // First check for zero count bins
+                // Note: Expected number of tracers in tomobin: <N> ~ 2*pi*nbar*drbin*<rbin>
+                //   --> If we put lenses (with nbar<~1/arcmin^2) in tomo bins, most 3pcf bins will be empty...
+                int nallowedcounts = 0;
+                for (int zbin1=0; zbin1<nbinsz_source; zbin1++){
+                    for (int elb1=0; elb1<nbinsr; elb1++){
+                        z2rshift = zbin1*nbinsr + elb1;
+                        if (thisncounts[z2rshift] != 0){
+                            allowedrinds[nallowedcounts] = elb1;
+                            allowedzinds[nallowedcounts] = zbin1;
+                            nallowedcounts += 1;
+                        }
+                    }
+                }
+                // Now allocate only nonzero bins
+                // Upsilon_-(thet1, thet2) ~ w * G_{+n-2}(thet1) * G_{-n-2}(thet2) + delta^K_{thet1,thet2} * (w * (we)^2*exp(4*phi))
+                // Upsilon_+(thet1, thet2) ~ w * G_{+n-2}(thet1) * conj(G_{+n-2})(thet2) + delta^K_{thet1,thet2} * (w * |we|^2)
+                // Norm(thet1, thet2)    ~   w  * W_{n}(thet1)   * W_{-n}(thet2)   - delta^K_{thet1,thet2} * (w  * w*w)
+                // Note that here we allocate also the negative multipoles as Upsilon_- does not have a symmetry connecting the 
+                // negative multipoles to the positive one (for this we would need also a <n gamma^* gamma> correlator, but this
+                // does not carry any additional information as compared to <n gamma gamma^*>...). 
+                
+                for (int thisn=-nmax; thisn<=nmax; thisn++){
+                    int thisnshift_ups = threadshift_upsilon + (thisn+nmax)*upsilon_nshift;
+                    int thisnshift_norm = threadshift_norm + (thisn+nmax)*norm_nshift;
+                    int _wind, _upsind1, _upsind2, zrshift, zcombi, upsilon_indshift, norm_indshift, elb1, zbin2, elb2, zbin3;
+                    double complex nextUps1, nextUps2, nextN;
+                    for (int zrcombis1=0; zrcombis1<nallowedcounts; zrcombis1++){
+                        elb1 = allowedrinds[zrcombis1];
+                        zbin2 = allowedzinds[zrcombis1];
+                        zrshift = zbin2*nbinsr + elb1;
+                        // Double counting correction
+                        if (dccorr==1){
+                            zcombi = zbin_gal1*nbinsz_source*nbinsz_source + zbin2*nbinsz_source + zbin2;
+                            upsilon_indshift = thisnshift_ups + zcombi*upsilon_zshift + elb1*nbinsr+elb1;
+                            norm_indshift = thisnshift_norm + zcombi*norm_zshift + elb1*nbinsr+elb1;
+                            tmpUpsilon[upsilon_indshift] -= thisG2ns[zrshift];
+                            tmpUpsilon[upsilon_indshift+upsilon_compshift] -= thisG2ns[nbinszr_Gn+zrshift];
+                            tmpNorm[norm_indshift] -= thisW2ns[zrshift];
+                        }
+                        _wind = (nmax+thisn)*nbinszr_Wn+zrshift;
+                        _upsind1 = (nmax+0+thisn)*nbinszr_Gn+zrshift;
+                        _upsind2 = (nmax+0+thisn)*nbinszr_Gn+zrshift;
+                        nextUps1 = w_gal1*thisGns[_upsind1];
+                        nextUps2 = w_gal1*thisGns[_upsind2];
+                        nextN = w_gal1*thisWns[_wind];
+                        for (int zrcombis2=0; zrcombis2<nallowedcounts; zrcombis2++){
+                            elb2 = allowedrinds[zrcombis2];
+                            zbin3 = allowedzinds[zrcombis2];
+                            zrshift = zbin3*nbinsr + elb2;
+                            _wind = (nmax-thisn)*nbinszr_Wn+zrshift;
+                            _upsind1 = (nmax-thisn+0)*nbinszr_Gn+zrshift;
+                            _upsind2 = (nmax+thisn+0)*nbinszr_Gn+zrshift;
+                            zcombi = zbin_gal1*nbinsz_source*nbinsz_source + zbin2*nbinsz_source + zbin3;
+                            upsilon_indshift = thisnshift_ups + elb1*nbinsr + zcombi*upsilon_zshift + elb2;
+                            norm_indshift = thisnshift_norm + elb1*nbinsr + zcombi*upsilon_zshift + elb2;
+                            tmpUpsilon[upsilon_indshift] += nextUps1*thisGns[_upsind1];
+                            tmpUpsilon[upsilon_indshift+upsilon_compshift] += nextUps2*conj(thisGns[_upsind2]);
+                            tmpNorm[norm_indshift] += nextN*thisWns[_wind];
+                        }
+                    }
+                }
+                // Set phigrids to zero
+                for (int tmpind=0; tmpind<nnonempty; tmpind++){
+                    inds_galinap[tmpind]=0;
+                    apgals_w[tmpind]=0;
+                    apgals_rel1[tmpind]=0;
+                    apgals_rel2[tmpind]=0;
+                    apgals_wshape[tmpind]=0;
+                }
+                
+                
+                //free stuff
+                free(thisWns);
+                free(thisGns);
+                free(thisG2ns);
+                free(thisW2ns);
+                free(thisncounts);
+                free(allowedrinds);
+                free(allowedzinds);
+                
+                
+                
+            }
+        }
+        free(inds_galinap);
+        free(apgals_w);
+        free(apgals_rel1);
+        free(apgals_rel2);
+        free(apgals_wshape);
+    }
+    
+    // Accumulate the Upsilon_n / N_n
+    printf("Accumulate Upsilon\n");
+    #pragma omp parallel for num_threads(nthreads)
+    for (int thisn=0; thisn<2*nmax+1; thisn++){
+        int iUps;
+        for (int thisthread=0; thisthread<nthreads; thisthread++){
+            int thisthreadshift_ups = thisthread*_upsilonthreadshift;
+            int thisthreadshift_norm = thisthread*_normthreadshift;
+            for (int zcombi=0; zcombi<_nzcombis; zcombi++){
+                for (int elb1=0; elb1<nbinsr; elb1++){
+                    for (int elb2=0; elb2<nbinsr; elb2++){
+                        iUps = thisn*_upsilonnshift + zcombi*_upsilonzshift + elb1*nbinsr + elb2;
+                        Upsilon_n[iUps] += tmpUpsilon[thisthreadshift_ups+iUps];
+                        Upsilon_n[iUps+_upsiloncompshift] += tmpUpsilon[thisthreadshift_ups+_upsiloncompshift+iUps];
+                        Norm_n[iUps] += tmpNorm[thisthreadshift_norm+iUps];
+                    }
+                }
+            }
+        }
+    }
+    
+    // Accumulate the bin distances and weights
+    printf("Accumulate bin centers \n");
+    for (int thisthread=0; thisthread<nthreads; thisthread++){
+        int tmpind;
+        int thisthreadshift = thisthread*nbinsz_source*nbinsz_lens*nbinsr; 
+        for (int elbinz=0; elbinz<nbinsz_source*nbinsz_lens; elbinz++){
+            for (int elbinr=0; elbinr<nbinsr; elbinr++){
+                tmpind = elbinz*nbinsr + elbinr;
+                totcounts[tmpind] += tmpwcounts[thisthreadshift+tmpind];
+                totnorms[tmpind] += tmpwnorms[thisthreadshift+tmpind];
+            }
+        }
+    }
+    
+    // Get bin centers
+    printf("Finalize bin centers \n");
+    for (int elbinz=0; elbinz<nbinsz_source*nbinsz_lens; elbinz++){
+        for (int elbinr=0; elbinr<nbinsr; elbinr++){
+            int tmpind = elbinz*nbinsr + elbinr;
+            if (totnorms[tmpind] != 0){
+                bin_centers[tmpind] = totcounts[tmpind]/totnorms[tmpind];
+            }
+        }
+    } 
+    free(tmpUpsilon);
+    free(tmpNorm);
+    free(tmpwcounts);
+    free(tmpwnorms);
+    free(totcounts);
+    free(totnorms);
+}
+        
+
+// Discrete estimator of Lens-Source-Source Correlator
+void alloc_Gammans_tree_NGG(
+        int nresos, double *reso_redges, 
+        double *w_source_resos, double *pos1_source_resos, double *pos2_source_resos,
+        double *e1_source_resos, double *e2_source_resos, int *zbin_source_resos, int nbinsz_source, int *ngal_source_resos,
+        int *isinner_lens, double *w_lens, double *pos1_lens, double *pos2_lens, int *zbin_lens, int nbinsz_lens, int ngal_lens, 
+        int *index_matcher_source, int *pixs_galind_bounds_source, int *pix_gals_source, 
+        int *index_matcher_lens, int *pixs_galind_bounds_lens, int *pix_gals_lens, int nregions, 
+        double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n,
+        int nmax, double rmin, double rmax, int nbinsr, int dccorr,
+        int nthreads, double *bin_centers, double complex *Upsilon_n, double complex *Norm_n){
+    
+    int _nzcombis = nbinsz_lens*nbinsz_source*nbinsz_source;
+    int _upsilonzshift = nbinsr*nbinsr;
+    int _upsilonnshift = _upsilonzshift*_nzcombis;
+    int _upsiloncompshift = (2*nmax+1)*_upsilonnshift;
+    int _upsilonthreadshift = 2*_upsiloncompshift;
+    int _normzshift = nbinsr*nbinsr;
+    int _normnshift = _normzshift*_nzcombis;
+    int _normthreadshift = (2*nmax+1)*_normnshift;    
+    
+    double *tmpwcounts = calloc(nthreads*nbinsz_lens*nbinsz_source*nbinsr, sizeof(double));
+    double *tmpwnorms  = calloc(nthreads*nbinsz_lens*nbinsz_source*nbinsr, sizeof(double));
+    double *totcounts = calloc(nbinsz_lens*nbinsz_source*nbinsr, sizeof(double));
+    double *totnorms  = calloc(nbinsz_lens*nbinsz_source*nbinsr, sizeof(double));
+    // Temporary arrays that are allocated in parallel and later reduced
+    // Shape of tmpUpsilon ~ (nthreads, nnvals, nz_source, nz_lens, nz_lens, nbinsr, nbinsr)
+    double complex *tmpUpsilon = calloc(nthreads*_upsilonthreadshift, sizeof(double complex));
+    double complex *tmpNorm = calloc(nthreads*_normthreadshift, sizeof(double complex));
+    #pragma omp parallel for num_threads(nthreads)
+    for(int elthread=0;elthread<nthreads;elthread++){
+        int nregions_per_thread = nregions/nthreads;
+        int nnvals_Gn = 2*nmax+5; // Need [-nmax-2, ..., nmax+2]
+        int nnvals_Wn = 2*nmax+1; // Need [-nmax, ..., nmax]
+        int nnvals_Ups = 2*nmax+1;
+        int nnvals_Norm = 2*nmax+1;
+        int nzcombis = nbinsz_lens*nbinsz_source*nbinsz_source;
+        int upsilon_zshift = nbinsr*nbinsr;
+        int upsilon_nshift = upsilon_zshift*nzcombis;
+        int upsilon_compshift = nnvals_Ups*upsilon_nshift;
+        int threadshift_upsilon = 2*elthread*nnvals_Ups*upsilon_nshift;
+        int norm_zshift = nbinsr*nbinsr;
+        int norm_nshift = norm_zshift*nzcombis;
+        int threadshift_norm = elthread*nnvals_Norm*norm_nshift;
+        int threadshift_counts = elthread*nbinsz_lens*nbinsz_source*nbinsr;
+        int nbinszr_Gn = nbinsz_source*nbinsr;
+        int nbinszr_Wn = nbinsz_source*nbinsr;
+        double drbin = log(rmax/rmin)/nbinsr;
+        int npix_hash = pix1_n*pix2_n;
+        
+        int *rshift_index_matcher = calloc(nresos, sizeof(int));
+        int *rshift_pixs_galind_bounds = calloc(nresos, sizeof(int));
+        int *rshift_pix_gals = calloc(nresos, sizeof(int));
+        for (int elreso=1;elreso<nresos;elreso++){
+            rshift_index_matcher[elreso] = rshift_index_matcher[elreso-1] + npix_hash;
+            rshift_pixs_galind_bounds[elreso] = rshift_pixs_galind_bounds[elreso-1] + ngal_source_resos[elreso-1]+1;
+            rshift_pix_gals[elreso] = rshift_pix_gals[elreso-1] + ngal_source_resos[elreso-1];
+        }
+        
+        
+        for (int elregion=0; elregion<nregions; elregion++){
+            int region_debug=(int) (nthreads/2) * nregions_per_thread;
+            //int region_debug=99999;
+            // Check if this thread is responsible for the region
+            int nthread_target = mymin(elregion/nregions_per_thread, nthreads-1);
+            if (nthread_target!=elthread){continue;}
+            //if (elregion==region_debug){printf("Region %d is in thread %d\n",elregion,elthread);}
+            if (elthread==nthreads/2){
+                int elreg_inthread = elregion-nregions_per_thread*(nthreads/2);
+                printf("\rDone %.2f per cent",100*((double) elreg_inthread)/nregions_per_thread);
+            }
+            
+            int zbin_gal1, zbin_gal2;
+            double pos1_gal1, pos2_gal1, w_gal1;
+            double pos1_gal2, pos2_gal2, w_gal2, e1_gal2, e2_gal2;
+            double complex wshape_gal2;
+            int ind_red, ind_gal1, ind_gal2, lower1, upper1, isinner_gal1, lower2, upper2;
+            int pix1_lower, pix2_lower, pix1_upper, pix2_upper;
+            int ind_inpix1, ind_inpix2;
+            lower1 = pixs_galind_bounds_lens[elregion];
+            upper1 = pixs_galind_bounds_lens[elregion+1];
+            for (ind_inpix1=lower1; ind_inpix1<upper1; ind_inpix1++){
+                
+                // Load lens galaxy info
+                ind_gal1 = pix_gals_lens[ind_inpix1];
+                #pragma omp critical
+                {pos1_gal1 = pos1_lens[ind_gal1];
+                pos2_gal1 = pos2_lens[ind_gal1];
+                w_gal1 = w_lens[ind_gal1];
+                zbin_gal1 = zbin_lens[ind_gal1];
+                zbin_gal1 = zbin_lens[ind_gal1];
+                isinner_gal1 = isinner_lens[ind_gal1];}
+                if(isinner_gal1==0){continue;}
+                
+                // Allocate the G_n and W_n coefficients + Double-counting correction factors
+                double complex phirot, nphirot;
+                double rel1, rel2, dist;
+                int ind_Wnp, ind_Wnm, ind_Gnp, ind_Gnm, ind_counts, z1shift, z2rshift, rbin;
+                double complex *thisGns = calloc(nnvals_Gn*nbinszr_Gn, sizeof(double complex)); 
+                double complex *thisWns = calloc(nnvals_Wn*nbinszr_Wn, sizeof(double complex)); 
+                double complex *thisG2ns = calloc(2*nbinszr_Gn, sizeof(double complex));
+                double complex *thisW2ns = calloc(nbinszr_Wn, sizeof(double complex));
+                int *thisncounts = calloc(nbinszr_Wn, sizeof(int));
+                int *allowedrinds = calloc(nbinszr_Wn, sizeof(int));
+                int *allowedzinds = calloc(nbinszr_Wn, sizeof(int));
+                z1shift = zbin_gal1*nbinsz_source*nbinsr;
+                /////
+                
+                
+                for (int elreso=0;elreso<nresos;elreso++){
+                    int pix1_lower = mymax(0, (int) floor((pos1_gal1 - 
+                                                           (reso_redges[elreso+1]+pix1_d) - pix1_start)/pix1_d));
+                    int pix2_lower = mymax(0, (int) floor((pos2_gal1 - 
+                                                           (reso_redges[elreso+1]+pix2_d) - pix2_start)/pix2_d));
+                    int pix1_upper = mymin(pix1_n-1, (int) floor((pos1_gal1 + 
+                                                                  (reso_redges[elreso+1]+pix1_d) - pix1_start)/pix1_d));
+                    int pix2_upper = mymin(pix2_n-1, (int) floor((pos2_gal1 + 
+                                                                  (reso_redges[elreso+1]+pix2_d) - pix2_start)/pix2_d));
+                    int ind_pix1, ind_pix2;
+                    double rmin_sq = reso_redges[elreso]*reso_redges[elreso];
+                    double rmax_sq = reso_redges[elreso+1]*reso_redges[elreso+1];
+                    for (ind_pix1=pix1_lower; ind_pix1<pix1_upper; ind_pix1++){
+                        for (ind_pix2=pix2_lower; ind_pix2<pix2_upper; ind_pix2++){
+                            ind_red = index_matcher_source[rshift_index_matcher[elreso] + ind_pix2*pix1_n + ind_pix1];
+                            if (ind_red==-1){continue;}
+                            lower2 = pixs_galind_bounds_source[rshift_pixs_galind_bounds[elreso]+ind_red];
+                            upper2 = pixs_galind_bounds_source[rshift_pixs_galind_bounds[elreso]+ind_red+1];
+                            for (ind_inpix2=lower2; ind_inpix2<upper2; ind_inpix2++){
+                                ind_gal2 = rshift_pix_gals[elreso] + pix_gals_source[rshift_pix_gals[elreso]+ind_inpix2];
+                                pos1_gal2 = pos1_source_resos[ind_gal2];
+                                pos2_gal2 = pos2_source_resos[ind_gal2];
+                                rel1 = pos1_gal2 - pos1_gal1;
+                                rel2 = pos2_gal2 - pos2_gal1;
+                                dist = rel1*rel1 + rel2*rel2;
+                                if(dist < rmin_sq || dist >= rmax_sq) continue;
+                                dist = sqrt(dist);
+                                rbin = (int) floor((log(dist)-log(rmin))/drbin);
+                                w_gal2 = w_source_resos[ind_gal2];
+                                zbin_gal2 = zbin_source_resos[ind_gal2];
+                                e1_gal2 = e1_source_resos[ind_gal2];
+                                e2_gal2 = e2_source_resos[ind_gal2];
+                                wshape_gal2 = w_gal2*(e1_gal2+I*e2_gal2);
+                                z2rshift = zbin_gal2*nbinsr + rbin;
+                                ind_counts = threadshift_counts + z1shift + z2rshift;
+
+                                phirot = (rel1+I*rel2)/dist;
+                                thisncounts[z2rshift] += 1;
+                                tmpwcounts[ind_counts] += w_gal1*w_gal2*dist; 
+                                tmpwnorms[ind_counts] += w_gal1*w_gal2; 
+                                thisG2ns[z2rshift] += w_gal1*wshape_gal2*wshape_gal2*conj(phirot*phirot*phirot*phirot);
+                                thisG2ns[nbinszr_Gn+z2rshift] += w_gal1*wshape_gal2*conj(wshape_gal2);
+                                thisW2ns[z2rshift] += w_gal1*w_gal2*w_gal2;
+
+                                // n=0
+                                ind_Wnp = nmax*nbinszr_Wn + z2rshift;
+                                ind_Wnm = ind_Wnp;
+                                ind_Gnp = (nmax+2)*nbinszr_Gn+z2rshift;
+                                ind_Gnm = ind_Gnp;
+                                nphirot = 1;
+                                thisGns[ind_Gnp] += wshape_gal2;
+                                thisWns[ind_Wnp] += w_gal2;
+                                // n \in {-nmax, ..., -1, 1, ...,  nmax}
+                                for (int nextn=1;nextn<=nmax;nextn++){
+                                    nphirot *= phirot; 
+                                    ind_Wnp += nbinszr_Wn;
+                                    ind_Wnm -= nbinszr_Wn;
+                                    ind_Gnp += nbinszr_Gn;
+                                    ind_Gnm -= nbinszr_Gn;
+                                    thisGns[ind_Gnp] += wshape_gal2*nphirot;
+                                    thisGns[ind_Gnm] += wshape_gal2*conj(nphirot);
+                                    thisWns[ind_Wnp] += w_gal2*nphirot;
+                                    thisWns[ind_Wnm] += w_gal2*conj(nphirot);
+                                }
+
+                                // n \in {-nmax-2, -nmax-1, nmax+1, nmax+2}
+                                nphirot *= phirot; 
+                                ind_Gnp += nbinszr_Gn;
+                                ind_Gnm -= nbinszr_Gn;
+                                thisGns[ind_Gnp] += wshape_gal2*nphirot;
+                                thisGns[ind_Gnm] += wshape_gal2*conj(nphirot);
+                                nphirot *= phirot; 
+                                ind_Gnp += nbinszr_Gn;
+                                ind_Gnm -= nbinszr_Gn;
+                                thisGns[ind_Gnp] += wshape_gal2*nphirot;
+                                thisGns[ind_Gnm] += wshape_gal2*conj(nphirot);
+                            }
+                        }
+                    }
+                }
+                
+                // Update the Upsilon_n & N_n for this galaxy
+                // shape (nthreads, nmax+1, nbinsz_lens, nbinsz_source, nbinsz_source, nbinsr, nbinsr)
+                // First check for zero count bins
+                // Note: Expected number of tracers in tomobin: <N> ~ 2*pi*nbar*drbin*<rbin>
+                //   --> If we put lenses (with nbar<~1/arcmin^2) in tomo bins, most 3pcf bins will be empty...
+                int nallowedcounts = 0;
+                for (int zbin1=0; zbin1<nbinsz_source; zbin1++){
+                    for (int elb1=0; elb1<nbinsr; elb1++){
+                        z2rshift = zbin1*nbinsr + elb1;
+                        if (thisncounts[z2rshift] != 0){
+                            allowedrinds[nallowedcounts] = elb1;
+                            allowedzinds[nallowedcounts] = zbin1;
+                            nallowedcounts += 1;
+                        }
+                    }
+                }
+                // Now allocate only nonzero bins
+                // Upsilon_-(thet1, thet2) ~ w * G_{+n-2}(thet1) * G_{-n-2}(thet2) + delta^K_{thet1,thet2} * (w * (we)^2*exp(4*phi))
+                // Upsilon_+(thet1, thet2) ~ w * G_{+n-2}(thet1) * conj(G_{+n-2})(thet2) + delta^K_{thet1,thet2} * (w * |we|^2)
+                // Norm(thet1, thet2)    ~   w  * W_{n}(thet1)   * W_{-n}(thet2)   - delta^K_{thet1,thet2} * (w  * w*w)
+                // Note that here we allocate also the negative multipoles as Upsilon_- does not have a symmetry connecting the 
+                // negative multipoles to the positive one (for this we would need also a <n gamma^* gamma> correlator, but this
+                // does not carry any additional information as compared to <n gamma gamma^*>...). 
+                
+                for (int thisn=-nmax; thisn<=nmax; thisn++){
+                    int thisnshift_ups = threadshift_upsilon + (thisn+nmax)*upsilon_nshift;
+                    int thisnshift_norm = threadshift_norm + (thisn+nmax)*norm_nshift;
+                    int _wind, _upsind1, _upsind2, zrshift, zcombi, upsilon_indshift, norm_indshift, elb1, zbin2, elb2, zbin3;
+                    double complex nextUps1, nextUps2, nextN;
+                    for (int zrcombis1=0; zrcombis1<nallowedcounts; zrcombis1++){
+                        elb1 = allowedrinds[zrcombis1];
+                        zbin2 = allowedzinds[zrcombis1];
+                        zrshift = zbin2*nbinsr + elb1;
+                        // Double counting correction
+                        if (dccorr==1){
+                            zcombi = zbin_gal1*nbinsz_source*nbinsz_source + zbin2*nbinsz_source + zbin2;
+                            upsilon_indshift = thisnshift_ups + zcombi*upsilon_zshift + elb1*nbinsr+elb1;
+                            norm_indshift = thisnshift_norm + zcombi*norm_zshift + elb1*nbinsr+elb1;
+                            tmpUpsilon[upsilon_indshift] -= thisG2ns[zrshift];
+                            tmpUpsilon[upsilon_indshift+upsilon_compshift] -= thisG2ns[nbinszr_Gn+zrshift];
+                            tmpNorm[norm_indshift] -= thisW2ns[zrshift];
+                        }
+                        _wind = (nmax+thisn)*nbinszr_Wn+zrshift;
+                        _upsind1 = (nmax+0+thisn)*nbinszr_Gn+zrshift;
+                        _upsind2 = (nmax+0+thisn)*nbinszr_Gn+zrshift;
+                        nextUps1 = w_gal1*thisGns[_upsind1];
+                        nextUps2 = w_gal1*thisGns[_upsind2];
+                        nextN = w_gal1*thisWns[_wind];
+                        for (int zrcombis2=0; zrcombis2<nallowedcounts; zrcombis2++){
+                            elb2 = allowedrinds[zrcombis2];
+                            zbin3 = allowedzinds[zrcombis2];
+                            zrshift = zbin3*nbinsr + elb2;
+                            _wind = (nmax-thisn)*nbinszr_Wn+zrshift;
+                            _upsind1 = (nmax-thisn+0)*nbinszr_Gn+zrshift;
+                            _upsind2 = (nmax+thisn+0)*nbinszr_Gn+zrshift;
+                            zcombi = zbin_gal1*nbinsz_source*nbinsz_source + zbin2*nbinsz_source + zbin3;
+                            upsilon_indshift = thisnshift_ups + elb1*nbinsr + zcombi*upsilon_zshift + elb2;
+                            norm_indshift = thisnshift_norm + elb1*nbinsr + zcombi*upsilon_zshift + elb2;
+                            tmpUpsilon[upsilon_indshift] += nextUps1*thisGns[_upsind1];
+                            tmpUpsilon[upsilon_indshift+upsilon_compshift] += nextUps2*conj(thisGns[_upsind2]);
+                            tmpNorm[norm_indshift] += nextN*thisWns[_wind];
+                        }
+                    }
+                }
+                free(thisWns);
+                free(thisGns);
+                free(thisG2ns);
+                free(thisW2ns);
+                free(thisncounts);
+                free(allowedrinds);
+                free(allowedzinds);
+            }
+        }
+        free(rshift_index_matcher);
+        free(rshift_pixs_galind_bounds);
+        free(rshift_pix_gals);
+    }
+    
+    // Accumulate the Upsilon_n / N_n
+    printf("Accumulate Upsilon\n");
+    #pragma omp parallel for num_threads(nthreads)
+    for (int thisn=0; thisn<2*nmax+1; thisn++){
+        int iUps;
+        for (int thisthread=0; thisthread<nthreads; thisthread++){
+            int thisthreadshift_ups = thisthread*_upsilonthreadshift;
+            int thisthreadshift_norm = thisthread*_normthreadshift;
+            for (int zcombi=0; zcombi<_nzcombis; zcombi++){
+                for (int elb1=0; elb1<nbinsr; elb1++){
+                    for (int elb2=0; elb2<nbinsr; elb2++){
+                        iUps = thisn*_upsilonnshift + zcombi*_upsilonzshift + elb1*nbinsr + elb2;
+                        Upsilon_n[iUps] += tmpUpsilon[thisthreadshift_ups+iUps];
+                        Upsilon_n[iUps+_upsiloncompshift] += tmpUpsilon[thisthreadshift_ups+_upsiloncompshift+iUps];
+                        Norm_n[iUps] += tmpNorm[thisthreadshift_norm+iUps];
+                    }
+                }
+            }
+        }
+    }
+    
+    // Accumulate the bin distances and weights
+    printf("Accumulate bin centers \n");
+    for (int thisthread=0; thisthread<nthreads; thisthread++){
+        int tmpind;
+        int thisthreadshift = thisthread*nbinsz_source*nbinsz_lens*nbinsr; 
+        for (int elbinz=0; elbinz<nbinsz_source*nbinsz_lens; elbinz++){
+            for (int elbinr=0; elbinr<nbinsr; elbinr++){
+                tmpind = elbinz*nbinsr + elbinr;
+                totcounts[tmpind] += tmpwcounts[thisthreadshift+tmpind];
+                totnorms[tmpind] += tmpwnorms[thisthreadshift+tmpind];
+            }
+        }
+    }
+    
+    // Get bin centers
+    printf("Finalize bin centers \n");
+    for (int elbinz=0; elbinz<nbinsz_source*nbinsz_lens; elbinz++){
+        for (int elbinr=0; elbinr<nbinsr; elbinr++){
+            int tmpind = elbinz*nbinsr + elbinr;
+            if (totnorms[tmpind] != 0){
+                bin_centers[tmpind] = totcounts[tmpind]/totnorms[tmpind];
+            }
+        }
+    } 
+    free(tmpUpsilon);
+    free(tmpNorm);
+    free(tmpwcounts);
+    free(tmpwnorms);
+    free(totcounts);
+    free(totnorms);
+}
+
 // DoubleTree based estimtor of Lens-Source-Source Correlator
 void alloc_Gammans_doubletree_NGG(
     int nresos, int nresos_grid, double *dpix1_resos,  double *dpix2_resos, double *reso_redges, 
@@ -3799,12 +4486,12 @@ void alloc_Gammans_doubletree_NGG(
         double complex *wWncache = calloc(nnvals_Wn*size_max_nshift, sizeof(double complex));
         int *Wncache_updates = calloc(size_max_nshift, sizeof(int));
         for (int elregion=0; elregion<nregions; elregion++){
-            int region_debug=0;
+            int region_debug=-1;
             // Check if this thread is responsible for the region
             int nthread_target = mymin(elregion/nregions_per_thread, nthreads-1);
             if (nthread_target!=elthread){continue;}
             // printf("Region %d is in thread %d\n",elregion,elthread);
-            if (elregion==region_debug){printf("Region %d is in thread %d\n",elregion,elthread);}
+            //if (elregion==region_debug){printf("Region %d is in thread %d\n",elregion,elthread);}
             if (elthread==nthreads/2){
                 //printf("\rDone %.2f per cent",100*((double) elregion-nregions_per_thread*(int)(nthreads/2))/nregions_per_thread);
             }
@@ -3928,7 +4615,7 @@ void alloc_Gammans_doubletree_NGG(
             for (int elz=0; elz<nbinsz_lens; elz++){
                 if (elregion==region_debug){printf("z=%d/%d: \n", elz,nbinsz_lens);}
                 for (int elreso=0; elreso<nresos; elreso++){
-                    if (elregion==region_debug){printf("  reso=%d/%d: \n", elreso,nresos);}
+                    //if (elregion==region_debug){printf("  reso=%d/%d: \n", elreso,nresos);}
                     if (hasdiscrete==1 && elreso==0){
                         cumresoshift_z[elz*(nresos+1) + elreso+1] = ngal_in_pix[elz*nresos + elreso+1];
                     }
@@ -3939,12 +4626,14 @@ void alloc_Gammans_doubletree_NGG(
                 }
                 thetashifts_z[elz] = cumresoshift_z[elz*(nresos+1) + nresos];
                 zbinshifts[elz+1] = zbinshifts[elz] + nbinsr*thetashifts_z[elz];
-                if ((elregion==region_debug)){printf("thetashifts_z[z]=%d: \nzbinshifts[z+1]=%d: \n", thetashifts_z[elz],  zbinshifts[elz+1]);}
+                if ((elregion==region_debug)){printf("thetashifts_z[z]=%d: \nzbinshifts[z+1]=%d: \n", 
+                                                     thetashifts_z[elz],  zbinshifts[elz+1]);}
             }            
             zbin2shift = zbinshifts[nbinsz_lens];
             nshift_cache = nbinsz_source*zbin2shift;
             // Set all the cache indices that are updated in this region to zero
-            if ((elregion==region_debug)){printf("zbin2shift=%d: nshift_cache=%d: size_max_nshift=%d \n", zbin2shift, nshift_cache, size_max_nshift);}
+            if ((elregion==region_debug)){printf("zbin2shift=%d: nshift_cache=%d: size_max_nshift=%d \n", 
+                                                 zbin2shift, nshift_cache, size_max_nshift);}
             for (int _i=0; _i<nnvals_Gn*nshift_cache; _i++){Gncache[_i] = 0; wGncache[_i] = 0; cwGncache[_i] = 0;}
             for (int _i=0; _i<nnvals_Wn*nshift_cache; _i++){ Wncache[_i] = 0; wWncache[_i] = 0;}
             for (int _i=0; _i<nshift_cache; _i++){ Wncache_updates[_i] = 0;}
@@ -3990,7 +4679,7 @@ void alloc_Gammans_doubletree_NGG(
                 int *thisncounts = calloc(nbinszr_reso, sizeof(int));
                 int *allowedrinds = calloc(nbinszr_reso, sizeof(int));
                 int *allowedzinds = calloc(nbinszr_reso, sizeof(int));
-                if (elregion==region_debug){printf("rbinmin=%d, rbinmax%d\n",rbinmin,rbinmax);}
+                //if (elregion==region_debug){printf("rbinmin=%d, rbinmax%d\n",rbinmin,rbinmax);}
                 int ind_Wnp, ind_Wnm, ind_Gnp, ind_Gnm, ind_counts, z1shift, z2rshift, rbin;
                 for (ind_inpix1=lower1; ind_inpix1<upper1; ind_inpix1++){
                     ind_gal1 = rshift_pix_gals_lens[elreso] + pix_gals_lens[rshift_pix_gals_lens[elreso]+ind_inpix1];
@@ -4131,7 +4820,7 @@ void alloc_Gammans_doubletree_NGG(
                         } 
                     }
                     
-                    if (elregion==region_debug){printf("Doing rbin-thinning (same reso)");}
+                    //if (elregion==-1){printf("Doing rbin-thinning (same reso)");}
                     // Allocate same reso Upsilon
                     // First check for zero count bins (most likely only in discrete-discrete bit)
                     int nallowedcounts = 0;
@@ -4146,7 +4835,7 @@ void alloc_Gammans_doubletree_NGG(
                         }
                     }
                     
-                    if (elregion==region_debug){printf("Doing Upsilon update (same reso, ncounts=%d)",nallowedcounts);}
+                    //if (elregion==region_debug){printf("Doing Upsilon update (same reso, ncounts=%d)",nallowedcounts);}
                     // Now update the Upsilon_n
                     // tmpUpsilon have shape (nthreads, 2, 2*nmax+1, nz_lens, nz_source, nz_source, nbinsr, nbinsr)
                     // Gns have shape (nmax+5, nbinsz_source, nbinsr)
@@ -4196,15 +4885,15 @@ void alloc_Gammans_doubletree_NGG(
                             }
                         }
                     }
-                    if(elregion%100==0){printf("Setting stuff to 0 for region %d",elregion);}
+                    //if(elregion%100==0){printf("Setting stuff to 0 for region %d",elregion);}
                     for (int _i=0;_i<nnvals_Wn*nbinszr_reso;_i++){thisWns[_i]=0;}
                     for (int _i=0;_i<nnvals_Gn*nbinszr_reso;_i++){thisGns[_i]=0;}
                     for (int _i=0;_i<2*nbinszr_reso;_i++){thisG2ns[_i]=0;}
                     for (int _i=0;_i<nbinszr_reso;_i++){
                         thisW2ns[_i]=0; thisncounts[_i]=0; allowedrinds[_i]=0; allowedzinds[_i]=0;}
-                    if(elregion%100==0){printf("Finished stuff to 0 for region %d",elregion);}
+                    //if(elregion%100==0){printf("Finished stuff to 0 for region %d",elregion);}
                 }
-                if(elregion%100==0)printf("Freeing stuff for region %d",elregion);
+                //if(elregion%100==0)printf("Freeing stuff for region %d",elregion);
                 free(thisGns);
                 free(thisWns);
                 free(thisG2ns);
@@ -4217,16 +4906,19 @@ void alloc_Gammans_doubletree_NGG(
             //
             // Note that for different configurations of the resolutions we do the Gamman
             // allocation as follows - see eq. (xx) in yyy.zzz for the reasoning:
-            // * Upsilon = -wshape * W_nm1 * conj(W_np1)
-            //          --> -(wW_nm1) * conj(W_np1)    if reso1 < reso2
-            //          --> - W_nm1   * conj(cwW_np1)  if reso1 > reso2
+            // * Upsilon_- = wshape  * G_nm2 * G_mnm2
+            //          --> (wG_nm2) * G_mnm2    if reso1 < reso2
+            //          -->  G_nm2   * wG_mnm2   if reso1 > reso2
+            // * Upsilon_+ = wshape  * G_nm2 * conj(G_nm2)
+            //          --> (wG_nm2) * conj(G_nm2)    if reso1 < reso2
+            //          -->  G_nm2   * conj(wG_nm2)   if reso1 > reso2
             // * Norm   =  w * W_n * conj(W_n)
             //          --> wW_n * conj(W_n)  if reso1 < reso2
             //          --> W_n  * conj(wW_n) if reso1 > reso2
             // where wW_xxx := w(shape)*W_xxx and cwG_xxx := conj(w(shape))*G_xxx
             double complex nextUps, nextN;
             int zcombi;
-            if(elregion%100==0)printf("Allocating different reso stuff for region %d",elregion);
+            //if(elregion==region_debug)printf("Allocating different reso stuff for region %d",elregion);
             for (int thisn=-nmax; thisn<=nmax; thisn++){
                 int _upsshift, _normshift;
                 //int thisnshift = upsilon_threadshift + (nmax+thisn)*upsilon_nshift;
@@ -4727,6 +5419,1337 @@ void alloc_notomoGammans_discrete_gggg(
     free(totnorms);
 }
 
+// If thread==0 --> For final two threads allocate double/triple counting corrs
+// thetacombis_batches: array of length nbinsr^3 with the indices of all possible (r1,r2,r3) combinations
+//                      most likely it is simply range(nbinsr^3), but we leave some freedom here for 
+//                      potential cost-based implementations
+// nthetacombis_batches: array of length nthetbatches with the number of theta-combis in each batch
+// cumthetacombis_batches : array of length (nthetbatches+1) with is cumsum of nthetacombis_batches
+// nthetbatches: the number of theta batches
+void alloc_notomoMap4_disc_gggg(
+    int *isinner, double *weight, double *pos1, double *pos2, double *e1, double *e2, int ngal, 
+    int nmax, double rmin, double rmax, int nbinsr, int dccorr, double *phibins, double *dbinsphi, int nbinsphi,
+    int *index_matcher_hash, int *pixs_galind_bounds, int *pix_gals, int nregions, 
+    double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n, 
+    int *thetacombis_batches, int *nthetacombis_batches, int *cumthetacombis_batches, int nthetbatches,
+    int nthreads, int projection, double *mapradii, int nmapradii, double complex *M4correlators, 
+    int alloc_4pcfmultipoles, int alloc_4pcfreal,
+    double *bin_centers, double complex *Upsilon_n, double complex *N_n, double complex *Gammas, double complex *Norms){
+               
+    double complex *allM4correlators = calloc(nthreads*8*1*nmapradii, sizeof(double complex));
+    #pragma omp parallel for
+    for(int elthetbatch=0;elthetbatch<nthetbatches;elthetbatch++){
+        int nregions_skip_print = nregions/1000;
+        int save_multipoles=1; // Debug: Save all multipoles (1:true, 0:false)
+        int save_npcf = 0; // Debug: Save all npcf
+        
+        int thisthread = omp_get_thread_num();
+        //printf("Doing thetabatch %d/%d on thread %d\n",elthetbatch,nthetbatches,thisthread);
+        int nbinsz = 1;
+        int ncomp = 8;
+        int nnvals_Gn = 4*nmax+3; // Need to cover [-n1-n2-3, n1+n2-1]
+        int nnvals_G2n = 4*nmax+7; // Need to cover [-n1-n2-5, n1+n2+1]
+        int nnvals_Wn = 4*nmax+1; // Need to cover [-n1-n2, n1+n2]
+        int nnvals_Upsn = 2*nmax+1; // Need tocover [-nmax,+nmax]
+        int nzero_Gn = 2*nmax+3;
+        int nzero_G2n = 2*nmax+5;
+        int nzero_Wn = 2*nmax;
+        int nzero_Ups = nmax;
+        
+        int ups_nshift = nbinsr*nbinsr*nbinsr;
+        int n2n3combis = nnvals_Upsn*nnvals_Upsn;
+        int ups_compshift = n2n3combis*ups_nshift;
+        
+        int batch_nthetas = nthetacombis_batches[elthetbatch];
+        int batchups_nshift = batch_nthetas;
+        int batchups_compshift = n2n3combis*batchups_nshift;
+        int batchgamma_thetshift = nbinsphi*nbinsphi;
+        int batchgamma_compshift = batch_nthetas*batchgamma_thetshift;
+        
+        double *totcounts = calloc(nbinsr, sizeof(double));
+        double *totnorms = calloc(nbinsr, sizeof(double));
+        double *bin_centers_batch = calloc(nbinsr, sizeof(double));
+        double complex *batchUpsilon_n = calloc(ncomp*batchups_compshift, sizeof(double complex));
+        double complex *batchN_n = calloc(batchups_compshift, sizeof(double complex));
+        double complex *batchfourpcf = calloc(ncomp*batchups_compshift, sizeof(double complex));
+        double complex *batchfourpcf_norm = calloc(batchups_compshift, sizeof(double complex));
+        double *batch_thetas1 = calloc(batch_nthetas, sizeof(double));
+        double *batch_thetas2 = calloc(batch_nthetas, sizeof(double));
+        double *batch_thetas3 = calloc(batch_nthetas, sizeof(double));
+        
+        int nbinszr = nbinsz*nbinsr;
+        double complex *nextGns =  calloc(nnvals_Gn*nbinszr, sizeof(double complex));
+        double complex *nextG2ns_gg =  calloc(nnvals_G2n*nbinszr, sizeof(double complex));
+        double complex *nextG2ns_ggc =  calloc(nnvals_G2n*nbinszr, sizeof(double complex));
+        double complex *nextG3ns_ggg = calloc(2*nbinszr, sizeof(double complex));
+        double complex *nextG3ns_gggc = calloc(2*nbinszr, sizeof(double complex));
+        double complex *nextWns = calloc(nnvals_Wn*nbinszr, sizeof(double complex));
+        double complex *nextW2ns = calloc(nnvals_Wn*nbinszr, sizeof(double complex));
+        double complex *nextW3ns = calloc(nbinszr, sizeof(double complex));
+        
+        double drbin = (log(rmax)-log(rmin))/(nbinsr);
+        int *elb1s_batch = calloc(batch_nthetas, sizeof(int));
+        int *elb2s_batch = calloc(batch_nthetas, sizeof(int));
+        int *elb3s_batch = calloc(batch_nthetas, sizeof(int));
+        double *bin_edges = calloc(nbinsr+1, sizeof(double));
+        #pragma omp critical
+        {
+        for (int elb=0;elb<batch_nthetas;elb++){
+            int thisrcombi = thetacombis_batches[cumthetacombis_batches[elthetbatch]+elb];
+            elb1s_batch[elb] = thisrcombi/(nbinsr*nbinsr);
+            elb2s_batch[elb] = (thisrcombi-elb1s_batch[elb]*nbinsr*nbinsr)/nbinsr;
+            elb3s_batch[elb] = thisrcombi-elb1s_batch[elb]*nbinsr*nbinsr-elb2s_batch[elb]*nbinsr;
+        }
+        bin_edges[0] = rmin;
+        for (int elb=0;elb<nbinsr;elb++){
+            bin_edges[elb+1] = bin_edges[elb]*exp(drbin);
+        }
+        }
+           
+        // Allocate the 4pcf multipoles for this batch of radii 
+        int offset_per_thread = nregions/nthreads;
+        int offset = offset_per_thread*thisthread;
+        for (int _elregion=0; _elregion<nregions; _elregion++){
+            int elregion = (_elregion+offset)%nregions; // Try to evade collisions
+            if ((elregion%nregions_skip_print == 0)&&(thisthread==0)){
+                printf("Doing region %d/%d for thetabatch %d/%d\n",elregion,nregions,elthetbatch,nthetbatches);
+            }
+            int region_debug = mymin(500,nregions-1);
+            int lower1, upper1;
+            lower1 = pixs_galind_bounds[elregion];
+            upper1 = pixs_galind_bounds[elregion+1];
+            for (int ind_inpix1=lower1; ind_inpix1<upper1; ind_inpix1++){
+                double time1, time2;
+                time1 = omp_get_wtime();
+                int ind_gal = pix_gals[ind_inpix1];
+                double p11, p12, w1, e11, e12;
+                int innergal;
+                p11 = pos1[ind_gal];
+                p12 = pos2[ind_gal];
+                w1 = weight[ind_gal];
+                e11 = e1[ind_gal];
+                e12 = e2[ind_gal];
+                innergal = isinner[ind_gal];
+                if (innergal==0){continue;}
+                
+                int ind_gal2;
+                int ind_red, lower, upper; 
+                double  p21, p22, w2, w2_sq, e21, e22, rel1, rel2, dist, dphi;
+                double complex wshape1, wshape1c, wshape2, wshape_sq, wshape_cube, wshapewshapec, wshapesqwshapec;
+                double complex phirot, phirotc, twophirotc, fourphirotc, nphirot, nphirotc;
+                
+                // Check how many ns we need for Gn
+                // Gns have shape (nnvals, nbinsz, nbinsr)
+                // where the ns are ordered as 
+                // [-nmax_1-nmax_2-3, ..., nmax_1+nmax_2+3]
+                
+                for (int i=0;i<nnvals_Gn*nbinszr;i++){nextGns[i]=0;}
+                for (int i=0;i<nnvals_G2n*nbinszr;i++){nextG2ns_gg[i]=0;nextG2ns_ggc[i]=0;}
+                for (int i=0;i<2*nbinszr;i++){nextG3ns_ggg[i]=0;nextG3ns_gggc[i]=0;}
+                for (int i=0;i<nnvals_Wn*nbinszr;i++){nextWns[i]=0;nextW2ns[i]=0;}
+                for (int i=0;i<nbinszr;i++){nextW3ns[i]=0;}
+
+                int rbin, zrshift, nextnshift, ind_Gn, ind_G2n, ind_Wn;
+                int pix1_lower = mymax(0, (int) floor((p11 - (rmax+pix1_d) - pix1_start)/pix1_d));
+                int pix2_lower = mymax(0, (int) floor((p12 - (rmax+pix2_d) - pix2_start)/pix2_d));
+                int pix1_upper = mymin(pix1_n-1, (int) floor((p11 + (rmax+pix1_d) - pix1_start)/pix1_d));
+                int pix2_upper = mymin(pix2_n-1, (int) floor((p12 + (rmax+pix2_d) - pix2_start)/pix2_d));
+                
+                for (int ind_pix1=pix1_lower; ind_pix1<pix1_upper; ind_pix1++){
+                    for (int ind_pix2=pix2_lower; ind_pix2<pix2_upper; ind_pix2++){
+                        ind_red = index_matcher_hash[ind_pix2*pix1_n + ind_pix1];
+                        if (ind_red==-1){continue;}
+                        lower = pixs_galind_bounds[ind_red];
+                        upper = pixs_galind_bounds[ind_red+1];
+                        for (int ind_inpix=lower; ind_inpix<upper; ind_inpix++){
+                            ind_gal2 = pix_gals[ind_inpix];
+                            p21 = pos1[ind_gal2];
+                            p22 = pos2[ind_gal2];
+                            w2 = weight[ind_gal2];
+                            e21 = e1[ind_gal2];
+                            e22 = e2[ind_gal2];
+
+                            rel1 = p21 - p11;
+                            rel2 = p22 - p12;
+                            dist = sqrt(rel1*rel1 + rel2*rel2);
+                            if(dist < rmin || dist >= rmax) continue;
+                            rbin = (int) floor((log(dist)-log(rmin))/drbin);
+                            w2_sq = w2*w2;
+                            wshape2 = (double complex) w2 * (e21+I*e22);
+                            wshape_sq = wshape2*wshape2;
+                            wshape_cube = wshape_sq*wshape2;
+                            wshapewshapec = wshape2*conj(wshape2);
+                            wshapesqwshapec = wshape_sq*conj(wshape2);
+                            dphi = atan2(rel2,rel1);
+                            phirot = cexp(I*dphi);
+                            phirotc = conj(phirot);
+                            twophirotc = phirotc*phirotc;
+                            fourphirotc = twophirotc*twophirotc;
+                            zrshift = 0*nbinsr + rbin;
+                            ind_Gn = nzero_Gn*nbinszr + zrshift;
+                            ind_G2n = nzero_G2n*nbinszr + zrshift;
+                            ind_Wn = nzero_Wn*nbinszr + zrshift;
+                            nphirot = 1+I*0;
+                            nphirotc = 1+I*0;
+                            
+                            // Triple-counting corr
+                            nextW3ns[zrshift] += w2_sq*w2;
+                            nextG3ns_ggg[zrshift] += wshape_cube*fourphirotc;
+                            nextG3ns_ggg[nbinszr + zrshift] += wshape_cube*fourphirotc*fourphirotc;
+                            nextG3ns_gggc[zrshift] += wshapesqwshapec;
+                            nextG3ns_gggc[nbinszr + zrshift] += wshapesqwshapec*fourphirotc;                            
+                            
+                            // Nominal G and double-counting corr
+                            // n = 0
+                            totcounts[zrshift] += w1*w2*dist; 
+                            totnorms[zrshift] += w1*w2; 
+                            nextGns[ind_Gn] += wshape2*nphirot;
+                            nextG2ns_gg[ind_G2n] += wshape_sq*nphirot;
+                            nextG2ns_ggc[ind_G2n] += wshapewshapec*nphirot;
+                            nextWns[ind_Wn] += w2*nphirot;  
+                            nextW2ns[ind_Wn] += w2_sq*nphirot;
+                            // /*
+                            // n \in [-2*nmax+1,2*nmax-1]                          
+                            nphirot *= phirot;
+                            nphirotc *= phirotc; 
+                            // n in [1, ..., nmax-1] x {+1,-1}
+                            for (int nextn=1;nextn<2*nmax;nextn++){
+                                nextnshift = nextn*nbinszr;
+                                nextGns[ind_Gn+nextnshift] += wshape2*nphirot;
+                                nextGns[ind_Gn-nextnshift] += wshape2*nphirotc;
+                                nextG2ns_gg[ind_G2n+nextnshift] += wshape_sq*nphirot;
+                                nextG2ns_gg[ind_G2n-nextnshift] += wshape_sq*nphirotc;
+                                nextG2ns_ggc[ind_G2n+nextnshift] += wshapewshapec*nphirot;
+                                nextG2ns_ggc[ind_G2n-nextnshift] += wshapewshapec*nphirotc;
+                                nextWns[ind_Wn+nextnshift] += w2*nphirot;
+                                nextWns[ind_Wn-nextnshift] += w2*nphirotc;
+                                nextW2ns[ind_Wn+nextnshift] += w2_sq*nphirot;
+                                nextW2ns[ind_Wn-nextnshift] += w2_sq*nphirotc;
+                                nphirot *= phirot;
+                                nphirotc *= phirotc; 
+                            }
+                            
+                            // n = \pm 2*nmax
+                            nextnshift += nbinszr;
+                            nextGns[ind_Gn-nextnshift] += wshape2*nphirotc;
+                            nextG2ns_gg[ind_G2n+nextnshift] += wshape_sq*nphirot;
+                            nextG2ns_gg[ind_G2n-nextnshift] += wshape_sq*nphirotc;
+                            nextG2ns_ggc[ind_G2n+nextnshift] += wshapewshapec*nphirot;
+                            nextG2ns_ggc[ind_G2n-nextnshift] += wshapewshapec*nphirotc;
+                            nextWns[ind_Wn+nextnshift] += w2*nphirot;
+                            nextWns[ind_Wn-nextnshift] += w2*nphirotc;
+                            nextW2ns[ind_Wn+nextnshift] += w2_sq*nphirot;
+                            nextW2ns[ind_Wn-nextnshift] += w2_sq*nphirotc;
+                            nphirot *= phirot;
+                            nphirotc *= phirotc; 
+                            
+                            // n = \pm 2*nmax+1 
+                            nextnshift += nbinszr;
+                            nextGns[ind_Gn-nextnshift] += wshape2*nphirotc;
+                            nextG2ns_gg[ind_G2n+nextnshift] += wshape_sq*nphirot;
+                            nextG2ns_gg[ind_G2n-nextnshift] += wshape_sq*nphirotc;
+                            nextG2ns_ggc[ind_G2n+nextnshift] += wshapewshapec*nphirot;
+                            nextG2ns_ggc[ind_G2n-nextnshift] += wshapewshapec*nphirotc;
+                            nphirotc *= phirotc;
+                            // n =  -2*nmax-2
+                            nextnshift += nbinszr;
+                            nextGns[ind_Gn-nextnshift] += wshape2*nphirotc;
+                            nextG2ns_gg[ind_G2n-nextnshift] += wshape_sq*nphirotc;
+                            nextG2ns_ggc[ind_G2n-nextnshift] += wshapewshapec*nphirotc;
+                            nphirotc *= phirotc;
+                            // n =  -2*nmax-3
+                            nextnshift += nbinszr;
+                            nextGns[ind_Gn-nextnshift] += wshape2*nphirotc;
+                            nextG2ns_gg[ind_G2n-nextnshift] += wshape_sq*nphirotc;
+                            nextG2ns_ggc[ind_G2n-nextnshift] += wshapewshapec*nphirotc;
+                            nphirotc *= phirotc;
+                            // n =  -2*nmax-4
+                            nextnshift += nbinszr;
+                            nextG2ns_gg[ind_G2n-nextnshift] += wshape_sq*nphirotc;
+                            nextG2ns_ggc[ind_G2n-nextnshift] += wshapewshapec*nphirotc;
+                            nphirotc *= phirotc;
+                            // n =  -2*nmax-5
+                            nextnshift += nbinszr;
+                            nextG2ns_gg[ind_G2n-nextnshift] += wshape_sq*nphirotc;
+                            nextG2ns_ggc[ind_G2n-nextnshift] += wshapewshapec*nphirotc; 
+                        }
+                    }
+                }
+                time2 = omp_get_wtime();
+                if ((elregion%nregions_skip_print == 0)&&(thisthread==0)&&(ind_inpix1==lower1)){
+                    printf("Computed Gn for first gal in region %d/%d for thetabatch %d/%d in %.4f seconds\n",
+                           elregion,nregions,elthetbatch,nthetbatches,(time2-time1));}
+                
+                time1 = omp_get_wtime();
+                // Allocate Upsilon
+                // Upsilon have shape 
+                // (ncomp,(2*nmax+1),(2*nmax+1),nthetas)
+                double complex gGG0, gGG1, gGG2, gGG3, gGG4, gGG5, gGG6, gGG7, wNN;
+                int thisn, thisnshift, thisnrshift, thisrcombi, elb1, elb2, elb3;
+                int thisGshift_mn2m2, thisGshift_n2m2, thisWshift_n2;
+                int thisGshift_mn3m3, thisGshift_mn3m1, thisGshift_n3m3, thisGshift_n3m1, thisWshift_n3;
+                int thisGshift_mn2mn3m3, thisGshift_mn2mn3m1, thisGshift_n2n3m3, thisGshift_n2n3m1, thisWshift_n2n3;
+                wshape1 = w1 * (e11+I*e12);  
+                wshape1c = conj(wshape1);
+                for (int thisn2=-nmax; thisn2<=nmax; thisn2++){
+                    thisGshift_mn2m2 = (nzero_Gn-thisn2-2)*nbinsr;
+                    thisGshift_n2m2 = (nzero_Gn+thisn2-2)*nbinsr;
+                    thisWshift_n2 = (nzero_Wn+thisn2)*nbinsr;
+                    for (int thisn3=-nmax; thisn3<=nmax; thisn3++){
+                        thisn = thisn2+thisn3;
+                        thisGshift_mn3m3 = (nzero_Gn-thisn3-3)*nbinsr;
+                        thisGshift_mn3m1 = (nzero_Gn-thisn3-1)*nbinsr;
+                        thisGshift_n3m3 = (nzero_Gn+thisn3-3)*nbinsr;
+                        thisGshift_n3m1 = (nzero_Gn+thisn3-1)*nbinsr;
+                        thisWshift_n3 = (nzero_Wn+thisn3)*nbinsr;
+                        thisGshift_mn2mn3m3 = (nzero_Gn-thisn-3)*nbinsr;
+                        thisGshift_mn2mn3m1 = (nzero_Gn-thisn-1)*nbinsr;
+                        thisGshift_n2n3m3 = (nzero_Gn+thisn-3)*nbinsr;
+                        thisGshift_n2n3m1 = (nzero_Gn+thisn-1)*nbinsr;
+                        thisWshift_n2n3 = (nzero_Wn+thisn)*nbinsr;
+                        thisnshift = ((thisn2+nzero_Ups)*nnvals_Upsn + (thisn3+nzero_Ups)) * batchups_nshift;
+                        for (int elb=0;elb<batch_nthetas;elb++){
+                            //thisrcombi = thetacombis_batches[cumthetacombis_batches[elthetbatch]+elb];
+                            //elb1 = thisrcombi/(nbinsr*nbinsr);
+                            //elb2 = (thisrcombi-elb1*nbinsr*nbinsr)/nbinsr;
+                            //elb3 = thisrcombi-elb1*nbinsr*nbinsr-elb2*nbinsr;
+                            elb1 = elb1s_batch[elb];
+                            elb2 = elb2s_batch[elb];
+                            elb3 = elb3s_batch[elb];
+                            thisnrshift = thisnshift + elb;
+                            // Multiple counting corrections:
+                            // sum_(i neq j neq k) = sum_(i,j,k) - ( sum_(i, j, i=k) + 2perm ) + 2 * sum_(i, i=j, i=k)
+                            // Triple-counting corr
+                            if ((elb1==elb2) && (elb1==elb3) && (elb2==elb3)){
+                                batchUpsilon_n[0*batchups_compshift+thisnrshift] += 
+                                    2 * wshape1  * nextG3ns_ggg[1*nbinsr+elb1];
+                                batchUpsilon_n[1*batchups_compshift+thisnrshift] += 
+                                    2 * wshape1c * nextG3ns_ggg[0*nbinsr+elb1];
+                                batchUpsilon_n[2*batchups_compshift+thisnrshift] += 
+                                    2 * wshape1  * nextG3ns_gggc[1*nbinsr+elb1];
+                                batchUpsilon_n[3*batchups_compshift+thisnrshift] +=
+                                    2 * wshape1  * nextG3ns_gggc[1*nbinsr+elb1];
+                                batchUpsilon_n[4*batchups_compshift+thisnrshift] += 
+                                    2 * wshape1  * nextG3ns_gggc[1*nbinsr+elb1];
+                                batchUpsilon_n[5*batchups_compshift+thisnrshift] += 
+                                    2 * wshape1c * nextG3ns_gggc[0*nbinsr+elb1];
+                                batchUpsilon_n[6*batchups_compshift+thisnrshift] += 
+                                    2 * wshape1c * nextG3ns_gggc[0*nbinsr+elb1];
+                                batchUpsilon_n[7*batchups_compshift+thisnrshift] += 
+                                    2 * wshape1c * nextG3ns_gggc[0*nbinsr+elb1];
+                                batchN_n[thisnrshift] -= -2 * w1*nextW3ns[elb1];
+                            }
+                            // Double-counting corr for theta1==theta2
+                            if (elb1==elb2){
+                                batchUpsilon_n[0*batchups_compshift+thisnrshift] -= wshape1  *
+                                    nextG2ns_gg[(nzero_G2n+thisn3-5)*nbinsr+elb1]  * nextGns[thisGshift_mn3m3+elb3];
+                                batchUpsilon_n[1*batchups_compshift+thisnrshift] -= wshape1c *
+                                    nextG2ns_gg[(nzero_G2n+thisn3-3)*nbinsr+elb1]  * nextGns[thisGshift_mn3m1+elb3];
+                                batchUpsilon_n[2*batchups_compshift+thisnrshift] -= wshape1  *
+                                    nextG2ns_ggc[(nzero_G2n+thisn3-1)*nbinsr+elb1] * nextGns[thisGshift_mn3m3+elb3];
+                                batchUpsilon_n[3*batchups_compshift+thisnrshift] -= wshape1  *
+                                    nextG2ns_ggc[(nzero_G2n+thisn3-1)*nbinsr+elb1] * nextGns[thisGshift_mn3m3+elb3];
+                                batchUpsilon_n[4*batchups_compshift+thisnrshift] -= wshape1  *
+                                    nextG2ns_gg[(nzero_G2n+thisn3-5)*nbinsr+elb1]  * conj(nextGns[thisGshift_n3m1+elb3]);
+                                batchUpsilon_n[5*batchups_compshift+thisnrshift] -= wshape1c *
+                                    nextG2ns_ggc[(nzero_G2n+thisn3+1)*nbinsr+elb1] * nextGns[thisGshift_mn3m1+elb3];
+                                batchUpsilon_n[6*batchups_compshift+thisnrshift] -= wshape1c *
+                                    nextG2ns_ggc[(nzero_G2n+thisn3+1)*nbinsr+elb1] * nextGns[thisGshift_mn3m1+elb3];
+                                batchUpsilon_n[7*batchups_compshift+thisnrshift] -= wshape1c *
+                                    nextG2ns_gg[(nzero_G2n+thisn3-3)*nbinsr+elb1]  * conj(nextGns[thisGshift_n3m3+elb3]);
+                                batchN_n[thisnrshift] -= w1 * 
+                                    nextW2ns[(nzero_Wn+thisn3)*nbinsr+elb1]*conj(nextWns[thisWshift_n3+elb3]);
+                            }
+                            // Double-counting corr for theta1==theta3  
+                            if (elb1==elb3){
+                                batchUpsilon_n[0*batchups_compshift+thisnrshift] -= wshape1  *
+                                    nextG2ns_gg[(nzero_G2n+thisn2-6)*nbinsr+elb1]  * nextGns[thisGshift_mn2m2+elb2];
+                                batchUpsilon_n[1*batchups_compshift+thisnrshift] -= wshape1c *
+                                    nextG2ns_gg[(nzero_G2n+thisn2-2)*nbinsr+elb1]  * nextGns[thisGshift_mn2m2+elb2];
+                                batchUpsilon_n[2*batchups_compshift+thisnrshift] -= wshape1  *
+                                    nextG2ns_ggc[(nzero_G2n+thisn2-2)*nbinsr+elb1] * nextGns[thisGshift_mn2m2+elb2];
+                                batchUpsilon_n[3*batchups_compshift+thisnrshift] -= wshape1  *
+                                    nextG2ns_gg[(nzero_G2n+thisn2-6)*nbinsr+elb1]  * conj(nextGns[thisGshift_n2m2+elb2]);
+                                batchUpsilon_n[4*batchups_compshift+thisnrshift] -= wshape1  *
+                                    nextG2ns_ggc[(nzero_G2n+thisn2-2)*nbinsr+elb1] * nextGns[thisGshift_mn2m2+elb2];
+                                batchUpsilon_n[5*batchups_compshift+thisnrshift] -= wshape1c *
+                                    nextG2ns_ggc[(nzero_G2n+thisn2+2)*nbinsr+elb1] * nextGns[thisGshift_mn2m2+elb2];
+                                batchUpsilon_n[6*batchups_compshift+thisnrshift] -= wshape1c *
+                                    nextG2ns_gg[(nzero_G2n+thisn2-2)*nbinsr+elb1]  * conj(nextGns[thisGshift_n2m2+elb2]);
+                                batchUpsilon_n[7*batchups_compshift+thisnrshift] -= wshape1c *
+                                    nextG2ns_ggc[(nzero_G2n+thisn2+2)*nbinsr+elb1] * nextGns[thisGshift_mn2m2+elb2];
+                                batchN_n[thisnrshift] -= w1 * 
+                                    nextW2ns[(nzero_Wn+thisn2)*nbinsr+elb1] * conj(nextWns[thisWshift_n2+elb2]);
+                            }
+                            // Double-counting corr for theta2==theta3
+                            if (elb2==elb3){
+                                batchUpsilon_n[0*batchups_compshift+thisnrshift] -= wshape1  *
+                                    nextG2ns_gg[(nzero_G2n-thisn2-thisn3-5)*nbinsr+elb2]  * 
+                                    nextGns[thisGshift_n2n3m3+elb1];
+                                batchUpsilon_n[1*batchups_compshift+thisnrshift] -= wshape1c *
+                                    nextG2ns_gg[(nzero_G2n-thisn2-thisn3-3)*nbinsr+elb2]  * 
+                                    nextGns[thisGshift_n2n3m1+elb1];
+                                batchUpsilon_n[2*batchups_compshift+thisnrshift] -= wshape1  *
+                                    nextG2ns_gg[(nzero_G2n-thisn2-thisn3-5)*nbinsr+elb2]  * 
+                                    conj(nextGns[thisGshift_mn2mn3m1+elb1]);
+                                batchUpsilon_n[3*batchups_compshift+thisnrshift] -= wshape1  *
+                                    nextG2ns_ggc[(nzero_G2n-thisn2-thisn3-1)*nbinsr+elb2] * 
+                                    nextGns[thisGshift_n2n3m3+elb1];
+                                batchUpsilon_n[4*batchups_compshift+thisnrshift] -= wshape1  *
+                                    nextG2ns_ggc[(nzero_G2n-thisn2-thisn3-1)*nbinsr+elb2] * 
+                                    nextGns[thisGshift_n2n3m3+elb1];
+                                batchUpsilon_n[5*batchups_compshift+thisnrshift] -= wshape1c *
+                                    nextG2ns_gg[(nzero_G2n-thisn2-thisn3-3)*nbinsr+elb2]  * 
+                                    conj(nextGns[thisGshift_mn2mn3m3+elb1]);
+                                batchUpsilon_n[6*batchups_compshift+thisnrshift] -= wshape1c *
+                                    nextG2ns_ggc[(nzero_G2n-thisn2-thisn3+1)*nbinsr+elb2] * 
+                                    nextGns[thisGshift_n2n3m1+elb1];
+                                batchUpsilon_n[7*batchups_compshift+thisnrshift] -= wshape1c *
+                                    nextG2ns_ggc[(nzero_G2n-thisn2-thisn3+1)*nbinsr+elb2] *
+                                    nextGns[thisGshift_n2n3m1+elb1];
+                                batchN_n[thisnrshift] -= w1 * 
+                                    nextW2ns[(nzero_Wn-thisn2-thisn3)*nbinsr+elb2] * nextWns[thisWshift_n2n3+elb1];
+                            }
+                            // Nominal allocation
+                            gGG0 = wshape1*nextGns[thisGshift_n2n3m3+elb1]*nextGns[thisGshift_mn2m2+elb2];
+                            gGG1 = wshape1c*nextGns[thisGshift_n2n3m1+elb1]*nextGns[thisGshift_mn2m2+elb2];
+                            gGG2 = wshape1*conj(nextGns[thisGshift_mn2mn3m1+elb1])*nextGns[thisGshift_mn2m2+elb2];
+                            gGG3 = wshape1*nextGns[thisGshift_n2n3m3+elb1]*conj(nextGns[thisGshift_n2m2+elb2]);
+                            gGG4 = wshape1*nextGns[thisGshift_n2n3m3+elb1]*nextGns[thisGshift_mn2m2+elb2];
+                            gGG5 = wshape1c*conj(nextGns[thisGshift_mn2mn3m3+elb1])*nextGns[thisGshift_mn2m2+elb2];
+                            gGG6 = wshape1c*nextGns[thisGshift_n2n3m1+elb1]*conj(nextGns[thisGshift_n2m2+elb2]);
+                            gGG7 = wshape1c*nextGns[thisGshift_n2n3m1+elb1]*nextGns[thisGshift_mn2m2+elb2];
+                            wNN = w1*nextWns[thisWshift_n2n3+elb1]*conj(nextWns[thisWshift_n2+elb2]);
+                            batchUpsilon_n[0*batchups_compshift+thisnrshift] += gGG0*nextGns[thisGshift_mn3m3+elb3];
+                            batchUpsilon_n[1*batchups_compshift+thisnrshift] += gGG1*nextGns[thisGshift_mn3m1+elb3];
+                            batchUpsilon_n[2*batchups_compshift+thisnrshift] += gGG2*nextGns[thisGshift_mn3m3+elb3];
+                            batchUpsilon_n[3*batchups_compshift+thisnrshift] += gGG3*nextGns[thisGshift_mn3m3+elb3];
+                            batchUpsilon_n[4*batchups_compshift+thisnrshift] += gGG4*conj(nextGns[thisGshift_n3m1+elb3]);
+                            batchUpsilon_n[5*batchups_compshift+thisnrshift] += gGG5*nextGns[thisGshift_mn3m1+elb3];
+                            batchUpsilon_n[6*batchups_compshift+thisnrshift] += gGG6*nextGns[thisGshift_mn3m1+elb3];
+                            batchUpsilon_n[7*batchups_compshift+thisnrshift] += gGG7*conj(nextGns[thisGshift_n3m3+elb3]);
+                            batchN_n[thisnrshift] += wNN*conj(nextWns[thisWshift_n3+elb3]);
+                        }
+                    }
+                }
+                time2 = omp_get_wtime();
+                if ((elregion%nregions_skip_print == 0)&&(thisthread==0)&&(ind_inpix1==lower1)){
+                    printf("Allocated Ups for first gal in region %d/%d for thetabatch %d/%d in %.4f seconds for %d theta-combis\n",
+                           elregion,nregions,elthetbatch,nthetbatches,(time2-time1),batch_nthetas);}
+            }
+            if ((elregion%nregions_skip_print == 0)&&(thisthread==0)){
+                printf("Done region %d/%d for thetabatch %d/%d\n",elregion,nregions,elthetbatch,nthetbatches);}
+        }
+        
+        // Get bin centers
+        for (int elbinr=0; elbinr<nbinsr; elbinr++){
+            if (totnorms[elbinr] != 0){
+                // Note that the bin centers are the same for every batch!
+                bin_centers_batch[elbinr] = totcounts[elbinr]/totnorms[elbinr]; 
+                if (elthetbatch==0){bin_centers[elbinr] = bin_centers_batch[elbinr];} // Debug
+            }
+        }
+        
+        
+        // For each theta combination (theta1,theta2,theta3) in this batch 
+        // 1) Get bin edges and bin centers of the combinations
+        // 2) Get the Gamma_mu(theta1,theta2,theta3,phi12,phi13)
+        // 3) Transform the Gamma_mu to the target basis
+        // 4) Update the aperture Map^4 integral
+        double complex *nextM4correlators = calloc(8, sizeof(double complex));
+        double complex *thisUpsilon_n = calloc(8*n2n3combis, sizeof(double complex));
+        double complex *thisN_n = calloc(n2n3combis, sizeof(double complex));
+        double complex *thisnpcf = calloc(8*batchgamma_thetshift, sizeof(double complex));
+        double complex *thisnpcf_norm = calloc(batchgamma_thetshift, sizeof(double complex));
+        for (int elb=0;elb<batch_nthetas;elb++){
+            // 1)
+            int nbshift, elb1, elb2, elb3;
+            elb1 = elb1s_batch[elb];
+            elb2 = elb2s_batch[elb];
+            elb3 = elb3s_batch[elb];
+            // 2)
+            for(int eln12=0;eln12<n2n3combis;eln12++){
+                nbshift = eln12*batchups_nshift+elb;
+                for (int elcomp=0;elcomp<8;elcomp++){
+                    thisUpsilon_n[elcomp*n2n3combis+eln12] = batchUpsilon_n[elcomp*batchups_compshift+nbshift];
+                }
+                thisN_n[eln12] = batchN_n[nbshift];
+                // OPTIONAL: Allocate 4PCF in multipole basis
+                if (alloc_4pcfmultipoles==1){
+                    int thisnrshift = eln12*ups_nshift + elb1*nbinsr*nbinsr + elb2*nbinsr + elb3;
+                    for (int elcomp=0;elcomp<8;elcomp++){
+                        Upsilon_n[elcomp*ups_compshift+thisnrshift] = 
+                                thisUpsilon_n[elcomp*n2n3combis+eln12];
+                    }
+                    N_n[thisnrshift] = thisN_n[eln12];
+                }
+            }
+            // 3)
+            multipoles2npcf_gggg_singletheta(thisUpsilon_n, thisN_n, nmax, nmax,
+                                             bin_centers_batch[elb1], bin_centers_batch[elb2], bin_centers_batch[elb3],
+                                             phibins, phibins, nbinsphi, nbinsphi,
+                                             projection, thisnpcf, thisnpcf_norm);
+            
+            // OPTIONAL: Allocate 4pcf in real basis (Shape: (8,ntheta,ntheta,ntheta,nphi,nphi)
+            if (alloc_4pcfreal==1){
+                for (int elphi12=0;elphi12<batchgamma_thetshift;elphi12++){
+                    int gamma_rshift = nbinsphi*nbinsphi;
+                    int gamma_phircombi = gamma_rshift*(elb1*nbinsr*nbinsr+elb2*nbinsr+elb3)+elphi12;
+                    int gamma_compshift = nbinsr*nbinsr*nbinsr*gamma_rshift;
+                    for (int elcomp=0;elcomp<8;elcomp++){
+                        Gammas[elcomp*gamma_compshift+gamma_phircombi] = thisnpcf[elcomp*batchgamma_thetshift+elphi12];
+                    }
+                    Norms[gamma_phircombi] = thisnpcf_norm[elphi12];
+                }
+            }
+            
+            // 4)
+            double y1, y2, y3, dy1, dy2, dy3;
+            int map4ind;
+            int map4threadshift = thisthread*8*nmapradii;
+            for (int elmapr=0; elmapr<nmapradii; elmapr++){
+                y1=bin_centers_batch[elb1]/mapradii[elmapr];
+                y2=bin_centers_batch[elb2]/mapradii[elmapr];
+                y3=bin_centers_batch[elb3]/mapradii[elmapr];
+                dy1 = (bin_edges[elb1+1]-bin_edges[elb1])/mapradii[elmapr];
+                dy2 = (bin_edges[elb2+1]-bin_edges[elb2])/mapradii[elmapr];
+                dy3 = (bin_edges[elb3+1]-bin_edges[elb3])/mapradii[elmapr];
+                fourpcf2M4correlators(1,
+                                      y1, y2, y3, dy1, dy2, dy3,
+                                      phibins, phibins, dbinsphi, dbinsphi, nbinsphi, nbinsphi,
+                                      thisnpcf, nextM4correlators);
+                for (int elcomp=0;elcomp<8;elcomp++){
+                    map4ind = elcomp*nmapradii+elmapr;
+                    if (isnan(cabs(nextM4correlators[elcomp]))==false){
+                        allM4correlators[map4threadshift+map4ind] += nextM4correlators[elcomp];
+                    }
+                    nextM4correlators[elcomp] = 0;
+                }
+            }
+        
+            // Reset 4pcf placeholders to zero
+            for(int i=0;i<batchgamma_thetshift;i++){
+                thisnpcf_norm[i] = 0;
+                for (int elcomp=0;elcomp<8;elcomp++){
+                    thisnpcf[elcomp*batchgamma_thetshift+i] = 0;
+                }
+            }
+            for(int i=0;i<n2n3combis;i++){
+                thisN_n[i] = 0;
+                for (int elcomp=0;elcomp<8;elcomp++){
+                    thisUpsilon_n[elcomp*n2n3combis+i] = 0;
+                }
+            }
+        }
+        
+        for (int elmapr=0; elmapr<nmapradii; elmapr++){
+            for (int elcomp=0;elcomp<8;elcomp++){
+                int map4ind = elcomp*nmapradii+elmapr;
+                int map4threadshift = thisthread*8*nmapradii;
+                printf("\nthread %d, elr %d, elcomp %d, allM4cont=%.20f ",
+                               thisthread, elmapr, elcomp, creal(allM4correlators[map4threadshift+map4ind]));
+            }
+        }
+        if (thisthread>-1){printf("Done allocating 4pcfs for thetabatch %d/%d\n",elthetbatch,nthetbatches);}
+            
+        free(totcounts);
+        free(totnorms);
+        free(bin_centers_batch);
+        free(batch_thetas1);
+        free(batch_thetas2);
+        free(batch_thetas3);
+        free(batchUpsilon_n);
+        free(batchN_n);
+        free(batchfourpcf);
+        free(batchfourpcf_norm);
+        
+        free(nextGns);
+        free(nextG2ns_gg);
+        free(nextG2ns_ggc);
+        free(nextG3ns_ggg);
+        free(nextG3ns_gggc);
+        free(nextWns);
+        free(nextW2ns);
+        free(nextW3ns);
+        
+        free(elb1s_batch);
+        free(elb2s_batch);
+        free(elb3s_batch);
+        free(bin_edges);
+        
+        free(nextM4correlators);
+        free(thisUpsilon_n);
+        free(thisN_n);
+        free(thisnpcf);
+        free(thisnpcf_norm);                
+    }
+    
+    // Accummulate the Map^4 integral
+    for (int elthread=0;elthread<nthreads;elthread++){
+        int map4ind;
+        int map4threadshift = elthread*8*nmapradii;
+        for (int elcomp=0;elcomp<8;elcomp++){
+            for (int elmapr=0; elmapr<nmapradii; elmapr++){
+                map4ind = elcomp*nmapradii+elmapr;
+                M4correlators[map4ind] += allM4correlators[map4threadshift+map4ind];
+            }
+        }
+    }    
+    free(allM4correlators);
+}
+
+/*    
+// Non-tomo 4pcf using discrete estimator
+// Very basic, no use of symmetry properties
+void alloc_notomoGammans_tree_gggg(
+    int *isinner, double *weight, double *pos1, double *pos2, double *e1, double *e2, int ngal, // Discrete cat
+    int *index_matcher_hash, int *pixs_galind_bounds_hash, int *pix_gals_hash, int nregions, //Stuff related to regions
+    double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n, 
+    int nresos, double *reso_redges, int *ngal_resos, // Stuff related to tree
+    double *weight_resos, double *pos1_resos, double *pos2_resos, 
+    double *e1_resos, double *e2_resos, int *zbin_resos, double *weightsq_resos,
+    int *index_matcher, int *pixs_galind_bounds, int *pix_gals, 
+    int nmax, double rmin, double rmax, double *rbins, int nbinsr, int dccorr, // Stuff related to binning
+    int nthreads, double *bin_centers, double complex *Upsilon_n, double complex *N_n){ //Stuff related to output
+    
+    // Temporary arrays that are allocated in parallel and later reduced
+    double *tmpwcounts = calloc(nthreads*nbinsr, sizeof(double));
+    double *tmpwnorms = calloc(nthreads*nbinsr, sizeof(double));
+    
+    double *totcounts = calloc(nbinsr, sizeof(double));
+    double *totnorms = calloc(nbinsr, sizeof(double));
+    
+    #pragma omp parallel for num_threads(nthreads)
+    for(int elthread=0;elthread<nthreads;elthread++){
+        int nregions_per_thread = nregions/nthreads;
+        int nbinsz = 1;
+        int ncomp = 8;
+        int nnvals_Gn = 4*nmax+3; // Need to cover [-n1-n2-3, n1+n2-1]
+        int nnvals_G2n = 4*nmax+7; // Need to cover [-n1-n2-5, n1+n2+1]
+        int nnvals_Wn = 4*nmax+1; // Need to cover [-n1-n2, n1+n2]
+        int nnvals_Upsn = 2*nmax+1; // Need tocover [-nmax,+nmax]
+        int nzero_Gn = 2*nmax+3;
+        int nzero_G2n = 2*nmax+5;
+        int nzero_Wn = 2*nmax;
+        int nzero_Ups = nmax;
+        
+        int ups_nshift = nbinsr*nbinsr*nbinsr;
+        int n2n3combis = nnvals_Upsn*nnvals_Upsn;
+        int ups_compshift = n2n3combis*ups_nshift;
+        double complex *tmpUpsilon_n = calloc(8*ups_compshift, sizeof(double complex));
+        double complex *tmpN_n = calloc(ups_compshift, sizeof(double complex));
+        
+        for (int elregion=0; elregion<nregions; elregion++){
+            int region_debug = mymin(500,nregions-1);
+            // Check if this thread is responsible for the region
+            int nthread_target = mymin(elregion/nregions_per_thread, nthreads-1);
+            if (nthread_target!=elthread){continue;}
+            // printf("Region %d is in thread %d\n",elregion,elthread);
+            
+            if (elregion==region_debug){printf("Region %d is in thread %d (%i regions in total)\n",
+                                               elregion,elthread,nregions);}
+            if (elthread==nthreads/2){
+                printf("\rDone %.2f per cent",
+                       100*((double) elregion-nregions_per_thread*(int)(nthreads/2))/nregions_per_thread);
+            }
+            int lower1 = pixs_galind_bounds[elregion];
+            int upper1 = pixs_galind_bounds[elregion+1];
+            for (int ind_inpix1=lower1; ind_inpix1<upper1; ind_inpix1++){
+                int ind_gal = pix_gals[ind_inpix1];
+                double p11, p12, w1, e11, e12;
+                int innergal;
+                #pragma omp critical
+                {p11 = pos1[ind_gal];
+                p12 = pos2[ind_gal];
+                w1 = weight[ind_gal];
+                e11 = e1[ind_gal];
+                e12 = e2[ind_gal];
+                innergal = isinner[ind_gal];}
+                if (innergal==0){continue;}
+                
+                int ind_gal2;
+                int ind_red, lower, upper; 
+                double  p21, p22, w2, w2_sq, e21, e22, rel1, rel2, dist, dphi;
+                double complex wshape1, wshape1c, wshape2, wshape_sq, wshape_cube, wshapewshapec, wshapesqwshapec;
+                double complex phirot, phirotc, twophirotc, fourphirotc, nphirot, nphirotc;
+                
+                // Check how many ns we need for Gn
+                // Gns have shape (nnvals, nbinsz, nbinsr)
+                // where the ns are ordered as 
+                // [-nmax_1-nmax_2-3, ..., nmax_1+nmax_2+3]
+                int nbinszr = nbinsz*nbinsr;
+                double complex *nextGns =  calloc(ncomp*nnvals_Gn*nbinszr, sizeof(double complex));
+                double complex *nextG2ns_gg =  calloc(nnvals_G2n*nbinszr, sizeof(double complex));
+                double complex *nextG2ns_ggc =  calloc(nnvals_G2n*nbinszr, sizeof(double complex));
+                double complex *nextG3ns_ggg = calloc(2*nbinszr, sizeof(double complex));
+                double complex *nextG3ns_gggc = calloc(2*nbinszr, sizeof(double complex));
+                double complex *nextWns = calloc(nnvals_Wn*nbinszr, sizeof(double complex));
+                double complex *nextW2ns = calloc(nnvals_Wn*nbinszr, sizeof(double complex));
+                double complex *nextW3ns = calloc(nbinszr, sizeof(double complex));
+
+                int ind_rbin, rbin, zrshift, nextnshift, ind_Gn, ind_G2n, ind_Wn;
+                double drbin = (log(rmax)-log(rmin))/(nbinsr);
+                int pix1_lower = mymax(0, (int) floor((p11 - (rmax+pix1_d) - pix1_start)/pix1_d));
+                int pix2_lower = mymax(0, (int) floor((p12 - (rmax+pix2_d) - pix2_start)/pix2_d));
+                int pix1_upper = mymin(pix1_n-1, (int) floor((p11 + (rmax+pix1_d) - pix1_start)/pix1_d));
+                int pix2_upper = mymin(pix2_n-1, (int) floor((p12 + (rmax+pix2_d) - pix2_start)/pix2_d));
+                for (int ind_pix1=pix1_lower; ind_pix1<pix1_upper; ind_pix1++){
+                    for (int ind_pix2=pix2_lower; ind_pix2<pix2_upper; ind_pix2++){
+                        ind_red = index_matcher_hash[ind_pix2*pix1_n + ind_pix1];
+                        if (ind_red==-1){continue;}
+                        lower = pixs_galind_bounds_hash[ind_red];
+                        upper = pixs_galind_bounds_hash[ind_red+1];
+                        for (int ind_inpix=lower; ind_inpix<upper; ind_inpix++){
+                            ind_gal2 = pix_gals_hash[ind_inpix];
+                            p21 = pos1[ind_gal2];
+                            p22 = pos2[ind_gal2];
+                            w2 = weight[ind_gal2];
+                            e21 = e1[ind_gal2];
+                            e22 = e2[ind_gal2];
+
+                            rel1 = p21 - p11;
+                            rel2 = p22 - p12;
+                            dist = sqrt(rel1*rel1 + rel2*rel2);
+                            if(dist < rmin || dist >= rmax) continue;
+                            if (rbins[0] < 0){
+                                rbin = (int) floor((log(dist)-log(rmin))/drbin);
+                            }
+                            else{
+                                rbin=0;
+                                while(rbins[rbin+1] <= dist){rbin+=1;}
+                            }
+                            w2_sq = w2*w2;
+                            wshape2 = (double complex) w2 * (e21+I*e22);
+                            wshape_sq = wshape2*wshape2;
+                            wshape_cube = wshape_sq*wshape2;
+                            wshapewshapec = wshape2*conj(wshape2);
+                            wshapesqwshapec = wshape_sq*conj(wshape2);
+                            dphi = atan2(rel2,rel1);
+                            phirot = cexp(I*dphi);
+                            phirotc = conj(phirot);
+                            twophirotc = phirotc*phirotc;
+                            fourphirotc = twophirotc*twophirotc;
+                            zrshift = 0*nbinsr + rbin;
+                            ind_rbin = elthread*nbinszr + zrshift;
+                            ind_Gn = nzero_Gn*nbinszr + zrshift;
+                            ind_G2n = nzero_G2n*nbinszr + zrshift;
+                            ind_Wn = nzero_Wn*nbinszr + zrshift;
+                            nphirot = 1+I*0;
+                            nphirotc = 1+I*0;
+                            
+                            // Triple-counting corr
+                            nextW3ns[zrshift] += w2_sq*w2;
+                            nextG3ns_ggg[zrshift] += wshape_cube*fourphirotc;
+                            nextG3ns_ggg[nbinszr + zrshift] += wshape_cube*fourphirotc*fourphirotc;
+                            nextG3ns_gggc[zrshift] += wshapesqwshapec;
+                            nextG3ns_gggc[nbinszr + zrshift] += wshapesqwshapec*fourphirotc;                            
+                            
+                            // Nominal G and double-counting corr
+                            // n = 0
+                            tmpwcounts[ind_rbin] += w1*w2*dist; 
+                            tmpwnorms[ind_rbin] += w1*w2; 
+                            nextGns[ind_Gn] += wshape2*nphirot;
+                            nextG2ns_gg[ind_G2n] += wshape_sq*nphirot;
+                            nextG2ns_ggc[ind_G2n] += wshapewshapec*nphirot;
+                            nextWns[ind_Wn] += w2*nphirot;  
+                            nextW2ns[ind_Wn] += w2_sq*nphirot;
+                            // /*
+                            // n \in [-2*nmax+1,2*nmax-1]                          
+                            nphirot *= phirot;
+                            nphirotc *= phirotc; 
+                            // n in [1, ..., nmax-1] x {+1,-1}
+                            for (int nextn=1;nextn<2*nmax;nextn++){
+                                nextnshift = nextn*nbinszr;
+                                nextGns[ind_Gn+nextnshift] += wshape2*nphirot;
+                                nextGns[ind_Gn-nextnshift] += wshape2*nphirotc;
+                                nextG2ns_gg[ind_G2n+nextnshift] += wshape_sq*nphirot;
+                                nextG2ns_gg[ind_G2n-nextnshift] += wshape_sq*nphirotc;
+                                nextG2ns_ggc[ind_G2n+nextnshift] += wshapewshapec*nphirot;
+                                nextG2ns_ggc[ind_G2n-nextnshift] += wshapewshapec*nphirotc;
+                                nextWns[ind_Wn+nextnshift] += w2*nphirot;
+                                nextWns[ind_Wn-nextnshift] += w2*nphirotc;
+                                nextW2ns[ind_Wn+nextnshift] += w2_sq*nphirot;
+                                nextW2ns[ind_Wn-nextnshift] += w2_sq*nphirotc;
+                                nphirot *= phirot;
+                                nphirotc *= phirotc; 
+                            }
+                            
+                            // n = \pm 2*nmax
+                            nextnshift += nbinszr;
+                            nextGns[ind_Gn-nextnshift] += wshape2*nphirotc;
+                            nextG2ns_gg[ind_G2n+nextnshift] += wshape_sq*nphirot;
+                            nextG2ns_gg[ind_G2n-nextnshift] += wshape_sq*nphirotc;
+                            nextG2ns_ggc[ind_G2n+nextnshift] += wshapewshapec*nphirot;
+                            nextG2ns_ggc[ind_G2n-nextnshift] += wshapewshapec*nphirotc;
+                            nextWns[ind_Wn+nextnshift] += w2*nphirot;
+                            nextWns[ind_Wn-nextnshift] += w2*nphirotc;
+                            nextW2ns[ind_Wn+nextnshift] += w2_sq*nphirot;
+                            nextW2ns[ind_Wn-nextnshift] += w2_sq*nphirotc;
+                            nphirot *= phirot;
+                            nphirotc *= phirotc; 
+                            
+                            // n = \pm 2*nmax+1 
+                            nextnshift += nbinszr;
+                            nextGns[ind_Gn-nextnshift] += wshape2*nphirotc;
+                            nextG2ns_gg[ind_G2n+nextnshift] += wshape_sq*nphirot;
+                            nextG2ns_gg[ind_G2n-nextnshift] += wshape_sq*nphirotc;
+                            nextG2ns_ggc[ind_G2n+nextnshift] += wshapewshapec*nphirot;
+                            nextG2ns_ggc[ind_G2n-nextnshift] += wshapewshapec*nphirotc;
+                            nphirotc *= phirotc;
+                            // n =  -2*nmax-2
+                            nextnshift += nbinszr;
+                            nextGns[ind_Gn-nextnshift] += wshape2*nphirotc;
+                            nextG2ns_gg[ind_G2n-nextnshift] += wshape_sq*nphirotc;
+                            nextG2ns_ggc[ind_G2n-nextnshift] += wshapewshapec*nphirotc;
+                            nphirotc *= phirotc;
+                            // n =  -2*nmax-3
+                            nextnshift += nbinszr;
+                            nextGns[ind_Gn-nextnshift] += wshape2*nphirotc;
+                            nextG2ns_gg[ind_G2n-nextnshift] += wshape_sq*nphirotc;
+                            nextG2ns_ggc[ind_G2n-nextnshift] += wshapewshapec*nphirotc;
+                            nphirotc *= phirotc;
+                            // n =  -2*nmax-4
+                            nextnshift += nbinszr;
+                            nextG2ns_gg[ind_G2n-nextnshift] += wshape_sq*nphirotc;
+                            nextG2ns_ggc[ind_G2n-nextnshift] += wshapewshapec*nphirotc;
+                            nphirotc *= phirotc;
+                            // n =  -2*nmax-5
+                            nextnshift += nbinszr;
+                            nextG2ns_gg[ind_G2n-nextnshift] += wshape_sq*nphirotc;
+                            nextG2ns_ggc[ind_G2n-nextnshift] += wshapewshapec*nphirotc; 
+                        }
+                    }
+                }
+                
+                // Allocate Upsilon
+                // Upsilon have shape 
+                // (8,(2*nmax+1),(2*nmax+1),nbinsr,nbinsr,nbinsr)
+                // Ups_0 ~ wgamma  *  G_{n2+n3-3}  *  G_{-n2-2}  *  G_{-n3-3}
+                // Ups_1 ~ wgammac *  G_{n2+n3-1}  *  G_{-n2-2}  *  G_{-n3-1}
+                double complex gGG0, gGG1, gGG2, gGG3, gGG4, gGG5, gGG6, gGG7, wNN;
+                int thisn, thisnshift, thisnrshift;
+                int thisGshift_mn2m2, thisGshift_n2m2, thisWshift_n2;
+                int thisGshift_mn3m3, thisGshift_mn3m1, thisGshift_n3m3, thisGshift_n3m1, thisWshift_n3;
+                int thisGshift_mn2mn3m3, thisGshift_mn2mn3m1, thisGshift_n2n3m3, thisGshift_n2n3m1, thisWshift_n2n3;
+                wshape1 = w1 * (e11+I*e12);  
+                wshape1c = conj(wshape1);
+                for (int thisn2=-nmax; thisn2<=nmax; thisn2++){
+                    thisGshift_mn2m2 = (nzero_Gn-thisn2-2)*nbinsr;
+                    thisGshift_n2m2 = (nzero_Gn+thisn2-2)*nbinsr;
+                    thisWshift_n2 = (nzero_Wn+thisn2)*nbinsr;
+                    for (int thisn3=-nmax; thisn3<=nmax; thisn3++){
+                        thisn = thisn2+thisn3;
+                        thisGshift_mn3m3 = (nzero_Gn-thisn3-3)*nbinsr;
+                        thisGshift_mn3m1 = (nzero_Gn-thisn3-1)*nbinsr;
+                        thisGshift_n3m3 = (nzero_Gn+thisn3-3)*nbinsr;
+                        thisGshift_n3m1 = (nzero_Gn+thisn3-1)*nbinsr;
+                        thisWshift_n3 = (nzero_Wn+thisn3)*nbinsr;
+                        thisGshift_mn2mn3m3 = (nzero_Gn-thisn-3)*nbinsr;
+                        thisGshift_mn2mn3m1 = (nzero_Gn-thisn-1)*nbinsr;
+                        thisGshift_n2n3m3 = (nzero_Gn+thisn-3)*nbinsr;
+                        thisGshift_n2n3m1 = (nzero_Gn+thisn-1)*nbinsr;
+                        thisWshift_n2n3 = (nzero_Wn+thisn)*nbinsr;
+                        thisnshift = ((thisn2+nzero_Ups)*nnvals_Upsn + (thisn3+nzero_Ups)) * ups_nshift;
+                        for (int elb1=0; elb1<nbinsr; elb1++){
+                            // Triple-counting corr
+                            // Double-counting corr for theta1==theta2
+                            // Double-counting corr for theta1==theta3 
+                            for (int elb2=0; elb2<nbinsr; elb2++){
+                                // Double-counting corr for theta2==theta3
+                                // Allocation of first three complex products for Upsilon/Norm updates
+                                gGG0 = wshape1*nextGns[thisGshift_n2n3m3+elb1]*nextGns[thisGshift_mn2m2+elb2];
+                                gGG1 = wshape1c*nextGns[thisGshift_n2n3m1+elb1]*nextGns[thisGshift_mn2m2+elb2];
+                                gGG2 = wshape1*conj(nextGns[thisGshift_mn2mn3m1+elb1])*nextGns[thisGshift_mn2m2+elb2];
+                                gGG3 = wshape1*nextGns[thisGshift_n2n3m3+elb1]*conj(nextGns[thisGshift_n2m2+elb2]);
+                                gGG4 = wshape1*nextGns[thisGshift_n2n3m3+elb1]*nextGns[thisGshift_mn2m2+elb2];
+                                gGG5 = wshape1c*conj(nextGns[thisGshift_mn2mn3m3+elb1])*nextGns[thisGshift_mn2m2+elb2];
+                                gGG6 = wshape1c*nextGns[thisGshift_n2n3m1+elb1]*conj(nextGns[thisGshift_n2m2+elb2]);
+                                gGG7 = wshape1c*nextGns[thisGshift_n2n3m1+elb1]*nextGns[thisGshift_mn2m2+elb2];
+                                wNN = w1*nextWns[thisWshift_n2n3+elb1]*conj(nextWns[thisWshift_n2+elb2]);
+                                for (int elb3=0; elb3<nbinsr; elb3++){
+                                    thisnrshift = thisnshift + elb1*nbinsr*nbinsr + elb2*nbinsr + elb3;
+                                    // Allocation of Upsilon and Norm
+                                    tmpUpsilon_n[0*ups_compshift+thisnrshift] += gGG0*nextGns[thisGshift_mn3m3+elb3];
+                                    tmpUpsilon_n[1*ups_compshift+thisnrshift] += gGG1*nextGns[thisGshift_mn3m1+elb3];
+                                    tmpUpsilon_n[2*ups_compshift+thisnrshift] += gGG2*nextGns[thisGshift_mn3m3+elb3];
+                                    tmpUpsilon_n[3*ups_compshift+thisnrshift] += gGG3*nextGns[thisGshift_mn3m3+elb3];
+                                    tmpUpsilon_n[4*ups_compshift+thisnrshift] += gGG4*conj(nextGns[thisGshift_n3m1+elb3]);
+                                    tmpUpsilon_n[5*ups_compshift+thisnrshift] += gGG5*nextGns[thisGshift_mn3m1+elb3];
+                                    tmpUpsilon_n[6*ups_compshift+thisnrshift] += gGG6*nextGns[thisGshift_mn3m1+elb3];
+                                    tmpUpsilon_n[7*ups_compshift+thisnrshift] += gGG7*conj(nextGns[thisGshift_n3m3+elb3]);
+                                    tmpN_n[thisnrshift] += wNN*conj(nextWns[thisWshift_n3+elb3]);
+                                }
+                            }
+                        }
+                    }
+                }
+                free(nextGns);
+                free(nextG2ns_gg);
+                free(nextG2ns_ggc);
+                free(nextG3ns_ggg);
+                free(nextG3ns_gggc);
+                free(nextWns);
+                free(nextW2ns);
+                free(nextW3ns);
+                nextGns = NULL;
+                nextG2ns_gg = NULL;
+                nextG2ns_ggc = NULL;
+                nextG3ns_ggg = NULL;
+                nextG3ns_gggc = NULL;
+                nextWns = NULL;
+                nextW2ns = NULL;
+                nextW3ns = NULL;
+            }
+        }
+        
+        // Accumulate Upsilon_n and N_n
+        // Given the openmp implementation this needs to be done sequentially...however,
+        // as the threads will reach this step at different points in time, it will
+        // most likely not be a severe bottleneck.
+        #pragma omp critical
+        {
+            int thisn_thread, thisn2, thisn3, thisnshift, thisnrshift;
+            for (int thisn=0; thisn<n2n3combis; thisn++){
+                thisn_thread = (thisn+elthread)%n2n3combis;
+                thisn2 = thisn_thread/nnvals_Upsn;
+                thisn3 = thisn_thread%nnvals_Upsn;
+                thisnshift = (thisn2*nnvals_Upsn + thisn3) * ups_nshift;
+                for (int elb1=0; elb1<nbinsr; elb1++){
+                    for (int elb2=0; elb2<nbinsr; elb2++){
+                        for (int elb3=0; elb3<nbinsr; elb3++){
+                            thisnrshift = thisnshift + elb1*nbinsr*nbinsr + elb2*nbinsr + elb3;
+                            N_n[thisnrshift] += tmpN_n[thisnrshift];
+                            for (int elcomp=0; elcomp<8; elcomp++){
+                                Upsilon_n[elcomp*ups_compshift+thisnrshift] += tmpUpsilon_n[elcomp*ups_compshift+thisnrshift];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        free(tmpUpsilon_n);
+        free(tmpN_n);
+    }
+    // Accumulate the bin distances and weights
+    for (int thisthread=0; thisthread<nthreads; thisthread++){
+        for (int elbinr=0; elbinr<nbinsr; elbinr++){
+            totcounts[elbinr] += tmpwcounts[thisthread*nbinsr+elbinr];
+            totnorms[elbinr] += tmpwnorms[thisthread*nbinsr+elbinr];
+        }
+    }
+    // Get bin centers
+    for (int elbinr=0; elbinr<nbinsr; elbinr++){
+        if (totnorms[elbinr] != 0){
+            bin_centers[elbinr] = totcounts[elbinr]/totnorms[elbinr];
+        }
+    }
+    
+    free(tmpwcounts);
+    free(tmpwnorms);
+    free(totcounts);
+    free(totnorms);
+}
+
+// Upsilon_n has shape (8,nthetas,nphi12,nphi13)
+void multipoles2npcf_gggg_rtriple(double complex *Upsilon_n, double complex *N_n, int n1max, int n2max,
+                                  double *theta1, double *theta2, double *theta3, int nthetas,
+                                  double *phis12, double *phis13, int nbinsphi12, int nbinsphi13,
+                                  int projection, double complex *npcf, double complex *npcf_norm){
+    int n_cfs = 8;
+    int nmax = n1max;
+    double complex *expphi12s = calloc(2*nmax+1, sizeof(double complex));
+    double complex *expphi13s = calloc(2*nmax+1, sizeof(double complex));
+    double complex *projdir = calloc(n_cfs, sizeof(double complex));
+    int npcf_thetshift = nbinsphi12*nbinsphi13;
+    int npcf_compshift = nthetas*npcf_thetshift;
+    int ups_thetshift = (2*nmax+1)*(2*nmax+1);
+    int ups_compshift =nthetas*ups_thetshift;
+    
+    for (int elphi12=0; elphi12<nbinsphi12; elphi12++){
+        for (int elphi13=0; elphi13<nbinsphi13; elphi13++){
+            // Convert multipoles to npcf
+            for (int nextn=0; nextn<2*nmax+1; nextn++){ 
+                expphi12s[nextn] = cexp(I*(nextn-nmax)*phis12[elphi12]);
+                expphi13s[nextn] = cexp(I*(nextn-nmax)*phis13[elphi13]);
+            }
+            double complex nextang;
+            for (int elthet=0;elthet<nthetas;elthet++){
+                int ind_npcf = elthet*npcf_thetshift + elphi12*nbinsphi13 + elphi13;
+                for (int nextn1=0; nextn1<2*nmax+1; nextn1++){
+                    for (int nextn2=0; nextn2<2*nmax+1; nextn2++){ 
+                        int ind_ups = elthet*ups_thetshift + nextn1*(2*nmax+1) + nextn2;
+                        nextang = INV_2PI * expphi12s[nextn1] * expphi13s[nextn2];
+                        npcf_norm[ind_npcf] += N_n[ind_ups]*nextang;
+                        for (int elcf=0; elcf<n_cfs; elcf++){ 
+                            npcf[elcf*npcf_compshift + ind_npcf] += 
+                                Upsilon_n[elcf*ups_compshift + ind_ups]*nextang;
+                        }
+                    }
+                }
+                // Normalize: Gamma=Upsilon/N --> Make sure that we have counts, i.e. N >~ 1.
+                for (int elcf=0; elcf<n_cfs; elcf++){ 
+                    if (cabs(npcf_norm[ind_npcf]) > 0.1){npcf[elcf*npcf_compshift + ind_npcf] /= cabs(npcf_norm[ind_npcf]);}
+                    else{npcf[elcf*npcf_compshift + ind_npcf] = 0;}
+                }
+                // Now transform to some projection
+                if (projection==0){//X projection
+                    for (int elcf=0; elcf<n_cfs; elcf++){projdir[elcf] = 1;}
+                }
+                else if (projection==1){//Centroid projection
+                    double rcenter1, rcenter2, rcenter3;
+                    double complex q1, q2, q3, q4;
+                    double complex qcbyq_1, qcbyq_2, qcbyq_3, qcbyq_4, qbyqc_1, qbyqc_2, qbyqc_3, qbyqc_4;
+                    rcenter1 = theta1[elthet];
+                    rcenter2 = theta2[elthet];
+                    rcenter3 = theta3[elthet];                        
+                    q1 = -0.25*( 1*rcenter1 + 1*rcenter2*expphi12s[nmax+1] + 1*rcenter3*expphi13s[nmax+1]);
+                    q2 = +0.25*( 3*rcenter1 - 1*rcenter2*expphi12s[nmax+1] - 1*rcenter3*expphi13s[nmax+1]);
+                    q3 = +0.25*(-1*rcenter1 + 3*rcenter2*expphi12s[nmax+1] - 1*rcenter3*expphi13s[nmax+1]);
+                    q4 = +0.25*(-1*rcenter1 - 1*rcenter2*expphi12s[nmax+1] + 3*rcenter3*expphi13s[nmax+1]);
+                    qcbyq_1=conj(q1)/q1; qcbyq_2=conj(q2)/q2; qcbyq_3=conj(q3)/q3; qcbyq_4=conj(q4)/q4;
+                    qbyqc_1=q1/conj(q1); qbyqc_2=q2/conj(q2); qbyqc_3=q3/conj(q3); qbyqc_4=q4/conj(q4); 
+                    projdir[0] = qcbyq_1*qcbyq_2*qcbyq_3*qcbyq_4 * expphi12s[nmax+2] * expphi13s[nmax+3];
+                    projdir[1] = qbyqc_1*qcbyq_2*qcbyq_3*qcbyq_4 * expphi12s[nmax+2] * expphi13s[nmax+1];
+                    projdir[2] = qcbyq_1*qbyqc_2*qcbyq_3*qcbyq_4 * expphi12s[nmax+2] * expphi13s[nmax+3];
+                    projdir[3] = qcbyq_1*qcbyq_2*qbyqc_3*qcbyq_4 * expphi12s[nmax-2] * expphi13s[nmax+3];
+                    projdir[4] = qcbyq_1*qcbyq_2*qcbyq_3*qbyqc_4 * expphi12s[nmax+2] * expphi13s[nmax-1];
+                    projdir[5] = qbyqc_1*qbyqc_2*qcbyq_3*qcbyq_4 * expphi12s[nmax+2] * expphi13s[nmax+1];
+                    projdir[6] = qbyqc_1*qcbyq_2*qbyqc_3*qcbyq_4 * expphi12s[nmax-2] * expphi13s[nmax+1];
+                    projdir[7] = qbyqc_1*qcbyq_2*qcbyq_3*qbyqc_4 * expphi12s[nmax+2] * expphi13s[nmax-3];
+                }
+                for (int elcf=0; elcf<n_cfs; elcf++){npcf[elcf*npcf_compshift + ind_npcf] *= projdir[elcf];}
+            }
+        }
+    } 
+    free(expphi12s);
+    free(expphi13s);
+    free(projdir);
+}
+*/
+
+// Upsilon_n has shape (8,nphi12,nphi13)
+void multipoles2npcf_gggg_singletheta(double complex *Upsilon_n, double complex *N_n, int n1max, int n2max,
+                                      double theta1, double theta2, double theta3,
+                                      double *phis12, double *phis13, int nbinsphi12, int nbinsphi13,
+                                      int projection, double complex *npcf, double complex *npcf_norm){
+    int n_cfs = 8;
+    int nmax = n1max;
+    int nns = 2*nmax+1;
+    double complex expphi12, expphi13;
+    double complex *expphi12s = calloc(nns, sizeof(double complex));
+    double complex *expphi13s = calloc(nns, sizeof(double complex));
+    double complex *projdir = calloc(n_cfs, sizeof(double complex));
+    int npcf_compshift = nbinsphi12*nbinsphi13;
+    int ups_compshift = nns*nns;
+    for (int elphi12=0; elphi12<nbinsphi12; elphi12++){
+        for (int elphi13=0; elphi13<nbinsphi13; elphi13++){
+            // Convert multipoles to npcf
+            expphi12s[nmax] = 1;
+            expphi13s[nmax] = 1;
+            expphi12 = cexp(I*phis12[elphi12]);
+            expphi13 = cexp(I*phis13[elphi13]);
+            for (int nextn=1; nextn<=nmax; nextn++){ 
+                expphi12s[nmax+nextn] = expphi12s[nmax+nextn-1]*expphi12;
+                expphi12s[nmax-nextn] = conj(expphi12s[nmax+nextn]);
+                expphi13s[nmax+nextn] = expphi13s[nmax+nextn-1]*expphi13;
+                expphi13s[nmax-nextn] = conj(expphi13s[nmax+nextn]);
+            }
+            double complex nextang;
+            int ind_npcf = elphi12*nbinsphi13 + elphi13;
+            for (int nextn1=0; nextn1<nns; nextn1++){
+                for (int nextn2=0; nextn2<nns; nextn2++){ 
+                    int ind_ups = nextn1*nns + nextn2;
+                    nextang = INV_2PI * expphi12s[nextn1] * expphi13s[nextn2];
+                    npcf_norm[ind_npcf] += N_n[ind_ups]*nextang;
+                    for (int elcf=0; elcf<n_cfs; elcf++){ 
+                        npcf[elcf*npcf_compshift + ind_npcf] += Upsilon_n[elcf*ups_compshift + ind_ups]*nextang;
+                    }
+                }
+            }
+            // Normalize: Gamma=Upsilon/N --> Make sure that we have counts, i.e. N >~ 1.
+            for (int elcf=0; elcf<n_cfs; elcf++){ 
+                if (cabs(npcf_norm[ind_npcf]) > 0.1){npcf[elcf*npcf_compshift + ind_npcf] /= cabs(npcf_norm[ind_npcf]);}
+                else{npcf[elcf*npcf_compshift + ind_npcf] = 0;}
+            }
+            // Now transform to some projection
+            if (projection==0){//X projection
+                for (int elcf=0; elcf<n_cfs; elcf++){projdir[elcf] = 1;}
+            }
+            else if (projection==1){//Centroid projection
+                double complex y1, y2, y3;
+                double complex q1, q2, q3, q4;
+                double complex qcbyq_1, qcbyq_2, qcbyq_3, qcbyq_4, qbyqc_1, qbyqc_2, qbyqc_3, qbyqc_4;
+                y1 = theta1;
+                y2 = theta2*expphi12s[nmax+1];
+                y3 = theta3*expphi13s[nmax+1];                        
+                q1 = -0.25*(  y1 + y2   + y3);
+                q2 = +0.25*(3*y1 - y2   - y3);
+                q3 = +0.25*(- y1 + 3*y2 - y3);
+                q4 = +0.25*(- y1 - 1*y2 + 3*y3);
+                qcbyq_1=conj(q1)/q1; qcbyq_2=conj(q2)/q2; qcbyq_3=conj(q3)/q3; qcbyq_4=conj(q4)/q4;
+                qbyqc_1=q1/conj(q1); qbyqc_2=q2/conj(q2); qbyqc_3=q3/conj(q3); qbyqc_4=q4/conj(q4); 
+                projdir[0] = qcbyq_1*qcbyq_2*qcbyq_3*qcbyq_4 * expphi12s[nmax+2] * expphi13s[nmax+3];
+                projdir[1] = qbyqc_1*qcbyq_2*qcbyq_3*qcbyq_4 * expphi12s[nmax+2] * expphi13s[nmax+1];
+                projdir[2] = qcbyq_1*qbyqc_2*qcbyq_3*qcbyq_4 * expphi12s[nmax+2] * expphi13s[nmax+3];
+                projdir[3] = qcbyq_1*qcbyq_2*qbyqc_3*qcbyq_4 * expphi12s[nmax-2] * expphi13s[nmax+3];
+                projdir[4] = qcbyq_1*qcbyq_2*qcbyq_3*qbyqc_4 * expphi12s[nmax+2] * expphi13s[nmax-1];
+                projdir[5] = qbyqc_1*qbyqc_2*qcbyq_3*qcbyq_4 * expphi12s[nmax+2] * expphi13s[nmax+1];
+                projdir[6] = qbyqc_1*qcbyq_2*qbyqc_3*qcbyq_4 * expphi12s[nmax-2] * expphi13s[nmax+1];
+                projdir[7] = qbyqc_1*qcbyq_2*qcbyq_3*qbyqc_4 * expphi12s[nmax+2] * expphi13s[nmax-3];
+            }
+            for (int elcf=0; elcf<n_cfs; elcf++){npcf[elcf*npcf_compshift + ind_npcf] *= projdir[elcf];}
+        }
+    } 
+    free(expphi12s);
+    free(expphi13s);
+    free(projdir);
+}
+
+void filter_Map4(double y1, double y2, double y3, double phi1, double phi2, double complex *output){
+    double complex F_1[8]= {0, 0, 0, 0, 0, 0, 0, 0};
+    double complex F_2[8]= {0, 0, 0, 0, 0, 0, 0, 0};
+    double complex F_3[8]= {0, 0, 0, 0, 0, 0, 0, 0};
+    double complex xproj[8]= {0, 0, 0, 0, 0, 0, 0, 0};
+    double complex nextF;
+    
+    double complex q1, q2, q3, q4, q1c, q2c, q3c, q4c, q1_2, q2_2, q3_2, q4_2, q1c_2, q2c_2, q3c_2, q4c_2;
+    double complex q1cq2c, q1cq3c, q1cq4c, q2cq3c, q2cq4c, q3cq4c;
+    double q1abs, q2abs, q3abs, q4abs, q1abs_2, q2abs_2, q3abs_2, q4abs_2;
+    double complex _y1, _y2, _y3, _y1c, _y2c, _y3c, _y1_2, _y2_2, _y3_2, _y1_3, _y2_3, _y3_3 ;
+    double _y1abs, _y2abs, _y3abs, _y1abs_2, _y2abs_2, _y3abs_2, _y1abs_3, _y2abs_3, _y3abs_3;
+    double _exp;
+    _y1 = y1; _y1_2=_y1*_y1; _y1_3=_y1_2*_y1; _y1c=conj(_y1); 
+    _y1abs=y1; _y1abs_2=_y1abs*_y1abs; _y1abs_3=_y1abs_2*_y1abs;
+    _y2 = y2*cexp(I*phi1); _y2_2=_y2*_y2; _y2_3=_y2_2*_y2; _y3c=conj(_y2); 
+    _y2abs=y2; _y2abs_2=_y2abs*_y2abs; _y2abs_3=_y2abs_2*_y2abs;
+    _y3 = y3*cexp(I*phi2); _y3_2=_y3*_y3; _y3_3=_y3_2*_y3; _y3c=conj(_y3); 
+    _y3abs=y3; _y3abs_2=_y3abs*_y3abs; _y3abs_3=_y3abs_2*_y3abs;
+    q1 =  0.25*(3*_y1-_y2-_y3); q1c=conj(q1); q1_2=q1*q1; q1c_2=q1c*q1c; q1abs=cabs(q1); q1abs_2=q1abs*q1abs;
+    q2 =  0.25*(3*_y2-_y3-_y1); q2c=conj(q2); q2_2=q2*q2; q2c_2=q2c*q2c; q2abs=cabs(q2); q2abs_2=q2abs*q2abs;
+    q3 =  0.25*(3*_y3-_y1-_y2); q3c=conj(q3); q3_2=q3*q3; q3c_2=q3c*q3c; q3abs=cabs(q3); q3abs_2=q3abs*q3abs;
+    q4 = -0.25*(  _y1+_y2+_y3); q4c=conj(q4); q4_2=q4*q4; q4c_2=q4c*q4c; q4abs=cabs(q4); q4abs_2=q4abs*q4abs;
+    q1cq2c=q1c*q2c; q1cq3c=q1c*q3c; q1cq4c=q1c*q4c; q2cq3c=q2c*q3c; q2cq4c=q2c*q4c; q3cq4c=q3c*q4c; 
+    _exp = exp(-0.5*(q1abs_2+q2abs_2+q3abs_2+q4abs_2));
+    F_1[0] = q1c_2*q2c_2*q3c_2*q4c_2;
+    F_1[1] = q4_2*q1c_2*q2c_2*q3c_2; 
+    F_1[2] = q1_2*q4c_2*q2c_2*q3c_2; 
+    F_1[3] = q2_2*q1c_2*q4c_2*q3c_2; 
+    F_1[4] = q3_2*q1c_2*q2c_2*q4c_2; 
+    F_1[5] = q4_2*q1c_2*q2c_2*q3_2; 
+    F_1[6] = q4_2*q3c_2*q2c_2*q1_2; 
+    F_1[7] = q4_2*q1c_2*q3c_2*q2_2;
+    F_2[0] = 0;
+    F_2[1] = 2*q4*q1cq2c*q3c*(q2cq3c+q1cq3c+q1cq2c);
+    F_2[2] = 2*q1*q2cq4c*q3c*(q2cq3c+q3cq4c+q2cq4c);
+    F_2[3] = 2*q2*q1cq4c*q3c*(q3cq4c+q1cq3c+q1cq4c);
+    F_2[4] = 2*q3*q1cq2c*q4c*(q2cq4c+q1cq4c+q1cq2c);
+    F_2[5] = 2*q1cq2c*q3*q4*(q3+q4)*(q1c+q2c);
+    F_2[6] = 2*q2cq3c*q1*q4*(q1+q4)*(q3c+q2c);
+    F_2[7] = 2*q1cq3c*q2*q4*(q2+q4)*(q1c+q3c);
+    F_3[0] = 0;
+    F_3[1] = 0.5*(q1c_2*(q2c_2+4*q2cq3c)+q2c_2*(q3c_2+4*q1cq3c)+q3c_2*(q1c_2+4*q1cq2c));
+    F_3[2] = 0.5*(q4c_2*(q2c_2+4*q2cq3c)+q2c_2*(q3c_2+4*q3cq4c)+q3c_2*(q4c_2+4*q2cq4c));
+    F_3[3] = 0.5*(q1c_2*(q4c_2+4*q3cq4c)+q4c_2*(q3c_2+4*q1cq3c)+q3c_2*(q1c_2+4*q1cq4c));
+    F_3[4] = 0.5*(q1c_2*(q2c_2+4*q2cq4c)+q2c_2*(q4c_2+4*q1cq4c)+q4c_2*(q1c_2+4*q1cq2c));
+    F_3[5] = 0.5*(q3_2+4*q3*q4+q4_2)*(q1c_2+4*q1cq2c+q2c_2) + 3*(q3+q4)*(q1c+q2c) + 1.5;
+    F_3[6] = 0.5*(q1_2+4*q1*q4+q4_2)*(q3c_2+4*q2cq3c+q2c_2) + 3*(q1+q4)*(q3c+q2c) + 1.5;
+    F_3[7] = 0.5*(q2_2+4*q2*q4+q4_2)*(q1c_2+4*q1cq3c+q3c_2) + 3*(q2+q4)*(q1c+q3c) + 1.5;
+    xproj[0] =  _y1_3*_y2_2*_y3_3/(_y1abs_3*_y2abs_2*_y3abs_3);
+    xproj[1] =  _y1*_y2_2*_y3/(_y1abs*_y2abs_2*_y3abs);
+    xproj[2] =  _y1c*_y2_2*_y3_3/(_y1abs*_y2abs_2*_y3abs_3);
+    xproj[3] =  _y1_3*conj(_y2_2)*_y3_3/(_y1abs_3*_y2abs_2*_y3abs_3);
+    xproj[4] =  _y1_3*_y2_2*_y3c/(_y1abs_3*_y2abs_2*_y3abs);
+    xproj[5] =  _y1*_y2_2*conj(_y3_3)/(_y1abs*_y2abs_2*_y3abs_3);
+    xproj[6] =  conj(_y1_3)*_y2_2*_y3/(_y1abs_3*_y2abs_2*_y3abs);
+    xproj[7] =  _y1*conj(_y2_2)*_y3/(_y1abs*_y2abs_2*_y3abs);
+    for (int elcombi=0;elcombi<8;elcombi++){
+        output[elcombi] = 1./64 * (F_1[elcombi]+F_2[elcombi]+F_3[elcombi])* _exp * xproj[elcombi];
+    }
+}
+
+    
+// M4 filters for a fixed aperture radius
+// Note that with y==theta/R_ap the expressions do not depend on the aperture radius
+// fourpcf has shape (8,nbinsz,nbinsphi,nbinsphi)
+void fourpcf2M4correlators(int nzcombis,
+                           double y1, double y2, double y3, double dy1, double dy2, double dy3,
+                           double *phis1, double *phis2, double *dphis1, double *dphis2, int nbinsphi1, int nbinsphi2,
+                           double complex *fourpcf, double complex *m4corr){
+    double complex q1, q2, q3, q4, q1c, q2c, q3c, q4c, q1_2, q2_2, q3_2, q4_2, q1c_2, q2c_2, q3c_2, q4c_2;
+    double complex q1cq2c, q1cq3c, q1cq4c, q2cq3c, q2cq4c, q3cq4c;
+    double q1abs, q2abs, q3abs, q4abs, q1abs_2, q2abs_2, q3abs_2, q4abs_2;
+    double complex _y1, _y2, _y3, _y1c, _y2c, _y3c, _y1_2, _y2_2, _y3_2, _y1_3, _y2_3, _y3_3 ;
+    double _y1abs, _y2abs, _y3abs, _y1abs_2, _y2abs_2, _y3abs_2, _y1abs_3, _y2abs_3, _y3abs_3;
+    double _measure, _exp;
+    double complex F_1[8]= {0, 0, 0, 0, 0, 0, 0, 0};
+    double complex F_2[8]= {0, 0, 0, 0, 0, 0, 0, 0};
+    double complex F_3[8]= {0, 0, 0, 0, 0, 0, 0, 0};
+    double complex xproj[8]= {0, 0, 0, 0, 0, 0, 0, 0};
+    double compshuffle[8] = {0, 1, 2, 3, 4, 7, 5, 6};
+    double complex nextF;
+    int fourpcf_compshift, ind_4pcf;
+    for (int elphi1=0;elphi1<nbinsphi1;elphi1++){
+        for (int elphi2=0;elphi2<nbinsphi2;elphi2++){
+            _y1 = y1; _y1_2=_y1*_y1; _y1_3=_y1_2*_y1; _y1c=conj(_y1); 
+            _y1abs=y1; _y1abs_2=_y1abs*_y1abs; _y1abs_3=_y1abs_2*_y1abs;
+            _y2 = y2*cexp(I*phis1[elphi1]); _y2_2=_y2*_y2; _y2_3=_y2_2*_y2; _y3c=conj(_y2); 
+            _y2abs=y2; _y2abs_2=_y2abs*_y2abs; _y2abs_3=_y2abs_2*_y2abs;
+            _y3 = y3*cexp(I*phis2[elphi2]); _y3_2=_y3*_y3; _y3_3=_y3_2*_y3; _y3c=conj(_y3); 
+            _y3abs=y3; _y3abs_2=_y3abs*_y3abs; _y3abs_3=_y3abs_2*_y3abs;
+            q1 =  0.25*(3*_y1-_y2-_y3); q1c=conj(q1); q1_2=q1*q1; q1c_2=q1c*q1c; q1abs=cabs(q1); q1abs_2=q1abs*q1abs;
+            q2 =  0.25*(3*_y2-_y3-_y1); q2c=conj(q2); q2_2=q2*q2; q2c_2=q2c*q2c; q2abs=cabs(q2); q2abs_2=q2abs*q2abs;
+            q3 =  0.25*(3*_y3-_y1-_y2); q3c=conj(q3); q3_2=q3*q3; q3c_2=q3c*q3c; q3abs=cabs(q3); q3abs_2=q3abs*q3abs;
+            q4 = -0.25*(  _y1+_y2+_y3); q4c=conj(q4); q4_2=q4*q4; q4c_2=q4c*q4c; q4abs=cabs(q4); q4abs_2=q4abs*q4abs;
+            q1cq2c=q1c*q2c; q1cq3c=q1c*q3c; q1cq4c=q1c*q4c; q2cq3c=q2c*q3c; q2cq4c=q2c*q4c; q3cq4c=q3c*q4c; 
+            _measure = y1*y2*y3*dy1*dy2*dy3 * dphis1[elphi1]*dphis2[elphi2]*INV_2PI*INV_2PI;
+            _exp = exp(-0.5*(q1abs_2+q2abs_2+q3abs_2+q4abs_2));
+            F_1[0] = q1c_2*q2c_2*q3c_2*q4c_2;
+            F_1[1] = q4_2*q1c_2*q2c_2*q3c_2; 
+            F_1[2] = q1_2*q4c_2*q2c_2*q3c_2; 
+            F_1[3] = q2_2*q1c_2*q4c_2*q3c_2; 
+            F_1[4] = q3_2*q1c_2*q2c_2*q4c_2; 
+            F_1[5] = q4_2*q1c_2*q2c_2*q3_2; 
+            F_1[6] = q4_2*q3c_2*q2c_2*q1_2; 
+            F_1[7] = q4_2*q1c_2*q3c_2*q2_2;
+            F_2[0] = 0;
+            F_2[1] = 2*q4*q1cq2c*q3c*(q2cq3c+q1cq3c+q1cq2c);
+            F_2[2] = 2*q1*q2cq4c*q3c*(q2cq3c+q3cq4c+q2cq4c);
+            F_2[3] = 2*q2*q1cq4c*q3c*(q3cq4c+q1cq3c+q1cq4c);
+            F_2[4] = 2*q3*q1cq2c*q4c*(q2cq4c+q1cq4c+q1cq2c);
+            F_2[5] = 2*q1cq2c*q3*q4*(q3+q4)*(q1c+q2c);
+            F_2[6] = 2*q2cq3c*q1*q4*(q1+q4)*(q3c+q2c);
+            F_2[7] = 2*q1cq3c*q2*q4*(q2+q4)*(q1c+q3c);
+            F_3[0] = 0;
+            F_3[1] = 0.5*(q1c_2*(q2c_2+4*q2cq3c)+q2c_2*(q3c_2+4*q1cq3c)+q3c_2*(q1c_2+4*q1cq2c));
+            F_3[2] = 0.5*(q4c_2*(q2c_2+4*q2cq3c)+q2c_2*(q3c_2+4*q3cq4c)+q3c_2*(q4c_2+4*q2cq4c));
+            F_3[3] = 0.5*(q1c_2*(q4c_2+4*q3cq4c)+q4c_2*(q3c_2+4*q1cq3c)+q3c_2*(q1c_2+4*q1cq4c));
+            F_3[4] = 0.5*(q1c_2*(q2c_2+4*q2cq4c)+q2c_2*(q4c_2+4*q1cq4c)+q4c_2*(q1c_2+4*q1cq2c));
+            F_3[5] = 0.5*(q3_2+4*q3*q4+q4_2)*(q1c_2+4*q1cq2c+q2c_2) + 3*(q3+q4)*(q1c+q2c) + 1.5;
+            F_3[6] = 0.5*(q1_2+4*q1*q4+q4_2)*(q3c_2+4*q2cq3c+q2c_2) + 3*(q1+q4)*(q3c+q2c) + 1.5;
+            F_3[7] = 0.5*(q2_2+4*q2*q4+q4_2)*(q1c_2+4*q1cq3c+q3c_2) + 3*(q2+q4)*(q1c+q3c) + 1.5;
+            xproj[0] =  _y1_3*_y2_2*_y3_3/(_y1abs_3*_y2abs_2*_y3abs_3);//comp 0
+            xproj[1] =  _y1*_y2_2*_y3/(_y1abs*_y2abs_2*_y3abs);//comp 1
+            xproj[2] =  _y1c*_y2_2*_y3_3/(_y1abs*_y2abs_2*_y3abs_3);//comp 2
+            xproj[3] =  _y1_3*conj(_y2_2)*_y3_3/(_y1abs_3*_y2abs_2*_y3abs_3);//comp 3
+            xproj[4] =  _y1_3*_y2_2*_y3c/(_y1abs_3*_y2abs_2*_y3abs);//comp 4
+            xproj[5] =  _y1*_y2_2*conj(_y3_3)/(_y1abs*_y2abs_2*_y3abs_3);//comp 7
+            xproj[6] =  conj(_y1_3)*_y2_2*_y3/(_y1abs_3*_y2abs_2*_y3abs);//comp 5
+            xproj[7] =  _y1*conj(_y2_2)*_y3/(_y1abs*_y2abs_2*_y3abs);//comp 6
+            for (int elcombi=0;elcombi<8;elcombi++){
+                nextF = 1./64 * _measure * (F_1[elcombi]+F_2[elcombi]+F_3[elcombi])* _exp * xproj[elcombi];
+                fourpcf_compshift = compshuffle[elcombi]*nzcombis*nbinsphi1*nbinsphi2 + elphi1*nbinsphi2 + elphi2;
+                for (int zcombi=0;zcombi<nzcombis;zcombi++){
+                    ind_4pcf = fourpcf_compshift + zcombi*nbinsphi1*nbinsphi2;
+                    m4corr[elcombi*nzcombis+zcombi] += nextF * fourpcf[ind_4pcf];
+                }
+            }
+        }
+    }
+}
+
+// M4 filters for a fixed aperture radius
+// Note that with y==theta/R_ap the expressions do not depend on the aperture radius
+// fourpcf has shape (8,nbinsz,nbinsphi,nbinsphi)
+void fourpcf2M4correlators_parallel(int nzcombis,
+                           double y1, double y2, double y3, double dy1, double dy2, double dy3,
+                           double *phis1, double *phis2, double *dphis1, double *dphis2, int nbinsphi1, int nbinsphi2,
+                           int nthreads, double complex *fourpcf, double complex *m4corr){
+    
+    double complex *tmpm4corr = calloc(nthreads*8*nzcombis, sizeof(double complex));
+    #pragma omp parallel for num_threads(nthreads)
+    for (int elphi=0;elphi<nbinsphi1*nbinsphi2;elphi++){
+        double complex q1, q2, q3, q4, q1c, q2c, q3c, q4c, q1_2, q2_2, q3_2, q4_2, q1c_2, q2c_2, q3c_2, q4c_2;
+        double complex q1cq2c, q1cq3c, q1cq4c, q2cq3c, q2cq4c, q3cq4c;
+        double q1abs, q2abs, q3abs, q4abs, q1abs_2, q2abs_2, q3abs_2, q4abs_2;
+        double complex _y1, _y2, _y3, _y1c, _y2c, _y3c, _y1_2, _y2_2, _y3_2, _y1_3, _y2_3, _y3_3 ;
+        double _y1abs, _y2abs, _y3abs, _y1abs_2, _y2abs_2, _y3abs_2, _y1abs_3, _y2abs_3, _y3abs_3;
+        double _measure, _exp;
+        double complex F_1[8]= {0, 0, 0, 0, 0, 0, 0, 0};
+        double complex F_2[8]= {0, 0, 0, 0, 0, 0, 0, 0};
+        double complex F_3[8]= {0, 0, 0, 0, 0, 0, 0, 0};
+        double complex xproj[8]= {0, 0, 0, 0, 0, 0, 0, 0};
+        int compshuffle[8] = {0, 1, 2, 3, 4, 7, 5, 6};
+        double complex nextF;
+        int fourpcf_compshift, ind_4pcf;
+        
+        int thisthread = omp_get_thread_num();
+        int elphi1 = elphi/nbinsphi2;
+        int elphi2 = elphi-elphi1*nbinsphi2;
+        
+        double phi1, phi2, dphi1, dphi2;
+        //#pragma omp critical
+        {
+            phi1 = phis1[elphi1]; phi2 = phis2[elphi2]; 
+            dphi1 = dphis1[elphi1]; dphi2 = dphis2[elphi2]; 
+        }
+        int threadshift = thisthread*8*nzcombis;
+        _y1 = y1; _y1_2=_y1*_y1; _y1_3=_y1_2*_y1; _y1c=conj(_y1); 
+        _y1abs=y1; _y1abs_2=_y1abs*_y1abs; _y1abs_3=_y1abs_2*_y1abs;
+        _y2 = y2*cexp(I*phi1); _y2_2=_y2*_y2; _y2_3=_y2_2*_y2; _y3c=conj(_y2); 
+        _y2abs=y2; _y2abs_2=_y2abs*_y2abs; _y2abs_3=_y2abs_2*_y2abs;
+        _y3 = y3*cexp(I*phi2); _y3_2=_y3*_y3; _y3_3=_y3_2*_y3; _y3c=conj(_y3); 
+        _y3abs=y3; _y3abs_2=_y3abs*_y3abs; _y3abs_3=_y3abs_2*_y3abs;
+        q1 =  0.25*(3*_y1-_y2-_y3); q1c=conj(q1); q1_2=q1*q1; q1c_2=q1c*q1c; q1abs=cabs(q1); q1abs_2=q1abs*q1abs;
+        q2 =  0.25*(3*_y2-_y3-_y1); q2c=conj(q2); q2_2=q2*q2; q2c_2=q2c*q2c; q2abs=cabs(q2); q2abs_2=q2abs*q2abs;
+        q3 =  0.25*(3*_y3-_y1-_y2); q3c=conj(q3); q3_2=q3*q3; q3c_2=q3c*q3c; q3abs=cabs(q3); q3abs_2=q3abs*q3abs;
+        q4 = -0.25*(  _y1+_y2+_y3); q4c=conj(q4); q4_2=q4*q4; q4c_2=q4c*q4c; q4abs=cabs(q4); q4abs_2=q4abs*q4abs;
+        q1cq2c=q1c*q2c; q1cq3c=q1c*q3c; q1cq4c=q1c*q4c; q2cq3c=q2c*q3c; q2cq4c=q2c*q4c; q3cq4c=q3c*q4c; 
+        _measure = y1*y2*y3*dy1*dy2*dy3 * dphi1*dphi2*INV_2PI*INV_2PI;
+        _exp = exp(-0.5*(q1abs_2+q2abs_2+q3abs_2+q4abs_2));
+        F_1[0] = q1c_2*q2c_2*q3c_2*q4c_2;
+        F_1[1] = q4_2*q1c_2*q2c_2*q3c_2; 
+        F_1[2] = q1_2*q4c_2*q2c_2*q3c_2; 
+        F_1[3] = q2_2*q1c_2*q4c_2*q3c_2; 
+        F_1[4] = q3_2*q1c_2*q2c_2*q4c_2; 
+        F_1[5] = q4_2*q1c_2*q2c_2*q3_2; 
+        F_1[6] = q4_2*q3c_2*q2c_2*q1_2; 
+        F_1[7] = q4_2*q1c_2*q3c_2*q2_2;
+        F_2[0] = 0;
+        F_2[1] = 2*q4*q1cq2c*q3c*(q2cq3c+q1cq3c+q1cq2c);
+        F_2[2] = 2*q1*q2cq4c*q3c*(q2cq3c+q3cq4c+q2cq4c);
+        F_2[3] = 2*q2*q1cq4c*q3c*(q3cq4c+q1cq3c+q1cq4c);
+        F_2[4] = 2*q3*q1cq2c*q4c*(q2cq4c+q1cq4c+q1cq2c);
+        F_2[5] = 2*q1cq2c*q3*q4*(q3+q4)*(q1c+q2c);
+        F_2[6] = 2*q2cq3c*q1*q4*(q1+q4)*(q3c+q2c);
+        F_2[7] = 2*q1cq3c*q2*q4*(q2+q4)*(q1c+q3c);
+        F_3[0] = 0;
+        F_3[1] = 0.5*(q1c_2*(q2c_2+4*q2cq3c)+q2c_2*(q3c_2+4*q1cq3c)+q3c_2*(q1c_2+4*q1cq2c));
+        F_3[2] = 0.5*(q4c_2*(q2c_2+4*q2cq3c)+q2c_2*(q3c_2+4*q3cq4c)+q3c_2*(q4c_2+4*q2cq4c));
+        F_3[3] = 0.5*(q1c_2*(q4c_2+4*q3cq4c)+q4c_2*(q3c_2+4*q1cq3c)+q3c_2*(q1c_2+4*q1cq4c));
+        F_3[4] = 0.5*(q1c_2*(q2c_2+4*q2cq4c)+q2c_2*(q4c_2+4*q1cq4c)+q4c_2*(q1c_2+4*q1cq2c));
+        F_3[5] = 0.5*(q3_2+4*q3*q4+q4_2)*(q1c_2+4*q1cq2c+q2c_2) + 3*(q3+q4)*(q1c+q2c) + 1.5;
+        F_3[6] = 0.5*(q1_2+4*q1*q4+q4_2)*(q3c_2+4*q2cq3c+q2c_2) + 3*(q1+q4)*(q3c+q2c) + 1.5;
+        F_3[7] = 0.5*(q2_2+4*q2*q4+q4_2)*(q1c_2+4*q1cq3c+q3c_2) + 3*(q2+q4)*(q1c+q3c) + 1.5;
+        xproj[0] =  _y1_3*_y2_2*_y3_3/(_y1abs_3*_y2abs_2*_y3abs_3);//comp 0
+        xproj[1] =  _y1*_y2_2*_y3/(_y1abs*_y2abs_2*_y3abs);//comp 1
+        xproj[2] =  _y1c*_y2_2*_y3_3/(_y1abs*_y2abs_2*_y3abs_3);//comp 2
+        xproj[3] =  _y1_3*conj(_y2_2)*_y3_3/(_y1abs_3*_y2abs_2*_y3abs_3);//comp 3
+        xproj[4] =  _y1_3*_y2_2*_y3c/(_y1abs_3*_y2abs_2*_y3abs);//comp 4
+        xproj[5] =  _y1*_y2_2*conj(_y3_3)/(_y1abs*_y2abs_2*_y3abs_3);//comp 7
+        xproj[6] =  conj(_y1_3)*_y2_2*_y3/(_y1abs_3*_y2abs_2*_y3abs);//comp 5
+        xproj[7] =  _y1*conj(_y2_2)*_y3/(_y1abs*_y2abs_2*_y3abs);//comp 6
+        for (int elcombi=0;elcombi<8;elcombi++){
+            nextF = 1./64 * _measure * (F_1[elcombi]+F_2[elcombi]+F_3[elcombi])* _exp * xproj[elcombi];
+            fourpcf_compshift = compshuffle[elcombi]*nzcombis*nbinsphi1*nbinsphi2 + elphi1*nbinsphi2 + elphi2;
+            for (int zcombi=0;zcombi<nzcombis;zcombi++){
+                ind_4pcf = fourpcf_compshift + zcombi*nbinsphi1*nbinsphi2;
+                tmpm4corr[threadshift+elcombi*nzcombis+zcombi] += nextF * fourpcf[ind_4pcf];
+            }
+        }
+    }
+
+    for (int elthread=0;elthread<nthreads;elthread++){
+        int threadshift = elthread*8*nzcombis;
+        for (int elcombi=0;elcombi<8;elcombi++){
+            for (int zcombi=0;zcombi<nzcombis;zcombi++){
+                m4corr[elcombi*nzcombis+zcombi] += tmpm4corr[threadshift+elcombi*nzcombis+zcombi];
+            }
+        }
+    }
+    free(tmpm4corr);
+}
+                     
+                     
 // No zbins as in most circumstances this will exceed the 2^32 elements barrier in the arrays...
 // Additionally, we only subselect certain (phi12,phi13) bin combinations to make sure that 
 // the individual chunks will never exceed 1e9 elements
@@ -4745,9 +6768,9 @@ void multipoles2npcf_gggg(double complex *upsilon_n, double complex *N_n, double
         
         int nbinsr2 = nbinsr*nbinsr;
         int nbinsr3 = nbinsr*nbinsr*nbinsr;
-        int mult_n2shift = nbinsr3;
-        int mult_n1shift = (2*nmax+1)*mult_n2shift;
-        int mult_compshift = (2*nmax+1)*mult_n1shift;
+        int mult_n1shift = nbinsr3;
+        int mult_n2shift = (2*nmax+1)*mult_n1shift;
+        int mult_compshift = (2*nmax+1)*mult_n2shift;
         int npcf_r3shift = nbinsphi12*nbinsphi13;
         int npcf_r2shift = nbinsr*npcf_r3shift;
         int npcf_r1shift = nbinsr*npcf_r2shift;
@@ -4844,32 +6867,261 @@ void multipoles2npcf_gggg(double complex *upsilon_n, double complex *N_n, double
     }
 }
 
-
-// Compute Map4 given npcf in centroid projection
-void computeMap4(double *mapradii, int nmapradii, 
-                 double *rbins_centers, double *rbins_edges, int nbinsr,
-                 double *phi12bins, double *phi13bins, int nphi12bins, int nphi13bins,
-                 int nthreads, double complex *npcf, double *map4){
+// If thread==0 --> For final two threads allocate double/triple counting corrs
+// thetacombis_batches: array of length nbinsr^3 with the indices of all possible (r1,r2,r3) combinations
+//                      most likely it is simply range(nbinsr^3), but we leave some freedom here for 
+//                      potential cost-based implementations
+// nthetacombis_batches: array of length nthetbatches with the number of theta-combis in each batch
+// cumthetacombis_batches : array of length (nthetbatches+1) with is cumsum of nthetacombis_batches
+// nthetbatches: the number of theta batches
+void alloc_notomoMap4_analytic(
+    double rmin, double rmax, int nbinsr, double *phibins, double *dbinsphi, int nbinsphi,
+    int *thetacombis_batches, int *nthetacombis_batches, int *cumthetacombis_batches, int nthetbatches,
+    int nthreads, double *mapradii, int nmapradii, 
+    double *xip, double *xim, double thetamin_xi, double thetamax_xi, int nthetabins_xi, int nsubsample_filter,
+    double complex *M4correlators){
+               
+    
+    double complex *allM4correlators = calloc(nthreads*8*1*nmapradii, sizeof(double complex));
+    #pragma omp parallel for num_threads(nthreads)
+    for(int elthetbatch=0;elthetbatch<nthetbatches;elthetbatch++){
+        int thisthread = omp_get_thread_num();
+        printf("Starting thetabatch %d/%d on thread %d with %d thetacombis\n",
+               elthetbatch,nthetbatches,thisthread,nthetacombis_batches[elthetbatch]);
+        int nbinsz = 1;
+        int ncomp = 8;        
+        int batch_nthetas = nthetacombis_batches[elthetbatch];
+        int batchgamma_thetshift = nbinsphi*nbinsphi;
+        int batchgamma_compshift = batch_nthetas*batchgamma_thetshift;
+        
+        
+        double *bin_centers = calloc(nbinsr, sizeof(double));
+        double *bin_edges = calloc(nbinsr+1, sizeof(double));
+        double drbin = exp((log(rmax)-log(rmin))/(nbinsr));
+        int nbinszr = nbinsz*nbinsr;        
+        int *elb1s_batch = calloc(batch_nthetas, sizeof(int));
+        int *elb2s_batch = calloc(batch_nthetas, sizeof(int));
+        int *elb3s_batch = calloc(batch_nthetas, sizeof(int));
+        
+        double complex *nextM4correlators = calloc(8, sizeof(double complex));
+        double complex *thisnpcf = calloc(8*batchgamma_thetshift, sizeof(double complex));
+        //printf("Done allocations for thetabatch %d/%d on thread %d with %d thetacombis\n",
+        //       elthetbatch,nthetbatches,thisthread,nthetacombis_batches[elthetbatch]);
+        
+        #pragma omp critical
+        {
+            for (int elb=0;elb<batch_nthetas;elb++){
+                int thisrcombi = thetacombis_batches[cumthetacombis_batches[elthetbatch]+elb];
+                elb1s_batch[elb] = thisrcombi/(nbinsr*nbinsr);
+                elb2s_batch[elb] = (thisrcombi-elb1s_batch[elb]*nbinsr*nbinsr)/nbinsr;
+                elb3s_batch[elb] = thisrcombi-elb1s_batch[elb]*nbinsr*nbinsr-elb2s_batch[elb]*nbinsr;
+                if ((elb1s_batch[elb]>=nbinsr) || (elb2s_batch[elb]>=nbinsr) || (elb3s_batch[elb]>=nbinsr) 
+                   || (elb1s_batch[elb]<0) || (elb2s_batch[elb]<0) || (elb3s_batch[elb]<0)){
+                    printf("Error for index %d in thetabatch %d (rcombi %d) with el1=%d el2=%d el3=%d",
+                         elb,elthetbatch,thisrcombi,elb1s_batch[elb],elb2s_batch[elb],elb3s_batch[elb]);}
+            }
+            bin_edges[0] = rmin;
+            for (int elb=0;elb<nbinsr;elb++){
+                bin_edges[elb+1] = bin_edges[elb]*drbin;
+                bin_centers[elb] = .5*(bin_edges[elb]+bin_edges[elb+1]);
+            }
+        }
+        //printf("Computed bin centers for thetabatch %d/%d on thread %d with %d thetacombis\n",
+        //       elthetbatch,nthetbatches,thisthread,nthetacombis_batches[elthetbatch]);
+                
+        // For each theta combination (theta1,theta2,theta3) in this batch 
+        // 1) Get bin edges and bin centers of the
+        // 2) Get the analytic gaussian 4pcf from the 2pcf
+        // 3) Update the aperture Map^4 integral
+        // Get bin centers for all theta combis in this batch
+        double dtheta_xi = (thetamax_xi-thetamin_xi)/nthetabins_xi;
+        for (int elb=0;elb<batch_nthetas;elb++){
+            //if(elb%100==-1){
+            //    printf("Starting bin %i in thetabatch %d/%d on thread %d\n",elb,elthetbatch,nthetbatches,thisthread);}
+            // 1)
+            //int thisrcombi = thetacombis_batches[cumthetacombis_batches[elthetbatch]+elb];
+            //int elb1 = thisrcombi/(nbinsr*nbinsr);
+            //int elb2 = (thisrcombi-elb1*nbinsr*nbinsr)/nbinsr;
+            //int elb3 = thisrcombi-elb1*nbinsr*nbinsr-elb2*nbinsr;
+            
+            // 2)
+            gauss4pcf_analytic(bin_centers[elb1s_batch[elb]],
+                               bin_centers[elb2s_batch[elb]],
+                               bin_centers[elb3s_batch[elb]], phibins, nbinsphi,
+                               xip, xim, thetamin_xi, thetamax_xi, dtheta_xi, thisnpcf);
+            //if(elb%100==-1){
+            //printf("Done 4pcf for bin %i in thetabatch %d/%d on thread %d\n",elb,elthetbatch,nthetbatches,thisthread);}
+            
+            // 3)
+            double y1, y2, y3, dy1, dy2, dy3;
+            int map4ind;
+            int map4threadshift = thisthread*8*nmapradii;
+            for (int elmapr=0; elmapr<nmapradii; elmapr++){
+                y1=bin_centers[elb1s_batch[elb]]/mapradii[elmapr];
+                y2=bin_centers[elb2s_batch[elb]]/mapradii[elmapr];
+                y3=bin_centers[elb3s_batch[elb]]/mapradii[elmapr];
+                dy1 = (bin_edges[elb1s_batch[elb]+1]-bin_edges[elb1s_batch[elb]])/mapradii[elmapr];
+                dy2 = (bin_edges[elb2s_batch[elb]+1]-bin_edges[elb2s_batch[elb]])/mapradii[elmapr];
+                dy3 = (bin_edges[elb3s_batch[elb]+1]-bin_edges[elb3s_batch[elb]])/mapradii[elmapr];
+                fourpcf2M4correlators(1,
+                                      y1, y2, y3, dy1, dy2, dy3,
+                                      phibins, phibins, dbinsphi, dbinsphi, nbinsphi, nbinsphi,
+                                      thisnpcf, nextM4correlators);
+                    
+                for (int elcomp=0;elcomp<8;elcomp++){
+                    map4ind = elcomp*nmapradii+elmapr;
+                    if (isnan(cabs(nextM4correlators[elcomp]))==false){
+                        allM4correlators[map4threadshift+map4ind] += nextM4correlators[elcomp];
+                        int _thetacombi = thetacombis_batches[cumthetacombis_batches[elthetbatch]+elb];
+                        //if ((_thetacombi>12285) && (_thetacombi<12295)){
+                        //    printf("%d %d %d %d : %d %d %d : %.50f %.50f\n",
+                        //           thetacombis_batches[cumthetacombis_batches[elthetbatch]+elb],
+                        //           elb1s_batch[elb],elb2s_batch[elb],elb3s_batch[elb],elthetbatch,elmapr,elcomp,
+                        //           creal(nextM4correlators[elcomp]),cimag(nextM4correlators[elcomp]));}
+                    }
+                    //if (isnan(cabs(nextM4correlators[elcomp]))==true){
+                    //printf("%d %d %d : %d %d %d : %.7f %.7f %.7f : %.7f\n",
+                    //       elb1s_batch[elb],elb2s_batch[elb],elb3s_batch[elb],elthetbatch,elmapr,elcomp,
+                    //       y1,y2,y3,cabs(nextM4correlators[elcomp]));}
+                    nextM4correlators[elcomp] = 0;
+                }
+            }
+            
+            // Reset 4pcf placeholders to zero
+            for(int i=0;i<8*batchgamma_thetshift;i++){thisnpcf[i] = 0;}
+        }        
+        
+        //if (thisthread>-1){printf("Done allocating 4pcfs for thetabatch %d/%d\n",elthetbatch,nthetbatches);}
+                
+        free(bin_centers);
+        free(bin_edges);
+        free(elb1s_batch);
+        free(elb2s_batch);
+        free(elb3s_batch);
+        free(nextM4correlators);
+        free(thisnpcf);
+        bin_centers = NULL;
+        bin_edges = NULL;
+        elb1s_batch = NULL;
+        elb2s_batch = NULL;
+        elb3s_batch = NULL;
+        nextM4correlators = NULL;
+        thisnpcf = NULL;
+                
+    }
+    
+    // Accummulate the Map^4 integral
+    for (int elthread=0;elthread<nthreads;elthread++){
+        int map4ind;
+        int map4threadshift = elthread*8*nmapradii;
+        for (int elcomp=0;elcomp<8;elcomp++){
+            for (int elmapr=0; elmapr<nmapradii; elmapr++){
+                map4ind = elcomp*nmapradii+elmapr;
+                M4correlators[map4ind] += allM4correlators[map4threadshift+map4ind];
+            }
+        }
+    }
+    free(allM4correlators);
 }
 
-
-// Directly go from catalog to map4
-// * This can be done in low-mem as we never store the full npcf, but directly
-//   convert the individual Upsilon_n(theta1,theta2,theta3) to contributions towards the Map4 integral
-// * However, this also requires the catalogs and the hashes to be private and also we will have to
-//   compute the Gns for a couple of times, i.e. it will not be super efficient. For a very fine binning
-//   this might not be a crazy bottleneck. 
-// * Possible optimization: Use blocks of x radial bin combinations s.t. Ups_n(n1,n2,z1,z2,z3,z4,{theta_i})
-//   has ~1e7 components
-// do repeated
-void alloc_Map4_discrete_gggg(
-    int *isinner, double *weight, double *pos1, double *pos2, double *e1, double *e2, int ngal, 
-    int nmax, double rmin, double rmax, double *rbins, int nbinsr, int dccorr,
-    int *index_matcher_hash, int *pixs_galind_bounds, int *pix_gals, int nregions, 
-    double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n, 
-    int nthreads, double *bin_centers, double complex *Upsilon_n, double complex *N_n){
+double linint(double *vec, double x, double xmin, double xmax, double dx){
+    if (x<=xmin){return 0;}
+    if (x>=(xmax-dx)){return 0;}
+    int elb_lo = (int) ((x-xmin)/dx);
+    double w = (x-(xmin+elb_lo*dx))/dx;
+    double res = w*vec[elb_lo] + (1-w)*vec[elb_lo+1];
+    //printf("%.9f %.9f %.9f %d %.9f %.9f %.9f %.9f\n",x,xmin,xmax,elb_lo,w,vec[elb_lo],vec[elb_lo+1],res);
+    return res;
 }
     
+    
+// gaussfourpcf has shape (8,nphis,nphis)
+// assume xip, xim have linear bin-edges
+// X4 --> X1 --> X2 --> X3 convention
+void gauss4pcf_analytic(double theta1, double theta2, double theta3, double *phis, int nphis,
+                        double *xip, double *xim, double thetamin_xis, double thetamax_xis, double dtheta_xis,
+                        double complex *gaussfourpcf){
+    double complex y1, y2, y3, q1, q2, q3, q4, q1c, q2c, q3c, q4c;
+    double complex ang1, ang2, ang3, ang1_3, ang1_4, ang2_2, ang2_4, ang3_3, ang3_4;
+    double complex ang12, ang12_4, ang13, ang13_4, ang23, ang23_4;
+    double complex y1_3, y2_2, y3_3;
+    double absy1, absy2, absy3, absy12, absy13, absy23;
+    double xip_1, xip_2, xip_3, xip_12, xip_13, xip_23, xim_1, xim_2, xim_3, xim_12, xim_13, xim_23;
+    int elb12, elb13, elb23;
+    double w1;
+    int phishift;
+    double complex xprojs[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    int nphis_2 = nphis*nphis;
+    
+    y1 = (double complex) theta1;
+    ang1 = y1/cabs(y1);
+    ang1_3 = ang1*ang1*ang1;
+    ang1_4 = ang1_3*ang1;
+    xip_1 = linint(xip, theta1, thetamin_xis, thetamax_xis, dtheta_xis);//xip[eltheta1];
+    xim_1 = linint(xim, theta1, thetamin_xis, thetamax_xis, dtheta_xis);
+    xip_2 = linint(xip, theta2, thetamin_xis, thetamax_xis, dtheta_xis);
+    xim_2 = linint(xim, theta2, thetamin_xis, thetamax_xis, dtheta_xis);
+    xip_3 = linint(xip, theta3, thetamin_xis, thetamax_xis, dtheta_xis);
+    xim_3 = linint(xim, theta3, thetamin_xis, thetamax_xis, dtheta_xis);
+    for (int elphi1=0;elphi1<nphis;elphi1++){
+        y2 = theta2*cexp(I*phis[elphi1]);
+        ang2 = y2/cabs(y2);
+        ang2_2 = ang2*ang2;
+        ang2_4 = ang2_2*ang2_2;
+        absy12 = cabs(y2-y1);
+        ang12 = (y2-y1)/absy12;
+        ang12_4 = ang12*ang12*ang12*ang12;
+        xip_12 = linint(xip, absy12, thetamin_xis, thetamax_xis, dtheta_xis);
+        xim_12 = linint(xim, absy12, thetamin_xis, thetamax_xis, dtheta_xis);
+        for (int elphi2=0;elphi2<nphis;elphi2++){
+            phishift = elphi1*nphis+elphi2;
+            y3 = theta3*cexp(I*phis[elphi2]);
+            ang3 = y3/cabs(y3);
+            ang3_3 =ang3*ang3*ang3;
+            ang3_4=ang3_3*ang3;
+            absy13 = cabs(y3-y1);
+            ang13 = (y3-y1)/absy13;
+            ang13_4 = ang13*ang13*ang13*ang13;
+            xip_13 = linint(xip, absy13, thetamin_xis, thetamax_xis, dtheta_xis);
+            xim_13 = linint(xim, absy13, thetamin_xis, thetamax_xis, dtheta_xis);
+            absy23 = cabs(y3-y2);
+            ang23 = (y3-y2)/absy23;
+            ang23_4 = ang23*ang23*ang23*ang23;
+            if ((absy12>1e-3) && (absy23>1e-3) && (absy13>1e-3)){
+                xip_23 = linint(xip, absy23, thetamin_xis, thetamax_xis, dtheta_xis);
+                xim_23 = linint(xim, absy23, thetamin_xis, thetamax_xis, dtheta_xis);
+                xprojs[0] = ang1_3       * ang2_2       * ang3_3;
+                xprojs[1] = ang1         * ang2_2       * ang3;
+                xprojs[2] = conj(ang1)   * ang2_2       * ang3_3;
+                xprojs[3] = ang1_3       * conj(ang2_2) * ang3_3;
+                xprojs[4] = ang1_3       * ang2_2       * conj(ang3);
+                xprojs[5] = conj(ang1_3) * ang2_2       * ang3;
+                xprojs[6] = ang1         * conj(ang2_2) * ang3;
+                xprojs[7] = ang1         * ang2_2       * conj(ang3_3);
+                gaussfourpcf[0*nphis_2+phishift] = conj(xprojs[0]) * (
+                    ang23_4*ang1_4*xim_23*xim_1 + ang13_4*ang2_4*xim_13*xim_2 + ang12_4*ang3_4*xim_12*xim_3);
+                gaussfourpcf[1*nphis_2+phishift] = conj(xprojs[1]) * (
+                    ang23_4*xim_23*xip_1 + ang13_4*xim_13*xip_2 + ang12_4*xim_12*xip_3);
+                gaussfourpcf[2*nphis_2+phishift] = conj(xprojs[2]) * (
+                    ang23_4*xip_1*xim_23 + ang2_4*xim_2*xip_13 + ang3_4*xim_3*xip_12);
+                gaussfourpcf[3*nphis_2+phishift] = conj(xprojs[3]) * (
+                    ang1_4*xim_1*xip_23 + ang13_4*xip_2*xim_13 + ang3_4*xim_3*xip_12);
+                gaussfourpcf[4*nphis_2+phishift] = conj(xprojs[4]) * (
+                    ang1_4*xim_1*xip_23 + ang2_4*xim_2*xip_13 + ang12_4*xip_3*xim_12);
+                gaussfourpcf[5*nphis_2+phishift] = conj(xprojs[5]) * (
+                    conj(ang1_4)*ang23_4*xim_1*xim_23 + xip_2*xip_13 + xip_3*xip_12);
+                gaussfourpcf[6*nphis_2+phishift] = conj(xprojs[6]) * (
+                    xip_1*xip_23 + conj(ang2_4)*ang13_4*xim_2*xim_13 + xip_3*xip_12);
+                gaussfourpcf[7*nphis_2+phishift] = conj(xprojs[7]) * (
+                    xip_1*xip_23 + xip_2*xip_13 + conj(ang3_4)*ang12_4*xim_3*xim_12);
+                for (int elcomp=0;elcomp<8;elcomp++){
+                    if (isnan(cabs(gaussfourpcf[elcomp*nphis_2+phishift]))){gaussfourpcf[elcomp*nphis_2+phishift]=0;}
+                }
+            }
+        }
+    }
+}
+ 
 
 /*
 // 4pcf

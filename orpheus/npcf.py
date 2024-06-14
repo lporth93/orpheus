@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 import ctypes as ct
 from copy import deepcopy
 from functools import reduce
-from itertools import accumulate
+from itertools import accumulate, product, chain
 import glob
 from numba import jit, prange
 from numba import config as nb_config
@@ -14,7 +14,8 @@ import operator
 from pathlib import Path
 import sys
 from .catalog import Catalog, ScalarTracerCatalog, SpinTracerCatalog, MultiTracerCatalog
-from .utils import get_site_packages_dir, search_file_in_site_package
+from .utils import flatlist, split_array_into_batches, get_site_packages_dir, search_file_in_site_package
+from .exceptions import *
 
 
 __all__ = ["BinnedNPCF", 
@@ -260,6 +261,18 @@ class BinnedNPCF:
                 np.ctypeslib.ndpointer(dtype=np.float64), 
                 np.ctypeslib.ndpointer(dtype=np.complex128),
                 np.ctypeslib.ndpointer(dtype=np.complex128)] 
+                        
+            self.clib.alloc_Gammans_tree_NGG.restype = ct.c_void_p
+            self.clib.alloc_Gammans_tree_NGG.argtypes = [
+                ct.c_int32, p_f64, 
+                p_f64, p_f64, p_f64, p_f64, p_f64, p_i32, ct.c_int32, p_i32,
+                p_i32, p_f64, p_f64, p_f64,  p_i32, ct.c_int32, ct.c_int32,
+                p_i32, p_i32, p_i32, p_i32, p_i32, p_i32, ct.c_int32, 
+                ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32,
+                ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, ct.c_int32,
+                np.ctypeslib.ndpointer(dtype=np.float64), 
+                np.ctypeslib.ndpointer(dtype=np.complex128),
+                np.ctypeslib.ndpointer(dtype=np.complex128)]             
         
             self.clib.alloc_Gammans_doubletree_NGG.restype = ct.c_void_p
             self.clib.alloc_Gammans_doubletree_NGG.argtypes = [
@@ -337,7 +350,61 @@ class BinnedNPCF:
                 p_c128, p_c128, p_f64, ct.c_int32, 
                 ct.c_int32, ct.c_int32, ct.c_int32, p_f64, ct.c_int32, p_f64, ct.c_int32, 
                 ct.c_int32, p_c128, p_c128]
-
+            
+            # Discrete estimator of non-tomographic Map^4 statistics (low-mem)
+            self.clib.alloc_notomoMap4_disc_gggg.restype = ct.c_void_p
+            self.clib.alloc_notomoMap4_disc_gggg.argtypes = [
+                p_i32, p_f64, p_f64, p_f64, p_f64, p_f64, ct.c_int32, 
+                ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, p_f64, p_f64, ct.c_int32,
+                p_i32, p_i32, p_i32, ct.c_int32, 
+                ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, 
+                p_i32, p_i32, p_i32, ct.c_int32, 
+                ct.c_int32, ct.c_int32, p_f64, ct.c_int32, np.ctypeslib.ndpointer(dtype=np.complex128),
+                ct.c_int32, ct.c_int32, np.ctypeslib.ndpointer(dtype=np.float64), 
+                np.ctypeslib.ndpointer(dtype=np.complex128),np.ctypeslib.ndpointer(dtype=np.complex128),
+                np.ctypeslib.ndpointer(dtype=np.complex128),np.ctypeslib.ndpointer(dtype=np.complex128)]
+            
+            # Transformation between 4PCF from multipole-basis tp real-space basis for a fixed
+            # combination of radial bins
+            self.clib.multipoles2npcf_gggg_singletheta.restype = ct.c_void_p
+            self.clib.multipoles2npcf_gggg_singletheta.argtypes = [
+                p_c128, p_c128, ct.c_int32, ct.c_int32, 
+                ct.c_double, ct.c_double, ct.c_double, 
+                p_f64, p_f64, ct.c_int32, ct.c_int32, 
+                ct.c_int32, 
+                np.ctypeslib.ndpointer(dtype=np.complex128),np.ctypeslib.ndpointer(dtype=np.complex128)]
+            
+            # [DEBUG]: Shear 4pt function in terms of xip/xim
+            self.clib.gauss4pcf_analytic.restype = ct.c_void_p
+            self.clib.gauss4pcf_analytic.argtypes = [
+                ct.c_double, ct.c_double, ct.c_double, p_f64, ct.c_int32,
+                p_f64, p_f64, ct.c_double, ct.c_double, ct.c_double, 
+                np.ctypeslib.ndpointer(dtype=np.complex128)]
+            
+            # [DEBUG]: Map4 via analytic gaussian 4pcf
+            self.clib.alloc_notomoMap4_analytic.restype = ct.c_void_p
+            self.clib.alloc_notomoMap4_analytic.argtypes = [
+                ct.c_double, ct.c_double, ct.c_int32, p_f64, p_f64, ct.c_int32,
+                p_i32, p_i32, p_i32, ct.c_int32,
+                ct.c_int32, p_f64, ct.c_int32,
+                p_f64, p_f64, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, 
+                np.ctypeslib.ndpointer(dtype=np.complex128)]
+            
+            # [DEBUG]: Map4 filter function for single combination
+            self.clib.filter_Map4.restype = ct.c_void_p
+            self.clib.filter_Map4.argtypes = [
+                ct.c_double, ct.c_double, ct.c_double, ct.c_double, ct.c_double, 
+                np.ctypeslib.ndpointer(dtype=np.complex128)] 
+            
+            # [DEBUG]: Conversion between 4pcf and Map4 for (theta1,theta2,theta3) subset
+            self.clib.fourpcf2M4correlators_parallel.restype = ct.c_void_p
+            self.clib.fourpcf2M4correlators_parallel.argtypes = [
+                ct.c_int32,
+                ct.c_double, ct.c_double, ct.c_double, ct.c_double, ct.c_double, ct.c_double, 
+                p_f64, p_f64, p_f64, p_f64, ct.c_int32, ct.c_int32, 
+                ct.c_int32,
+                np.ctypeslib.ndpointer(dtype=np.complex128), np.ctypeslib.ndpointer(dtype=np.complex128)] 
+                        
     ############################################################
     ## Functions that deal with different projections of NPCF ##
     ############################################################
@@ -1355,7 +1422,7 @@ class NGGCorrelation(BinnedNPCF):
                     Upsilon_n,
                     Norm_n, )
             func = self.clib.alloc_Gammans_discrete_NGG
-        if self.method == "DoubleTree":
+        if self.method=="Tree" or self.method == "DoubleTree":
             cutfirst = np.int32(self.tree_resos[0]==0.)
             jointextent = list(cat_source._jointextent([cat_lens], extend=self.tree_resos[-1]))
             # Build multihashes for sources and lenses
@@ -1375,7 +1442,7 @@ class NGGCorrelation(BinnedNPCF):
             pixs_galind_bounds_source = np.concatenate(spixs_galind_bounds).astype(np.int32)
             pix_gals_source = np.concatenate(spix_gals).astype(np.int32)
             mhash_lens = cat_lens.multihash(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1], 
-                                                shuffle=self.shuffle_pix, normed=True, extent=jointextent)
+                                            shuffle=self.shuffle_pix, normed=True, extent=jointextent)
             lngal_resos, lpos1s, lpos2s, lweights, lzbins, lisinners, lallfields, lindex_matchers, \
             lpixs_galind_bounds, lpix_gals, ldpixs1_true, ldpixs2_true = mhash_lens
             ngal_resos_lens = np.array(lngal_resos, dtype=np.int32)
@@ -1389,6 +1456,28 @@ class NGGCorrelation(BinnedNPCF):
             pix_gals_lens = np.asarray(np.concatenate(lpix_gals)).astype(np.int32)
             index_matcher_flat = np.argwhere(cat_lens.index_matcher>-1).flatten().astype(np.int32)
             nregions = np.int32(len(index_matcher_flat))
+        if self.method=="Tree":
+            # Collect args
+            args_resoinfo = (np.int32(self.tree_nresos), self.tree_redges,)
+            args_resos_sourcecat = (weight_resos_source, pos1_resos_source, pos2_resos_source,
+                                    e1_resos_source, e2_resos_source, zbin_resos_source, 
+                                    np.int32(self.nbinsz_source), ngal_resos_source, )
+            args_mhash = (index_matcher_source, pixs_galind_bounds_source, pix_gals_source,
+                          index_matcher_lens, pixs_galind_bounds_lens, pix_gals_lens, nregions, )
+            args_pixgrid = (np.float64(cat_lens.pix1_start), np.float64(cat_lens.pix1_d), np.int32(cat_lens.pix1_n), 
+                            np.float64(cat_lens.pix2_start), np.float64(cat_lens.pix2_d), np.int32(cat_lens.pix2_n), )
+            args = (*args_resoinfo,
+                    *args_resos_sourcecat,
+                    *args_lenscat,
+                    *args_mhash,
+                    *args_pixgrid,
+                    *args_basesetup,
+                    np.int32(self.nthreads),
+                    bin_centers,
+                    Upsilon_n,
+                    Norm_n, )
+            func = self.clib.alloc_Gammans_tree_NGG            
+        if self.method == "DoubleTree":
             # Collect args
             args_resoinfo = (np.int32(self.tree_nresos), np.int32(self.tree_nresos-cutfirst),
                              sdpixs1_true.astype(np.float64), sdpixs2_true.astype(np.float64), self.tree_redges, )
@@ -1428,6 +1517,7 @@ class NGGCorrelation(BinnedNPCF):
         
         func(*args)
         
+        # Components of npcf are ordered as (Ups_-, Ups_+)
         self.bin_centers = bin_centers.reshape(szr)
         self.bin_centers_mean = np.mean(self.bin_centers, axis=(0,1))
         self.npcf_multipoles = Upsilon_n.reshape(sc)
@@ -1559,8 +1649,8 @@ class NGGCorrelation(BinnedNPCF):
                         A_NMM = filtercache[tmprcombi]
                     else:
                         A_NMM = self._NMM_filtergrid(R1, R2, R3)
-                    _NMM =  np.nansum(A_NMM[0]*self.npcf[1,...],axis=(1,2,3))
-                    _NMMstar =  np.nansum(A_NMM[1]*self.npcf[0,...],axis=(1,2,3))
+                    _NMM =  np.nansum(A_NMM[0]*self.npcf[0,...],axis=(1,2,3))
+                    _NMMstar =  np.nansum(A_NMM[1]*self.npcf[1,...],axis=(1,2,3))
                     NMM[0,:,tmprcombi] = (_NMM + _NMMstar).real/2.
                     NMM[1,:,tmprcombi] = (-_NMM + _NMMstar).real/2.
                     NMM[2,:,tmprcombi] = (_NMM + _NMMstar).imag/2.
@@ -1622,35 +1712,302 @@ class FFFCorrelation(BinnedNPCF):
 #############################
 ## FOURTH-ORDER STATISTICS ##
 #############################
-
 class GGGGCorrelation_NoTomo(BinnedNPCF):
     
-    def __init__(self, min_sep, max_sep, verbose=False, **kwargs):
+    def __init__(self, min_sep, max_sep, verbose=False, thetabatchsize_max=10000, **kwargs):
         super().__init__(order=4, spins=np.array([2,2,2,2], dtype=np.int32),
                          n_cfs=8, min_sep=min_sep, max_sep=max_sep, **kwargs)
+        
+        self.thetabatchsize_max = thetabatchsize_max
         self.verbose = verbose
         self.projection = None
         self.projections_avail = [None, "X", "Centroid"]
         self.proj_dict = {"X":0, "Centroid":1}
-        self.nbinsz = None
-        self.nzcombis = None
+        self.methods_avail = ["Discrete"] # Default right now. See if tree-methods make sense.
+        self.method = "Discrete" # Default right now 
+        self.nbinsz = 1
+        self.nzcombis = 1
         
         # (Add here any newly implemented projections)
         self._initprojections(self)
         self.project["X"]["Centroid"] = self._x2centroid
-    
-    def process(self, cat, apply_edge_correction=False, basis="Multipoles", projection="Centroid"):
-        assert(basis in ["Multipoles", "NPCF"])
+        
+    def process(self, cat, statistics="all", tofile=False, apply_edge_correction=False, projection="X",
+                lowmem=None, mapradii=None, batchsize=None, cutlen=2**32-1):
+        """
+        
+        Arguments:
+        
+        Logic works as follows:
+        * Keyword 'statistics' \in [4pcf_real, 4pcf_multipoles, M4, Map4, M4c, Map4c, allMap, all4pcf, all]
+            * If 4pcf_multipoles in statistics --> save 4pcf_multipoles
+            * If 4pcf_real in statistics --> save 4pcf_real
+            * If only M4 in statistics --> Do not save any 4pcf. This is really the lowmem case.
+            * allMap, all4pcf, all are abbreviations as expected
+        * If lowmem=True, uses the inefficient, but lowmem function for computation and output statistics
+          from there as wanted.
+        * If lowmem=False, use the fast functions to do the 4pcf multipole computation and do 
+          the potential conversions lateron.
+        * Default lowmem to None and
+            * Set to true if any aperture statistics is in stats or we will run into mem error
+            * Set to false otherwise
+            * Raise error if lowmen=False and we will have more that 2^32 elements at any stage of the computation
+        Memory required for lowmem: ~ nthreads * 9 * (2*nmax+1)^2 * batchsize double complex
+                                    ~ nthreads * 9 * (31      )^2 * 10000 
+                                    ~ nthreads *  nzcombi * ((2*nmax+1)/31)^2 * (batchsize/10000) * 1.38 GB
+                                      (independent of radial/angular binning!)
+        """
+        
+        ## Preparations ##
+        # Build list of statistics to be calculated
+        statistics_avail_4pcf = ["4pcf_real", "4pcf_multipole"]
+        statistics_avail_map4 = ["M4", "Map4", "M4c", "Map4c"]
+        statistics_avail_comp = ["allMap", "all4pcf", "all"]
+        statistics_avail_phys = statistics_avail_4pcf + statistics_avail_map4
+        statistics_avail = statistics_avail_4pcf + statistics_avail_map4 + statistics_avail_comp        
+        _statistics = []
+        hasintegratedstats = False
+        _strbadstats = lambda stat: ("The statistics `%s` has not been implemented yet. "%stat + 
+                                     "Currently supported statistics are:\n" + str(statistics_avail))
+        if type(statistics) not in [list, str]:
+            raise ValueError("The parameter `statistics` should either be a list or a string.")
+        if type(statistics) is str:
+            if statistics not in statistics_avail:
+                raise ValueError(_strbadstats)
+            statistics = [statistics]
+        if type(statistics) is list:
+            if "all" in statistics:
+                _statistics = statistics_avail_phys
+            elif "all4pcf" in statistics:
+                _statistics.append(statistics_avail_4pcf)
+            elif "allMap" in statistics:
+                _statistics.append(statistics_avail_map4)
+            _statistics = flatlist(_statistics)
+            for stat in statistics:
+                if stat not in statistics_avail:
+                    raise ValueError(_strbadstats)
+                if stat in statistics_avail_phys and stat not in _statistics:
+                    _statistics.append(stat)
+        statistics = list(set(flatlist(_statistics)))
+        for stat in statistics:
+            if stat in statistics_avail_map4:
+                hasintegratedstats = True
+                
+        # Check if the output will fit in memory
+        if "4pcf_multipole" in statistics:
+            _nvals = 8*self.nzcombis*(2*self.nmaxs[0]+1)*(2*self.nmaxs[1]+1)*self.nbinsr**3
+            if _nvals>cutlen:
+                raise ValueError(("4pcf in multipole basis will cause memory overflow " + 
+                                  "(requiring %.2fx10^9 > %.2fx10^9 elements)\n"%(_nvals/1e9, cutlen/1e9) + 
+                                  "If you are solely interested in integrated statistics (like Map4), you" +
+                                  "only need to add those to the `statistics` argument."))
+        if "4pcf_real" in statistics:
+            _nvals = 8*self.nzcombis*self.nbinsphi[0]*self.nbinsphi[1]*self.nbinsr**3
+            if _nvals>cutlen:
+                raise ValueError(("4pcf in real basis will cause memory overflow " + 
+                                  "(requiring %.2fx10^9 > %.2fx10^9 elements)\n"%(_nvals/1e9, cutlen/1e9) + 
+                                  "If you are solely interested in integrated statistics (like Map4), you" +
+                                  "only need to add those to the `statistics` argument."))
+                
+        # Decide on whether to use low-mem functions or not
+        if hasintegratedstats:
+            if lowmem in [False, None]:
+                if not lowmem:
+                    print("Low-memory computation enforced for integrated measures of the 4pcf. " +
+                          "Set `lowmem` from `%s` to `True`"%str(lowmem))
+                lowmem = True
+        else:
+            if lowmem in [None, False]:
+                maxlen = 0
+                _lowmem = False
+                if "4pcf_multipole" in statistics:
+                    _nvals = 8*self.nzcombis*(2*self.nmaxs[0]+1)*(2*self.nmaxs[1]+1)*self.nbinsr**3
+                    if _nvals > cutlen:
+                        if not lowmem:
+                            print("Switching to low-memory computation of 4pcf in multipole basis.")
+                        lowmem = True
+                    else:
+                        lowmem = False
+                if "4pcf_real" in statistics:
+                    nvals = 8*self.nzcombis*self.nbinsphi[0]*self.nbinsphi[1]*self.nbinsr**3
+                    if _nvals > cutlen:
+                        if not lowmem:
+                            print("Switching to low-memory computation of 4pcf in real basis.")
+                        lowmem = True
+                    else:
+                        lowmem = False
+                        
+        # Misc checks            
         assert(projection in self.projections_avail)
         self._checkcats(cat, self.spins)
-        self.nbinsz = 1
-        self.nzcombis = 1
+        projection = np.int32(self.proj_dict[projection])
+        
+        ## Build args for wrapped functions ##
+        # Shortcuts
         _nmax = self.nmaxs[0]
         _nnvals = (2*_nmax+1)*(2*_nmax+1)
         _nbinsr3 = self.nbinsr*self.nbinsr*self.nbinsr
+        _nphis = len(self.phis[0])
         sc = (8,2*_nmax+1,2*_nmax+1,self.nzcombis,self.nbinsr,self.nbinsr,self.nbinsr)
         sn = (2*_nmax+1,2*_nmax+1,self.nzcombis,self.nbinsr,self.nbinsr,self.nbinsr)
         szr = (self.nbinsz, self.nbinsr)
+        s4pcf = (8,self.nzcombis,self.nbinsr,self.nbinsr,self.nbinsr,_nphis,_nphis)
+        s4pcfn = (self.nzcombis,self.nbinsr,self.nbinsr,self.nbinsr,_nphis,_nphis)
+        # Init default args
+        bin_centers = np.zeros(self.nbinsz*self.nbinsr).astype(np.float64)
+        if not cat.hasspatialhash:
+            cat.build_spatialhash(dpix=max(1.,self.max_sep//10.))
+        nregions = np.int32(len(np.argwhere(cat.index_matcher>-1).flatten()))
+        args_basecat = (cat.isinner.astype(np.int32), cat.weight, cat.pos1, cat.pos2, 
+                        cat.tracer_1, cat.tracer_2, np.int32(cat.ngal), )
+        args_hash = (cat.index_matcher, cat.pixs_galind_bounds, cat.pix_gals, nregions, 
+                     np.float64(cat.pix1_start), np.float64(cat.pix1_d), np.int32(cat.pix1_n), 
+                     np.float64(cat.pix2_start), np.float64(cat.pix2_d), np.int32(cat.pix2_n), )
+        
+        # Init optional args
+        __lenflag = 10
+        __fillflag = -1
+        if "4pcf_multipole" in statistics:
+            Upsilon_n = np.zeros(self.n_cfs*_nnvals*self.nzcombis*_nbinsr3).astype(np.complex128)
+            N_n = np.zeros(_nnvals*self.nzcombis*_nbinsr3).astype(np.complex128)
+            alloc_4pcfmultipoles = 1
+        else:
+            Upsilon_n = __fillflag*np.ones(__lenflag).astype(np.complex128)
+            N_n = __fillflag*np.zeros(__lenflag).astype(np.complex128)
+            alloc_4pcfmultipoles = 0
+        if "4pcf_real" in statistics:
+            fourpcf = np.zeros(8*_nphis*_nphis*self.nzcombis*_nbinsr3).astype(np.complex128)
+            fourpcf_norm = np.zeros(_nphis*_nphis*self.nzcombis*_nbinsr3).astype(np.complex128)
+            alloc_4pcfreal = 1
+        else:
+            fourpcf = __fillflag*np.ones(__lenflag).astype(np.complex128)
+            fourpcf_norm = __fillflag*np.ones(__lenflag).astype(np.complex128)
+            alloc_4pcfreal = 0
+        if hasintegratedstats:
+            if mapradii is None:
+                raise ValueError("Aperture radii not need to be specified in variable `mapradii`.")
+            mapradii = mapradii.astype(np.float64)
+            M4correlators = np.zeros(8*self.nzcombis*len(mapradii)).astype(np.complex128)
+            
+        if self.method=="Discrete" and not lowmem:
+            args_basesetup = (np.int32(_nmax), np.float64(self.min_sep), 
+                              np.float64(self.max_sep), np.array([-1.]).astype(np.float64), 
+                              np.int32(self.nbinsr), np.int32(self.multicountcorr), )
+            args = (*args_basecat,
+                    *args_basesetup,
+                    *args_hash,
+                    np.int32(self.nthreads),
+                    bin_centers,
+                    Upsilon_n,
+                    N_n)
+            func = self.clib.alloc_notomoGammans_discrete_gggg 
+        if self.method=="Discrete" and lowmem:
+            if batchsize is None:
+                batchsize = min(_nbinsr3,min(self.thetabatchsize_max,_nbinsr3/self.nthreads))
+                print("Using batchsize of %i for radial bins"%batchsize)
+            if batchsize==self.thetabatchsize_max:
+                nbatches = np.int32(np.ceil(_nbinsr3/batchsize))
+            else:
+                nbatches = np.int32(_nbinsr3/batchsize)
+            thetacombis_batches = np.arange(_nbinsr3).astype(np.int32)
+            cumnthetacombis_batches = (np.arange(nbatches+1)*_nbinsr3/(nbatches)).astype(np.int32)
+            nthetacombis_batches = (cumnthetacombis_batches[1:]-cumnthetacombis_batches[:-1]).astype(np.int32)
+            cumnthetacombis_batches[-1] = _nbinsr3
+            nthetacombis_batches[-1] = _nbinsr3-cumnthetacombis_batches[-2]
+            thetacombis_batches = thetacombis_batches.flatten().astype(np.int32)
+            nbatches = len(nthetacombis_batches)
+            args_basesetup = (np.int32(_nmax), 
+                              np.float64(self.min_sep), np.float64(self.max_sep), np.int32(self.nbinsr), 
+                              np.int32(self.multicountcorr),
+                              self.phis[0].astype(np.float64), 
+                              2*np.pi/_nphis*np.ones(_nphis, dtype=np.float64), np.int32(_nphis))
+            args_4pcf = (np.int32(alloc_4pcfmultipoles), np.int32(alloc_4pcfreal), 
+                         bin_centers, Upsilon_n, N_n, fourpcf, fourpcf_norm, )
+            args_thetas = (thetacombis_batches, nthetacombis_batches, cumnthetacombis_batches, nbatches, )
+            args_map4 = (mapradii, np.int32(len(mapradii)), M4correlators)
+            args = (*args_basecat,
+                    *args_basesetup,
+                    *args_hash,
+                    *args_thetas,
+                    np.int32(self.nthreads),
+                    projection,
+                    *args_map4,
+                    *args_4pcf)
+            func = self.clib.alloc_notomoMap4_disc_gggg  
+            
+        # Optionally print the arguments 
+        if self.verbose:
+            print("We pass the following arguments:")
+            for elarg, arg in enumerate(args):
+                toprint = (elarg, type(arg),)
+                if isinstance(arg, np.ndarray):
+                    toprint += (type(arg[0]), arg.shape)
+                try:
+                    toprint += (func.argtypes[elarg], )
+                    print(toprint)
+                    print(arg)
+                except:
+                    print("We did have a problem for arg %i"%elarg)
+        
+        ## Compute 4th order stats ##
+        func(*args)
+        
+        ## Massage the output ##
+        istatout = ()
+        self.bin_centers = bin_centers.reshape(szr)
+        self.bin_centers_mean = np.mean(self.bin_centers, axis=0)
+        if "4pcf_multipole" in statistics:
+            self.npcf_multipoles = Upsilon_n.reshape(sc)
+            self.npcf_multipoles_norm = N_n.reshape(sn)
+        if "4pcf_real" in statistics:
+            if lowmem:
+                self.npcf = fourpcf.reshape(s4pcf)
+                self.npcf_norm = fourpcf_norm.reshape(s4pcfn) 
+            else:
+                if self.verbose:
+                    print("Transforming output to real space basis")
+                self.multipoles2npcf_c(projection=projection)
+        if hasintegratedstats:
+            if "M4" in statistics:
+                istatout += (M4correlators.reshape((8,self.nzcombis,len(mapradii))), )
+            # TODO allocate map4, map4c etc.
+            
+        return istatout
+       
+    def _process(self, cat, apply_edge_correction=False, basis="Multipoles", projection="X",
+                lowmem=None,mapradii=None,batchsize=None):
+        """
+        TODO: Refactor to allow for more extended logic:
+        * Add keyword 'statistics' \in [4pcf_real, 4pcf_multipoles, M4, Map4, M4c, Map4c, allMap, all4pcf, all]
+            * If 4pcf_multipoles in statistics --> save 4pcf_multipoles
+            * If 4pcf_real in statistics --> save 4pcf_real
+            * If only M4 in statistics --> Do not save any 4pcf. This is really the lowmem case.
+            * allMap, alll4pcf, all are abbreviations as expected
+        * If lowmem=True, use the inefficient, but lowmem function for computation and output statistics
+          from there as wanted.
+        * If lowmem=False, use the fast functions to do the 4pcf multipole computation and do 
+          the potential conversions lateron.
+        * Default lowmem to None and
+            * Set to true if any aperture statistics is in stats or we will run into mem error
+            * Set to false otherwise
+            * Raise error if lowmen=False and we will have more that 2^32 elements at any stage of the computation
+        Memory required for lowmem: ~ nthreads * 9 * (2*nmax+1)^2 * batchsize double complex
+                                    ~ nthreads * 9 * (31      )^2 * 10000 
+                                    ~ nthreads * 1.38 GB (independent of radial/angular binning!)
+
+        """
+        assert(basis in ["Multipoles", "NPCF"])
+        assert(projection in self.projections_avail)
+        self._checkcats(cat, self.spins)
+        _nmax = self.nmaxs[0]
+        _nnvals = (2*_nmax+1)*(2*_nmax+1)
+        _nbinsr3 = self.nbinsr*self.nbinsr*self.nbinsr
+        _nphis = len(self.phis[0])
+        sc = (8,2*_nmax+1,2*_nmax+1,self.nzcombis,self.nbinsr,self.nbinsr,self.nbinsr)
+        sn = (2*_nmax+1,2*_nmax+1,self.nzcombis,self.nbinsr,self.nbinsr,self.nbinsr)
+        szr = (self.nbinsz, self.nbinsr)
+        s4pcf = (8,self.nzcombis,self.nbinsr,self.nbinsr,self.nbinsr,_nphis,_nphis)
+        s4pcfn = (self.nzcombis,self.nbinsr,self.nbinsr,self.nbinsr,_nphis,_nphis)
         bin_centers = np.zeros(self.nbinsz*self.nbinsr).astype(np.float64)
         Upsilon_n = np.zeros(self.n_cfs*_nnvals*self.nzcombis*_nbinsr3).astype(np.complex128)
         N_n = np.zeros(_nnvals*self.nzcombis*_nbinsr3).astype(np.complex128)
@@ -1659,7 +2016,16 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
         args_basesetup = (np.int32(_nmax), np.float64(self.min_sep), 
                           np.float64(self.max_sep), np.array([-1.]).astype(np.float64), 
                           np.int32(self.nbinsr), np.int32(self.multicountcorr), )
-        if self.method=="Discrete":
+        thismethod = self.method
+        if lowmem:
+            if mapradii is not None:
+                mapradii = mapradii.astype(np.float64)
+                thismethod = self.method+"Map4"
+            else:
+                print("mapradii not specified")
+                return 0
+            
+        if thismethod=="Discrete":
             if not cat.hasspatialhash:
                 cat.build_spatialhash(dpix=max(1.,self.max_sep//10.))
             nregions = np.int32(len(np.argwhere(cat.index_matcher>-1).flatten()))
@@ -1674,16 +2040,173 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                     Upsilon_n,
                     N_n)
             func = self.clib.alloc_notomoGammans_discrete_gggg 
+
+        if thismethod=="DiscreteMap4":
+            assert(mapradii is not None)
+            fourpcf = np.zeros(8*_nphis*_nphis*self.nzcombis*_nbinsr3).astype(np.complex128)
+            fourpcf_norm = np.zeros(_nphis*_nphis*self.nzcombis*_nbinsr3).astype(np.complex128)
+            #fourpcf = np.zeros(100).astype(np.complex128)
+            #fourpcf_norm = np.zeros(100).astype(np.complex128)
+            M4correlators = np.zeros(8*self.nzcombis*len(mapradii)).astype(np.complex128)
+            args_basesetup = (np.int32(_nmax), 
+                              np.float64(self.min_sep), np.float64(self.max_sep), np.int32(self.nbinsr), 
+                              np.int32(self.multicountcorr),
+                              self.phis[0].astype(np.float64), 
+                              2*np.pi/_nphis*np.ones(_nphis, dtype=np.float64), np.int32(_nphis))
+            # Define args related to spatial hash
+            if not cat.hasspatialhash:
+                cat.build_spatialhash(dpix=max(1.,self.max_sep//10.))
+            nregions = np.int32(len(np.argwhere(cat.index_matcher>-1).flatten()))
+            args_hash = (cat.index_matcher, cat.pixs_galind_bounds, cat.pix_gals, nregions, 
+                         np.float64(cat.pix1_start), np.float64(cat.pix1_d), np.int32(cat.pix1_n), 
+                         np.float64(cat.pix2_start), np.float64(cat.pix2_d), np.int32(cat.pix2_n), )
+            # Define the radial bin batches
+            if batchsize is None:
+                batchsize = min(_nbinsr3,min(self.thetabatchsize_max,_nbinsr3/self.nthreads))
+                print("Using batchsize of %i for radial bins"%batchsize)
+            ## Optimize this by assigning a cost to each theta for the Gn computation.
+            ## Todo: Update to reflect the expected cost...here I just claim that cost ~ theta. In reality, this will
+            ##       somewhat depend on the chosen algorithm and the binning accuracy in real space and in multipole
+            ##       space with a scaling ranging from theta^0 to theta^2. Also, for each batch the cost for Gn is 
+            ##       somewhat bound by the larges theta value anyways...
+            ## Note that for large radii we will most likely have all radii in each batch, meaning that we have to
+            ## allocate all the Gn anyways, meaning that this optimization does not help a lot...
+            #thetacombis_batches = np.asarray(
+            #    tuple(product(np.arange(self.nbinsr), np.arange(self.nbinsr), np.arange(self.nbinsr))))
+            #cost = self.bin_edges[1:] 
+            #costarr = np.max(cost[nrcombis],axis=1)
+            #costarr_sortinds = np.argsort(costarr)
+            #_, _, batch_lengths, batch_indices = split_array_into_batches(costarr[costarr_sortinds], nthreads)
+            #for elbatch in range(nthreads):
+            #    thisinds = costarr_sortinds[batch_indices[elbatch]]
+            if batchsize==self.thetabatchsize_max:
+                nbatches = np.int32(np.ceil(_nbinsr3/batchsize))
+            else:
+                nbatches = np.int32(_nbinsr3/batchsize)
+            thetacombis_batches = np.arange(_nbinsr3).astype(np.int32)
+            cumnthetacombis_batches = (np.arange(nbatches+1)*_nbinsr3/(nbatches)).astype(np.int32)
+            nthetacombis_batches = (cumnthetacombis_batches[1:]-cumnthetacombis_batches[:-1]).astype(np.int32)
+            cumnthetacombis_batches[-1] = _nbinsr3
+            nthetacombis_batches[-1] = _nbinsr3-cumnthetacombis_batches[-2]
+            thetacombis_batches = thetacombis_batches.flatten().astype(np.int32)
+            nbatches = len(nthetacombis_batches)
+            args_thetas = (thetacombis_batches, nthetacombis_batches, cumnthetacombis_batches, nbatches, )
+            args_map4 = (mapradii, np.int32(len(mapradii)), M4correlators)
+            projection = np.int32(self.proj_dict[projection])
+            args = (*args_basecat,
+                    *args_basesetup,
+                    *args_hash,
+                    *args_thetas,
+                    np.int32(self.nthreads),
+                    projection,
+                    *args_map4,
+                    bin_centers, Upsilon_n, N_n, fourpcf, fourpcf_norm)
+            func = self.clib.alloc_notomoMap4_disc_gggg  
+            
+        if True:
+            for elarg, arg in enumerate(args):
+                toprint = (elarg, type(arg),)
+                if isinstance(arg, np.ndarray):
+                    toprint += (type(arg[0]), arg.shape)
+                try:
+                    toprint += (func.argtypes[elarg], )
+                    print(toprint)
+                    print(arg)
+                except:
+                    print("We did have a problem for arg %i"%elarg)
             
         func(*args)
         
-        self.bin_centers = bin_centers.reshape(szr)
-        self.bin_centers_mean = np.mean(self.bin_centers, axis=0)
-        self.npcf_multipoles = Upsilon_n.reshape(sc)
-        self.npcf_multipoles_norm = N_n.reshape(sn)
-        
-        if basis == "NPCF":
-            self.multipoles2npcf_c(projection=projection)
+        if "Map4" not in thismethod:
+            self.bin_centers = bin_centers.reshape(szr)
+            self.bin_centers_mean = np.mean(self.bin_centers, axis=0)
+            self.npcf_multipoles = Upsilon_n.reshape(sc)
+            self.npcf_multipoles_norm = N_n.reshape(sn)
+            self.npcf = fourpcf.reshape(s4pcf)
+            self.npcf_norm = fourpcf_norm.reshape(s4pcfn) 
+
+            if basis == "NPCF":
+                self.multipoles2npcf_c(projection=projection)
+        else:
+            print(len(bin_centers),szr)
+            print(len(Upsilon_n),sc)
+            print(len(N_n),sn)
+            print(len(fourpcf),s4pcf)
+            print(len(fourpcf_norm),s4pcfn)
+            self.bin_centers = bin_centers.reshape(szr)
+            self.bin_centers_mean = np.mean(self.bin_centers, axis=0)
+            self.npcf_multipoles = Upsilon_n.reshape(sc)
+            self.npcf_multipoles_norm = N_n.reshape(sn)
+            #self.npcf = fourpcf.reshape(s4pcf)
+            #self.npcf_norm = fourpcf_norm.reshape(s4pcfn) 
+            return M4correlators.reshape((8,self.nzcombis,len(mapradii)))
+    
+    @staticmethod
+    def fourpcf_gauss_x(theta1, theta2, theta3, phi12, phi13, xipspl, ximspl):
+        """ Computes disconnected part of the 4pcf in the 'x'-projection
+        given a splined 2pcf
+        """
+        allgammas = [None]*8
+        xprojs = [None]*8
+        y1 = theta1 * np.ones_like(phi12)
+        y2 = theta2*np.exp(1j*phi12)
+        y3 = theta3*np.exp(1j*phi13)
+        absy1 = np.abs(y1)
+        absy2 = np.abs(y2)
+        absy3 = np.abs(y3)
+        absy12 = np.abs(y2-y1)
+        absy13 = np.abs(y1-y3)
+        absy23 = np.abs(y3-y2)
+        q1 = -0.25*(y1+y2+y3)
+        q2 = 0.25*(3*y1-y2-y3)
+        q3 = 0.25*(3*y2-y3-y1)
+        q4 = 0.25*(3*y3-y1-y2)
+        q1c = q1.conj(); q2c = q2.conj(); q3c = q3.conj(); q4c = q4.conj(); 
+        y123_cub = (np.abs(y1)*np.abs(y2)*np.abs(y3))**3
+        ang1_4 = ((y1)/absy1)**4; ang2_4 = ((y2)/absy2)**4; ang3_4 = ((y3)/absy3)**4
+        ang12_4 = ((y2-y1)/absy12)**4; ang13_4 = ((y3-y1)/absy13)**4; ang23_4 = ((y3-y2)/absy23)**4; 
+        xprojs[0] = (y1**3*y2**2*y3**3)/(np.abs(y1)**3*np.abs(y2)**2*np.abs(y3)**3)
+        xprojs[1] = (y1**1*y2**2*y3**1)/(np.abs(y1)**1*np.abs(y2)**2*np.abs(y3)**1)
+        xprojs[2] = (y1**-1*y2**2*y3**3)/(np.abs(y1)**-1*np.abs(y2)**2*np.abs(y3)**3)
+        xprojs[3] = (y1**3*y2**-2*y3**3)/(np.abs(y1)**3*np.abs(y2)**-2*np.abs(y3)**3)
+        xprojs[4] = (y1**3*y2**2*y3**-1)/(np.abs(y1)**3*np.abs(y2)**2*np.abs(y3)**-1)
+        xprojs[5] = (y1**-3*y2**2*y3**1)/(np.abs(y1)**-3*np.abs(y2)**2*np.abs(y3)**1)
+        xprojs[6] = (y1**1*y2**-2*y3**1)/(np.abs(y1)**1*np.abs(y2)**-2*np.abs(y3)**1)
+        xprojs[7] = (y1**1*y2**2*y3**-3)/(np.abs(y1)**1*np.abs(y2)**2*np.abs(y3)**-3)
+        allgammas[0] = 1./xprojs[0] * (
+            ang23_4 * ang1_4 * ximspl(absy23) * ximspl(absy1) +
+            ang13_4 * ang2_4 * ximspl(absy13) * ximspl(absy2) + 
+            ang12_4 * ang3_4 * ximspl(absy12) * ximspl(absy3))
+        allgammas[1] = 1./xprojs[1] * (
+            ang23_4 * xipspl(absy1) * ximspl(absy23) + 
+            ang13_4 * xipspl(absy2) * ximspl(absy13) + 
+            ang12_4 * xipspl(absy3) * ximspl(absy12))
+        allgammas[2] = 1./xprojs[2] * (
+            ang23_4 * xipspl(absy1) * ximspl(absy23) + 
+            ang2_4  * ximspl(absy2) * xipspl(absy13) + 
+            ang3_4  * ximspl(absy3) * xipspl(absy12))
+        allgammas[3] = 1./xprojs[3] * (
+            ang1_4  * ximspl(absy1) * xipspl(absy23) + 
+            ang13_4 * xipspl(absy2) * ximspl(absy13) + 
+            ang3_4  * ximspl(absy3) * xipspl(absy12))
+        allgammas[4] = 1./xprojs[4] * (
+            ang1_4  * ximspl(absy1) * xipspl(absy23) + 
+            ang2_4  * ximspl(absy2) * xipspl(absy13) + 
+            ang12_4 * xipspl(absy3) * ximspl(absy12))
+        allgammas[5] = 1./xprojs[5] * (
+            ang1_4.conj() * ang23_4 * ximspl(absy23) * ximspl(absy1) +
+                                      xipspl(absy13) * xipspl(absy2) + 
+                                      xipspl(absy12) * xipspl(absy3))
+        allgammas[6] = 1./xprojs[6] * (
+                                      xipspl(absy23) * xipspl(absy1) +
+            ang2_4.conj() * ang13_4 * ximspl(absy13) * ximspl(absy2) + 
+                                      xipspl(absy12) * xipspl(absy3))
+        allgammas[7] = 1./xprojs[7] * (
+                                      xipspl(absy23) * xipspl(absy1) +
+                                      xipspl(absy13) * xipspl(absy2) + 
+            ang3_4.conj() * ang12_4 * ximspl(absy12) * ximspl(absy3))
+    
+        return allgammas        
     
     def multipoles2npcf(self, integrated=False):
         _nzero1 = self.nmaxs[0]
@@ -1724,7 +2247,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                               out=np.zeros_like(self.npcf), where=np.abs(self.npcf_norm)>0)
         self.projection = "X"  
         
-    def multipoles2npcf_c(self, projection="Centroid"):
+    def multipoles2npcf_c(self, projection="X"):
         assert((projection in self.proj_dict.keys()) and (projection in self.projections_avail))
         
         _nzero1 = self.nmaxs[0]
@@ -1747,6 +2270,34 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
         self.npcf_norm = self.npcf_norm.reshape(shape_npcf_norm)
         self.projection = projection
         
+        
+    def multipoles2npcf_singlethetcombi(self, elthet1, elthet2, elthet3, projection="X"):
+        assert((projection in self.proj_dict.keys()) and (projection in self.projections_avail))
+        
+        _phis1 = self.phis[0].astype(np.float64)
+        _phis2 = self.phis[1].astype(np.float64)
+        _nphis1 = len(self.phis[0])
+        _nphis2 = len(self.phis[1])
+        ncfs, nnvals, _, nzcombis, nbinsr, _, _ = np.shape(self.npcf_multipoles)
+        
+        Upsilon_in = self.npcf_multipoles[...,elthet1,elthet2,elthet3].flatten()
+        N_in = self.npcf_multipoles_norm[...,elthet1,elthet2,elthet3].flatten()
+        npcf_out = np.zeros(self.n_cfs*nzcombis*_nphis1*_nphis2, dtype=np.complex128)
+        npcf_norm_out = np.zeros(nzcombis*_nphis1*_nphis2, dtype=np.complex128)
+        
+        #void multipoles2npcf_gggg_singletheta(double complex *Upsilon_n, double complex *N_n, int n1max, int n2max,
+        #                              double theta1, double theta2, double theta3,
+        #                              double *phis12, double *phis13, int nbinsphi12, int nbinsphi13,
+        #                              int projection, double complex *npcf, double complex *npcf_norm)
+                
+        self.clib.multipoles2npcf_gggg_singletheta(
+            Upsilon_in, N_in, self.nmaxs[0], self.nmaxs[1],
+            self.bin_centers_mean[elthet1], self.bin_centers_mean[elthet2], self.bin_centers_mean[elthet3],
+            _phis1, _phis2, _nphis1, _nphis2,
+            np.int32(self.proj_dict[projection]), npcf_out, npcf_norm_out)
+        
+        return npcf_out, npcf_norm_out
+          
     ## PROJECTIONS ##
     def projectnpcf(self, projection):
         super()._projectnpcf(self, projection)
@@ -1782,7 +2333,6 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                     rot_nom[7] = pimod(np.angle(prod1_inv*prod2    *prod3    *prod4_inv * phi12grid**2   * phi13grid_c**3))
                     gammas_cen[:,:,elb1,elb2,elb3] = self.npcf[:,:,elb1,elb2,elb3]*np.exp(1j*rot_nom)[:,np.newaxis,:,:]
         return gammas_cen
-    
     
     def computeMap4(self, radii, do_multiscale=False, tofile=False, filtercache=None):
         """
@@ -1940,7 +2490,92 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
             F7[elb1,elb2,elb3] = _measures * _exp * (nextF0 + nextF7_1 + nextF7_2)
                     
         return F0, F1, F2, F3, F4, F5, F6, F7
+    
+    
+    # [Debug] Gaussian 4pcf from analytic 2pcf
+    def gauss4pcf_analytic(theta1, theta2, theta3, xip_arr, xim_arr, thetamin_xi, thetamax_xi, dtheta_xi):
+        gausss_4pcf = np.zeros(8*len(self.phis[0])*len(self.phis[0]),dtype=np.complex128)
+        self.clib.gauss4pcf_analytic(theta1.astype(np.float64), 
+                                     theta2.astype(np.float64),
+                                     theta3.astype(np.float64),
+                                     self.phis[0].astype(np.float64), np.int32(len(self.phis[0])),
+                                     xip_arr.astype(np.float64), xim_arr.astype(np.float64),
+                                     thetamin_xi, thetamax_xi, dtheta_xi,
+                                     gausss_4pcf)
+        return gausss_4pcf
+    
+    # [Debug] Disconnected part of Map^4 from analytic 2pcf
+    def Map4analytic(self,mapradii, xip_spl, xim_spl, thetamin_xi, thetamax_xi, ntheta_xi, 
+                     nsubsample_filter=1, batchsize=None):
+        
+        self.nbinsz = 1
+        self.nzcombis = 1
+        _nmax = self.nmaxs[0]
+        _nnvals = (2*_nmax+1)*(2*_nmax+1)
+        _nbinsr3 = self.nbinsr*self.nbinsr*self.nbinsr
+        _nphis = len(self.phis[0])
+        bin_centers = np.zeros(self.nbinsz*self.nbinsr).astype(np.float64)
+        M4correlators = np.zeros(8*self.nzcombis*len(mapradii)).astype(np.complex128)
+        # Define the radial bin batches
+        if batchsize is None:
+            batchsize = min(_nbinsr3,min(10000,int(_nbinsr3/self.nthreads)))
+            print("Using batchsize of %i for radial bins"%batchsize)
+        nbatches = np.int32(_nbinsr3/batchsize)
+        thetacombis_batches = np.arange(_nbinsr3).astype(np.int32)
+        cumnthetacombis_batches = (np.arange(nbatches+1)*_nbinsr3/(nbatches)).astype(np.int32)
+        nthetacombis_batches = (cumnthetacombis_batches[1:]-cumnthetacombis_batches[:-1]).astype(np.int32)
+        cumnthetacombis_batches[-1] = _nbinsr3
+        nthetacombis_batches[-1] = _nbinsr3-cumnthetacombis_batches[-2]
+        thetacombis_batches = thetacombis_batches.flatten().astype(np.int32)
+        nbatches = len(nthetacombis_batches)
+        ## Optimize this by assigning a cost to each theta for the Gn computation.
+        ## Todo: Update to reflect the expected cost...here I just claim that cost ~ theta. In reality, this will
+        ##       somewhat depend on the chosen algorithm and the binning accuracy in real space and in multipole
+        ##       space with a scaling ranging from theta^0 to theta^2. Also, for each batch the cost for Gn is 
+        ##       somewhat bound by the larges theta value anyways...
+        ## Note that for large radii we will most likely have all radii in each batch, meaning that we have to
+        ## allocate all the Gn anyways, meaning that this optimization does not help a lot...
+        #thetacombis_batches = np.asarray(
+        #    tuple(product(np.arange(self.nbinsr), np.arange(self.nbinsr), np.arange(self.nbinsr))))
+        #cost = self.bin_edges[1:] 
+        #costarr = np.max(cost[nrcombis],axis=1)
+        #costarr_sortinds = np.argsort(costarr)
+        #_, _, batch_lengths, batch_indices = split_array_into_batches(costarr[costarr_sortinds], nthreads)
+        #for elbatch in range(nthreads):
+        #    thisinds = costarr_sortinds[batch_indices[elbatch]]
+        args_4pcfsetup = (np.float64(self.min_sep), np.float64(self.max_sep), np.int32(self.nbinsr), 
+                          self.phis[0].astype(np.float64), 
+                          (self.phis[0][1]-self.phis[0][0])*np.ones(_nphis, dtype=np.float64), _nphis,)
+        args_thetas = (thetacombis_batches, nthetacombis_batches, cumnthetacombis_batches, nbatches, )
+        args_map4 = (mapradii, np.int32(len(mapradii)), )
+        thetas_xi = np.linspace(thetamin_xi,thetamax_xi,ntheta_xi+1)
+        args_xi = (xip_spl(thetas_xi), xim_spl(thetas_xi), thetamin_xi, thetamax_xi, ntheta_xi, nsubsample_filter, )
+        args = (*args_4pcfsetup,
+                *args_thetas,
+                np.int32(self.nthreads),
+                *args_map4,
+                *args_xi,
+                M4correlators)
+        func = self.clib.alloc_notomoMap4_analytic
+        
+        if True:
+            for elarg, arg in enumerate(args):
+                toprint = (elarg, type(arg),)
+                if isinstance(arg, np.ndarray):
+                    toprint += (type(arg[0]), arg.shape)
+                try:
+                    toprint += (func.argtypes[elarg], )
+                    print(toprint)
+                    print(arg)
+                except:
+                    print("We did have a problem for arg %i"%elarg)
 
+        func(*args)
+        
+        return M4correlators.reshape((8,self.nzcombis,len(mapradii)))
+
+            
+    
 class GGGGCorrelation(BinnedNPCF):
     """ This class stores the natural components of the shear four point correlation functions.""
     

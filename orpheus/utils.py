@@ -1,5 +1,13 @@
+import numpy as np
 import os
 import site
+
+def flatlist(A):
+    rt = []
+    for i in A:
+        if isinstance(i,list): rt.extend(flatlist(i))
+        else: rt.append(i)
+    return rt
 
 def get_site_packages_dir():
         return [p for p  in site.getsitepackages()
@@ -11,6 +19,86 @@ def search_file_in_site_package(directory, package):
             if file.startswith(package):
                 return os.path.join(root, file)
     return None
+
+def split_array_into_batches(sorted_arr, k):
+    """
+    We want to split an array into approximately k
+    subarrays of roughly equal size s.t. the sum of elements
+    in each subarray is roughly equal. We assume the array
+    to be sorted from the largest to the smallest element.
+    """
+    
+    # Check whether array is sorted
+    assert(np.max(sorted_arr[1:]-sorted_arr[:-1]>=0.))
+    
+    # Initialize output 
+    n = len(sorted_arr)
+    inds_toosmall = [0] * (2*k)
+    batch_sums = [0] * (2*k)
+    batch_lengths = [0] * (2*k)
+    batch_indices = [[] for _ in range(2*k)]
+    
+    # Allocate output
+    target_sum = np.sum(sorted_arr)/k
+    thisbatch = 0 # The number of the current batch
+    thisbatchsum = 0 # The sum of numbers in the current batch
+    thisbatchlength = 0 # The number of elements in the current batch
+    ind_toosmall = 0
+    for i in range(n):
+        # Iteratively pick the next smallest/largest index.
+        # This, together with the overshoot check later on
+        # ensures that we never massively overshoot `target_sum`
+        if not i%2: nextind = n-1-i//2
+        else: nextind = i//2
+        nextbatchsum = thisbatchsum+sorted_arr[nextind]
+        # Overshoots target sum --> Need to start new batch
+        if nextbatchsum>=target_sum:
+            # Put this index in new batch
+            if (nextbatchsum-target_sum)>(target_sum-thisbatchsum):
+                batch_sums[thisbatch] = thisbatchsum
+                batch_lengths[thisbatch] = thisbatchlength
+                inds_toosmall[ind_toosmall] = thisbatch
+                ind_toosmall += 1
+                thisbatch += 1
+                batch_indices[thisbatch].append(nextind)
+                thisbatchsum = sorted_arr[nextind]
+                thisbatchlength = 1
+            # Put index in present batch and move to next batch
+            else:
+                batch_indices[thisbatch].append(nextind)
+                batch_sums[thisbatch] = nextbatchsum
+                batch_lengths[thisbatch] = thisbatchlength + 1
+                thisbatch += 1
+                thisbatchsum = 0
+                thisbatchlength = 0
+        # Just append to present batch
+        else:
+            batch_indices[thisbatch].append(nextind)
+            thisbatchlength += 1
+            thisbatchsum = nextbatchsum 
+    # If there is a temporary batch, finalize it
+    # Note that this batch could have a much smaller
+    # sum than the ones before it...for our problem
+    # setup, we do not really care about this.
+    if thisbatchsum>0:
+        batch_sums[thisbatch] = thisbatchsum
+        batch_lengths[thisbatch] = thisbatchlength
+        
+    # Now collect indices, removing empty lists
+    thinned_indices = []
+    thinned_sums = []
+    thinned_lengths = []
+    for elb, s in enumerate(batch_sums):
+        if s>0:
+            thinned_indices.append(batch_indices[elb])
+            thinned_sums.append(s)
+            thinned_lengths.append(batch_lengths[elb])
+    
+    # Sanity checks
+    assert(np.sum(batch_lengths)==n)
+    assert(np.sum(thinned_sums)==np.sum(sorted_arr))
+            
+    return target_sum, np.asarray(thinned_sums), np.array(thinned_lengths), thinned_indices
 
 
 class MapCombinatorics:
