@@ -27,6 +27,9 @@ __all__ = ["BinnedNPCF",
 ################################################        
 class BinnedNPCF:
     
+    """Class containing variables and metods that can be used across of its children.
+    """
+    
     def __init__(self, order, spins, n_cfs, min_sep, max_sep, nbinsr=None, binsize=None, nbinsphi=100, 
                  nmaxs=30, method="Tree", multicountcorr=True, diagrenorm=False, shuffle_pix=1,
                  tree_resos=[0,0.25,0.5,1.,2.], tree_redges=None, rmin_pixsize=20, 
@@ -1232,10 +1235,11 @@ class GNNCorrelation(BinnedNPCF):
     def multipoles2npcf(self):
         """
         Notes:
+        ------
         * The Upsilon and norms are only computed for the n>0 multipoles. We recover n<0 multipoles by symmetry
-          considerations (i.e. Upsilon_{-n}(thet1,thet2,z1,z2,z3) = Upsilon_{n}(thet2,thet1,z1,z3,z2)). As the
-          tomographic bin combinations are interpreted as a flat list, it needs to be appropriately shuffled --
-          this is what `ztiler' is doing. 
+        considerations (i.e. Upsilon_{-n}(thet1,thet2,z1,z2,z3) = Upsilon_{n}(thet2,thet1,z1,z3,z2)). As the
+        tomographic bin combinations are interpreted as a flat list, it needs to be appropriately shuffled --
+        this is what `ztiler' is doing. 
         * When dividing by the (weighted) counts N, we set all contributions for which N<=0 to zero. 
         """
         _, nzcombis, rbins, rbins = np.shape(self.npcf_multipoles[0])
@@ -1569,10 +1573,11 @@ class NGGCorrelation(BinnedNPCF):
     def multipoles2npcf(self, integrated=False):
         """
         Notes:
+        ------
         * The Upsilon and norms are only computed for the n>0 multipoles. We recover n<0 multipoles by symmetry
-          considerations (i.e. Upsilon_{-n}(thet1,thet2,z1,z2,z3) = Upsilon_{n}(thet2,thet1,z1,z3,z2)). As the
-          tomographic bin combinations are interpreted as a flat list, it needs to be appropriately shuffled --
-          this is what `ztiler' is doing. 
+        considerations (i.e. Upsilon_{-n}(thet1,thet2,z1,z2,z3) = Upsilon_{n}(thet2,thet1,z1,z3,z2)). As the
+        tomographic bin combinations are interpreted as a flat list, it needs to be appropriately shuffled --
+        this is what `ztiler' is doing. 
         * When dividing by the (weighted) counts N, we set all contributions for which N<=0 to zero. 
         """
         _, nzcombis, rbins, rbins = np.shape(self.npcf_multipoles[0])
@@ -1734,28 +1739,23 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
         
     def process(self, cat, statistics="all", tofile=False, apply_edge_correction=False, projection="X",
                 lowmem=None, mapradii=None, batchsize=None, cutlen=2**32-1):
-        """
-        
+        r"""
         Arguments:
         
         Logic works as follows:
         * Keyword 'statistics' \in [4pcf_real, 4pcf_multipoles, M4, Map4, M4c, Map4c, allMap, all4pcf, all]
-            * If 4pcf_multipoles in statistics --> save 4pcf_multipoles
-            * If 4pcf_real in statistics --> save 4pcf_real
-            * If only M4 in statistics --> Do not save any 4pcf. This is really the lowmem case.
-            * allMap, all4pcf, all are abbreviations as expected
-        * If lowmem=True, uses the inefficient, but lowmem function for computation and output statistics
-          from there as wanted.
+        * - If 4pcf_multipoles in statistics --> save 4pcf_multipoles
+        * - If 4pcf_real in statistics --> save 4pcf_real
+        * - If only M4 in statistics --> Do not save any 4pcf. This is really the lowmem case.
+        * - allMap, all4pcf, all are abbreviations as expected
+        * If lowmem=True, uses the inefficient, but lowmem function for computation and output statistics 
+        from there as wanted.
         * If lowmem=False, use the fast functions to do the 4pcf multipole computation and do 
-          the potential conversions lateron.
+        the potential conversions lateron.
         * Default lowmem to None and
-            * Set to true if any aperture statistics is in stats or we will run into mem error
-            * Set to false otherwise
-            * Raise error if lowmen=False and we will have more that 2^32 elements at any stage of the computation
-        Memory required for lowmem: ~ nthreads * 9 * (2*nmax+1)^2 * batchsize double complex
-                                    ~ nthreads * 9 * (31      )^2 * 10000 
-                                    ~ nthreads *  nzcombi * ((2*nmax+1)/31)^2 * (batchsize/10000) * 1.38 GB
-                                      (independent of radial/angular binning!)
+        * - Set to true if any aperture statistics is in stats or we will run into mem error
+        * - Set to false otherwise
+        * - Raise error if lowmen=False and we will have more that 2^32 elements at any stage of the computation
         """
         
         ## Preparations ##

@@ -19,7 +19,34 @@ __all__ = ["Catalog", "ScalarTracerCatalog", "SpinTracerCatalog", "MultiTracerCa
 ##############################################
 class Catalog:
     
+    r"""Class containing variables and metods that can be used across of its children.  
+    """
+    
     def __init__(self, pos1, pos2, weight=None, zbins=None, isinner=None, zbins_mean=None, zbins_std=None):
+        r"""Class constructor.
+        
+        Attributes
+        ----------
+        pos1: numpy.ndarray
+            The :math:`x`-positions of the tracer objects
+        pos2: numpy.ndarray
+            The :math:`y`-positions of the tracer objects
+        weight: numpy.ndarray, optional, defaults to ``None``
+            The weights of the tracer objects. If set to ``None`` all weights are assumed to be unity.
+        zbins: numpy.ndarray, optional, defaults to ``None``
+            The tomographic redshift bins of the tracer objects. If set to ``None`` all zbins are assumed to be zero.
+            
+        Notes
+        -----
+            As we are working in the flat-sky approximation, *orpheus* does currently not use any convention 
+            for the units. In particular, we assume that the units of the positions and the npcf computation
+            are the same.
+            
+            The ``zbins`` parameter can also be used for other characteristics of the tracers (i.e. color cuts).
+            
+        -----
+        
+        """
         self.pos1 = pos1.astype(np.float64)
         self.pos2 = pos2.astype(np.float64)
         self.weight = weight
@@ -135,6 +162,16 @@ class Catalog:
     def _reduce(self, fields, dpix, dpix2=None, relative_to_hash=None, normed=True, shuffle=0,
                extent=[None,None,None,None], forcedivide=1, 
                ret_inst=False):
+        r"""Paints a catalog onto a grid with equal-area cells
+        
+        Parameters
+        ----------
+        fields: list
+            The fields to be painted to the grid. Each field is given as a 1D array of float.
+        dpix: float
+            The sidelength of a grid cell.        
+        
+        """
         
         # Initialize grid
         if relative_to_hash is None: 
@@ -439,6 +476,7 @@ class Catalog:
                extent=[None,None,None,None], method="CIC", forcedivide=1, 
                asgrid=None, nthreads=1, ret_inst=False):
         """ 
+        - ranndom teststr
         - field is a list with the weights as its last element.
         - Per default builds the grid around min/max of galaxy positions. If
           one wants this can be cast to a fixed larger grid by making use 
@@ -637,6 +675,15 @@ class ScalarTracerCatalog(Catalog):
     def reduce(self, dpix, dpix2=None, relative_to_hash=None, normed=True, shuffle=0,
                extent=[None,None,None,None], forcedivide=1, 
                ret_inst=False):
+        r"""Paints a catalog onto a grid with equal-area cells
+        
+        Parameters
+        ----------
+        dpix: float
+            The sidelength of a grid cell.    
+        dpix2: float, optional
+            The sidelength of a grid cell. If set to ``None`` dpix2=dpix. Defaults to ``None``. 
+        """
         res = super()._reduce(
             dpix=dpix,
             dpix2=None, 
