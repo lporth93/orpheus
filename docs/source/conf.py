@@ -45,6 +45,8 @@ extensions = [
     'sphinx.ext.viewcode',
     'sphinx.ext.napoleon',
     'sphinx.ext.intersphinx',
+    "myst_parser",
+    "nbsphinx",
     'numpydoc',
 ]
 
@@ -52,6 +54,12 @@ napoleon_google_docstring = False
 
 # Include init in class documentation.
 autoclass_content = 'both'
+
+autodoc_default_options = {
+    "members": True,
+    "undoc-members": True,
+    "private-members": True
+}
 
 # Order docstrings as in the source
 autodoc_member_order = 'bysource'

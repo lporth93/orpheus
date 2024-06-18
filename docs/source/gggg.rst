@@ -1,4 +1,4 @@
-GGGCorrelation: Shear-shear-shear-shear correlations
+GGDGCorrelation: Shear-shear-shear-shear correlations
 -----------------------------------------------------
 
 .. autoclass:: orpheus.GGGGCorrelation_NoTomo

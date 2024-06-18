@@ -1,3 +1,5 @@
+# TODO Reactivate gridded catalog instances?
+
 import ctypes as ct
 import numpy as np 
 from numpy.ctypeslib import ndpointer
@@ -35,6 +37,27 @@ class Catalog:
             The weights of the tracer objects. If set to ``None`` all weights are assumed to be unity.
         zbins: numpy.ndarray, optional, defaults to ``None``
             The tomographic redshift bins of the tracer objects. If set to ``None`` all zbins are assumed to be zero.
+        nbinsz: int
+            The number of tomographic bins
+        isinner: numpy.ndarray
+            A flag signaling wheter a tracer is within the interior part of the footprint
+        min1: float
+            The smallest :math:`x`-value appearing in the catalog
+        max1: float
+            The largest :math:`x`-value appearing in the catalog
+        min2: float
+            The smallest :math:`y`-value appearing in the catalog
+        max2: float
+            The largest :math:`y`-value appearing in the catalog
+        len1: float
+            The extent of the catalog in :math:`x`-direction.
+        len2: float
+            The extent of the catalog in :math:`y`-direction.
+        hasspatialhash: bool
+            Flag on wheter a spatial hash structure has been allocated for the catalog
+        index_matcher: numpy.ndarray
+            Indicates on whether there is a tracer in each of the pixels in the spatial hash.
+        
             
         Notes
         -----
@@ -42,7 +65,7 @@ class Catalog:
             for the units. In particular, we assume that the units of the positions and the npcf computation
             are the same.
             
-            The ``zbins`` parameter can also be used for other characteristics of the tracers (i.e. color cuts).
+            The ``zbins`` parameter can also be used for other characteristics of the tracers (i.e. color cuts).            
             
         -----
         
@@ -88,7 +111,7 @@ class Catalog:
         self.len1 = self.max1-self.min1
         self.len2 = self.max2-self.min2
         
-        self.spatialhash = None
+        self.spatialhash = None # Check whether needed not in docs
         self.hasspatialhash = False
         self.index_matcher = None
         self.pixs_galind_bounds = None
@@ -169,8 +192,28 @@ class Catalog:
         fields: list
             The fields to be painted to the grid. Each field is given as a 1D array of float.
         dpix: float
-            The sidelength of a grid cell.        
-        
+            The sidelength of a grid cell.  
+        dpix2: float, optional
+            The sidelength of a grid cell in :math:`y`-direction. Defaults to ``None``. 
+            If set to ``None`` the pixels are assumed to be squares.
+        relative_to_hash: int, optional
+            Forces the cell size to be an integer multiple of the cell size of the spatial hash. 
+            Defaults to ``None``. If set to ``None`` the pixelsize is unrelated to the cell
+            size of the spatial hash.
+        normed: bool, optional
+            Decide on whether to average or to sum the field over pixels. Defaults to ``True``.
+        shuffle: int, optional
+            Choose a definition on how to set the central point of each pixel. Defaults to zero.
+        extent: list, optional
+            Sets custom boundaries ``[xmin, xmax, ymin, ymax]`` for the grid. Each element defaults
+            to ``None``. Each element equal to ``None`` sets the grid boundary as the smallest value
+            fully containing the discrete field tracers.
+        forcedivide: int, optional
+            Forces the number of cells in each dimensions to be divisible by some number. 
+            Defaults to ``1``.
+        ret_inst: bool, optional
+            Decides on wheter to return the output as a list of arrays containing the reduced catalog or
+            on returning a new ``Catalog`` instance. Defaults to ``False``.
         """
         
         # Initialize grid
@@ -267,7 +310,62 @@ class Catalog:
     
     def _multihash(self, dpixs, fields, dpix_hash=None, normed=True, shuffle=0,
                   extent=[None,None,None,None], forcedivide=1):
-        """ Builds spatialhash for a base catalog and its reductions. """
+        r"""Builds spatialhash for a base catalog and its reductions.
+        
+        Parameters
+        ----------
+        dpixs: list
+            The pixel sizes on which the hierarchy of reduced catalogs is constructed.
+        fields: list
+            The fields for which the multihash is constructed. Each field is given as a 1D array of float.
+        dpix_hash: float, optional
+            The size of the pixels used for the spatial hash of the hierarchy of catalogs. Defaults
+            to ``None``. If set to ``None`` uses the largest value of ``dpixs``.
+        normed: bool, optional
+            Decide on whether to average or to sum the field over pixels. Defaults to ``True``.
+        shuffle: int, optional
+            Choose a definition on how to set the central point of each pixel. Defaults to zero.
+        extent: list, optional
+            Sets custom boundaries ``[xmin, xmax, ymin, ymax]`` for the grid. Each element defaults
+            to ``None``. Each element equal to ``None`` sets the grid boundary as the smallest value
+            fully containing the discrete field tracers.
+        forcedivide: int, optional
+            Forces the number of cells in each dimensions to be divisible by some number. 
+            Defaults to ``1``.
+            
+        Returns
+        -------
+        ngals: list
+            Contains the number of galaxies for each of the catalogs in the hierarchy.
+        pos1s: list
+            Contains the :math:`x`-positions for each of the catalogs in the hierarchy.
+        pos2s: list
+            Contains the :math:`y`-positions for each of the catalogs in the hierarchy.
+        weights: list
+            Contains the tracer weights for each of the catalogs in the hierarchy.
+        zbins: list
+            Contains the tomographic redshift bins for each of the catalogs in the hierarchy.
+        isinners: list
+            Contains the flag on wheter a tracer is within the interior part of the footprint
+            for each of the catalogs in the hierarchy.
+        allfields: list
+            Contains the tracer fields for each of the catalogs in the hierarchy.
+        index_matchers: list
+            Contains the ``index_matchers`` arrays for each of the catalogs in the hierarchy.
+            See the ```index_matcher`` attribute for more information.
+        pixs_galind_bounds: list
+            Contains the ``pixs_galind_bounds`` arrays for each of the catalogs in the hierarchy.
+            See the ```pixs_galind_bounds`` attribute for more information.
+        pix_gals: list
+            Contains the ``pix_gals`` arrays for each of the catalogs in the hierarchy.
+            See the ```pix_gals`` attribute for more information.
+        dpixs1_true: list
+            Contains final values of the pixel sidelength along the :math:`x`-direction for each
+            of the catalogs in the hierarchy.
+        dpixs2_true: list
+            Contains final values of the pixel sidelength along the :math:`y`-direction for each
+            of the catalogs in the hierarchy.
+        """
         
         dpixs = sorted(dpixs)
         if dpix_hash is None:
@@ -475,17 +573,58 @@ class Catalog:
     def togrid(self, fields, dpix, normed=False, weighted=True, 
                extent=[None,None,None,None], method="CIC", forcedivide=1, 
                asgrid=None, nthreads=1, ret_inst=False):
-        """ 
-        - ranndom teststr
-        - field is a list with the weights as its last element.
-        - Per default builds the grid around min/max of galaxy positions. If
-          one wants this can be cast to a fixed larger grid by making use 
-          of the 'extent' parameter [min1, max1, min2, max2]
-        - forcedivide makes sure that n1 & n2 are divisible by at least some 
-          factor. If 'extent' is set this might alter dpix by a bit
-        - if one wants to mimic an already existing GriddedCatalog instance
-          simply put this instance as 'asgrid'. This overrides all other 
-          settings, i.e. only 'fields' needs to be given
+        r"""Paints a catalog of discrete tracers to a grid.
+        
+        Parameters
+        ----------
+        fields: list
+            The fields to be painted to the grid. Each field is given as a 1D array of float.
+        dpix: float
+            The sidelength of a grid cell.  
+        normed: bool, optional
+            Decide on whether to average or to sum the field over pixels. Defaults to ``True``.
+        weighted: bool, optional
+            Whether to apply the tracer weights of the catalog. Defaults to ``True``.
+        extent: list, optional
+            Sets custom boundaries ``[xmin, xmax, ymin, ymax]`` for the grid. Each element defaults
+            to ``None``. Each element equal to ``None`` sets the grid boundary as the smallest value
+            fully containing the discrete field tracers.
+        method: str, optional
+            The chosen mass assignment method applied to each of the fields. Currently supported methods
+            are ``NGP``, ``CIC`` and ``TSC`` assignment. Defaults to ``CIC``.
+        forcedivide: int, optional
+            Forces the number of cells in each dimensions to be divisible by some number. 
+            Defaults to ``1``.
+        ret_inst: bool, optional
+            Decides on wheter to return the output as a list of arrays containing the reduced catalog or
+            on returning a new ``Catalog`` instance. Defaults to ``False``.
+        asgrid: bool, optional
+            Deprecated.
+        nthreads: int, optional
+            The number of openmp threads used for the reduction procedure. Defaults to ``1``.
+        ret_inst: bool, optional
+            Deprecated.
+            
+        Returns
+        -------
+        projectedfields: list
+            A list of the 2D arrays containing the reduced fields
+        start1: float
+            The :math:`x`-position of the first columns' left edge
+        start2: float
+            The :math:`y`-position of the first rows' lower edge
+        dpix: float
+            The sidelength of each pixel in the grid. Note that this
+            value might slightly differ from the one provided in the parameters.
+        normed: bool
+            Same as the ``normed`` parameter
+        method: str
+            Same as the ``method`` parameter
+                
+        Todo
+        ----
+        Check on how the weight fields are handeled in the C-layer
+        Check on wheter to re-activate the binding to GriddedCatalog instances
         """
         
         if asgrid is not None:
@@ -561,6 +700,23 @@ class Catalog:
         
     
     def build_spatialhash(self, dpix=1., extent=[None, None, None, None]):
+        r"""Adds a spatial hashing data structure to the catalog.
+        
+        Parameters
+        ----------
+        dpix: float
+            The sidelength of each cell of the hash. Defaults to ``1``.
+        extent: list, optional
+            Sets custom boundaries ``[xmin, xmax, ymin, ymax]`` for the grid. Each element defaults
+            to ``None``. Each element equal to ``None`` sets the grid boundary as the smallest value
+            fully containing the discrete field tracers.
+        
+        Note
+        ----
+        Calling this method (re-)allocates the ``index_matcher``, ``pixs_galind_bounds``, ``pix_gals``,
+        ``pix1_start``, ``pix2_start``, ``pix1_n``, ``pix2_n``, ``pix1_d`` and ``pix2_d`` 
+        attributes of the instance. 
+        """
         
         # Build extent
         if extent[0] is None:
@@ -668,6 +824,9 @@ class Catalog:
 class ScalarTracerCatalog(Catalog):
     
     def __init__(self, pos1, pos2, tracer, **kwargs):
+        r""""
+        
+        """
         super().__init__(pos1=pos1, pos2=pos2, **kwargs)
         self.tracer = tracer
         self.spin = 0
@@ -675,14 +834,33 @@ class ScalarTracerCatalog(Catalog):
     def reduce(self, dpix, dpix2=None, relative_to_hash=None, normed=True, shuffle=0,
                extent=[None,None,None,None], forcedivide=1, 
                ret_inst=False):
-        r"""Paints a catalog onto a grid with equal-area cells
+        r"""Paints the catalog onto a grid with equal-area cells
         
         Parameters
         ----------
         dpix: float
-            The sidelength of a grid cell.    
+            The sidelength of a grid cell.  
         dpix2: float, optional
-            The sidelength of a grid cell. If set to ``None`` dpix2=dpix. Defaults to ``None``. 
+            The sidelength of a grid cell in :math:`y`-direction. Defaults to ``None``. 
+            If set to ``None`` the pixels are assumed to be squares.
+        relative_to_hash: int, optional
+            Forces the cell size to be an integer multiple of the cell size of the spatial hash. 
+            Defaults to ``None``. If set to ``None`` the pixelsize is unrelated to the cell
+            size of the spatial hash.
+        normed: bool, optional
+            Decide on whether to average or to sum the field over pixels. Defaults to ``True``.
+        shuffle: int, optional
+            Choose a definition on how to set the central point of each pixel. Defaults to zero.
+        extent: list, optional
+            Sets custom boundaries ``[xmin, xmax, ymin, ymax]`` for the grid. Each element defaults
+            to ``None``. Each element equal to ``None`` sets the grid boundary as the smallest value
+            fully containing the discrete field tracers.
+        forcedivide: int, optional
+            Forces the number of cells in each dimensions to be divisible by some number. 
+            Defaults to ``1``.
+        ret_inst: bool, optional
+            Decides on wheter to return the output as a list of arrays containing the reduced catalog or
+            on returning a new ``Catalog`` instance. Defaults to ``False``.
         """
         res = super()._reduce(
             dpix=dpix,
@@ -703,6 +881,32 @@ class ScalarTracerCatalog(Catalog):
     
     def multihash(self, dpixs, dpix_hash=None, normed=True, shuffle=0,
                   extent=[None,None,None,None], forcedivide=1):
+        r"""Builds spatialhash for a base catalog and its reductions. 
+        
+        Parameters
+        ----------
+        dpixs: list
+            The pixel sizes on which the hierarchy of reduced catalogs is constructed.
+        dpix_hash: float, optional
+            The size of the pixels used for the spatial hash of the hierarchy of catalogs. Defaults
+            to ``None``. If set to ``None`` uses the largest value of ``dpixs``.
+        normed: bool, optional
+            Decide on whether to average or to sum the field over pixels. Defaults to ``True``.
+        shuffle: int, optional
+            Choose a definition on how to set the central point of each pixel. Defaults to zero.
+        extent: list, optional
+            Sets custom boundaries ``[xmin, xmax, ymin, ymax]`` for the grid. Each element defaults
+            to ``None``. Each element equal to ``None`` sets the grid boundary as the smallest value
+            fully containing the discrete field tracers.
+        forcedivide: int, optional
+            Forces the number of cells in each dimensions to be divisible by some number. 
+            Defaults to ``1``.
+            
+        Returns
+        -------
+        res: tuple
+            Contains the output of the ```Catalog._multihash method```
+        """
         res = super()._multihash(
             dpixs=dpixs.astype(np.float64), 
             fields=[self.tracer], 
@@ -735,6 +939,38 @@ class SpinTracerCatalog(Catalog):
     def reduce(self, dpix, dpix2=None, relative_to_hash=None, normed=True, shuffle=0,
                extent=[None,None,None,None], forcedivide=1, w2field=True,
                ret_inst=False):
+        r"""Paints the catalog onto a grid with equal-area cells
+        
+        Parameters
+        ----------
+        dpix: float
+            The sidelength of a grid cell.  
+        dpix2: float, optional
+            The sidelength of a grid cell in :math:`y`-direction. Defaults to ``None``. 
+            If set to ``None`` the pixels are assumed to be squares.
+        relative_to_hash: int, optional
+            Forces the cell size to be an integer multiple of the cell size of the spatial hash. 
+            Defaults to ``None``. If set to ``None`` the pixelsize is unrelated to the cell
+            size of the spatial hash.
+        normed: bool, optional
+            Decide on whether to average or to sum the field over pixels. Defaults to ``True``.
+        shuffle: int, optional
+            Choose a definition on how to set the central point of each pixel. Defaults to zero.
+        extent: list, optional
+            Sets custom boundaries ``[xmin, xmax, ymin, ymax]`` for the grid. Each element defaults
+            to ``None``. Each element equal to ``None`` sets the grid boundary as the smallest value
+            fully containing the discrete field tracers.
+        forcedivide: int, optional
+            Forces the number of cells in each dimensions to be divisible by some number. 
+            Defaults to ``1``.
+        w2field: bool, optional
+            Adds an additional field equivalent to the squared weight of the tracers to the reduced 
+            catalog. Defaaullts to ``True``.
+        ret_inst: bool, optional
+            Decides on wheter to return the output as a list of arrays containing the reduced catalog or
+            on returning a new ``Catalog`` instance. Defaults to ``False``.
+        """
+        
         if not w2field:
             fields=(self.tracer_1, self.tracer_2,) 
         else:
@@ -758,6 +994,35 @@ class SpinTracerCatalog(Catalog):
     
     def multihash(self, dpixs, dpix_hash=None, normed=True, shuffle=0, w2field=True,
                   extent=[None,None,None,None], forcedivide=1):
+        r"""Builds spatialhash for a base catalog and its reductions. 
+        
+        Parameters
+        ----------
+        dpixs: list
+            The pixel sizes on which the hierarchy of reduced catalogs is constructed.
+        dpix_hash: float, optional
+            The size of the pixels used for the spatial hash of the hierarchy of catalogs. Defaults
+            to ``None``. If set to ``None`` uses the largest value of ``dpixs``.
+        normed: bool, optional
+            Decide on whether to average or to sum the field over pixels. Defaults to ``True``.
+        shuffle: int, optional
+            Choose a definition on how to set the central point of each pixel. Defaults to zero.
+        extent: list, optional
+            Sets custom boundaries ``[xmin, xmax, ymin, ymax]`` for the grid. Each element defaults
+            to ``None``. Each element equal to ``None`` sets the grid boundary as the smallest value
+            fully containing the discrete field tracers.
+        forcedivide: int, optional
+            Forces the number of cells in each dimensions to be divisible by some number. 
+            Defaults to ``1``.
+        w2field: bool, optional
+            Adds an additional field equivalent to the squared weight of the tracers to the reduced 
+            catalog. Defaaullts to ``True``.
+            
+        Returns
+        -------
+        res: tuple
+            Contains the output of the ```Catalog._multihash method```
+        """
         if not w2field:
             fields=(self.tracer_1, self.tracer_2,) 
         else:
@@ -830,6 +1095,27 @@ class MultiTracerCatalog:
     def reduce(self, dpix, normed=True, 
                extent=[None,None,None,None], forcedivide=1, 
                ret_inst=False):
+        r"""Paints all catalogs onto a grid with equal-area cells.
+        
+        Parameters
+        ----------
+        dpix: float
+            The sidelength of a grid cell.  
+        normed: bool, optional
+            Decide on whether to average or to sum the field over pixels. Defaults to ``True``.
+        shuffle: int, optional
+            Choose a definition on how to set the central point of each pixel. Defaults to zero.
+        extent: list, optional
+            Sets custom boundaries ``[xmin, xmax, ymin, ymax]`` for the grid. Each element defaults
+            to ``None``. Each element equal to ``None`` sets the grid boundary as the smallest value
+            fully containing the discrete field tracers.
+        forcedivide: int, optional
+            Forces the number of cells in each dimensions to be divisible by some number. 
+            Defaults to ``1``.
+        ret_inst: bool, optional
+            Decides on wheter to return the output as a list of arrays containing the reduced catalog or
+            on returning a new ``Catalog`` instance. Defaults to ``False``.
+        """
         
         allpos1_red = []
         allpos2_red = []

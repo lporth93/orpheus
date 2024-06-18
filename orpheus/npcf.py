@@ -31,7 +31,7 @@ class BinnedNPCF:
     """
     
     def __init__(self, order, spins, n_cfs, min_sep, max_sep, nbinsr=None, binsize=None, nbinsphi=100, 
-                 nmaxs=30, method="Tree", multicountcorr=True, diagrenorm=False, shuffle_pix=1,
+                 nmaxs=30, method="DoubleTree", multicountcorr=True, diagrenorm=False, shuffle_pix=1,
                  tree_resos=[0,0.25,0.5,1.,2.], tree_redges=None, rmin_pixsize=20, 
                  resoshift_leafs=0, minresoind_leaf=None, maxresoind_leaf=None,  nthreads=16):
         
