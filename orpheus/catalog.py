@@ -59,16 +59,12 @@ class Catalog:
             Indicates on whether there is a tracer in each of the pixels in the spatial hash.
         
             
-        Notes
-        -----
+        .. note::
             As we are working in the flat-sky approximation, *orpheus* does currently not use any convention 
             for the units. In particular, we assume that the units of the positions and the npcf computation
             are the same.
             
             The ``zbins`` parameter can also be used for other characteristics of the tracers (i.e. color cuts).            
-            
-        -----
-        
         """
         self.pos1 = pos1.astype(np.float64)
         self.pos2 = pos2.astype(np.float64)
@@ -425,7 +421,29 @@ class Catalog:
         return ngals, pos1s, pos2s, weights, zbins, isinners, allfields, index_matchers, pixs_galind_bounds, pix_gals, dpixs1_true, dpixs2_true
     
     def _jointextent(self, others, extend=0):
-        """ Draws largest possible rectangle over set of catalogs """
+        r"""Draws largest possible rectangle over set of catalogs.
+        
+        Parameters
+        ----------
+        others: list
+            Contains ``Catalog`` instances over which the joint extent will
+            be drawn
+        extend: float, optional
+            Include an additional boundary layer around the joint extent
+            of the catalogs. Defaults to ``0`` (no extension).
+            
+        Returns
+        -------
+        xlo: float
+            The lower ``x``-boundary of the joint extent.
+        xhi: float
+            The upper ``x``-boundary of the joint extent.
+        ylo: float
+            The lower ``y``-boundary of the joint extent.
+        yhi: float
+            The upper ``y``-boundary of the joint extent.
+        
+        """
         for other in others:
             assert(isinstance(other, Catalog))
         
@@ -443,16 +461,28 @@ class Catalog:
             
     def _genmatched_multiresocats(self, dpixs, fields, flattened=True, 
                                   normed=True, extent=[None,None,None,None], forcedivide=1):
-        """
-        Shapes of the unflattened arrays/lists:
-        - ngals/resos1/resos2: (nresos,)
-        - ngalshifts_1d: (nresos+1,)
-        - ngalshifts_3d: (nbinsz, nresos-1, nresos)
-        - pos1s/pos1s/weights/zbins: (ngals_reso1 + ngal_reso2 + ... + ngal_nresos)==(cumgals,)
-        - allfields: (nfields, cumgals)
-        - index_matchers: (nresos, npix_spatialhash)
-        - pixs_galind_bounds/pix_gals:  (cumgals,)
-        - pixmatcher: (nresos*ngal_reso1 + (nresos-1)*ngal_reso2 + ... + 1*ngal_{nresos-1}, )
+        r"""Builds a hierarchy of reduced fields for a set of catalogs using the equal hash cells.
+        
+        Parameters
+        ----------
+        dpixs: list
+            The pixel sizes on which the hierarchy of reduced catalogs is constructed.
+        fields: list
+            The fields for which the multihash is constructed. Each field is given as a 1D array of float.
+        flattened: bool, optional
+            Flag on whether to return the fields in 2D or in 1D. Defaults to ``True``.
+        normed: bool, optional
+            Decide on whether to average or to sum the field over pixels. Defaults to ``True``.
+        extent: list, optional
+            Sets custom boundaries ``[xmin, xmax, ymin, ymax]`` for the grid. Each element defaults
+            to ``None``. Each element equal to ``None`` sets the grid boundary as the smallest value
+            fully containing the discrete field tracers.
+        forcedivide: int, optional
+            Forces the number of cells in each dimensions to be divisible by some number. 
+            Defaults to ``1``.
+            
+        .. note::
+            This method is deprecated. Instead use the ```multihash`` method.
         """
         _ = self.__genmatched_multiresocats(dpixs, fields, change_renormsign=False, 
                                             normed=normed,
@@ -621,10 +651,9 @@ class Catalog:
         method: str
             Same as the ``method`` parameter
                 
-        Todo
-        ----
-        Check on how the weight fields are handeled in the C-layer
-        Check on wheter to re-activate the binding to GriddedCatalog instances
+        .. todo::
+            Check on how the weight fields are handeled in the C-layer
+            Check on wheter to re-activate the binding to GriddedCatalog instances
         """
         
         if asgrid is not None:
@@ -774,6 +803,34 @@ class Catalog:
         
 
     def _gengridprops(self, dpix, dpix2=None, forcedivide=1, extent=[None,None,None,None]):
+        r"""Gives some basic properties of grids created from the discrete tracers.
+        
+        Parameters
+        ----------
+        dpix: float
+            The sidelength of a grid cell.  
+        dpix2: float, optional
+            The sidelength of a grid cell in :math:`y`-direction. Defaults to ``None``. 
+            If set to ``None`` the pixels are assumed to be squares.
+        forcedivide: int, optional
+            Forces the number of cells in each dimensions to be divisible by some number. 
+            Defaults to ``1``.
+        extent: list, optional
+            Sets custom boundaries ``[xmin, xmax, ymin, ymax]`` for the grid. Each element defaults
+            to ``None``. Each element equal to ``None`` sets the grid boundary as the smallest value
+            fully containing the discrete field tracers.
+            
+        Returns
+        -------
+        start1: float
+            The :math:``x``-position of the first column.
+        start2: float
+            The :math:``y``-position of the first row.
+        n1: int
+            The number of pixels in the :math:``x``-position. 
+        n2: int
+            The number of pixels in the :math:``y``-position. 
+        """
         
         # Define inner extent of the grid
         fixedsize = False
@@ -824,8 +881,48 @@ class Catalog:
 class ScalarTracerCatalog(Catalog):
     
     def __init__(self, pos1, pos2, tracer, **kwargs):
-        r""""
+        r"""Class constructor.
         
+        Attributes
+        ----------
+        pos1: numpy.ndarray
+            The :math:`x`-positions of the tracer objects
+        pos2: numpy.ndarray
+            The :math:`y`-positions of the tracer objects
+        tracer: numpy.ndarray
+            The values of the scalar tracer field, i.e. galaxy weights or cosmic convergence.
+        weight: numpy.ndarray, optional, defaults to ``None``
+            The weights of the tracer objects. If set to ``None`` all weights are assumed to be unity.
+        zbins: numpy.ndarray, optional, defaults to ``None``
+            The tomographic redshift bins of the tracer objects. If set to ``None`` all zbins are assumed to be zero.
+        nbinsz: int
+            The number of tomographic bins
+        isinner: numpy.ndarray
+            A flag signaling wheter a tracer is within the interior part of the footprint
+        min1: float
+            The smallest :math:`x`-value appearing in the catalog
+        max1: float
+            The largest :math:`x`-value appearing in the catalog
+        min2: float
+            The smallest :math:`y`-value appearing in the catalog
+        max2: float
+            The largest :math:`y`-value appearing in the catalog
+        len1: float
+            The extent of the catalog in :math:`x`-direction.
+        len2: float
+            The extent of the catalog in :math:`y`-direction.
+        hasspatialhash: bool
+            Flag on wheter a spatial hash structure has been allocated for the catalog
+        index_matcher: numpy.ndarray
+            Indicates on whether there is a tracer in each of the pixels in the spatial hash.
+        
+            
+        .. note::
+            As we are working in the flat-sky approximation, *orpheus* does currently not use any convention 
+            for the units. In particular, we assume that the units of the positions and the npcf computation
+            are the same.
+            
+            The ``zbins`` parameter can also be used for other characteristics of the tracers (i.e. color cuts).            
         """
         super().__init__(pos1=pos1, pos2=pos2, **kwargs)
         self.tracer = tracer
@@ -931,6 +1028,53 @@ class ScalarTracerCatalog(Catalog):
 class SpinTracerCatalog(Catalog):
     
     def __init__(self, spin, pos1, pos2, tracer_1, tracer_2, **kwargs):
+        r"""Class constructor.
+        
+        Attributes
+        ----------
+        spin: int
+            The spin-value of the tracer field. I.e. ``2`` for polar fields like cosmic shear.
+        pos1: numpy.ndarray
+            The :math:`x`-positions of the tracer objects
+        pos2: numpy.ndarray
+            The :math:`y`-positions of the tracer objects
+        tracer_1: numpy.ndarray
+            The values of the real part of the tracer field, i.e. galaxy ellipticities.
+        tracer_2: numpy.ndarray
+            The values of the imaginary part of the tracer field, i.e. galaxy ellipticities.
+        weight: numpy.ndarray, optional, defaults to ``None``
+            The weights of the tracer objects. If set to ``None`` all weights are assumed to be unity.
+        zbins: numpy.ndarray, optional, defaults to ``None``
+            The tomographic redshift bins of the tracer objects. If set to ``None`` all zbins are assumed to be zero.
+        nbinsz: int
+            The number of tomographic bins
+        isinner: numpy.ndarray
+            A flag signaling wheter a tracer is within the interior part of the footprint
+        min1: float
+            The smallest :math:`x`-value appearing in the catalog
+        max1: float
+            The largest :math:`x`-value appearing in the catalog
+        min2: float
+            The smallest :math:`y`-value appearing in the catalog
+        max2: float
+            The largest :math:`y`-value appearing in the catalog
+        len1: float
+            The extent of the catalog in :math:`x`-direction.
+        len2: float
+            The extent of the catalog in :math:`y`-direction.
+        hasspatialhash: bool
+            Flag on wheter a spatial hash structure has been allocated for the catalog
+        index_matcher: numpy.ndarray
+            Indicates on whether there is a tracer in each of the pixels in the spatial hash.
+        
+            
+        .. note::
+            As we are working in the flat-sky approximation, *orpheus* does currently not use any convention 
+            for the units. In particular, we assume that the units of the positions and the npcf computation
+            are the same.
+            
+            The ``zbins`` parameter can also be used for other characteristics of the tracers (i.e. color cuts).            
+        """
         super().__init__(pos1=pos1, pos2=pos2, **kwargs)
         self.tracer_1 = tracer_1.astype(np.float64)
         self.tracer_2 = tracer_2.astype(np.float64)

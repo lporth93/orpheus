@@ -27,13 +27,91 @@ __all__ = ["BinnedNPCF",
 ################################################        
 class BinnedNPCF:
     
-    """Class containing variables and metods that can be used across of its children.
-    """
     
     def __init__(self, order, spins, n_cfs, min_sep, max_sep, nbinsr=None, binsize=None, nbinsphi=100, 
                  nmaxs=30, method="DoubleTree", multicountcorr=True, diagrenorm=False, shuffle_pix=1,
                  tree_resos=[0,0.25,0.5,1.,2.], tree_redges=None, rmin_pixsize=20, 
                  resoshift_leafs=0, minresoind_leaf=None, maxresoind_leaf=None,  nthreads=16):
+        r"""Class of an binned N-point correlation function of various arbitrary tracer catalogs. 
+        This class contains attributes and metods that can be used across any its children.
+        
+        Attributes
+        ----------
+        order: int
+            The order of the correlation function.
+        spins: list
+            The spins of the tracer fields of which the NPCF is computed. 
+        n_cfs: int
+            The number of independent components of the NPCF.
+        min_sep: float
+            The smallest distance of each vertex for which the NPCF is computed.
+        max_sep: float
+            The largest distance of each vertex for which the NPCF is computed.
+        nbinsr: int, optional
+            The number of radial bins for each vertex of the NPCF. If set to
+            ``None`` this attribute is inferred from the ``binsize`` attribute.
+        binsize: int, optional
+            The logarithmic slize of the radial bins for each vertex of the NPCF. If set to
+            ``None`` this attribute is inferred from the ``nbinsr`` attribute.
+        nbinsphi: float, optional
+            The number of angular bins for the NPCF in the real-space basis. 
+            Defaults to ``100``.
+        nmaxs: list, optional
+            The largest multipole component considered for the NPCF in the multipole basis. 
+            Defaults to ``30``.
+        method: str, optional
+            The method to be employed for the estimator. Defaults to ``DoubleTree``.
+        multicountcorr: bool, optional
+            Flag on whether to subtract of multiplets in which the same tracer appears more
+            than once. Defaults to ``True``.
+        diagrenorm: bool, optional
+            Deprecated
+        shuffle_pix: int, optional
+            Choice of how to define centers of the cells in the spatial hash structure.
+            Defaults to ``1``, i.e. random positioning.
+        tree_resos: list, optional
+            The cell sizes of the hierarchical spatial hash structure
+        tree_edges: list, optional
+            Deprecated(?)
+        rmin_pixsize: int, optional
+            The limiting radial distance relative to the cell of the spatial hash
+            after which one switches to the next hash in the hierarchy. Defaults to ``20``.
+        resoshift_leafs: int, optional
+            Allows for a difference in how the hierarchical spatial hash is traversed for
+            pixels at the base of the NPCF and pixels at leafs. I.e. positive values indicate
+            that leafs will be evaluated at a courser resolutions than the base. Defaults to ``0``.
+        minresoind_leaf: int, optional
+            Sets the smallest resolution in the spatial hash hierarchy which can be used to access
+            tracers at leaf positions. If set to ``None`` uses the smallest specified cell size. 
+            Defaults to ``None``.
+        maxresoind_leaf: int, optional
+            Sets the largest resolution in the spatial hash hierarchy which can be used to access
+            tracers at leaf positions. If set to ``None`` uses the largest specified cell size. 
+            Defaults to ``None``.
+        nthreads: int, optional
+            The number of openmp threads used for the reduction procedure. Defaults to ``16``.
+        bin_centers: numpy.ndarray
+            The centers of the radial bins for each combination of tomographic redshifts.
+        bin_centers_mean: numpy.ndarray
+            The centers of the radial bins averaged over all combination of tomographic redshifts.
+        phis: list
+            The bin centers for the N-2 angles describing the NPCF 
+            in the real-space basis.
+        npcf: numpy.ndarray
+            The natural components of the NPCF in the real space basis. The different axes
+            are specified as follows: ``(component, zcombi, rbin_1, ..., rbin_N-1, phiin_1, phibin_N-2)``.
+        npcf_norm: numpy.ndarray
+            The normalization of the natural components of the NPCF in the real space basis. The different axes
+            are specified as follows: ``(zcombi, rbin_1, ..., rbin_N-1, phiin_1, phibin_N-2)``.
+        npcf_multipoles: numpy.ndarray
+            The natural components of the NPCF in the multipole basis. The different axes
+            are specified as follows: ``(component, zcombi, multipole_1, ..., multipole_N-2, rbin_1, ..., rbin_N-1)``.
+        npcf_multipoles_norm: numpy.ndarray
+            The normalization of the natural components of the NPCF in the multipole basis. The different axes
+            are specified as follows: ``(zcombi, multipole_1, ..., multipole_N-2, rbin_1, ..., rbin_N-1)``.
+        is_edge_corrected: bool, optional
+            Flag signifying on wheter the NPCF multipoles have beed edge-corrected. Defaults to ``False``.
+        """
         
         self.order = int(order)
         self.n_cfs = int(n_cfs)
@@ -523,15 +601,84 @@ class BinnedNPCF:
 ## THIRD - ORDER STATISTICS ##
 ##############################
 class GGGCorrelation(BinnedNPCF):
-    """ This class stores the natural components of the shear correlation functions""
-    
-    Parameters:
-        n_cfs (int):
-        Number of natural components stored. While there are four natural components
-        in total, it is usually sufficient to only compute Gamma0 and Gamma1.
-    """
     
     def __init__(self, n_cfs, min_sep, max_sep, **kwargs):
+        r""" Class containing methods to measure and and obtain statistics that are built
+        from third-order shear correlation functions.
+        
+        Attributes
+        ----------
+        n_cfs: int
+            The number of independent components of the NPCF.
+        min_sep: float
+            The smallest distance of each vertex for which the NPCF is computed.
+        max_sep: float
+            The largest distance of each vertex for which the NPCF is computed.
+        nbinsr: int, optional
+            The number of radial bins for each vertex of the NPCF. If set to
+            ``None`` this attribute is inferred from the ``binsize`` attribute.
+        binsize: int, optional
+            The logarithmic slize of the radial bins for each vertex of the NPCF. If set to
+            ``None`` this attribute is inferred from the ``nbinsr`` attribute.
+        nbinsphi: float, optional
+            The number of angular bins for the NPCF in the real-space basis. 
+            Defaults to ``100``.
+        nmaxs: list, optional
+            The largest multipole component considered for the NPCF in the multipole basis. 
+            Defaults to ``30``.
+        method: str, optional
+            The method to be employed for the estimator. Defaults to ``DoubleTree``.
+        multicountcorr: bool, optional
+            Flag on whether to subtract of multiplets in which the same tracer appears more
+            than once. Defaults to ``True``.
+        diagrenorm: bool, optional
+            Deprecated
+        shuffle_pix: int, optional
+            Choice of how to define centers of the cells in the spatial hash structure.
+            Defaults to ``1``, i.e. random positioning.
+        tree_resos: list, optional
+            The cell sizes of the hierarchical spatial hash structure
+        tree_edges: list, optional
+            Deprecated(?)
+        rmin_pixsize: int, optional
+            The limiting radial distance relative to the cell of the spatial hash
+            after which one switches to the next hash in the hierarchy. Defaults to ``20``.
+        resoshift_leafs: int, optional
+            Allows for a difference in how the hierarchical spatial hash is traversed for
+            pixels at the base of the NPCF and pixels at leafs. I.e. positive values indicate
+            that leafs will be evaluated at a courser resolutions than the base. Defaults to ``0``.
+        minresoind_leaf: int, optional
+            Sets the smallest resolution in the spatial hash hierarchy which can be used to access
+            tracers at leaf positions. If set to ``None`` uses the smallest specified cell size. 
+            Defaults to ``None``.
+        maxresoind_leaf: int, optional
+            Sets the largest resolution in the spatial hash hierarchy which can be used to access
+            tracers at leaf positions. If set to ``None`` uses the largest specified cell size. 
+            Defaults to ``None``.
+        nthreads: int, optional
+            The number of openmp threads used for the reduction procedure. Defaults to ``16``.
+        bin_centers: numpy.ndarray
+            The centers of the radial bins for each combination of tomographic redshifts.
+        bin_centers_mean: numpy.ndarray
+            The centers of the radial bins averaged over all combination of tomographic redshifts.
+        phis: list
+            The bin centers for the N-2 angles describing the NPCF 
+            in the real-space basis.
+        npcf: numpy.ndarray
+            The natural components of the NPCF in the real space basis. The different axes
+            are specified as follows: ``(component, zcombi, rbin_1, ..., rbin_N-1, phiin_1, phibin_N-2)``.
+        npcf_norm: numpy.ndarray
+            The normalization of the natural components of the NPCF in the real space basis. The different axes
+            are specified as follows: ``(zcombi, rbin_1, ..., rbin_N-1, phiin_1, phibin_N-2)``.
+        npcf_multipoles: numpy.ndarray
+            The natural components of the NPCF in the multipole basis. The different axes
+            are specified as follows: ``(component, zcombi, multipole_1, ..., multipole_N-2, rbin_1, ..., rbin_N-1)``.
+        npcf_multipoles_norm: numpy.ndarray
+            The normalization of the natural components of the NPCF in the multipole basis. The different axes
+            are specified as follows: ``(zcombi, multipole_1, ..., multipole_N-2, rbin_1, ..., rbin_N-1)``.
+        is_edge_corrected: bool, optional
+            Flag signifying on wheter the NPCF multipoles have beed edge-corrected. Defaults to ``False``.
+        """
         super().__init__(order=3, spins=np.array([2,2,2], dtype=np.int32), n_cfs=n_cfs, min_sep=min_sep, max_sep=max_sep, **kwargs)
         self.nmax = self.nmaxs[0]
         self.phi = self.phis[0]
@@ -1007,8 +1154,81 @@ class GGGCorrelation(BinnedNPCF):
     
     
 class GNNCorrelation(BinnedNPCF):
-    """ Source-Lens-Lens (G3L) correlation function """
     def __init__(self, min_sep, max_sep, zweighting=False, zweighting_sigma=None, **kwargs):
+        r""" Class containing methods to measure and and obtain statistics that are built
+        from third-order source-lens-lens (G3L) correlation functions.
+        
+        Attributes
+        ----------
+        min_sep: float
+            The smallest distance of each vertex for which the NPCF is computed.
+        max_sep: float
+            The largest distance of each vertex for which the NPCF is computed.
+        nbinsr: int, optional
+            The number of radial bins for each vertex of the NPCF. If set to
+            ``None`` this attribute is inferred from the ``binsize`` attribute.
+        binsize: int, optional
+            The logarithmic slize of the radial bins for each vertex of the NPCF. If set to
+            ``None`` this attribute is inferred from the ``nbinsr`` attribute.
+        nbinsphi: float, optional
+            The number of angular bins for the NPCF in the real-space basis. 
+            Defaults to ``100``.
+        nmaxs: list, optional
+            The largest multipole component considered for the NPCF in the multipole basis. 
+            Defaults to ``30``.
+        method: str, optional
+            The method to be employed for the estimator. Defaults to ``DoubleTree``.
+        multicountcorr: bool, optional
+            Flag on whether to subtract of multiplets in which the same tracer appears more
+            than once. Defaults to ``True``.
+        diagrenorm: bool, optional
+            Deprecated
+        shuffle_pix: int, optional
+            Choice of how to define centers of the cells in the spatial hash structure.
+            Defaults to ``1``, i.e. random positioning.
+        tree_resos: list, optional
+            The cell sizes of the hierarchical spatial hash structure
+        tree_edges: list, optional
+            Deprecated(?)
+        rmin_pixsize: int, optional
+            The limiting radial distance relative to the cell of the spatial hash
+            after which one switches to the next hash in the hierarchy. Defaults to ``20``.
+        resoshift_leafs: int, optional
+            Allows for a difference in how the hierarchical spatial hash is traversed for
+            pixels at the base of the NPCF and pixels at leafs. I.e. positive values indicate
+            that leafs will be evaluated at a courser resolutions than the base. Defaults to ``0``.
+        minresoind_leaf: int, optional
+            Sets the smallest resolution in the spatial hash hierarchy which can be used to access
+            tracers at leaf positions. If set to ``None`` uses the smallest specified cell size. 
+            Defaults to ``None``.
+        maxresoind_leaf: int, optional
+            Sets the largest resolution in the spatial hash hierarchy which can be used to access
+            tracers at leaf positions. If set to ``None`` uses the largest specified cell size. 
+            Defaults to ``None``.
+        nthreads: int, optional
+            The number of openmp threads used for the reduction procedure. Defaults to ``16``.
+        bin_centers: numpy.ndarray
+            The centers of the radial bins for each combination of tomographic redshifts.
+        bin_centers_mean: numpy.ndarray
+            The centers of the radial bins averaged over all combination of tomographic redshifts.
+        phis: list
+            The bin centers for the N-2 angles describing the NPCF 
+            in the real-space basis.
+        npcf: numpy.ndarray
+            The natural components of the NPCF in the real space basis. The different axes
+            are specified as follows: ``(component, zcombi, rbin_1, ..., rbin_N-1, phiin_1, phibin_N-2)``.
+        npcf_norm: numpy.ndarray
+            The normalization of the natural components of the NPCF in the real space basis. The different axes
+            are specified as follows: ``(zcombi, rbin_1, ..., rbin_N-1, phiin_1, phibin_N-2)``.
+        npcf_multipoles: numpy.ndarray
+            The natural components of the NPCF in the multipole basis. The different axes
+            are specified as follows: ``(component, zcombi, multipole_1, ..., multipole_N-2, rbin_1, ..., rbin_N-1)``.
+        npcf_multipoles_norm: numpy.ndarray
+            The normalization of the natural components of the NPCF in the multipole basis. The different axes
+            are specified as follows: ``(zcombi, multipole_1, ..., multipole_N-2, rbin_1, ..., rbin_N-1)``.
+        is_edge_corrected: bool, optional
+            Flag signifying on wheter the NPCF multipoles have beed edge-corrected. Defaults to ``False``.
+        """
         super().__init__(3, [2,0,0], n_cfs=1, min_sep=min_sep, max_sep=max_sep, **kwargs)
         self.nmax = self.nmaxs[0]
         self.phi = self.phis[0]
@@ -1362,6 +1582,80 @@ class GNNCorrelation(BinnedNPCF):
 class NGGCorrelation(BinnedNPCF):
     """ Lens-Source-Source correlation function """
     def __init__(self, min_sep, max_sep, **kwargs):
+        r""" Class containing methods to measure and and obtain statistics that are built
+        from third-order lens-shear-shear correlation functions.
+        
+        Attributes
+        ----------
+        min_sep: float
+            The smallest distance of each vertex for which the NPCF is computed.
+        max_sep: float
+            The largest distance of each vertex for which the NPCF is computed.
+        nbinsr: int, optional
+            The number of radial bins for each vertex of the NPCF. If set to
+            ``None`` this attribute is inferred from the ``binsize`` attribute.
+        binsize: int, optional
+            The logarithmic slize of the radial bins for each vertex of the NPCF. If set to
+            ``None`` this attribute is inferred from the ``nbinsr`` attribute.
+        nbinsphi: float, optional
+            The number of angular bins for the NPCF in the real-space basis. 
+            Defaults to ``100``.
+        nmaxs: list, optional
+            The largest multipole component considered for the NPCF in the multipole basis. 
+            Defaults to ``30``.
+        method: str, optional
+            The method to be employed for the estimator. Defaults to ``DoubleTree``.
+        multicountcorr: bool, optional
+            Flag on whether to subtract of multiplets in which the same tracer appears more
+            than once. Defaults to ``True``.
+        diagrenorm: bool, optional
+            Deprecated
+        shuffle_pix: int, optional
+            Choice of how to define centers of the cells in the spatial hash structure.
+            Defaults to ``1``, i.e. random positioning.
+        tree_resos: list, optional
+            The cell sizes of the hierarchical spatial hash structure
+        tree_edges: list, optional
+            Deprecated(?)
+        rmin_pixsize: int, optional
+            The limiting radial distance relative to the cell of the spatial hash
+            after which one switches to the next hash in the hierarchy. Defaults to ``20``.
+        resoshift_leafs: int, optional
+            Allows for a difference in how the hierarchical spatial hash is traversed for
+            pixels at the base of the NPCF and pixels at leafs. I.e. positive values indicate
+            that leafs will be evaluated at a courser resolutions than the base. Defaults to ``0``.
+        minresoind_leaf: int, optional
+            Sets the smallest resolution in the spatial hash hierarchy which can be used to access
+            tracers at leaf positions. If set to ``None`` uses the smallest specified cell size. 
+            Defaults to ``None``.
+        maxresoind_leaf: int, optional
+            Sets the largest resolution in the spatial hash hierarchy which can be used to access
+            tracers at leaf positions. If set to ``None`` uses the largest specified cell size. 
+            Defaults to ``None``.
+        nthreads: int, optional
+            The number of openmp threads used for the reduction procedure. Defaults to ``16``.
+        bin_centers: numpy.ndarray
+            The centers of the radial bins for each combination of tomographic redshifts.
+        bin_centers_mean: numpy.ndarray
+            The centers of the radial bins averaged over all combination of tomographic redshifts.
+        phis: list
+            The bin centers for the N-2 angles describing the NPCF 
+            in the real-space basis.
+        npcf: numpy.ndarray
+            The natural components of the NPCF in the real space basis. The different axes
+            are specified as follows: ``(component, zcombi, rbin_1, ..., rbin_N-1, phiin_1, phibin_N-2)``.
+        npcf_norm: numpy.ndarray
+            The normalization of the natural components of the NPCF in the real space basis. The different axes
+            are specified as follows: ``(zcombi, rbin_1, ..., rbin_N-1, phiin_1, phibin_N-2)``.
+        npcf_multipoles: numpy.ndarray
+            The natural components of the NPCF in the multipole basis. The different axes
+            are specified as follows: ``(component, zcombi, multipole_1, ..., multipole_N-2, rbin_1, ..., rbin_N-1)``.
+        npcf_multipoles_norm: numpy.ndarray
+            The normalization of the natural components of the NPCF in the multipole basis. The different axes
+            are specified as follows: ``(zcombi, multipole_1, ..., multipole_N-2, rbin_1, ..., rbin_N-1)``.
+        is_edge_corrected: bool, optional
+            Flag signifying on wheter the NPCF multipoles have beed edge-corrected. Defaults to ``False``.
+        """
         super().__init__(3, [0,2,2], n_cfs=2, min_sep=min_sep, max_sep=max_sep, **kwargs)
         self.nmax = self.nmaxs[0]
         self.phi = self.phis[0]
@@ -1720,6 +2014,83 @@ class FFFCorrelation(BinnedNPCF):
 class GGGGCorrelation_NoTomo(BinnedNPCF):
     
     def __init__(self, min_sep, max_sep, verbose=False, thetabatchsize_max=10000, **kwargs):
+        r""" Class containing methods to measure and and obtain statistics that are built
+        from nontomographic fourth-order shear correlation functions.
+        
+        Attributes
+        ----------
+        min_sep: float
+            The smallest distance of each vertex for which the NPCF is computed.
+        max_sep: float
+            The largest distance of each vertex for which the NPCF is computed.
+        nbinsr: int, optional
+            The number of radial bins for each vertex of the NPCF. If set to
+            ``None`` this attribute is inferred from the ``binsize`` attribute.
+        binsize: int, optional
+            The logarithmic slize of the radial bins for each vertex of the NPCF. If set to
+            ``None`` this attribute is inferred from the ``nbinsr`` attribute.
+        thetabatchsize_max: int, optional
+            The largest number of radial bin combinations that are processed in parallel.
+            Defaults to ``10 000``.
+        nbinsphi: float, optional
+            The number of angular bins for the NPCF in the real-space basis. 
+            Defaults to ``100``.
+        nmaxs: list, optional
+            The largest multipole component considered for the NPCF in the multipole basis. 
+            Defaults to ``30``.
+        method: str, optional
+            The method to be employed for the estimator. Defaults to ``DoubleTree``.
+        multicountcorr: bool, optional
+            Flag on whether to subtract of multiplets in which the same tracer appears more
+            than once. Defaults to ``True``.
+        diagrenorm: bool, optional
+            Deprecated
+        shuffle_pix: int, optional
+            Choice of how to define centers of the cells in the spatial hash structure.
+            Defaults to ``1``, i.e. random positioning.
+        tree_resos: list, optional
+            The cell sizes of the hierarchical spatial hash structure
+        tree_edges: list, optional
+            Deprecated(?)
+        rmin_pixsize: int, optional
+            The limiting radial distance relative to the cell of the spatial hash
+            after which one switches to the next hash in the hierarchy. Defaults to ``20``.
+        resoshift_leafs: int, optional
+            Allows for a difference in how the hierarchical spatial hash is traversed for
+            pixels at the base of the NPCF and pixels at leafs. I.e. positive values indicate
+            that leafs will be evaluated at a courser resolutions than the base. Defaults to ``0``.
+        minresoind_leaf: int, optional
+            Sets the smallest resolution in the spatial hash hierarchy which can be used to access
+            tracers at leaf positions. If set to ``None`` uses the smallest specified cell size. 
+            Defaults to ``None``.
+        maxresoind_leaf: int, optional
+            Sets the largest resolution in the spatial hash hierarchy which can be used to access
+            tracers at leaf positions. If set to ``None`` uses the largest specified cell size. 
+            Defaults to ``None``.
+        nthreads: int, optional
+            The number of openmp threads used for the reduction procedure. Defaults to ``16``.
+        bin_centers: numpy.ndarray
+            The centers of the radial bins for each combination of tomographic redshifts.
+        bin_centers_mean: numpy.ndarray
+            The centers of the radial bins averaged over all combination of tomographic redshifts.
+        phis: list
+            The bin centers for the N-2 angles describing the NPCF 
+            in the real-space basis.
+        npcf: numpy.ndarray
+            The natural components of the NPCF in the real space basis. The different axes
+            are specified as follows: ``(component, zcombi, rbin_1, ..., rbin_N-1, phiin_1, phibin_N-2)``.
+        npcf_norm: numpy.ndarray
+            The normalization of the natural components of the NPCF in the real space basis. The different axes
+            are specified as follows: ``(zcombi, rbin_1, ..., rbin_N-1, phiin_1, phibin_N-2)``.
+        npcf_multipoles: numpy.ndarray
+            The natural components of the NPCF in the multipole basis. The different axes
+            are specified as follows: ``(component, zcombi, multipole_1, ..., multipole_N-2, rbin_1, ..., rbin_N-1)``.
+        npcf_multipoles_norm: numpy.ndarray
+            The normalization of the natural components of the NPCF in the multipole basis. The different axes
+            are specified as follows: ``(zcombi, multipole_1, ..., multipole_N-2, rbin_1, ..., rbin_N-1)``.
+        is_edge_corrected: bool, optional
+            Flag signifying on wheter the NPCF multipoles have beed edge-corrected. Defaults to ``False``.
+        """
         super().__init__(order=4, spins=np.array([2,2,2,2], dtype=np.int32),
                          n_cfs=8, min_sep=min_sep, max_sep=max_sep, **kwargs)
         
