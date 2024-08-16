@@ -6,6 +6,7 @@ from numpy.ctypeslib import ndpointer
 from pathlib import Path
 import glob
 from .utils import get_site_packages_dir, search_file_in_site_package
+from .flat2dgrid import FlatPixelGrid_2D, FlatDataGrid_2D
 import sys
 import time
 
@@ -24,7 +25,7 @@ class Catalog:
     r"""Class containing variables and metods that can be used across of its children.  
     """
     
-    def __init__(self, pos1, pos2, weight=None, zbins=None, isinner=None, zbins_mean=None, zbins_std=None):
+    def __init__(self, pos1, pos2, weight=None, zbins=None, isinner=None, mask=None, zbins_mean=None, zbins_std=None):
         r"""Class constructor.
         
         Attributes
@@ -86,6 +87,10 @@ class Catalog:
         if isinner is None:
             isinner = np.ones(self.ngal, dtype=np.float64)
         self.isinner = np.asarray(isinner, dtype=np.float64)
+        self.mask = mask
+        assert(isinstance(self.mask, FlatDataGrid_2D) or self.mask is None)
+        if isinstance(self.mask, FlatDataGrid_2D):
+            self.__checkmask()
         assert(np.min(self.isinner) >= 0.)
         assert(np.max(self.isinner) <= 1.)
         assert(len(self.isinner)==self.ngal)
@@ -598,6 +603,27 @@ class Catalog:
         return failed, ngals, pos1s, pos2s, weights, zbins, isinners, allfields, \
                index_matchers, pixs_galind_bounds, pix_gals, resos1, resos2, pixmatcher
 
+    def create_mask(self, method="Basic", pixsize=1.):
+        
+        assert(method in ["Basic", "Density", "File"])
+        
+        if method=="Basic":
+            npix_1 = int(np.ceil((self.max1-(self.min1))/pixsize))
+            npix_2 = int(np.ceil((self.max2-(self.min2))/pixsize))
+            self.mask = FlatDataGrid_2D(np.zeros((npix_2,npix_1), dtype=np.float64), 
+                                        self.min1, self.min2, pixsize, pixsize)
+        if method=="Density":
+            pass
+        if method=="File":
+            pass
+        
+        self. __checkmask()
+        
+    def __checkmask(self):
+        assert(self.mask.start_1 <= self.min1)
+        assert(self.mask.start_2 <= self.min2)
+        assert(self.mask.pix1_lbounds[-1] >= self.max1-self.mask.dpix_1)
+        assert(self.mask.pix2_lbounds[-1] >= self.max2-self.mask.dpix_2)
 
     # Maps catalog to grid
     def togrid(self, fields, dpix, normed=False, weighted=True, 
