@@ -4,6 +4,30 @@
 #include <stdbool.h>
 #include <math.h>
 
+int binary_search(double *array, int len_arr, double target){
+    int ind_min = 0;
+    int ind_max = len_arr - 1;
+    while (ind_min <= ind_max) {
+        int mid = ind_min + (ind_max-ind_min)/2;
+        if (target >= array[mid] && target < array[mid+1]){return mid;}
+        if (target >= array[mid + 1]){ind_min = mid+1;}
+        else {ind_max = mid-1;}
+    }
+    // Should not occur...
+    return -1;
+}
+
+
+// As the number of pixels goes with R^2 most bins will be in the outer pixels and we need fewer if/else branching
+int backsearch(double *array, int ind_min, int ind_max, double target) {
+    int ind;
+    for (ind=ind_max; ind>=ind_min; ind--) {
+        if (target >= array[ind]) {break;}
+    }
+    return ind;
+}
+
+
 
 double linint(double *vec, double x, double xmin, double xmax, double dx){
     if (x<=xmin){return 0;}

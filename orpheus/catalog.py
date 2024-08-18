@@ -603,9 +603,10 @@ class Catalog:
         return failed, ngals, pos1s, pos2s, weights, zbins, isinners, allfields, \
                index_matchers, pixs_galind_bounds, pix_gals, resos1, resos2, pixmatcher
 
-    def create_mask(self, method="Basic", pixsize=1.):
+    def create_mask(self, method="Basic", pixsize=1., apply=False):
         
         assert(method in ["Basic", "Density", "File"])
+        
         
         if method=="Basic":
             npix_1 = int(np.ceil((self.max1-(self.min1))/pixsize))
@@ -613,17 +614,24 @@ class Catalog:
             self.mask = FlatDataGrid_2D(np.zeros((npix_2,npix_1), dtype=np.float64), 
                                         self.min1, self.min2, pixsize, pixsize)
         if method=="Density":
-            pass
+            raise 
         if method=="File":
-            pass
+            raise NotImplementedError
         
         self. __checkmask()
+        
+        self. __applymask(apply)
         
     def __checkmask(self):
         assert(self.mask.start_1 <= self.min1)
         assert(self.mask.start_2 <= self.min2)
         assert(self.mask.pix1_lbounds[-1] >= self.max1-self.mask.dpix_1)
         assert(self.mask.pix2_lbounds[-1] >= self.max2-self.mask.dpix_2)
+        
+    def __applymask(self, method):
+        assert(method in [False, True, "WeightsOnly"])
+        
+        
 
     # Maps catalog to grid
     def togrid(self, fields, dpix, normed=False, weighted=True, 

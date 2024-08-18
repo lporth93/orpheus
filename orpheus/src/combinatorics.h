@@ -15,8 +15,8 @@ void ind2sel(int ind, int n, int k, double *fac_table, int *sel);
 int minr(int ind, int n, int k, double *fac_table);
 int maxr(int ind, int n, int k, double *fac_table);
 
-int zcombis_order(int nbinsz, int order, int *fac_table);
-int zcombis_tot(int nbinsz, int max_order, int *fac_table); 
+int zcombis_order(int nbinsz, int order, double *fac_table);
+int zcombis_tot(int nbinsz, int max_order, double *fac_table); 
 void nextzcombination(int n_els, int len_list, int *combination);
 
 double binom(int n , int k, double *fac_table);

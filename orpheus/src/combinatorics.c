@@ -234,12 +234,12 @@ int maxr(int ind, int n, int k, double *fac_table){
 
 // Number of ways to arrange zbins for a specific order of Mapn.
 // Due to the invariance of Mapn under permutations of the redshifts, we assume that the zbins are sorted.
-int zcombis_order(int nbinsz, int order, int *fac_table){
-    return nbinsz*fac_table[nbinsz+order-1]/(fac_table[nbinsz]*fac_table[order]);
+int zcombis_order(int nbinsz, int order, double *fac_table){
+    return nbinsz * (fac_table[nbinsz+order-1]/(fac_table[nbinsz]*fac_table[order]));
 }
 
 // Total number of redshift combinations up to order `max_order`
-int zcombis_tot(int nbinsz, int max_order, int *fac_table){
+int zcombis_tot(int nbinsz, int max_order, double *fac_table){
     int res = 0;
     for (int order=1;order<=max_order;order++){
         res += zcombis_order(nbinsz, order, fac_table);

@@ -253,6 +253,20 @@ class BinnedNPCF:
         p_i32 = ndpointer(np.int32, flags="C_CONTIGUOUS")
         p_f64_nof = ndpointer(np.float64)    
         
+        ## Second order scalar-scalar statistics ##
+        if self.order==2 and np.array_equal(self.spins, np.array([0, 0], dtype=np.int32)):
+            self.clib.alloc_NNcounts_doubletree.restype = ct.c_void_p
+            self.clib.alloc_NNcounts_doubletree.argtypes = [
+                ct.c_int32, ct.c_int32, p_f64, p_f64, p_f64, 
+                ct.c_int32, ct.c_int32, ct.c_int32, 
+                p_i32, ct.c_int32, p_i32, p_f64, p_f64, p_f64, p_f64, p_i32,
+                p_i32, p_i32, p_i32, 
+                ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, p_i32, 
+                ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, ct.c_int32, 
+                np.ctypeslib.ndpointer(dtype=np.float64), 
+                np.ctypeslib.ndpointer(dtype=np.float64), 
+                np.ctypeslib.ndpointer(dtype=np.int64)] 
+        
         ## Second order shear-shear statistics ##
         if self.order==2 and np.array_equal(self.spins, np.array([2, 2], dtype=np.int32)):
             # Doubletree-based estimator of second-order shear correlation function
@@ -263,7 +277,7 @@ class BinnedNPCF:
                 p_i32, ct.c_int32, p_i32, p_f64, p_f64, p_f64, p_f64, p_f64, p_i32,
                 p_i32, p_i32, p_i32, 
                 ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, p_i32, 
-                ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, 
+                ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, ct.c_int32, 
                 np.ctypeslib.ndpointer(dtype=np.float64), 
                 np.ctypeslib.ndpointer(dtype=np.complex128),
                 np.ctypeslib.ndpointer(dtype=np.complex128),
@@ -643,6 +657,106 @@ class BinnedNPCF:
 ###############################   
 ## SECOND - ORDER STATISTICS ##
 ###############################
+class NNCorrelation(BinnedNPCF):
+    """ Just need this in order to run this on overlapping patches (which treecorr does not do afaik).
+    Similar speed as treecorr and always much faster as compared to the higher-order functions
+    """
+    def __init__(self, min_sep, max_sep, **kwargs):
+        super().__init__(order=2, spins=np.array([2,2], dtype=np.int32), n_cfs=2, min_sep=min_sep, max_sep=max_sep, **kwargs)
+        self.projection = None
+        self.projections_avail = [None]
+        self.nbinsz = None
+        self.nzcombis = None
+        self.counts = None
+        
+        # (Add here any newly implemented projections)
+        self._initprojections(self)
+    
+    def process(self, cat, dotomo=True, do_dc=False, apply_edge_correction=False, adjust_tree=False):
+        
+        self._checkcats(cat, self.spins)
+        if not dotomo:
+            self.nbinsz = 1
+            old_zbins = cat.zbins[:]
+            cat.zbins = np.zeros(cat.ngal, dtype=np.int32)
+            self.nzcombis = 1
+        else:
+            self.nbinsz = cat.nbinsz
+            zbins = cat.zbins
+            self.nzcombis = self.nbinsz*self.nbinsz
+                    
+        z2r = self.nbinsz*self.nbinsz*self.nbinsr
+        sz2r = (self.nbinsz*self.nbinsz, self.nbinsr)
+        bin_centers = np.zeros(z2r).astype(np.float64)
+        counts = np.zeros(z2r).astype(np.float64)
+        npair = np.zeros(z2r).astype(np.int64)
+        
+        args_basesetup = (np.float64(self.min_sep), np.float64(self.max_sep), np.int32(self.nbinsr),  )
+        
+        cutfirst = np.int32(self.tree_resos[0]==0.)
+        mhash = cat.multihash(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1], 
+                              shuffle=self.shuffle_pix, w2field=False, normed=True)
+        ngal_resos, pos1s, pos2s, weights, zbins, isinners, allfields, index_matchers, pixs_galind_bounds, pix_gals, dpixs1_true, dpixs2_true = mhash
+        weight_resos = np.concatenate(weights).astype(np.float64)
+        pos1_resos = np.concatenate(pos1s).astype(np.float64)
+        pos2_resos = np.concatenate(pos2s).astype(np.float64)
+        zbin_resos = np.concatenate(zbins).astype(np.int32)
+        isinner_resos = np.concatenate(isinners).astype(np.int32)
+        scalar_resos = np.concatenate([allfields[i][0] for i in range(len(allfields))]).astype(np.float64)
+        index_matcher = np.concatenate(index_matchers).astype(np.int32)
+        pixs_galind_bounds = np.concatenate(pixs_galind_bounds).astype(np.int32)
+        pix_gals = np.concatenate(pix_gals).astype(np.int32)
+        index_matcher_flat = np.argwhere(cat.index_matcher>-1).flatten()
+        nregions = len(index_matcher_flat)
+        
+        args_treeresos = (np.int32(self.tree_nresos), np.int32(self.tree_nresos-cutfirst),
+                          dpixs1_true.astype(np.float64), dpixs2_true.astype(np.float64), self.tree_redges, 
+                          np.int32(self.resoshift_leafs), np.int32(self.minresoind_leaf), 
+                          np.int32(self.maxresoind_leaf), np.array(ngal_resos, dtype=np.int32), )
+        args_resos = (isinner_resos, weight_resos, pos1_resos, pos2_resos, scalar_resos, zbin_resos,
+                      index_matcher, pixs_galind_bounds, pix_gals, )
+        args_hash = (np.float64(cat.pix1_start), np.float64(cat.pix1_d), np.int32(cat.pix1_n), 
+                     np.float64(cat.pix2_start), np.float64(cat.pix2_d), np.int32(cat.pix2_n), 
+                     np.int32(nregions), index_matcher_flat.astype(np.int32),)
+        args_binning = (np.float64(self.min_sep), np.float64(self.max_sep), np.int32(self.nbinsr), np.int32(do_dc))
+        args_output = (bin_centers, counts, npair, )
+        func = self.clib.alloc_xipm_doubletree
+        args = (*args_treeresos,
+                np.int32(self.nbinsz),
+                *args_resos,
+                *args_hash,
+                *args_binning,
+                np.int32(self.nthreads),
+                *args_output)
+
+        func(*args)
+        
+        self.bin_centers = bin_centers.reshape(sz2r)
+        self.bin_centers_mean = np.mean(self.bin_centers, axis=0)
+        self.npair = npair.reshape(sz2r)
+        self.counts = norm.reshape(sz2r)
+        
+        if not dotomo:
+            cat.zbins = old_zbins
+            
+        
+    def computeNap2(self, radii, tofile=False):
+        
+        Tp = lambda x: 1./128. * (x**4-16*x**2+32) * np.exp(-x**2/4.)  
+        Tm = lambda x: 1./128. * (x**4) * np.exp(-x**2/4.)  
+        result = np.zeros((4, self.nzcombis, len(radii)), dtype=float)
+        for elr, R in enumerate(radii):
+            thetared = self.bin_centers/R
+            pref = self.binsize*thetared**2/2.
+            t1 = np.sum(pref*(Tp(thetared)*self.xip + Tm(thetared)*self.xim), axis=1)
+            t2 = np.sum(pref*(Tp(thetared)*self.xip - Tm(thetared)*self.xim), axis=1)
+            result[0,:,elr] =  t1.real  # Map2
+            result[1,:,elr] =  t1.imag  # MapMx 
+            result[2,:,elr] =  t2.real  # Mx2
+            result[3,:,elr] =  t2.imag  # MxMap (Difference from MapMx gives ~level of estimator uncertainty)
+            
+        return result
+    
 class GGCorrelation(BinnedNPCF):
     """ Just need this in order to run this on overlapping patches (which treecorr does not do afaik).
     Similar speed as treecorr and always much faster as compared to the higher-order functions
@@ -658,12 +772,13 @@ class GGCorrelation(BinnedNPCF):
         # (Add here any newly implemented projections)
         self._initprojections(self)
     
-    def process(self, cat, dotomo=True, apply_edge_correction=False, adjust_tree=False):
+    def process(self, cat, dotomo=True, do_dc=False, apply_edge_correction=False, adjust_tree=False):
         
         self._checkcats(cat, self.spins)
         if not dotomo:
             self.nbinsz = 1
-            zbins = np.zeros(cat.ngal, dtype=np.int32)
+            old_zbins = cat.zbins[:]
+            cat.zbins = np.zeros(cat.ngal, dtype=np.int32)
             self.nzcombis = 1
         else:
             self.nbinsz = cat.nbinsz
@@ -706,7 +821,7 @@ class GGCorrelation(BinnedNPCF):
         args_hash = (np.float64(cat.pix1_start), np.float64(cat.pix1_d), np.int32(cat.pix1_n), 
                      np.float64(cat.pix2_start), np.float64(cat.pix2_d), np.int32(cat.pix2_n), 
                      np.int32(nregions), index_matcher_flat.astype(np.int32),)
-        args_binning = (np.float64(self.min_sep), np.float64(self.max_sep), np.int32(self.nbinsr))
+        args_binning = (np.float64(self.min_sep), np.float64(self.max_sep), np.int32(self.nbinsr), np.int32(do_dc))
         args_output = (bin_centers, xip, xim, norm, npair, )
         func = self.clib.alloc_xipm_doubletree
         args = (*args_treeresos,
@@ -725,7 +840,11 @@ class GGCorrelation(BinnedNPCF):
         self.norm = norm.reshape(sz2r)
         self.xip = xip.reshape(sz2r)
         self.xim = xim.reshape(sz2r)
-        self.projection = "x"
+        self.projection = "xipm"
+        
+        if not dotomo:
+            cat.zbins = old_zbins
+            
         
     def computeMap2(self, radii, tofile=False):
         

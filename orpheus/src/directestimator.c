@@ -111,7 +111,7 @@ void ApertureMassMap_Equal(
         double *nextSn_w = calloc(max_order*nbinsz, sizeof(double));
         double *nextS2n_w = calloc(max_order*nbinsz, sizeof(double));
         
-        int *factorials_zcombis = calloc(max_order+nbinsz+1, sizeof(int));
+        double *factorials_zcombis = calloc(max_order+nbinsz+1, sizeof(double));
         double *factorials = calloc(max_order+1, sizeof(double));
         double *bellargs_Msn = calloc(max_order, sizeof(double));
         double *bellargs_Sn = calloc(max_order, sizeof(double));
@@ -125,7 +125,7 @@ void ApertureMassMap_Equal(
         double *nextMapn_var = calloc(max_order*nbinsz, sizeof(double));
         
         gen_fac_table(max_order, factorials);
-        gen_fac_table_int(max_order+nbinsz, factorials_zcombis);
+        gen_fac_table(max_order+nbinsz, factorials_zcombis);
         int thread_nzcombis = zcombis_tot(nbinsz, max_order, factorials_zcombis);
         int thisthreadshift = elthread*thread_nzcombis;
         
@@ -135,25 +135,21 @@ void ApertureMassMap_Equal(
             if ((ind_ap%nthreads)!=elthread){continue;}
             int c1 = ind_ap%ncenters_1;
             int c2 = ind_ap/ncenters_1;
-            if (elthread==0){
+            //if (elthread==0){
                 //for (order=1; order<=max_order; order++){
                 //    printf("%d %d %d %d %d %d \n ",
                 //           ncenters, ind_ap, nbinsz, order, factorials_zcombis[nbinsz+order-1],
                 //           zcombis_order(nbinsz, order, factorials_zcombis));
                 //}
                 //printf("Tot: %d \n ", thread_nzcombis);
-            }
+            //}
             
             //if (elthread==0){printf("Start setting stuff to zero for ap %d on thread %d\n",ind_ap,elthread);}
             // Reset args to zeros
             nextcovs[0]=0;nextcovs[1]=0;
+            for (int i=0; i<3*nbinsz; i++){nextcounts[i]=0;}
             for (int i=0; i<max_order*nbinsz; i++){
                 nextMsn[i]=0;nextSn[i]=0;nextSn_w[i]=0;nextS2n_w[i]=0;
-            }
-            for (int i=0; i<3*nbinsz; i++){nextcounts[i]=0;}
-            for (int i=0; i<max_order+1; i++){
-                nextMapn_singlez[i]=0; nextMapn_norm_singlez[i]=0; 
-                nextMapn_var_singlez[i]=0; nextMapn_var_norm_singlez[i]=0;
             }
                     
             // Get all the statistics of the aperture in power sum basis
@@ -166,13 +162,17 @@ void ApertureMassMap_Equal(
                 nextcounts, nextcovs, nextMsn, nextSn, nextSn_w, nextS2n_w);
             
             //if (elthread==0){printf("Got stats for ap %d on thread %d\n",ind_ap,elthread);}
-            printf("For aperture # %d at zbin0: x/y=%.3f/%.3f, cov=%.3f/%.3f, counts=%.3f, Ms1=%.10f S1=%.10f S2=%.10f \n",
-                               ind_ap, centers_1[c1], centers_2[c2], nextcovs[0], nextcovs[1], nextcounts[0],
-                               nextMsn[0*max_order+0],nextSn[0*max_order+0],nextSn[0*max_order+1]);
+            //printf("For aperture # %d at zbin0: x/y=%.3f/%.3f, cov=%.3f/%.3f, counts=%.3f, Ms1=%.10f S1=%.10f S2=%.10f \n",
+            //                   ind_ap, centers_1[c1], centers_2[c2], nextcovs[0], nextcovs[1], nextcounts[0],
+            //                   nextMsn[0*max_order+0],nextSn[0*max_order+0],nextSn[0*max_order+1]);
             
             // Transform to Mapn(zi)
             //if (elthread==0){printf("Transforming to Mapn %d on thread %d\n",ind_ap,elthread);}
             for (elbinz=0; elbinz<nbinsz; elbinz++){
+                for (int i=0; i<max_order+1; i++){
+                    nextMapn_singlez[i]=0; nextMapn_norm_singlez[i]=0; 
+                    nextMapn_var_singlez[i]=0; nextMapn_var_norm_singlez[i]=0;
+                }
                 int tmpind = elbinz*max_order+0;
                 bellargs_Msn[0] = -nextMsn[tmpind];
                 bellargs_Sn[0] = -nextSn[tmpind];
@@ -194,7 +194,7 @@ void ApertureMassMap_Equal(
                     if ((nextMapn_norm_singlez[order+1]!=0)&&(nextMapn_var_norm_singlez[order+1]!=0)){
                         nextMapn[elbinz*max_order+order] = nextMapn_singlez[order+1]/nextMapn_norm_singlez[order+1];
                         nextMapn_var[elbinz*max_order+order] = nextMapn_var_singlez[order+1] / (
-                            nextMapn_var_norm_singlez[order+1]*abs(nextMapn_var_norm_singlez[order+1]));
+                            nextMapn_var_norm_singlez[order+1]*nextMapn_var_norm_singlez[order+1]);
                         //printf("For aperture # %d: cov=%.3f, counts=%.3f, Map^%d_nom=%.10f, Multiplets^%d=%.10f, Map^%d=%.10f w_Ap=%.10f \n",
                         //       ind_ap, nextcovs[0], nextcounts[elbinz*3], order, nextMapn_singlez[order+1], order, 
                         //       nextMapn_norm_singlez[order+1], order,
@@ -214,10 +214,19 @@ void ApertureMassMap_Equal(
                 out_Sn[i*ncenters + c2*ncenters_1+c1] = nextSn[i];
                 out_Msn[i*ncenters + c2*ncenters_1+c1] = nextMsn[i];
                 out_Mapn[i*ncenters + c2*ncenters_1+c1] = nextMapn[i];
-                out_Msn[i*ncenters + c2*ncenters_1+c1] = nextMapn_var[i];
+                out_Mapn_var[i*ncenters + c2*ncenters_1+c1] = nextMapn_var[i];
+                //if (i<2){
+                //printf("At allocation: For ap %d/%d on thread %d at i=%i: S=%.8f  Ms=%.8f i.e. S=%.8f  Ms=%.8f \n",
+                //       c1,c2,elthread,i,nextSn[i],nextMsn[i],
+                //       out_Sn[i*ncenters + c2*ncenters_1+c1],
+                //       out_Msn[i*ncenters + c2*ncenters_1+c1]);}
             }
-            if (elthread==0){printf("For ap %d/%d on thread %d: S(zbin=0,order=1)=%.8f\n",
-                                c1,c2,elthread,out_Sn[0]);}
+            //printf("For ap %d/%d on thread %d: S1=%.8f  S2=%.8f  Ms1=%.8f  Ms2=%.8f\n\n",
+            //       c1,c2,elthread,
+            //       out_Sn[0*ncenters + c2*ncenters_1+c1],
+            //       out_Sn[1*ncenters + c2*ncenters_1+c1],
+            //       out_Msn[0*ncenters + c2*ncenters_1+c1],
+            //       out_Msn[1*ncenters + c2*ncenters_1+c1]);
         }
         
         
@@ -257,8 +266,8 @@ void MapnSingleEonlyDisc(
     int nthreads, double *Mapn, double *wtot_Mapn){
     
     //printf("Starting\n");
-    int *fac_zcombis = calloc(max_order+nbinsz+1, sizeof(int));
-    gen_fac_table_int(max_order+nbinsz, fac_zcombis);
+    double *fac_zcombis = calloc(max_order+nbinsz+1, sizeof(double));
+    gen_fac_table(max_order+nbinsz, fac_zcombis);
     int nzcombis = zcombis_tot(nbinsz, max_order, fac_zcombis);
     
     // shape (nthreads, nfrac_cuts, nzcombis)
@@ -277,7 +286,7 @@ void MapnSingleEonlyDisc(
         double *nextSn_w = calloc(max_order*nbinsz, sizeof(double));
         double *nextS2n_w = calloc(max_order*nbinsz, sizeof(double));
         
-        int *factorials_zcombis = calloc(max_order+nbinsz+1, sizeof(int));
+        double *factorials_zcombis = calloc(max_order+nbinsz+1, sizeof(double));
         double *factorials = calloc(max_order+1, sizeof(double));
         double *bellargs_Msn = calloc(max_order, sizeof(double));
         double *bellargs_Sn = calloc(max_order, sizeof(double));
@@ -291,7 +300,7 @@ void MapnSingleEonlyDisc(
         double *nextMapn_var = calloc(max_order*nbinsz, sizeof(double));
         
         gen_fac_table(max_order, factorials);
-        gen_fac_table_int(max_order+nbinsz, factorials_zcombis);
+        gen_fac_table(max_order+nbinsz, factorials_zcombis);
         int thread_nzcombis = zcombis_tot(nbinsz, max_order, factorials_zcombis);
         int thisthreadshift = elthread*nfrac_cuts*thread_nzcombis;
         
@@ -316,11 +325,7 @@ void MapnSingleEonlyDisc(
                 nextMsn[i]=0;nextSn[i]=0;nextSn_w[i]=0;nextS2n_w[i]=0;
             }
             for (int i=0; i<3*nbinsz; i++){nextcounts[i]=0;}
-            for (int i=0; i<max_order+1; i++){
-                nextMapn_singlez[i]=0; nextMapn_norm_singlez[i]=0; 
-                nextMapn_var_singlez[i]=0; nextMapn_var_norm_singlez[i]=0;
-            }
-                    
+            
             // Get all the statistics of the aperture in power sum basis
             //if (elthread==0){printf("Get power sums from ap %d on thread %d\n",ind_ap,elthread);}
             singleAp_MapnSingleEonlyDisc( R_ap, centers_1[ind_ap], centers_2[ind_ap], 
@@ -338,6 +343,10 @@ void MapnSingleEonlyDisc(
             // Transform to Mapn(zi)
             //if (elthread==0){printf("Transforming to Mapn %d on thread %d\n",ind_ap,elthread);}
             for (elbinz=0; elbinz<nbinsz; elbinz++){
+                for (int i=0; i<max_order+1; i++){
+                    nextMapn_singlez[i]=0; nextMapn_norm_singlez[i]=0; 
+                    nextMapn_var_singlez[i]=0; nextMapn_var_norm_singlez[i]=0;
+                    }
                 int tmpind = elbinz*max_order+0;
                 bellargs_Msn[0] = -nextMsn[tmpind];
                 bellargs_Sn[0] = -nextSn[tmpind];
@@ -359,10 +368,6 @@ void MapnSingleEonlyDisc(
                         nextMapn[elbinz*max_order+order] = nextMapn_singlez[order+1]/nextMapn_norm_singlez[order+1];
                         nextMapn_var[elbinz*max_order+order] = nextMapn_var_singlez[order+1] / (
                             nextMapn_var_norm_singlez[order+1]*abs(nextMapn_var_norm_singlez[order+1]));
-                        //printf("For aperture # %d: cov=%.3f, counts=%.3f, Map^%d_nom=%.10f, Multiplets^%d=%.10f, Map^%d=%.10f w_Ap=%.10f \n",
-                        //       ind_ap, nextcovs[0], nextcounts[elbinz*3], order, nextMapn_singlez[order+1], order, 
-                        //       nextMapn_norm_singlez[order+1], order,
-                        //       nextMapn[elbinz*max_order+order],nextMapn_var[elbinz*max_order+order]);
                     }
                 }   
             }
@@ -375,10 +380,12 @@ void MapnSingleEonlyDisc(
             double toadd_Mapn, toadd_Mapn_var, toadd_Mapn_w;
             for (order=1; order<=max_order; order++){
                 int *thiszcombi = calloc(order, sizeof(int));
+                //if (ind_ap==ncenters/3){printf("\nNow doing order %d\n",order);}
                 for (elzcombi=0; elzcombi<zcombis_order(nbinsz,order,factorials_zcombis); elzcombi++){
-                    //printf("Building zcombis at order %d (combi %d)",order,elzcombi);
+                    //printf("Building zcombis at order %d (combi %d) ",order,elzcombi);
                     // Compute Map^n and its weight for this zcombi 
                     // Do double counting corrs
+                    //if (ind_ap==ncenters/3){for (int _i=0;_i<order;_i++){printf("%d ",thiszcombi[_i]);}}
                     if (true){
                         if (order>1){
                             toadd_Mapn = 1;
@@ -388,6 +395,7 @@ void MapnSingleEonlyDisc(
                             for (elzbin=1; elzbin<order; elzbin++){
                                 if (thiszcombi[elzbin]==tmpzbin){tmporder+=1;}
                                 else{
+                                    //if (ind_ap==ncenters/3){printf(" Map^%i(z_%d)",tmporder+1,tmpzbin);}
                                     toadd_Mapn *= nextMapn[tmpzbin*max_order+tmporder];
                                     toadd_Mapn_var *= nextMapn_var[tmpzbin*max_order+tmporder];
                                     tmporder = 0;
@@ -396,6 +404,7 @@ void MapnSingleEonlyDisc(
                             }
                             toadd_Mapn *= nextMapn[tmpzbin*max_order+tmporder];
                             toadd_Mapn_var *= nextMapn_var[tmpzbin*max_order+tmporder];
+                            //if (ind_ap==ncenters/3){printf(" Map^%i(z_%d)\n",tmporder+1,tmpzbin);}
                         }
                         else{
                             toadd_Mapn = nextMapn[elzcombi*max_order+0];
@@ -413,15 +422,12 @@ void MapnSingleEonlyDisc(
                         }
                     }
                     if (weight_method==0){toadd_Mapn_w = 1.;}
-                    if ((weight_method==1) && (toadd_Mapn_var>0)){toadd_Mapn_w = 1./toadd_Mapn_var;}
+                    if ((weight_method==1) && (toadd_Mapn_var!=0)){toadd_Mapn_w = 1./toadd_Mapn_var;}
                     if ((weight_method==1) && (toadd_Mapn_var==0)){toadd_Mapn_w = 0;}
                     // Apply coverage cuts
-                    //if (nextcovs[0]>0.5){printf("nextcovs=%.4f/%.4f\n",nextcovs[0],nextcovs[1]);}
                     for (elcov_cut=1;elcov_cut<=nfrac_cuts;elcov_cut++){  
                         if ((nextcovs[0]>fraccov_cuts[nfrac_cuts-elcov_cut])|| 
                             (nextcovs[1]>fraccov_cuts[nfrac_cuts-elcov_cut])){break;}
-                        //if (nextcovs[0]>0.5){printf("Survived covcut %i at cov_cut=%.4f\n",
-                        //                            nfrac_cuts-elcov_cut,fraccov_cuts[nfrac_cuts-elcov_cut]);}
                         thisind = thisthreadshift + (nfrac_cuts-elcov_cut)*thread_nzcombis + cumzcombi;
                         tmpMapn[thisind] += toadd_Mapn_w*toadd_Mapn;
                         tmpwtot_Mapn[thisind] += toadd_Mapn_w;
@@ -467,7 +473,6 @@ void MapnSingleEonlyDisc(
         }
          Mapn[fzcombi] /= wtot_Mapn[fzcombi];
     }
-    
     free(fac_zcombis);
     free(tmpMapn);
     free(tmpwtot_Mapn);
@@ -634,6 +639,6 @@ void singleAp_MapnSingleEonlyDisc(
             S2n_w[thiscomp] *= tmp_normw*tmp_normw;
         }
     }
-    printf("After: R2=%.2f R2d=%.2f, maxd=%.4f, R=%.2f, Rext=%.4f counts=%.4f  S0=%.6f  S1=%.6f  Ms0=%.6f\n",
-               R2_ap,R2_ap_d, max_d, R_ap, R_ap+max_d, counts[1], Sn[0*max_order], Sn[0*max_order+1], Msn[0*max_order]);
+    //printf("After: R2=%.2f R2d=%.2f, maxd=%.4f, R=%.2f, Rext=%.4f counts=%.4f  S0=%.6f  S1=%.6f  Ms0=%.6f\n",
+    //           R2_ap,R2_ap_d, max_d, R_ap, R_ap+max_d, counts[1], Sn[0*max_order], Sn[0*max_order+1], Msn[0*max_order]);
 }
