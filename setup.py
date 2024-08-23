@@ -18,12 +18,22 @@ else:
     # See https://github.com/ContinuumIO/anaconda-issues/issues/11152
     os.environ["CC"] = "/usr/bin/gcc-12" 
     compiler_args = ["-shared", "-fopenmp", "-fPIC", "-Wall", "-lm", "-O3", "-ffast-math", "-std=c99"]
+    #compiler_args = ["-shared", "-fopenmp", "-fPIC", "-Wall", "-lm", "-std=c99"]
     linker_args = ["-fopenmp", "-lm"]
 
 ext_modules = [
     Extension(
         "orpheus_clib",
-        sources=["orpheus/src/assign.c", "orpheus/src/spatialhash.c", "orpheus/src/discrete.c"],
+        sources=["orpheus/src/utils.c", 
+                 "orpheus/src/assign.c", 
+                 "orpheus/src/spatialhash.c", 
+                 "orpheus/src/combinatorics.c", 
+                 "orpheus/src/directestimator.c", 
+                 "orpheus/src/corrfunc_second.c", 
+                 "orpheus/src/corrfunc_third.c",
+                 "orpheus/src/corrfunc_fourth.c",
+                 "orpheus/src/corrfunc_fourth_derived.c",
+                 "orpheus/src/covariance_second.c"],
         include_dirs=["orpheus/src"],
         extra_compile_args=compiler_args,
         extra_link_args=linker_args,

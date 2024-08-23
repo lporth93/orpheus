@@ -504,6 +504,16 @@ class BinnedNPCF:
                 ct.c_int32, 
                 np.ctypeslib.ndpointer(dtype=np.complex128),np.ctypeslib.ndpointer(dtype=np.complex128)]
             
+            # Transformation between 4PCF from multipole-basis tp real-space basis for a fixed
+            # combination of radial bins. Explicitly checks convergence for orders of multipoles included
+            self.clib.multipoles2npcf_gggg_singletheta_nconvergence.restype = ct.c_void_p
+            self.clib.multipoles2npcf_gggg_singletheta_nconvergence.argtypes = [
+                p_c128, p_c128, ct.c_int32, ct.c_int32, 
+                ct.c_double, ct.c_double, ct.c_double, 
+                p_f64, p_f64, ct.c_int32, ct.c_int32, 
+                ct.c_int32, 
+                np.ctypeslib.ndpointer(dtype=np.complex128),np.ctypeslib.ndpointer(dtype=np.complex128)]
+ 
             # Reconstruction of all 4pcf multipoles from symmetry properties given a set of
             # multipoles with theta1<=theta2<=theta3
             self.clib.getMultiplolesFromSymm.restype = ct.c_void_p
@@ -519,10 +529,18 @@ class BinnedNPCF:
                 p_f64, p_f64, ct.c_double, ct.c_double, ct.c_double, 
                 np.ctypeslib.ndpointer(dtype=np.complex128)]
             
+            # [DEBUG]: Shear 4pt function in terms of xip/xim, subsampled within the 4pcf bins
+            self.clib.gauss4pcf_analytic_integrated.restype = ct.c_void_p
+            self.clib.gauss4pcf_analytic_integrated.argtypes = [
+                ct.c_int32, ct.c_int32, ct.c_int32, ct.c_int32,
+                p_f64, ct.c_int32,  p_f64, ct.c_int32,
+                p_f64, p_f64, ct.c_double, ct.c_double, ct.c_double, 
+                np.ctypeslib.ndpointer(dtype=np.complex128)]
+            
             # [DEBUG]: Map4 via analytic gaussian 4pcf
             self.clib.alloc_notomoMap4_analytic.restype = ct.c_void_p
             self.clib.alloc_notomoMap4_analytic.argtypes = [
-                ct.c_double, ct.c_double, ct.c_int32, p_f64, p_f64, ct.c_int32,
+                ct.c_double, ct.c_double, ct.c_int32, p_f64, p_f64, ct.c_int32, ct.c_int32,
                 p_i32, p_i32, p_i32, ct.c_int32,
                 ct.c_int32, p_f64, ct.c_int32,
                 p_f64, p_f64, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, 
@@ -2709,7 +2727,33 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
             _phis1, _phis2, _nphis1, _nphis2,
             np.int32(self.proj_dict[projection]), npcf_out, npcf_norm_out)
         
-        return npcf_out.reshape((_self.n_cfs, phis1,_nphis1)), npcf_norm_out.reshape((_nphis1,_nphis2))
+        return npcf_out.reshape((self.n_cfs, _nphis1,_nphis2)), npcf_norm_out.reshape((_nphis1,_nphis2))
+                
+    def multipoles2npcf_gggg_singletheta_nconvergence(self, elthet1, elthet2, elthet3, projection="X"):
+        assert((projection in self.proj_dict.keys()) and (projection in self.projections_avail))
+        
+        _phis1 = self.phis[0].astype(np.float64)
+        _phis2 = self.phis[1].astype(np.float64)
+        _nphis1 = len(self.phis[0])
+        _nphis2 = len(self.phis[1])
+                
+        ncfs, nnvals, _, nzcombis, nbinsr, _, _ = np.shape(self.npcf_multipoles)
+        
+        Upsilon_in = self.npcf_multipoles[...,elthet1,elthet2,elthet3].flatten()
+        N_in = self.npcf_multipoles_norm[...,elthet1,elthet2,elthet3].flatten()
+        npcf_out = np.zeros(self.n_cfs*nzcombis*(self.nmaxs[0]+1)*(self.nmaxs[1]+1)*_nphis1*_nphis2, dtype=np.complex128)
+        npcf_norm_out = np.zeros(nzcombis*(self.nmaxs[0]+1)*(self.nmaxs[1]+1)*_nphis1*_nphis2, dtype=np.complex128)
+        
+        self.clib.multipoles2npcf_gggg_singletheta_nconvergence(
+            Upsilon_in, N_in, self.nmaxs[0], self.nmaxs[1],
+            self.bin_centers_mean[elthet1], self.bin_centers_mean[elthet2], self.bin_centers_mean[elthet3],
+            _phis1, _phis2, _nphis1, _nphis2,
+            np.int32(self.proj_dict[projection]), npcf_out, npcf_norm_out)
+                
+        npcf_out = npcf_out.reshape((self.n_cfs, self.nmaxs[0]+1, self.nmaxs[1]+1, _nphis1, _nphis2))
+        npcf_norm_out = npcf_norm_out.reshape((self.nmaxs[0]+1, self.nmaxs[1]+1, _nphis1, _nphis2))
+                
+        return npcf_out, npcf_norm_out
     
     def computeMap4(self, radii, do_multiscale=False, tofile=False, filtercache=None):
         
@@ -3057,9 +3101,27 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                                      gausss_4pcf)
         return gausss_4pcf
     
+    
+    # [Debug] Gaussian 4pcf from analytic 2pcf
+    def gauss4pcf_analytic_integrated(self, itheta1, itheta2, itheta3, nsubr, 
+                                 xip_arr, xim_arr, thetamin_xi, thetamax_xi, dtheta_xi):
+        gausss_4pcf = np.zeros(8*len(self.phis[0])*len(self.phis[0]),dtype=np.complex128)
+        self.clib.gauss4pcf_analytic_integrated(itheta1.astype(np.int32), 
+                                     itheta2.astype(np.int32),
+                                     itheta3.astype(np.int32),
+                                     nsubr.astype(np.int32),
+                                     self.bin_edges.astype(np.float64),self.nbinsr.astype(np.int32),
+                                     self.phis[0].astype(np.float64), np.int32(len(self.phis[0])),
+                                     xip_arr.astype(np.float64), xim_arr.astype(np.float64),
+                                     thetamin_xi.astype(np.float64), 
+                                     thetamax_xi.astype(np.float64), 
+                                     dtheta_xi.astype(np.float64),
+                                     gausss_4pcf)
+        return gauss_4pcf.reshape((8, self.phis[0], self.phis[0]))
+    
     # [Debug] Disconnected part of Map^4 from analytic 2pcf
-    def Map4analytic(self,mapradii, xip_spl, xim_spl, thetamin_xi, thetamax_xi, ntheta_xi, 
-                     nsubsample_filter=1, batchsize=None):
+    def Map4analytic(self, mapradii, xip_spl, xim_spl, thetamin_xi, thetamax_xi, ntheta_xi, 
+                     nsubr=1, nsubsample_filter=1, batchsize=None):
         
         self.nbinsz = 1
         self.nzcombis = 1
@@ -3081,26 +3143,12 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
         nthetacombis_batches[-1] = _nbinsr3-cumnthetacombis_batches[-2]
         thetacombis_batches = thetacombis_batches.flatten().astype(np.int32)
         nbatches = len(nthetacombis_batches)
-        ## Optimize this by assigning a cost to each theta for the Gn computation.
-        ## Todo: Update to reflect the expected cost...here I just claim that cost ~ theta. In reality, this will
-        ##       somewhat depend on the chosen algorithm and the binning accuracy in real space and in multipole
-        ##       space with a scaling ranging from theta^0 to theta^2. Also, for each batch the cost for Gn is 
-        ##       somewhat bound by the larges theta value anyways...
-        ## Note that for large radii we will most likely have all radii in each batch, meaning that we have to
-        ## allocate all the Gn anyways, meaning that this optimization does not help a lot...
-        #thetacombis_batches = np.asarray(
-        #    tuple(product(np.arange(self.nbinsr), np.arange(self.nbinsr), np.arange(self.nbinsr))))
-        #cost = self.bin_edges[1:] 
-        #costarr = np.max(cost[nrcombis],axis=1)
-        #costarr_sortinds = np.argsort(costarr)
-        #_, _, batch_lengths, batch_indices = split_array_into_batches(costarr[costarr_sortinds], nthreads)
-        #for elbatch in range(nthreads):
-        #    thisinds = costarr_sortinds[batch_indices[elbatch]]
+
         args_4pcfsetup = (np.float64(self.min_sep), np.float64(self.max_sep), np.int32(self.nbinsr), 
                           self.phis[0].astype(np.float64), 
-                          (self.phis[0][1]-self.phis[0][0])*np.ones(_nphis, dtype=np.float64), _nphis,)
+                          (self.phis[0][1]-self.phis[0][0])*np.ones(_nphis, dtype=np.float64), _nphis, np.int32(nsubr), )
         args_thetas = (thetacombis_batches, nthetacombis_batches, cumnthetacombis_batches, nbatches, )
-        args_map4 = (mapradii, np.int32(len(mapradii)), )
+        args_map4 = (mapradii.astype(np.float64), np.int32(len(mapradii)), )
         thetas_xi = np.linspace(thetamin_xi,thetamax_xi,ntheta_xi+1)
         args_xi = (xip_spl(thetas_xi), xim_spl(thetas_xi), thetamin_xi, thetamax_xi, ntheta_xi, nsubsample_filter, )
         args = (*args_4pcfsetup,

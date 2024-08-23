@@ -189,6 +189,93 @@ void multipoles2npcf_gggg_singletheta(double complex *Upsilon_n, double complex 
     free(projdir);
 }
 
+// Upsilon_n has shape (8,n1max+1,n2max+1,nphi12,nphi13)
+void multipoles2npcf_gggg_singletheta_nconvergence(
+    double complex *Upsilon_n, double complex *N_n, int n1max, int n2max,
+    double theta1, double theta2, double theta3,
+    double *phis12, double *phis13, int nbinsphi12, int nbinsphi13,
+    int projection, double complex *npcf, double complex *npcf_norm){
+    
+    int n_cfs = 8;
+    int nmax = n1max;
+    int nns = 2*nmax+1;
+    double complex expphi12, expphi13;
+    double complex *expphi12s = calloc(nns, sizeof(double complex));
+    double complex *expphi13s = calloc(nns, sizeof(double complex));
+    double complex *projdir = calloc(n_cfs, sizeof(double complex));
+    int npcf_n2cutshift = nbinsphi12*nbinsphi13;
+    int npcf_n1cutshift = (n2max+1)*nbinsphi12*nbinsphi13;
+    int npcf_compshift = (n1max+1)*(n2max+1)*nbinsphi12*nbinsphi13;
+    int ups_compshift = nns*nns;
+    for (int elphi12=0; elphi12<nbinsphi12; elphi12++){
+        for (int elphi13=0; elphi13<nbinsphi13; elphi13++){
+            // Convert multipoles to npcf
+            expphi12s[nmax] = 1;
+            expphi13s[nmax] = 1;
+            expphi12 = cexp(I*phis12[elphi12]);
+            expphi13 = cexp(I*phis13[elphi13]);
+            for (int nextn=1; nextn<=nmax; nextn++){ 
+                expphi12s[nmax+nextn] = expphi12s[nmax+nextn-1]*expphi12;
+                expphi12s[nmax-nextn] = conj(expphi12s[nmax+nextn]);
+                expphi13s[nmax+nextn] = expphi13s[nmax+nextn-1]*expphi13;
+                expphi13s[nmax-nextn] = conj(expphi13s[nmax+nextn]);
+            }
+            double complex nextang;
+            for (int n1cut=0; n1cut<=nmax; n1cut++){
+                for (int n2cut=0; n2cut<=nmax; n2cut++){ 
+                    printf("Doing n1c=%d n2c=%d",n1cut,n2cut);
+                    int ind_npcf = n1cut*npcf_n1cutshift + n2cut*npcf_n2cutshift + elphi12*nbinsphi13 + elphi13;
+                    for (int nextn1=-n1cut; nextn1<=n1cut; nextn1++){
+                        for (int nextn2=-n2cut; nextn2<=n2cut; nextn2++){ 
+                            int ind_ups = (nmax+nextn1)*nns + (nmax+nextn2);
+                            nextang = INV_2PI * expphi12s[nmax+nextn1] * expphi13s[nmax+nextn2];
+                            npcf_norm[ind_npcf] += N_n[ind_ups]*nextang;
+                            for (int elcf=0; elcf<n_cfs; elcf++){ 
+                                npcf[elcf*npcf_compshift + ind_npcf] += Upsilon_n[elcf*ups_compshift + ind_ups]*nextang;
+                            }
+                        }
+                    }
+                    // Normalize: Gamma=Upsilon/N --> Make sure that we have counts, i.e. N >~ 1.
+                    for (int elcf=0; elcf<n_cfs; elcf++){ 
+                        if (cabs(npcf_norm[ind_npcf]) > 0.1){npcf[elcf*npcf_compshift + ind_npcf] /= cabs(npcf_norm[ind_npcf]);}
+                        else{npcf[elcf*npcf_compshift + ind_npcf] = 0;}
+                    }
+                    // Now transform to some projection
+                    if (projection==0){//X projection
+                        for (int elcf=0; elcf<n_cfs; elcf++){projdir[elcf] = 1;}
+                    }
+                    else if (projection==1){//Centroid projection
+                        double complex y1, y2, y3;
+                        double complex q1, q2, q3, q4;
+                        double complex qcbyq_1, qcbyq_2, qcbyq_3, qcbyq_4, qbyqc_1, qbyqc_2, qbyqc_3, qbyqc_4;
+                        y1 = theta1;
+                        y2 = theta2*expphi12s[nmax+1];
+                        y3 = theta3*expphi13s[nmax+1];                        
+                        q1 = -0.25*(  y1 + y2   + y3);
+                        q2 = +0.25*(3*y1 - y2   - y3);
+                        q3 = +0.25*(- y1 + 3*y2 - y3);
+                        q4 = +0.25*(- y1 - 1*y2 + 3*y3);
+                        qcbyq_1=conj(q1)/q1; qcbyq_2=conj(q2)/q2; qcbyq_3=conj(q3)/q3; qcbyq_4=conj(q4)/q4;
+                        qbyqc_1=q1/conj(q1); qbyqc_2=q2/conj(q2); qbyqc_3=q3/conj(q3); qbyqc_4=q4/conj(q4); 
+                        projdir[0] = qcbyq_1*qcbyq_2*qcbyq_3*qcbyq_4 * expphi12s[nmax+2] * expphi13s[nmax+3];
+                        projdir[1] = qbyqc_1*qcbyq_2*qcbyq_3*qcbyq_4 * expphi12s[nmax+2] * expphi13s[nmax+1];
+                        projdir[2] = qcbyq_1*qbyqc_2*qcbyq_3*qcbyq_4 * expphi12s[nmax+2] * expphi13s[nmax+3];
+                        projdir[3] = qcbyq_1*qcbyq_2*qbyqc_3*qcbyq_4 * expphi12s[nmax-2] * expphi13s[nmax+3];
+                        projdir[4] = qcbyq_1*qcbyq_2*qcbyq_3*qbyqc_4 * expphi12s[nmax+2] * expphi13s[nmax-1];
+                        projdir[5] = qbyqc_1*qbyqc_2*qcbyq_3*qcbyq_4 * expphi12s[nmax+2] * expphi13s[nmax+1];
+                        projdir[6] = qbyqc_1*qcbyq_2*qbyqc_3*qcbyq_4 * expphi12s[nmax-2] * expphi13s[nmax+1];
+                        projdir[7] = qbyqc_1*qcbyq_2*qcbyq_3*qbyqc_4 * expphi12s[nmax+2] * expphi13s[nmax-3];
+                    }
+                    for (int elcf=0; elcf<n_cfs; elcf++){npcf[elcf*npcf_compshift + ind_npcf] *= projdir[elcf];}
+                }
+            } 
+        }
+    } 
+    free(expphi12s);
+    free(expphi13s);
+    free(projdir);
+}
+
 void filter_Map4(double y1, double y2, double y3, double phi1, double phi2, double complex *output){
     double complex F_1[8]= {0, 0, 0, 0, 0, 0, 0, 0};
     double complex F_2[8]= {0, 0, 0, 0, 0, 0, 0, 0};
@@ -559,7 +646,7 @@ void multipoles2npcf_gggg(double complex *upsilon_n, double complex *N_n, double
 // cumthetacombis_batches : array of length (nthetbatches+1) with is cumsum of nthetacombis_batches
 // nthetbatches: the number of theta batches
 void alloc_notomoMap4_analytic(
-    double rmin, double rmax, int nbinsr, double *phibins, double *dbinsphi, int nbinsphi,
+    double rmin, double rmax, int nbinsr, double *phibins, double *dbinsphi, int nbinsphi, int nsubr,
     int *thetacombis_batches, int *nthetacombis_batches, int *cumthetacombis_batches, int nthetbatches,
     int nthreads, double *mapradii, int nmapradii, 
     double *xip, double *xim, double thetamin_xi, double thetamax_xi, int nthetabins_xi, int nsubsample_filter,
@@ -610,33 +697,31 @@ void alloc_notomoMap4_analytic(
                 bin_centers[elb] = .5*(bin_edges[elb]+bin_edges[elb+1]);
             }
         }
-        //printf("Computed bin centers for thetabatch %d/%d on thread %d with %d thetacombis\n",
-        //       elthetbatch,nthetbatches,thisthread,nthetacombis_batches[elthetbatch]);
-                
-        // For each theta combination (theta1,theta2,theta3) in this batch 
-        // 1) Get bin edges and bin centers of the
-        // 2) Get the analytic gaussian 4pcf from the 2pcf
-        // 3) Update the aperture Map^4 integral
-        // Get bin centers for all theta combis in this batch
         double dtheta_xi = (thetamax_xi-thetamin_xi)/nthetabins_xi;
+        
+        // For each theta combination (theta1,theta2,theta3) in this batch 
         for (int elb=0;elb<batch_nthetas;elb++){
-            //if(elb%100==-1){
-            //    printf("Starting bin %i in thetabatch %d/%d on thread %d\n",elb,elthetbatch,nthetbatches,thisthread);}
-            // 1)
-            //int thisrcombi = thetacombis_batches[cumthetacombis_batches[elthetbatch]+elb];
-            //int elb1 = thisrcombi/(nbinsr*nbinsr);
-            //int elb2 = (thisrcombi-elb1*nbinsr*nbinsr)/nbinsr;
-            //int elb3 = thisrcombi-elb1*nbinsr*nbinsr-elb2*nbinsr;
             
-            // 2)
-            gauss4pcf_analytic(bin_centers[elb1s_batch[elb]],
-                               bin_centers[elb2s_batch[elb]],
-                               bin_centers[elb3s_batch[elb]], phibins, nbinsphi,
-                               xip, xim, thetamin_xi, thetamax_xi, dtheta_xi, thisnpcf);
-            //if(elb%100==-1){
-            //printf("Done 4pcf for bin %i in thetabatch %d/%d on thread %d\n",elb,elthetbatch,nthetbatches,thisthread);}
+            // Get the analytic gaussian 4pcf from the 2pcf
+            if (nsubr==1){
+                gauss4pcf_analytic(bin_centers[elb1s_batch[elb]],
+                                   bin_centers[elb2s_batch[elb]],
+                                   bin_centers[elb3s_batch[elb]], phibins, nbinsphi,
+                                   xip, xim, thetamin_xi, thetamax_xi, dtheta_xi, 
+                                   thisnpcf);
+            }
+            else{
+                gauss4pcf_analytic_integrated(elb1s_batch[elb], 
+                                              elb2s_batch[elb], 
+                                              elb3s_batch[elb], 
+                                              nsubr,
+                                              bin_edges, nbinsr,
+                                              phibins, nbinsphi,
+                                              xip, xim, thetamin_xi, thetamax_xi, dtheta_xi,
+                                              thisnpcf);
+            }
             
-            // 3)
+            // Update the aperture Map^4 integral
             double y1, y2, y3, dy1, dy2, dy3;
             int map4ind;
             int map4threadshift = thisthread*8*nmapradii;
@@ -651,22 +736,12 @@ void alloc_notomoMap4_analytic(
                                       y1, y2, y3, dy1, dy2, dy3,
                                       phibins, phibins, dbinsphi, dbinsphi, nbinsphi, nbinsphi,
                                       thisnpcf, nextM4correlators);
-                    
                 for (int elcomp=0;elcomp<8;elcomp++){
                     map4ind = elcomp*nmapradii+elmapr;
                     if (isnan(cabs(nextM4correlators[elcomp]))==false){
                         allM4correlators[map4threadshift+map4ind] += nextM4correlators[elcomp];
                         int _thetacombi = thetacombis_batches[cumthetacombis_batches[elthetbatch]+elb];
-                        //if ((_thetacombi>12285) && (_thetacombi<12295)){
-                        //    printf("%d %d %d %d : %d %d %d : %.50f %.50f\n",
-                        //           thetacombis_batches[cumthetacombis_batches[elthetbatch]+elb],
-                        //           elb1s_batch[elb],elb2s_batch[elb],elb3s_batch[elb],elthetbatch,elmapr,elcomp,
-                        //           creal(nextM4correlators[elcomp]),cimag(nextM4correlators[elcomp]));}
                     }
-                    //if (isnan(cabs(nextM4correlators[elcomp]))==true){
-                    //printf("%d %d %d : %d %d %d : %.7f %.7f %.7f : %.7f\n",
-                    //       elb1s_batch[elb],elb2s_batch[elb],elb3s_batch[elb],elthetbatch,elmapr,elcomp,
-                    //       y1,y2,y3,cabs(nextM4correlators[elcomp]));}
                     nextM4correlators[elcomp] = 0;
                 }
             }
@@ -708,6 +783,59 @@ void alloc_notomoMap4_analytic(
     free(allM4correlators);
 }  
     
+void gauss4pcf_analytic_integrated(
+    int indbin1, int indbin2, int indbin3, int nsubr, double *rbin_edges, int nbinsr, double *phis, int nphis, 
+    double *xip, double *xim, double thetamin_xi, double thetamax_xi, double dtheta_xi,
+    double complex *gaussfourpcf){
+    
+    double dtheta1, dtheta2, dtheta3, subshift, subsubshift, thisw, wtot;
+    double *theta1_subs = calloc(nsubr, sizeof(double));
+    double *theta2_subs = calloc(nsubr, sizeof(double));
+    double *theta3_subs = calloc(nsubr, sizeof(double));
+    
+    // We define the subsampling in a way s.t. the subsampled bin values are different for the different thetas.
+    // In particular, the values for theta2 are the `true` subsampled ones, while we shift the values of
+    // theta1 and theta3 by +-1/3 of the subsampling bin width.
+    dtheta1 = rbin_edges[indbin1+1] - rbin_edges[indbin1];
+    dtheta2 = rbin_edges[indbin2+1] - rbin_edges[indbin2];
+    dtheta3 = rbin_edges[indbin3+1] - rbin_edges[indbin3];
+    subsubshift = 1./(3*nsubr);
+    for (int elsub=0; elsub<nsubr; elsub++){
+        subshift = (1.+2*elsub)/(2*nsubr);
+        theta1_subs[elsub] = rbin_edges[indbin1] + dtheta1*(subshift + 0*subsubshift);
+        theta2_subs[elsub] = rbin_edges[indbin2] + dtheta2*(subshift + 0);
+        theta3_subs[elsub] = rbin_edges[indbin3] + dtheta3*(subshift - 0*subsubshift);    
+        //printf("%.2f %.2f\n ",subshift,theta2_subs[elsub]);
+    }
+    
+    // Run through all possible combinations of subsampled bin centers, evaluate the 
+    // corresponding 4pcf and add it to the bin-averaged 4pcf
+    wtot = 0;
+    for (int elsub1=0; elsub1<nsubr; elsub1++){
+        for (int elsub2=0; elsub2<nsubr; elsub2++){
+            for (int elsub3=0; elsub3<nsubr; elsub3++){
+                thisw = 1;
+                double complex *nextfourpcf = calloc(8*nphis*nphis, sizeof(double complex));
+                gauss4pcf_analytic(theta1_subs[elsub1],
+                                   theta2_subs[elsub2],
+                                   theta3_subs[elsub3], phis, nphis,
+                                   xip, xim, thetamin_xi, thetamax_xi, dtheta_xi, nextfourpcf);
+                for (int ind=0; ind<8*nphis*nphis; ind++){gaussfourpcf[ind] += thisw*nextfourpcf[ind];}
+                free(nextfourpcf);
+                wtot += thisw;
+            }
+        }
+    }
+    
+    // Normalize bin-averaged 4pcf
+    for (int ind=0; ind<8*nphis*nphis; ind++){gaussfourpcf[ind] /= wtot;}
+    
+    free(theta1_subs);
+    free(theta2_subs);
+    free(theta3_subs);
+}
+
+
 // gaussfourpcf has shape (8,nphis,nphis)
 // assume xip, xim have linear bin-edges
 // X4 --> X1 --> X2 --> X3 convention
