@@ -28,7 +28,6 @@ int backsearch(double *array, int ind_min, int ind_max, double target) {
 }
 
 
-
 double linint(double *vec, double x, double xmin, double xmax, double dx){
     if (x<=xmin){return 0;}
     if (x>=(xmax-dx)){return 0;}
@@ -54,6 +53,40 @@ void expand_arr(int *arr_long, int *arr_sel, int len_long, int len_sel, int *res
     }
 }
 
+
+// Builds product of terms based on tomo bin combination
+// Example: zcombi = [z1,z1,z2,z5,z5,z5] --> res = moments[z1,2]*moments[z2,1]*moments[z5,3]
+double nexttomoterm(int order, int max_order, double *moments, int *zcombi, int elzcombi, int do_subtractions){
+    double res;
+    int tmpzbin, tmporder;
+    if (do_subtractions){
+        if (order>1){
+            res = 1;
+            tmpzbin = zcombi[0];
+            tmporder = 0;
+            for (int elzbin=1; elzbin<order; elzbin++){
+                if (zcombi[elzbin]==tmpzbin){tmporder+=1;}
+                else{
+                    res *= moments[tmpzbin*max_order+tmporder];
+                    tmporder = 0;
+                    tmpzbin = zcombi[elzbin];
+                }
+            }
+            res *= moments[tmpzbin*max_order+tmporder];
+        }
+        else{
+            res = moments[elzcombi*max_order+0];
+        }
+    }
+    else{
+        res = 1;
+        for (int elzbin=0; elzbin<order; elzbin++){
+            tmpzbin = zcombi[elzbin];
+            res *= moments[tmpzbin*max_order+0];
+        }
+    }
+    return res;
+}
 
 int sumintarr(int *arr, int len){
     int res = 0;

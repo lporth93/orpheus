@@ -121,6 +121,65 @@ class DirectEstimator:
         p_i32 = ndpointer(np.int32, flags="C_CONTIGUOUS")
         p_f64_nof = ndpointer(np.float64)    
         
+    def get_pixelization(self, cat, R_ap, accuracy, R_crop=None, mgrid=True):
+        """ Computes pixel grid on survey field.
+
+        Arguments:
+        ----------
+        R_ap (float):
+            The radius of the aperture in pixel scale.
+        accuracy (float):
+            Accuracy parameter for the pixel grid.
+            A value of 0.5 results in a grid in which the apertures
+            are only touching each other - hence minimizing correlations.
+
+        Returns:
+        --------
+        grid_x (array of floats):
+            The grid cell centers for the x-coordinate.
+        grid_y (array of floats):
+            The grid cell centers for the y-coordinate.
+
+        Notes:
+        ------
+        The grid covers the rectangel between the extremal x/y coordinates of
+        the galaxy catalogue.
+        """
+        
+        start1 = cat.min1
+        start2 = cat.min2
+        end1 = cat.max1
+        end2 = cat.max2
+        if R_crop is not None:
+            start1 += R_crop
+            start2 += R_crop
+            end1 -= R_crop
+            end2 -= R_crop
+        
+        len_1 = end1 - start1
+        len_2 = end2 - start2
+
+        npixels_1 = int(np.ceil(accuracy * len_1 / R_ap))
+        npixels_2 = int(np.ceil(accuracy * len_2 / R_ap))
+
+        stepsize_1 = len_1 / npixels_1
+        stepsize_2 = len_2 / npixels_2
+
+        _centers_1 = [start1 + npixel *
+                     stepsize_1 for npixel in range(npixels_1 + 1)]
+        _centers_2 = [start2 + npixel *
+                     stepsize_2 for npixel in range(npixels_2 + 1)]
+        
+        if mgrid:
+            centers_1, centers_2 = np.meshgrid(_centers_1,_centers_2)
+            centers_1 = centers_1.flatten()
+            centers_2 = centers_2.flatten()
+        else:
+            centers_1 = np.asarray(_centers_1, dtype=np.float64)
+            centers_2 = np.asarray(_centers_2, dtype=np.float64)
+            
+        return centers_1, centers_2
+        
     def __getmap(self, R, cat, dotomo, field, filter_form):
         """ This simply computes an aperture mass map together with weights and coverages """
         
@@ -157,7 +216,7 @@ class Direct_MapnEqual(DirectEstimator):
         self.clib.MapnSingleEonlyDisc.restype = ct.c_void_p
         self.clib.MapnSingleEonlyDisc.argtypes = [
             ct.c_double, p_f64, p_f64, ct.c_int32,
-            ct.c_int32, ct.c_int32, ct.c_int32,
+            ct.c_int32, ct.c_int32, ct.c_int32, ct.c_int32,
             p_f64, p_f64, p_f64, p_f64, p_c128, p_i32, ct.c_int32, ct.c_int32,
             p_f64, p_f64, ct.c_int32, ct.c_int32,
             ct.c_double, ct.c_double, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
@@ -263,12 +322,15 @@ class Direct_MapnEqual(DirectEstimator):
             args_centers = (self.radii[indR], centers_1, centers_2, ncenters,)  
         elif forfunc=="EqualGrid":
             args_centers = (self.radii[indR], centers_1, centers_2, len(centers_1), len(centers_2), )  
-        args_ofw = (self.order_max, self.filters_dict[self.filter_form], self.ap_weights_dict[self.ap_weights], )
+        if forfunc=="Equal":
+            args_ofw = (self.order_max, self.filters_dict[self.filter_form], self.ap_weights_dict[self.ap_weights], 
+                        np.int32(self.multicountcorr), )
+        elif forfunc=="EqualGrid":
+            args_ofw = (self.order_max, self.filters_dict[self.filter_form], self.ap_weights_dict[self.ap_weights], )
         args_cat = (cat.weight.astype(np.float64), np.ones(cat.ngal, dtype=np.float64),
                     cat.pos1.astype(np.float64), cat.pos2.astype(np.float64), 
                     cat.tracer_1.astype(np.float64)+1j*cat.tracer_2.astype(np.float64), 
-                    zbins, np.int32(nbinsz), np.int32(cat.ngal)
-                   )
+                    zbins, np.int32(nbinsz), np.int32(cat.ngal), )
         if forfunc=="Equal":
             args_mask = (regridded_mask, self.frac_covs, self.nfrac_covs, 1, )
         elif forfunc=="EqualGrid":
@@ -309,68 +371,7 @@ class Direct_MapnEqual(DirectEstimator):
                 except:
                     print("We did have a problem for arg %i"%elarg)
 
-        return args
-    
-    
-    def get_pixelization(self, cat, R_ap, accuracy, R_crop=None, mgrid=True):
-        """ Computes pixel grid on survey field.
-
-        Arguments:
-        ----------
-        R_ap (float):
-            The radius of the aperture in pixel scale.
-        accuracy (float):
-            Accuracy parameter for the pixel grid.
-            A value of 0.5 results in a grid in which the apertures
-            are only touching each other - hence minimizing correlations.
-
-        Returns:
-        --------
-        grid_x (array of floats):
-            The grid cell centers for the x-coordinate.
-        grid_y (array of floats):
-            The grid cell centers for the y-coordinate.
-
-        Notes:
-        ------
-        The grid covers the rectangel between the extremal x/y coordinates of
-        the galaxy catalogue.
-        """
-        
-        start1 = cat.min1
-        start2 = cat.min2
-        end1 = cat.max1
-        end2 = cat.max2
-        if R_crop is not None:
-            start1 += R_crop
-            start2 += R_crop
-            end1 -= R_crop
-            end2 -= R_crop
-        
-        len_1 = end1 - start1
-        len_2 = end2 - start2
-
-        npixels_1 = int(np.ceil(accuracy * len_1 / R_ap))
-        npixels_2 = int(np.ceil(accuracy * len_2 / R_ap))
-
-        stepsize_1 = len_1 / npixels_1
-        stepsize_2 = len_2 / npixels_2
-
-        _centers_1 = [start1 + npixel *
-                     stepsize_1 for npixel in range(npixels_1 + 1)]
-        _centers_2 = [start2 + npixel *
-                     stepsize_2 for npixel in range(npixels_2 + 1)]
-        
-        if mgrid:
-            centers_1, centers_2 = np.meshgrid(_centers_1,_centers_2)
-            centers_1 = centers_1.flatten()
-            centers_2 = centers_2.flatten()
-        else:
-            centers_1 = np.asarray(_centers_1, dtype=np.float64)
-            centers_2 = np.asarray(_centers_2, dtype=np.float64)
-            
-        return centers_1, centers_2
-    
+        return args    
    
     def _nzcombis_tot(self, nbinsz, dotomo):
         res = 0
@@ -420,9 +421,258 @@ class Direct_MapnEqual(DirectEstimator):
         Mapn = args[-2].reshape((nbinsz, self.order_max, ncenters_2, ncenters_1))
         Mapn_var = args[-1].reshape((nbinsz, self.order_max, ncenters_2, ncenters_1))
         
-        return counts, covs, Msn, Sn, Mapn, Mapn_var  
+        return counts, covs, Msn, Sn, Mapn, Mapn_var 
     
     
+class Direct_NapmMapnEqual(DirectEstimator):
+    """
+    order_max is defined s.t. n+m<=order_max
+    
+    """
+    
+    def __init__(self, order_max, Rmin, Rmax, filter_form="C02", ap_weights="InvShot", **kwargs):
+        super().__init__(Rmin=Rmin, Rmax=Rmax, **kwargs)
+        self.order_max = order_max
+        self.filter_form = filter_form
+        self.ap_weights = ap_weights
+        
+        self.ap_weights_dict = {"Identity":0, "InvShot":1} # Only for Map we actually do InvShot weighting
+        self.filters_dict = {"S98":0, "C02":1}
+        self.ap_weights_avail = list(self.ap_weights_dict.keys())
+        self.filters_avail = list(self.filters_dict.keys())
+        assert(self.field in self.fields_avail)
+        assert(self.ap_weights in self.ap_weights_avail)
+        assert(self.filter_form in self.filters_avail)
+        
+        # We do not need DoubleTree for equal-aperture estimator
+        if self.method=="DoubleTree":
+            self.method="Tree"
+            
+        p_c128 = ndpointer(complex, flags="C_CONTIGUOUS")
+        p_f64 = ndpointer(np.float64, flags="C_CONTIGUOUS")
+        p_f32 = ndpointer(np.float32, flags="C_CONTIGUOUS")
+        p_i32 = ndpointer(np.int32, flags="C_CONTIGUOUS")
+        p_f64_nof = ndpointer(np.float64) 
+        
+        # Compute nth order equal-scale statistics using discrete estimator (E-Mode only!)
+        self.clib.NapmMapnSingleEonlyDisc.restype = ct.c_void_p
+        self.clib.NapmMapnSingleEonlyDisc.argtypes = [
+            ct.c_double, p_f64, p_f64, ct.c_int32,
+            ct.c_int32, ct.c_int32, ct.c_int32, ct.c_int32,
+            p_f64, p_f64, p_f64, p_f64, p_c128, p_i32, ct.c_int32, ct.c_int32,
+            p_f64, p_f64, ct.c_int32, ct.c_int32,
+            ct.c_double, ct.c_double, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
+            p_i32, p_i32, p_i32,
+            ct.c_int32, p_f64, p_f64]
+        self.clib.singleAp_NapmMapnSingleEonlyDisc.restype = ct.c_void_p
+        self.clib.singleAp_NapmMapnSingleEonlyDisc.argtypes = [
+            ct.c_double, ct.c_double, ct.c_double,
+            ct.c_int32, ct.c_int32, 
+            p_f64, p_f64, p_f64, p_f64, p_c128, p_i32, ct.c_int32, ct.c_int32,
+            p_f64,
+            ct.c_double, ct.c_double, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
+            p_i32, p_i32, p_i32,
+            p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, p_f64]    
+        """
+        # Compute aperture mass map for equal-scale stats
+        self.clib.ApertureMassNapMap_Equal.restype = ct.c_void_p
+        self.clib.ApertureMassNapMap_Equal.argtypes = [
+            ct.c_double, p_f64, p_f64, ct.c_int32, ct.c_int32, 
+            ct.c_int32, ct.c_int32, ct.c_int32,
+            p_f64, p_f64, p_f64, p_f64, p_c128, p_i32, ct.c_int32, ct.c_int32,
+            p_f64,
+            ct.c_double, ct.c_double, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
+            p_i32, p_i32, p_i32,
+            ct.c_int32, p_f64, p_f64, p_f64, p_f64, p_f64, p_f64]
+        """
+                       
+    def process(self, cat, dotomo=True, Emodeonly=True, connected=True):
+        """
+        Each given for all zcombis with 0 <= z_1<=z_2<=...<=z_m < z_{m+1} <=...<= z_{m+n} <= nbinsz-1
+        Stats are sorted like
+        N, M,   NN, NM, MM,   ...,   NN...NN, NN...NM, ..., NM...M, MM...MM
+        """
+        
+        nbinsz = cat.nbinsz
+        if not dotomo:
+            nbinsz = 1
+         
+        nzcombis = self._nzcombis_tot(nbinsz,dotomo)
+        result_Mapn = np.zeros((self.nbinsr, self.nfrac_covs, nzcombis), dtype=np.float64)
+        result_wMapn = np.zeros((self.nbinsr, self.nfrac_covs, nzcombis), dtype=np.float64)
+        if (self.method in ["Discrete", "BaseTree"]) and Emodeonly:
+            func = self.clib.MapnSingleEonlyDisc
+        elif (self.method in ["Discrete", "BaseTree"]) and not Emodeonly:
+            raise NotImplementedError
+        else:
+            raise NotImplementedError
+            
+        for elr, R in enumerate(self.radii):
+            nextmap_out = np.zeros(nzcombis*self.nfrac_covs ,dtype=np.float64)
+            nextwmap_out = np.zeros(nzcombis*self.nfrac_covs ,dtype=np.float64)
+            args = self._buildargs(cat, dotomo, elr, forfunc="Equal")
+            func(*args)
+            result_Mapn[elr] = args[-2].reshape((self.nfrac_covs, nzcombis))[:]
+            result_wMapn[elr] = args[-1].reshape((self.nfrac_covs, nzcombis))[:]
+            
+            sys.stdout.write("\rDone %i/%i aperture radii"%(elr+1,self.nbinsr))
+                       
+        return result_Mapn, result_wMapn
+                
+    def _getindex(self, order, mode, zcombi):
+        pass
+    
+    def _buildargs(self, cat, dotomo, indR, forfunc="Equal"):
+        
+        assert(forfunc in ["Equal", "EqualGrid"])
+        
+        if not dotomo:
+            nbinsz = 1
+            zbins = np.zeros(cat.ngal, dtype=np.int32)
+        else:
+            nbinsz = cat.nbinsz
+            zbins = cat.zbins.astype(np.int32)
+            
+        # Initialize combinatorics instances for lateron
+        # TODO: Should find a better place where to put this...
+        self.combinatorics = {}
+        for order in range(1,self.order_max+1):
+            self.combinatorics[order] = MapCombinatorics(nbinsz,order_max=order)
+            
+        # Parameters related to the aperture grid
+        if forfunc=="Equal":
+            centers_1, centers_2 = self.get_pixelization(cat, self.radii[indR], self.accuracies[indR], R_crop=0., mgrid=True)
+            ncenters = len(centers_1)
+        elif forfunc=="EqualGrid": 
+            centers_1, centers_2 = self.get_pixelization(cat, self.radii[indR], self.accuracies[indR], R_crop=0., mgrid=False)
+            ncenters = len(centers_1)*len(centers_2)
+        
+        cat.build_spatialhash(dpix=self.dpix_hash, extent=[None, None, None, None])
+        hashgrid = FlatPixelGrid_2D(cat.pix1_start, cat.pix1_start, 
+                                    cat.pix1_n, cat.pix2_n, cat.pix1_d, cat.pix2_d)
+        regridded_mask = cat.mask.regrid(hashgrid).data.flatten().astype(np.float64)
+        
+        len_out = self._nzcombis_tot(nbinsz,dotomo)*self.nfrac_covs
+                
+        if forfunc=="Equal":
+            args_centers = (self.radii[indR], centers_1, centers_2, ncenters,)  
+        elif forfunc=="EqualGrid":
+            args_centers = (self.radii[indR], centers_1, centers_2, len(centers_1), len(centers_2), )  
+        if forfunc=="Equal":
+            args_ofw = (self.order_max, self.filters_dict[self.filter_form], self.ap_weights_dict[self.ap_weights], 
+                        np.int32(self.multicountcorr), )
+        elif forfunc=="EqualGrid":
+            args_ofw = (self.order_max, self.filters_dict[self.filter_form], self.ap_weights_dict[self.ap_weights], )
+        args_cat = (cat.weight.astype(np.float64), np.ones(cat.ngal, dtype=np.float64),
+                    cat.pos1.astype(np.float64), cat.pos2.astype(np.float64), 
+                    cat.tracer_1.astype(np.float64)+1j*cat.tracer_2.astype(np.float64), 
+                    zbins, np.int32(nbinsz), np.int32(cat.ngal), )
+        if forfunc=="Equal":
+            args_mask = (regridded_mask, self.frac_covs, self.nfrac_covs, 1, )
+        elif forfunc=="EqualGrid":
+            args_mask = (regridded_mask, )
+        args_hash = (np.float64(cat.pix1_start), np.float64(cat.pix2_start), 
+                     np.float64(cat.pix1_d), np.float64(cat.pix2_d), 
+                     np.int32(cat.pix1_n), np.int32(cat.pix2_n), 
+                     cat.index_matcher.astype(np.int32), cat.pixs_galind_bounds.astype(np.int32), 
+                     cat.pix_gals.astype(np.int32)
+                    )
+        if forfunc=="Equal":
+            args_out = (np.zeros(len_out).astype(np.float64), np.zeros(len_out).astype(np.float64))
+        elif forfunc=="EqualGrid":
+            args_out = (np.zeros(3*nbinsz*ncenters).astype(np.float64), 
+                        np.zeros(2*ncenters).astype(np.float64), 
+                        np.zeros(self.order_max*nbinsz*ncenters).astype(np.float64), 
+                        np.zeros(self.order_max*nbinsz*ncenters).astype(np.float64), 
+                        np.zeros(self.order_max*nbinsz*ncenters).astype(np.float64), 
+                        np.zeros(self.order_max*nbinsz*ncenters).astype(np.float64), )
+        # Return the parameters for the Map computation
+        args =  (*args_centers,
+                 *args_ofw,
+                 *args_cat,
+                 *args_mask,
+                 *args_hash,
+                 np.int32(self.nthreads), 
+                 *args_out)
+        if False:
+            for elarg, arg in enumerate(args):
+                func  = self.clib.MapnSingleEonlyDisc
+                toprint = (elarg, type(arg),)
+                if isinstance(arg, np.ndarray):
+                    toprint += (type(arg[0]), arg.shape)
+                try:
+                    toprint += (func.argtypes[elarg], )
+                    print(toprint)
+                    print(arg)
+                except:
+                    print("We did have a problem for arg %i"%elarg)
+
+        return args    
+   
+    def _nzcombis_tot(self, nbinsz, dotomo):
+        res = 0
+        for order in range(1, self.order_max+1):
+            res += self._nzcombis_order(order, nbinsz, dotomo)
+        return res
+                
+    def _nzcombis_order(self, order_lens, order_source, nbinsz, dotomo):
+        if not dotomo:
+            return 1
+        else:
+            return int(nbinsz*factorial(nbinsz+order-1)/(factorial(nbinsz)*factorial(order)))
+        
+    def _cumnzcombis_order(self, order_lens, order_source, nbinsz, dotomo):
+        res = 0
+        for order in range(1, order+1):
+            res += self._nzcombis_order(order, nbinsz, dotomo)
+        return res
+        
+    def genzcombi(self,nbinsz,zs_lens,zs_source):
+        
+        if len(zs)>self.order_max:
+            raise ValueError("We only computed the statistics up to order %i."%self.order_max)
+        if max(zs) >= nbinsz:
+            raise ValueError("We only have %i tomographic bins available."%nbinsz)
+        
+        order = len(zs)
+        return self._cumnzcombis_order(order-1,nbinsz,True) + self.combinatorics[order].sel2ind(zs)
+        
+        
+    def getmap(self, indR, cat, dotomo=True):
+        """ This simply computes an aperture mass map together with weights and coverages """
+        
+        nbinsz = cat.nbinsz
+        if not dotomo:
+            nbinsz = 1
+            
+        args = self._buildargs(cat, dotomo, indR, forfunc="EqualGrid")
+        ncenters_1 = args[3]
+        ncenters_2 = args[4]
+        self.clib.ApertureMassMap_Equal(*args)
+        
+        counts = args[-6].reshape((nbinsz, 3, ncenters_2, ncenters_1))
+        covs = args[-5].reshape((2, ncenters_2, ncenters_1))
+        Msn = args[-4].reshape((nbinsz, self.order_max, ncenters_2, ncenters_1))
+        Sn = args[-3].reshape((nbinsz, self.order_max, ncenters_2, ncenters_1))
+        Mapn = args[-2].reshape((nbinsz, self.order_max, ncenters_2, ncenters_1))
+        Mapn_var = args[-1].reshape((nbinsz, self.order_max, ncenters_2, ncenters_1))
+        
+        return counts, covs, Msn, Sn, Mapn, Mapn_var
+    
+    
+class MapNapCombinatorics:
+    
+    def __init__(self, nradii, order_max):
+        self.nradii = nradii
+        self.order_max = order_max
+        self.basecombinatorics = [None]*self.order_max
+        for order in range(self.order_max):
+            self.basecombinatorics[order] = MapCombinatorics(self.nradii, order+1)
+        self.psummem = None
+        self.nindices = self.psumtot(order_max+1, nradii)
+        
+    
+        
 class MapCombinatorics:
     
     def __init__(self, nradii, order_max):
@@ -452,7 +702,7 @@ class MapCombinatorics:
         >>> print(res)
 
         Notes:
-        * The recursion reads as follows:
+        * The recursion reads as follows:bonn
           s(m,0) = 1
           s(m,n) = \sum_{i=1}^{m-1} s(m-1,n-1)
           [Have not formally proved that but checked with pen and paper

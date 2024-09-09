@@ -247,6 +247,19 @@ int zcombis_tot(int nbinsz, int max_order, double *fac_table){
     return res;
 }
 
+int zcombis_tot_two(int nbinsz_l, int nbinsz_s, int max_order, double *fac_table){
+    int res = 0;
+    int nextzcombis_s, nextzcombis_l;
+    for (int order=1;order<=max_order;order++){
+        for (int order_s=0;order_s<=order;order_s++){
+            nextzcombis_s = zcombis_order(nbinsz_s, order_s, fac_table);
+            nextzcombis_l = zcombis_order(nbinsz_l, order-order_s, fac_table);
+            res += nextzcombis_s*nextzcombis_l;
+        }
+    }
+    return res;
+}
+
 // Generates next zcombination 
 // Abstractly, next iteration of sorted list of length `order` with `n` distinct elements.
 // I.e. order=3, n=3 --> [[0,0,0],[0,0,1],[0,0,2],[0,1,1],[0,1,2],[0,2,2],[1,1,1],[1,1,2],[1,2,2],[2,2,2]]

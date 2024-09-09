@@ -102,7 +102,7 @@ class Catalog:
         self.zbins_std = zbins_std
         for _ in [self.zbins_mean, self.zbins_mean]:
             if _ is not None:
-                assert(isinstance(_np.ndarray))
+                assert(isinstance(_,np.ndarray))
                 assert(len(_)==self.nbinsz)
         
         self.min1 = np.min(self.pos1)

@@ -5,6 +5,7 @@
 int binary_search(double *array, int len_arr, double target);
 double linint(double *vec, double x, double xmin, double xmax, double dx);
 void expand_arr(int *arr_long, int *arr_sel, int len_long, int len_sel, int *result);
+double nexttomoterm(int order, int max_order, double *moments, int *zcombi, int elzcombi, int do_subtractions);
 int sumintarr(int *arr, int len);
 int countel(int el, int *arr, int len);
 int maxarr(int *arr, int len);
