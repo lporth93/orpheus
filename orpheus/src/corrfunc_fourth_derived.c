@@ -19,9 +19,10 @@
 #define INV_2PI   0.15915494309189534561
 
 // Reconstructs all multipole components from the ones with theta1<=theta2<=theta3
-// Upsn_in ~ Upsn[elthetbatch] ~ shape (8,2*nmax_alloc,2*nmax_allloc)
+// Upsn_in ~ Upsn[elthetbatch] ~ shape (8,2*nmax_alloc+1,2*nmax_alloc+1)
 // Nn_in ~ Nn[elthetbatch] ~ shape (2*nmax_alloc+1,2*nmax_alloc+1)
 // Upsn_out ~  shape (8,2*nmax+1,2*nmax+1)
+// Nn_out ~  shape (2*nmax+1,2*nmax+1)
 // 
 // Ordering for eltrafo: [123, 231, 312, 132, 213, 321]
 // Different configs: 
@@ -32,7 +33,7 @@ void getMultiplolesFromSymm(double complex *Upsn_in, double complex *Nn_in,
                             int nmax, int eltrafo, int *nindices, int len_nindices,
                             double complex *Upsn_out, double complex *Nn_out){
     
-    int nmax_alloc = 2*(nmax+1)+1;
+    int nmax_alloc = 2*nmax+1;
     int nzero_in = nmax_alloc;
     int nzero_out = nmax;
     int n2shift_in = 2*nmax_alloc+1;
@@ -55,8 +56,8 @@ void getMultiplolesFromSymm(double complex *Upsn_in, double complex *Nn_in,
     int n3, n3_0234, n3_1567, n3_N;
     int n23shift_in, n23shift_out;
     for (int nindex=0; nindex<len_nindices; nindex++){
-        n2 = nindices[nindex]/(2*nmax_alloc+1) - nmax_alloc;
-        n3 = nindices[nindex]%(2*nmax_alloc+1) - nmax_alloc;
+        n2 = nindices[nindex]/(2*nmax_alloc+1) - nzero_in;
+        n3 = nindices[nindex]%(2*nmax_alloc+1) - nzero_in;
         switch (eltrafo){
             case 0:
                 n2_0234=n2; n3_0234=n3;
@@ -88,7 +89,14 @@ void getMultiplolesFromSymm(double complex *Upsn_in, double complex *Nn_in,
                 n2_1567=n2; n3_1567=-n2-n3;
                 n2_N=n2; n3_N=-n2-n3;
                 break;
+            default:
+                n2_0234=0; n3_0234=0;
+                n2_1567=0; n3_1567=0;
+                n2_N=0; n3_N=0;
+                break;
         }
+        //printf("ind=%d: n2=%d n3=%d n2_0234=%d n3_0234=%d n2_1567=%d n3_1567=%d \n",
+        //       nindex,n2,n3,n2_0234,n3_0234,n2_1567,n3_1567);
         if ((abs(n2_0234)<=nmax) && (abs(n3_0234)<=nmax)){
             n23shift_in = (nzero_in+n2)*n2shift_in + (nzero_in+n3);
             n23shift_out = (nzero_out+n2_0234)*n2shift_out + (nzero_out+n3_0234);
@@ -96,6 +104,9 @@ void getMultiplolesFromSymm(double complex *Upsn_in, double complex *Nn_in,
             Upsn_out[comptrafo2*compshift_out+n23shift_out] = Upsn_in[2*compshift_in+n23shift_in];
             Upsn_out[comptrafo3*compshift_out+n23shift_out] = Upsn_in[3*compshift_in+n23shift_in];
             Upsn_out[comptrafo4*compshift_out+n23shift_out] = Upsn_in[4*compshift_in+n23shift_in];
+            //printf("Accepted Ups0234 update\n");
+            //printf("Ups0_out[%d] is filled by Ups0_in[%d]=%.5f\n",
+            //      comptrafo0*compshift_out+n23shift_out,0*compshift_in+n23shift_in,creal(Upsn_in[0*compshift_in+n23shift_in]));
         }
         if ((abs(n2_1567)<=nmax) && (abs(n3_1567)<=nmax)){
             n23shift_in = (nzero_in+n2)*n2shift_in + (nzero_in+n3);
@@ -281,18 +292,17 @@ void filter_Map4(double y1, double y2, double y3, double phi1, double phi2, doub
     double complex F_2[8]= {0, 0, 0, 0, 0, 0, 0, 0};
     double complex F_3[8]= {0, 0, 0, 0, 0, 0, 0, 0};
     double complex xproj[8]= {0, 0, 0, 0, 0, 0, 0, 0};
-    double complex nextF;
     
     double complex q1, q2, q3, q4, q1c, q2c, q3c, q4c, q1_2, q2_2, q3_2, q4_2, q1c_2, q2c_2, q3c_2, q4c_2;
     double complex q1cq2c, q1cq3c, q1cq4c, q2cq3c, q2cq4c, q3cq4c;
     double q1abs, q2abs, q3abs, q4abs, q1abs_2, q2abs_2, q3abs_2, q4abs_2;
-    double complex _y1, _y2, _y3, _y1c, _y2c, _y3c, _y1_2, _y2_2, _y3_2, _y1_3, _y2_3, _y3_3 ;
-    double _y1abs, _y2abs, _y3abs, _y1abs_2, _y2abs_2, _y3abs_2, _y1abs_3, _y2abs_3, _y3abs_3;
+    double complex _y1, _y2, _y3, _y1c, _y3c, _y1_2, _y2_2, _y3_2, _y1_3, _y3_3 ;
+    double _y1abs, _y2abs, _y3abs, _y1abs_2, _y2abs_2, _y3abs_2, _y1abs_3, _y3abs_3;
     double _exp;
     _y1 = y1; _y1_2=_y1*_y1; _y1_3=_y1_2*_y1; _y1c=conj(_y1); 
     _y1abs=y1; _y1abs_2=_y1abs*_y1abs; _y1abs_3=_y1abs_2*_y1abs;
-    _y2 = y2*cexp(I*phi1); _y2_2=_y2*_y2; _y2_3=_y2_2*_y2; _y3c=conj(_y2); 
-    _y2abs=y2; _y2abs_2=_y2abs*_y2abs; _y2abs_3=_y2abs_2*_y2abs;
+    _y2 = y2*cexp(I*phi1); _y2_2=_y2*_y2; _y3c=conj(_y2); 
+    _y2abs=y2; _y2abs_2=_y2abs*_y2abs;
     _y3 = y3*cexp(I*phi2); _y3_2=_y3*_y3; _y3_3=_y3_2*_y3; _y3c=conj(_y3); 
     _y3abs=y3; _y3abs_2=_y3abs*_y3abs; _y3abs_3=_y3abs_2*_y3abs;
     q1 =  0.25*(3*_y1-_y2-_y3); q1c=conj(q1); q1_2=q1*q1; q1c_2=q1c*q1c; q1abs=cabs(q1); q1abs_2=q1abs*q1abs;
@@ -349,8 +359,8 @@ void fourpcf2M4correlators(int nzcombis,
     double complex q1, q2, q3, q4, q1c, q2c, q3c, q4c, q1_2, q2_2, q3_2, q4_2, q1c_2, q2c_2, q3c_2, q4c_2;
     double complex q1cq2c, q1cq3c, q1cq4c, q2cq3c, q2cq4c, q3cq4c;
     double q1abs, q2abs, q3abs, q4abs, q1abs_2, q2abs_2, q3abs_2, q4abs_2;
-    double complex _y1, _y2, _y3, _y1c, _y2c, _y3c, _y1_2, _y2_2, _y3_2, _y1_3, _y2_3, _y3_3 ;
-    double _y1abs, _y2abs, _y3abs, _y1abs_2, _y2abs_2, _y3abs_2, _y1abs_3, _y2abs_3, _y3abs_3;
+    double complex _y1, _y2, _y3, _y1c, _y3c, _y1_2, _y2_2, _y3_2, _y1_3, _y3_3 ;
+    double _y1abs, _y2abs, _y3abs, _y1abs_2, _y2abs_2, _y3abs_2, _y1abs_3, _y3abs_3;
     double _measure, _exp;
     double complex F_1[8]= {0, 0, 0, 0, 0, 0, 0, 0};
     double complex F_2[8]= {0, 0, 0, 0, 0, 0, 0, 0};
@@ -363,8 +373,8 @@ void fourpcf2M4correlators(int nzcombis,
         for (int elphi2=0;elphi2<nbinsphi2;elphi2++){
             _y1 = y1; _y1_2=_y1*_y1; _y1_3=_y1_2*_y1; _y1c=conj(_y1); 
             _y1abs=y1; _y1abs_2=_y1abs*_y1abs; _y1abs_3=_y1abs_2*_y1abs;
-            _y2 = y2*cexp(I*phis1[elphi1]); _y2_2=_y2*_y2; _y2_3=_y2_2*_y2; _y3c=conj(_y2); 
-            _y2abs=y2; _y2abs_2=_y2abs*_y2abs; _y2abs_3=_y2abs_2*_y2abs;
+            _y2 = y2*cexp(I*phis1[elphi1]); _y2_2=_y2*_y2; _y3c=conj(_y2); 
+            _y2abs=y2; _y2abs_2=_y2abs*_y2abs; 
             _y3 = y3*cexp(I*phis2[elphi2]); _y3_2=_y3*_y3; _y3_3=_y3_2*_y3; _y3c=conj(_y3); 
             _y3abs=y3; _y3abs_2=_y3abs*_y3abs; _y3abs_3=_y3abs_2*_y3abs;
             q1 =  0.25*(3*_y1-_y2-_y3); q1c=conj(q1); q1_2=q1*q1; q1c_2=q1c*q1c; q1abs=cabs(q1); q1abs_2=q1abs*q1abs;
@@ -432,8 +442,8 @@ void fourpcf2M4correlators_parallel(int nzcombis,
         double complex q1, q2, q3, q4, q1c, q2c, q3c, q4c, q1_2, q2_2, q3_2, q4_2, q1c_2, q2c_2, q3c_2, q4c_2;
         double complex q1cq2c, q1cq3c, q1cq4c, q2cq3c, q2cq4c, q3cq4c;
         double q1abs, q2abs, q3abs, q4abs, q1abs_2, q2abs_2, q3abs_2, q4abs_2;
-        double complex _y1, _y2, _y3, _y1c, _y2c, _y3c, _y1_2, _y2_2, _y3_2, _y1_3, _y2_3, _y3_3 ;
-        double _y1abs, _y2abs, _y3abs, _y1abs_2, _y2abs_2, _y3abs_2, _y1abs_3, _y2abs_3, _y3abs_3;
+        double complex _y1, _y2, _y3, _y1c, _y3c, _y1_2, _y2_2, _y3_2, _y1_3, _y3_3 ;
+        double _y1abs, _y2abs, _y3abs, _y1abs_2, _y2abs_2, _y3abs_2, _y1abs_3, _y3abs_3;
         double _measure, _exp;
         double complex F_1[8]= {0, 0, 0, 0, 0, 0, 0, 0};
         double complex F_2[8]= {0, 0, 0, 0, 0, 0, 0, 0};
@@ -456,8 +466,8 @@ void fourpcf2M4correlators_parallel(int nzcombis,
         int threadshift = thisthread*8*nzcombis;
         _y1 = y1; _y1_2=_y1*_y1; _y1_3=_y1_2*_y1; _y1c=conj(_y1); 
         _y1abs=y1; _y1abs_2=_y1abs*_y1abs; _y1abs_3=_y1abs_2*_y1abs;
-        _y2 = y2*cexp(I*phi1); _y2_2=_y2*_y2; _y2_3=_y2_2*_y2; _y3c=conj(_y2); 
-        _y2abs=y2; _y2abs_2=_y2abs*_y2abs; _y2abs_3=_y2abs_2*_y2abs;
+        _y2 = y2*cexp(I*phi1); _y2_2=_y2*_y2; _y3c=conj(_y2); 
+        _y2abs=y2; _y2abs_2=_y2abs*_y2abs; 
         _y3 = y3*cexp(I*phi2); _y3_2=_y3*_y3; _y3_3=_y3_2*_y3; _y3c=conj(_y3); 
         _y3abs=y3; _y3abs_2=_y3abs*_y3abs; _y3abs_3=_y3abs_2*_y3abs;
         q1 =  0.25*(3*_y1-_y2-_y3); q1c=conj(q1); q1_2=q1*q1; q1c_2=q1c*q1c; q1abs=cabs(q1); q1abs_2=q1abs*q1abs;
@@ -559,7 +569,6 @@ void multipoles2npcf_gggg(double complex *upsilon_n, double complex *N_n, double
         double complex q1, q2, q3, q4;
         double complex qcbyq_1, qcbyq_2, qcbyq_3, qcbyq_4;
         double complex qbyqc_1, qbyqc_2, qbyqc_3, qbyqc_4;
-        double complex p1, p2, p3, p4, p1_inv, p2_inv, p3_inv, p4_inv;
         
         #pragma omp critical
         {rcenter1 = rcenters[elr1]; rcenter2 = rcenters[elr2]; rcenter3 = rcenters[elr3];}
@@ -606,28 +615,6 @@ void multipoles2npcf_gggg(double complex *upsilon_n, double complex *N_n, double
                     projdir[5] = qbyqc_1*qbyqc_2*qcbyq_3*qcbyq_4 * expphi12s[nmax+2] * expphi13s[nmax+1];
                     projdir[6] = qbyqc_1*qcbyq_2*qbyqc_3*qcbyq_4 * expphi12s[nmax-2] * expphi13s[nmax+1];
                     projdir[7] = qbyqc_1*qcbyq_2*qcbyq_3*qbyqc_4 * expphi12s[nmax+2] * expphi13s[nmax-3];
-                    
-                    /*
-                    p1 = (+1*rcenter1 + 1*rcenter2*expphi12s[nmax-1] + 1*rcenter3*expphi13s[nmax-1]) /
-                         (+1*rcenter1 + 1*rcenter2*expphi12s[nmax+1] + 1*rcenter3*expphi13s[nmax+1]);
-                    p2 = (+3*rcenter1 - 1*rcenter2*expphi12s[nmax-1] - 1*rcenter3*expphi13s[nmax-1]) /
-                         (+3*rcenter1 - 1*rcenter2*expphi12s[nmax+1] - 1*rcenter3*expphi13s[nmax+1]);
-                    p3 = (-1*rcenter1 + 3*rcenter2*expphi12s[nmax-1] - 1*rcenter3*expphi13s[nmax-1]) /
-                         (-1*rcenter1 + 3*rcenter2*expphi12s[nmax+1] - 1*rcenter3*expphi13s[nmax+1]);
-                    p4 = (-1*rcenter1 - 1*rcenter2*expphi12s[nmax-1] + 3*rcenter3*expphi13s[nmax-1]) /
-                         (-1*rcenter1 - 1*rcenter2*expphi12s[nmax+1] + 3*rcenter3*expphi13s[nmax+1]);
-                    p1_inv = conj(p1)/cabs(p1); p2_inv = conj(p2)/cabs(p2); 
-                    p3_inv = conj(p3)/cabs(p3); p4_inv = conj(p4)/cabs(p4); 
-                    projdir[0] = p1     * p2      * p3      * p4       * expphi12s[nmax+2] * expphi13s[nmax+3];
-                    projdir[1] = p1_inv * p2      * p3      * p4       * expphi12s[nmax+2] * expphi13s[nmax+1];
-                    projdir[2] = p1     * p2_inv  * p3      * p4       * expphi12s[nmax+2] * expphi13s[nmax+3];
-                    projdir[3] = p1     * p2      * p3_inv  * p4       * expphi12s[nmax-2] * expphi13s[nmax+3];
-                    projdir[4] = p1     * p2      * p3      * p4_inv   * expphi12s[nmax+2] * expphi13s[nmax-1];
-                    projdir[5] = p1_inv * p2_inv  * p3      * p4       * expphi12s[nmax+2] * expphi13s[nmax+1];
-                    projdir[6] = p1_inv * p2      * p3_inv  * p4       * expphi12s[nmax-2] * expphi13s[nmax+1];
-                    projdir[7] = p1_inv * p2      * p3      * p4_inv   * expphi12s[nmax+2] * expphi13s[nmax-3];
-                    */
-                    
                 }
                 for (int elcf=0; elcf<n_cfs; elcf++){npcf[elcf*npcf_compshift + ind_npcf] *= projdir[elcf];}
             }
@@ -659,17 +646,13 @@ void alloc_notomoMap4_analytic(
         int thisthread = omp_get_thread_num();
         printf("Starting thetabatch %d/%d on thread %d with %d thetacombis\n",
                elthetbatch,nthetbatches,thisthread,nthetacombis_batches[elthetbatch]);
-        int nbinsz = 1;
-        int ncomp = 8;        
-        int batch_nthetas = nthetacombis_batches[elthetbatch];
+        //int nbinsz = 1;
+        int batch_nthetas = nthetacombis_batches[elthetbatch];   
         int batchgamma_thetshift = nbinsphi*nbinsphi;
-        int batchgamma_compshift = batch_nthetas*batchgamma_thetshift;
-        
         
         double *bin_centers = calloc(nbinsr, sizeof(double));
         double *bin_edges = calloc(nbinsr+1, sizeof(double));
         double drbin = exp((log(rmax)-log(rmin))/(nbinsr));
-        int nbinszr = nbinsz*nbinsr;        
         int *elb1s_batch = calloc(batch_nthetas, sizeof(int));
         int *elb2s_batch = calloc(batch_nthetas, sizeof(int));
         int *elb3s_batch = calloc(batch_nthetas, sizeof(int));
@@ -740,7 +723,6 @@ void alloc_notomoMap4_analytic(
                     map4ind = elcomp*nmapradii+elmapr;
                     if (isnan(cabs(nextM4correlators[elcomp]))==false){
                         allM4correlators[map4threadshift+map4ind] += nextM4correlators[elcomp];
-                        int _thetacombi = thetacombis_batches[cumthetacombis_batches[elthetbatch]+elb];
                     }
                     nextM4correlators[elcomp] = 0;
                 }
@@ -842,14 +824,11 @@ void gauss4pcf_analytic_integrated(
 void gauss4pcf_analytic(double theta1, double theta2, double theta3, double *phis, int nphis,
                         double *xip, double *xim, double thetamin_xis, double thetamax_xis, double dtheta_xis,
                         double complex *gaussfourpcf){
-    double complex y1, y2, y3, q1, q2, q3, q4, q1c, q2c, q3c, q4c;
+    double complex y1, y2, y3;
     double complex ang1, ang2, ang3, ang1_3, ang1_4, ang2_2, ang2_4, ang3_3, ang3_4;
     double complex ang12, ang12_4, ang13, ang13_4, ang23, ang23_4;
-    double complex y1_3, y2_2, y3_3;
-    double absy1, absy2, absy3, absy12, absy13, absy23;
+    double absy12, absy13, absy23;
     double xip_1, xip_2, xip_3, xip_12, xip_13, xip_23, xim_1, xim_2, xim_3, xim_12, xim_13, xim_23;
-    int elb12, elb13, elb23;
-    double w1;
     int phishift;
     double complex xprojs[8] = {0, 0, 0, 0, 0, 0, 0, 0};
     int nphis_2 = nphis*nphis;

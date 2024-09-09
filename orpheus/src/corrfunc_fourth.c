@@ -173,6 +173,7 @@ void alloc_notomoGammans_discrete_gggg(
                             nphirot *= phirot;
                             nphirotc *= phirotc; 
                             // n in [1, ..., nmax-1] x {+1,-1}
+                            nextnshift = 0;
                             for (int nextn=1;nextn<2*nmax;nextn++){
                                 nextnshift = nextn*nbinszr;
                                 nextGns[ind_Gn+nextnshift] += wshape2*nphirot;
@@ -391,8 +392,6 @@ void alloc_notomoMap4_disc_gggg(
     #pragma omp parallel for
     for(int elthetbatch=0;elthetbatch<nthetbatches;elthetbatch++){
         int nregions_skip_print = nregions/1000;
-        int save_multipoles=1; // Debug: Save all multipoles (1:true, 0:false)
-        int save_npcf = 0; // Debug: Save all npcf
         
         int thisthread = omp_get_thread_num();
         //printf("Doing thetabatch %d/%d on thread %d\n",elthetbatch,nthetbatches,thisthread);
@@ -415,7 +414,6 @@ void alloc_notomoMap4_disc_gggg(
         int batchups_nshift = batch_nthetas;
         int batchups_compshift = n2n3combis*batchups_nshift;
         int batchgamma_thetshift = nbinsphi*nbinsphi;
-        int batchgamma_compshift = batch_nthetas*batchgamma_thetshift;
         
         double *totcounts = calloc(nbinsr, sizeof(double));
         double *totnorms = calloc(nbinsr, sizeof(double));
@@ -465,7 +463,7 @@ void alloc_notomoMap4_disc_gggg(
             if ((elregion%nregions_skip_print == 0)&&(thisthread==0)){
                 printf("Doing region %d/%d for thetabatch %d/%d\n",elregion,nregions,elthetbatch,nthetbatches);
             }
-            int region_debug = mymin(500,nregions-1);
+            //int region_debug = mymin(500,nregions-1);
             int lower1, upper1;
             lower1 = pixs_galind_bounds[elregion];
             upper1 = pixs_galind_bounds[elregion+1];
@@ -564,6 +562,7 @@ void alloc_notomoMap4_disc_gggg(
                             nphirot *= phirot;
                             nphirotc *= phirotc; 
                             // n in [1, ..., nmax-1] x {+1,-1}
+                            nextnshift = 0;
                             for (int nextn=1;nextn<2*nmax;nextn++){
                                 nextnshift = nextn*nbinszr;
                                 nextGns[ind_Gn+nextnshift] += wshape2*nphirot;
@@ -636,7 +635,7 @@ void alloc_notomoMap4_disc_gggg(
                 // Upsilon have shape 
                 // (ncomp,(2*nmax+1),(2*nmax+1),nthetas)
                 double complex gGG0, gGG1, gGG2, gGG3, gGG4, gGG5, gGG6, gGG7, wNN;
-                int thisn, thisnshift, thisnrshift, thisrcombi, elb1, elb2, elb3;
+                int thisn, thisnshift, thisnrshift, elb1, elb2, elb3;
                 int thisGshift_mn2m2, thisGshift_n2m2, thisWshift_n2;
                 int thisGshift_mn3m3, thisGshift_mn3m1, thisGshift_n3m3, thisGshift_n3m1, thisWshift_n3;
                 int thisGshift_mn2mn3m3, thisGshift_mn2mn3m1, thisGshift_n2n3m3, thisGshift_n2n3m1, thisWshift_n2n3;
@@ -660,7 +659,7 @@ void alloc_notomoMap4_disc_gggg(
                         thisWshift_n2n3 = (nzero_Wn+thisn)*nbinsr;
                         thisnshift = ((thisn2+nzero_Ups)*nnvals_Upsn + (thisn3+nzero_Ups)) * batchups_nshift;
                         for (int elb=0;elb<batch_nthetas;elb++){
-                            //thisrcombi = thetacombis_batches[cumthetacombis_batches[elthetbatch]+elb];
+                            //int thisrcombi = thetacombis_batches[cumthetacombis_batches[elthetbatch]+elb];
                             //elb1 = thisrcombi/(nbinsr*nbinsr);
                             //elb2 = (thisrcombi-elb1*nbinsr*nbinsr)/nbinsr;
                             //elb3 = thisrcombi-elb1*nbinsr*nbinsr-elb2*nbinsr;
@@ -961,8 +960,8 @@ void alloc_notomoMap4_tree_gggg(
     int nmax, double rmin, double rmax, int nbinsr, int dccorr, 
     int *nindices, int len_nindices, double *phibins, double *dbinsphi, int nbinsphi,
     int nresos, double *reso_redges, int *ngal_resos, 
-    double *weight_resos, double *pos1_resos, double *pos2_resos, 
-    double *e1_resos, double *e2_resos, int *zbin_resos, double *weightsq_resos,
+    int *isinner_resos, double *weight_resos, double *pos1_resos, double *pos2_resos, 
+    double *e1_resos, double *e2_resos,
     int *index_matcher_hash, int *pixs_galind_bounds, int *pix_gals, int nregions, 
     double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n, 
     int *thetacombis_batches, int *nthetacombis_batches, int *cumthetacombis_batches, int nthetbatches,
@@ -972,10 +971,8 @@ void alloc_notomoMap4_tree_gggg(
                
     double complex *allM4correlators = calloc(nthreads*8*1*nmapradii, sizeof(double complex));
     #pragma omp parallel for
-    for(int elthetbatch=0;elthetbatch<nthetbatches;elthetbatch++){
+    for (int elthetbatch=0;elthetbatch<nthetbatches;elthetbatch++){
         int nregions_skip_print = nregions/1000;
-        int save_multipoles=1; // Debug: Save all multipoles (1:true, 0:false)
-        int save_npcf = 0; // Debug: Save all npcf
         
         // * nmax_alloc specifies the largest multipole that needs to be allocated when wanting 
         //   to allocate the Upsn/Nn while making use of the symmetry properties
@@ -984,31 +981,28 @@ void alloc_notomoMap4_tree_gggg(
         //   reconstructed quantities having a suffix _rec
         int thisthread = omp_get_thread_num();
         //printf("Doing thetabatch %d/%d on thread %d\n",elthetbatch,nthetbatches,thisthread);
-        int nmax_alloc = 2*(nmax+1)+1;
+        int nmax_alloc = 2*nmax+1;
         int nbinsz = 1;
         int ncomp = 8;
         int nnvals_Gn = 4*nmax_alloc+3; // Need to cover [-n1-n2-3, n1+n2-1]
         int nnvals_G2n = 4*nmax_alloc+7; // Need to cover [-n1-n2-5, n1+n2+1]
         int nnvals_Wn = 4*nmax_alloc+1; // Need to cover [-n1-n2, n1+n2]
-        int nnvals_Upsn = 2*nmax_alloc+1; // Need tocover [-nmax,+nmax]
-        int nnvals_Upsn_rec = 2*nmax+1;
+        int nnvals_Upsn = 2*nmax_alloc+1;  // Need tocover [-2*nmax_alloc,+2*nmax_alloc]
+        int nnvals_Upsn_rec = 2*nmax+1; // Need tocover [-nmax,+nmax]
         int nzero_Gn = 2*nmax_alloc+3;
         int nzero_G2n = 2*nmax_alloc+5;
         int nzero_Wn = 2*nmax_alloc;
         int nzero_Ups = nmax_alloc;
-        int nzero_Ups_rec = nmax;
         
         int ups_nshift = nbinsr*nbinsr*nbinsr;
         int n2n3combis = nnvals_Upsn*nnvals_Upsn;
         int n2n3combis_rec = nnvals_Upsn_rec*nnvals_Upsn_rec;
-        int ups_compshift = n2n3combis*ups_nshift;
         int ups_rec_compshift = n2n3combis_rec*ups_nshift;
         
         int batch_nthetas = nthetacombis_batches[elthetbatch];
         int batchups_nshift = batch_nthetas;
         int batchups_compshift = n2n3combis*batchups_nshift;
         int batchgamma_thetshift = nbinsphi*nbinsphi;
-        int batchgamma_compshift = batch_nthetas*batchgamma_thetshift;
         
         int npix_hash = pix1_n*pix2_n;
         int *rshift_index_matcher_hash = calloc(nresos, sizeof(int));
@@ -1042,24 +1036,34 @@ void alloc_notomoMap4_tree_gggg(
         double complex *nextW3ns = calloc(nbinszr, sizeof(double complex));
         
         double drbin = (log(rmax)-log(rmin))/(nbinsr);
+        int rbin_min_batch=nbinsr;int rbin_max_batch=0;
+        int reso_min_batch=0; int reso_max_batch=0;
         int *elb1s_batch = calloc(batch_nthetas, sizeof(int));
         int *elb2s_batch = calloc(batch_nthetas, sizeof(int));
         int *elb3s_batch = calloc(batch_nthetas, sizeof(int));
         double *bin_edges = calloc(nbinsr+1, sizeof(double));
         #pragma omp critical
         {
-        for (int elb=0;elb<batch_nthetas;elb++){
-            int thisrcombi = thetacombis_batches[cumthetacombis_batches[elthetbatch]+elb];
-            elb1s_batch[elb] = thisrcombi/(nbinsr*nbinsr);
-            elb2s_batch[elb] = (thisrcombi-elb1s_batch[elb]*nbinsr*nbinsr)/nbinsr;
-            elb3s_batch[elb] = thisrcombi-elb1s_batch[elb]*nbinsr*nbinsr-elb2s_batch[elb]*nbinsr;
+            for (int elb=0;elb<batch_nthetas;elb++){
+                int thisrcombi = thetacombis_batches[cumthetacombis_batches[elthetbatch]+elb];
+                elb1s_batch[elb] = thisrcombi/(nbinsr*nbinsr);
+                elb2s_batch[elb] = (thisrcombi-elb1s_batch[elb]*nbinsr*nbinsr)/nbinsr;
+                elb3s_batch[elb] = thisrcombi-elb1s_batch[elb]*nbinsr*nbinsr-elb2s_batch[elb]*nbinsr;
+                rbin_min_batch = mymin(rbin_min_batch, elb1s_batch[elb]); 
+                rbin_max_batch = mymax(rbin_max_batch, elb3s_batch[elb]); 
+            }
+            bin_edges[0] = rmin;
+            for (int elb=0;elb<nbinsr;elb++){
+                bin_edges[elb+1] = bin_edges[elb]*exp(drbin);
+            }
+            for (int elreso=1;elreso<nresos;elreso++){
+                if (reso_redges[elreso] <= bin_edges[rbin_min_batch  ]){reso_min_batch += 1;}
+                if (reso_redges[elreso] <  bin_edges[rbin_max_batch+1]){reso_max_batch += 1;}
+            }
+            //printf("For batch %d with imin=%d imax=%d we have resomin=%d resomax=%d",
+            //       elthetbatch, rbin_min_batch, rbin_max_batch, reso_min_batch, reso_max_batch);
         }
-        bin_edges[0] = rmin;
-        for (int elb=0;elb<nbinsr;elb++){
-            bin_edges[elb+1] = bin_edges[elb]*exp(drbin);
-        }
-        }
-           
+        
         // Allocate the 4pcf multipoles for this batch of radii 
         int offset_per_thread = nregions/nthreads;
         int offset = offset_per_thread*thisthread;
@@ -1068,7 +1072,7 @@ void alloc_notomoMap4_tree_gggg(
             if ((elregion%nregions_skip_print == 0)&&(thisthread==0)){
                 printf("Doing region %d/%d for thetabatch %d/%d\n",elregion,nregions,elthetbatch,nthetbatches);
             }
-            int region_debug = mymin(500,nregions-1);
+            //int region_debug = mymin(500,nregions-1);
             int lower1, upper1;
             lower1 = pixs_galind_bounds[elregion];
             upper1 = pixs_galind_bounds[elregion+1];
@@ -1101,13 +1105,14 @@ void alloc_notomoMap4_tree_gggg(
                 for (int i=0;i<2*nbinszr;i++){nextG3ns_ggg[i]=0;nextG3ns_gggc[i]=0;}
                 for (int i=0;i<nnvals_Wn*nbinszr;i++){nextWns[i]=0;nextW2ns[i]=0;}
                 for (int i=0;i<nbinszr;i++){nextW3ns[i]=0;}
-                
-                for (int elreso=0;elreso<nresos;elreso++){
+                for (int elreso=reso_min_batch;elreso<=reso_max_batch;elreso++){
                     int rbin, zrshift, nextnshift, ind_Gn, ind_G2n, ind_Wn;
-                    int pix1_lower = mymax(0, (int) floor((p11 - (reso_redges[elreso+1]+pix1_d) - pix1_start)/pix1_d));
-                    int pix2_lower = mymax(0, (int) floor((p12 - (reso_redges[elreso+1]+pix2_d) - pix2_start)/pix2_d));
-                    int pix1_upper = mymin(pix1_n-1, (int) floor((p11 + (reso_redges[elreso+1]+pix1_d) - pix1_start)/pix1_d));
-                    int pix2_upper = mymin(pix2_n-1, (int) floor((p12 + (reso_redges[elreso+1]+pix2_d) - pix2_start)/pix2_d));
+                    double rmin_reso = reso_redges[elreso];
+                    double rmax_reso = reso_redges[elreso+1];
+                    int pix1_lower = mymax(0, (int) floor((p11 - (rmax_reso+pix1_d) - pix1_start)/pix1_d));
+                    int pix2_lower = mymax(0, (int) floor((p12 - (rmax_reso+pix2_d) - pix2_start)/pix2_d));
+                    int pix1_upper = mymin(pix1_n-1, (int) floor((p11 + (rmax_reso+pix1_d) - pix1_start)/pix1_d));
+                    int pix2_upper = mymin(pix2_n-1, (int) floor((p12 + (rmax_reso+pix2_d) - pix2_start)/pix2_d));
                     for (int ind_pix1=pix1_lower; ind_pix1<pix1_upper; ind_pix1++){
                         for (int ind_pix2=pix2_lower; ind_pix2<pix2_upper; ind_pix2++){
                             ind_red = index_matcher_hash[rshift_index_matcher_hash[elreso] + ind_pix2*pix1_n + ind_pix1];
@@ -1116,16 +1121,17 @@ void alloc_notomoMap4_tree_gggg(
                             upper = pixs_galind_bounds[rshift_pixs_galind_bounds[elreso]+ind_red+1];
                             for (int ind_inpix=lower; ind_inpix<upper; ind_inpix++){
                                 ind_gal2 = rshift_pix_gals[elreso] + pix_gals[rshift_pix_gals[elreso]+ind_inpix];
-                                p21 = pos1_resos[ind_gal2];
+                                //#pragma omp critical
+                                {p21 = pos1_resos[ind_gal2];
                                 p22 = pos2_resos[ind_gal2];
                                 w2 = weight_resos[ind_gal2];
                                 e21 = e1_resos[ind_gal2];
-                                e22 = e2_resos[ind_gal2];
-
+                                e22 = e2_resos[ind_gal2];}
+                                
                                 rel1 = p21 - p11;
                                 rel2 = p22 - p12;
                                 dist = sqrt(rel1*rel1 + rel2*rel2);
-                                if(dist < reso_redges[elreso] || dist >= reso_redges[elreso+1]) continue;
+                                if(dist < rmin_reso || dist >= rmax_reso) continue;
                                 rbin = (int) floor((log(dist)-log(rmin))/drbin);
                                 w2_sq = w2*w2;
                                 wshape2 = (double complex) w2 * (e21+I*e22);
@@ -1165,7 +1171,8 @@ void alloc_notomoMap4_tree_gggg(
                                 // n \in [-2*nmax+1,2*nmax-1]                          
                                 nphirot *= phirot;
                                 nphirotc *= phirotc; 
-                                // n in [1, ..., nmax-1] x {+1,-1}
+                                // n in [1, ..., 2*nmax_alloc-1] x {+1,-1}
+                                nextnshift = 0;
                                 for (int nextn=1;nextn<2*nmax_alloc;nextn++){
                                     nextnshift = nextn*nbinszr;
                                     nextGns[ind_Gn+nextnshift] += wshape2*nphirot;
@@ -1182,7 +1189,7 @@ void alloc_notomoMap4_tree_gggg(
                                     nphirotc *= phirotc; 
                                 }
 
-                                // n = \pm 2*nmax
+                                // n = \pm 2*nmax_alloc
                                 nextnshift += nbinszr;
                                 nextGns[ind_Gn-nextnshift] += wshape2*nphirotc;
                                 nextG2ns_gg[ind_G2n+nextnshift] += wshape_sq*nphirot;
@@ -1196,7 +1203,7 @@ void alloc_notomoMap4_tree_gggg(
                                 nphirot *= phirot;
                                 nphirotc *= phirotc; 
 
-                                // n = \pm 2*nmax+1 
+                                // n = \pm 2*nmax_alloc+1 
                                 nextnshift += nbinszr;
                                 nextGns[ind_Gn-nextnshift] += wshape2*nphirotc;
                                 nextG2ns_gg[ind_G2n+nextnshift] += wshape_sq*nphirot;
@@ -1204,27 +1211,27 @@ void alloc_notomoMap4_tree_gggg(
                                 nextG2ns_ggc[ind_G2n+nextnshift] += wshapewshapec*nphirot;
                                 nextG2ns_ggc[ind_G2n-nextnshift] += wshapewshapec*nphirotc;
                                 nphirotc *= phirotc;
-                                // n =  -2*nmax-2
+                                // n =  -2*nmax_alloc-2
                                 nextnshift += nbinszr;
                                 nextGns[ind_Gn-nextnshift] += wshape2*nphirotc;
                                 nextG2ns_gg[ind_G2n-nextnshift] += wshape_sq*nphirotc;
                                 nextG2ns_ggc[ind_G2n-nextnshift] += wshapewshapec*nphirotc;
                                 nphirotc *= phirotc;
-                                // n =  -2*nmax-3
+                                // n =  -2*nmax_alloc-3
                                 nextnshift += nbinszr;
                                 nextGns[ind_Gn-nextnshift] += wshape2*nphirotc;
                                 nextG2ns_gg[ind_G2n-nextnshift] += wshape_sq*nphirotc;
                                 nextG2ns_ggc[ind_G2n-nextnshift] += wshapewshapec*nphirotc;
                                 nphirotc *= phirotc;
-                                // n =  -2*nmax-4
+                                // n =  -2*nmax_alloc-4
                                 nextnshift += nbinszr;
                                 nextG2ns_gg[ind_G2n-nextnshift] += wshape_sq*nphirotc;
                                 nextG2ns_ggc[ind_G2n-nextnshift] += wshapewshapec*nphirotc;
                                 nphirotc *= phirotc;
-                                // n =  -2*nmax-5
+                                // n =  -2*nmax_alloc-5
                                 nextnshift += nbinszr;
                                 nextG2ns_gg[ind_G2n-nextnshift] += wshape_sq*nphirotc;
-                                nextG2ns_ggc[ind_G2n-nextnshift] += wshapewshapec*nphirotc; 
+                                nextG2ns_ggc[ind_G2n-nextnshift] += wshapewshapec*nphirotc;
                             }
                         }
                     }
@@ -1232,23 +1239,31 @@ void alloc_notomoMap4_tree_gggg(
                 time2 = omp_get_wtime();
                 if ((elregion%nregions_skip_print == 0)&&(thisthread==0)&&(ind_inpix1==lower1)){
                     printf("Computed Gn for first gal in region %d/%d for thetabatch %d/%d in %.4f seconds\n",
-                           elregion,nregions,elthetbatch,nthetbatches,(time2-time1));}
+                           elregion,nregions,elthetbatch,nthetbatches,(time2-time1));}                
                 
-                time1 = omp_get_wtime();
                 // Allocate Upsilon
                 // Upsilon have shape 
                 // (ncomp,(2*nmax_alloc+1),(2*nmax_alloc+1),nthetas)
+                time1 = omp_get_wtime();
                 double complex gGG0, gGG1, gGG2, gGG3, gGG4, gGG5, gGG6, gGG7, wNN;
-                int thisn2, thisn3, thisn, thisnshift, thisnrshift, thisrcombi, elb1, elb2, elb3;
+                int thisn2, thisn3, thisn, thisnshift, thisnrshift, elb1, elb2, elb3;
                 int thisGshift_mn2m2, thisGshift_n2m2, thisWshift_n2;
                 int thisGshift_mn3m3, thisGshift_mn3m1, thisGshift_n3m3, thisGshift_n3m1, thisWshift_n3;
                 int thisGshift_mn2mn3m3, thisGshift_mn2mn3m1, thisGshift_n2n3m3, thisGshift_n2n3m1, thisWshift_n2n3;
                 wshape1 = w1 * (e11+I*e12);  
                 wshape1c = conj(wshape1);
-                for (int nindex=0; nindex<=len_nindices; nindex++){
+                for (int nindex=0; nindex<len_nindices; nindex++){
                     thisn2 = nindices[nindex]/nnvals_Upsn - nzero_Ups;
                     thisn3 = nindices[nindex]%nnvals_Upsn - nzero_Ups;
+                    if (thisn2>nzero_Ups || -thisn2>nzero_Ups || thisn3>nzero_Ups || -thisn3>nzero_Ups){
+                        if (elregion==0 && elthetbatch==0){
+                            printf("Error at elregion=%d batch=%d nindex=%d: nindices[nindex]=%d n2=%d n3=%d",
+                                   elregion, elthetbatch, nindex, nindices[nindex], thisn2, thisn3);}
+                        continue;
+                    }
+                        
                     thisn = thisn2+thisn3;
+                    if (elregion==0 && elthetbatch==0){printf("nindex %d: n2=%d n3=%d\n",nindex,thisn2,thisn3);}
                     thisGshift_mn2m2 = (nzero_Gn-thisn2-2)*nbinsr;
                     thisGshift_n2m2 = (nzero_Gn+thisn2-2)*nbinsr;
                     thisWshift_n2 = (nzero_Wn+thisn2)*nbinsr;
@@ -1415,11 +1430,15 @@ void alloc_notomoMap4_tree_gggg(
         double complex *thisnpcf = calloc(8*batchgamma_thetshift, sizeof(double complex));
         double complex *thisnpcf_norm = calloc(batchgamma_thetshift, sizeof(double complex));
         for (int elb=0;elb<batch_nthetas;elb++){
+            if (thisthread==0){
+                printf("Done %.4f per cent of multipole-to-Map4 conversion\r",100.* (float) elb/batch_nthetas);}
             // 1)
-            int nbshift, elb1, elb2, elb3;
+            int nbshift, elb1, elb2, elb3, elb1t, elb2t, elb3t;
             elb1 = elb1s_batch[elb];
             elb2 = elb2s_batch[elb];
             elb3 = elb3s_batch[elb];
+            int bincombi_trafos[6][3] = {{elb1,elb2,elb3}, {elb2,elb3,elb1}, {elb3,elb1,elb2},
+                                         {elb1,elb3,elb2}, {elb2,elb1,elb3}, {elb3,elb2,elb1}}; 
             // 2)
             if ((elb1==elb2)&&(elb1==elb3)){ntrafos=1;}
             else if ((elb1==elb2)&&(elb1!=elb3)){ntrafos=3;}
@@ -1427,6 +1446,10 @@ void alloc_notomoMap4_tree_gggg(
             else if ((elb2==elb3)&&(elb2!=elb1)){ntrafos=3;}
             else{ntrafos=6;}
             for (int eltrafo=0;eltrafo<ntrafos;eltrafo++){
+                elb1t = bincombi_trafos[eltrafo][0];
+                elb2t = bincombi_trafos[eltrafo][1];
+                elb3t = bincombi_trafos[eltrafo][2];
+                //printf("elb1=%d eln2=%d elb3=%d: eltrafo=%d/%d\n",elb1,elb2,elb3,eltrafo,ntrafos+1);
                 // 2a)
                 for(int eln12=0;eln12<n2n3combis;eln12++){
                     nbshift = eln12*batchups_nshift+elb;
@@ -1440,7 +1463,7 @@ void alloc_notomoMap4_tree_gggg(
                 // OPTIONAL: Allocate 4PCF in multipole basis
                 for(int eln12=0;eln12<n2n3combis_rec;eln12++){
                     if (alloc_4pcfmultipoles==1){
-                        int thisnrshift = eln12*ups_nshift + elb1*nbinsr*nbinsr + elb2*nbinsr + elb3;
+                        int thisnrshift = eln12*ups_nshift + elb1t*nbinsr*nbinsr + elb2t*nbinsr + elb3t;
                         for (int elcomp=0;elcomp<8;elcomp++){
                             Upsilon_n[elcomp*ups_rec_compshift+thisnrshift] = 
                                     thisUpsilon_n_rec[elcomp*n2n3combis_rec+eln12];
@@ -1450,7 +1473,7 @@ void alloc_notomoMap4_tree_gggg(
                 }
                 // 2b)
                 multipoles2npcf_gggg_singletheta(thisUpsilon_n_rec, thisN_n_rec, nmax, nmax,
-                                                 bin_centers_batch[elb1], bin_centers_batch[elb2], bin_centers_batch[elb3],
+                                                 elb1t, elb2t, elb3t,
                                                  phibins, phibins, nbinsphi, nbinsphi,
                                                  projection, thisnpcf, thisnpcf_norm);
 
@@ -1458,7 +1481,7 @@ void alloc_notomoMap4_tree_gggg(
                 if (alloc_4pcfreal==1){
                     for (int elphi12=0;elphi12<batchgamma_thetshift;elphi12++){
                         int gamma_rshift = nbinsphi*nbinsphi;
-                        int gamma_phircombi = gamma_rshift*(elb1*nbinsr*nbinsr+elb2*nbinsr+elb3)+elphi12;
+                        int gamma_phircombi = gamma_rshift*(elb1t*nbinsr*nbinsr+elb2t*nbinsr+elb3t)+elphi12;
                         int gamma_compshift = nbinsr*nbinsr*nbinsr*gamma_rshift;
                         for (int elcomp=0;elcomp<8;elcomp++){
                             Gammas[elcomp*gamma_compshift+gamma_phircombi] = thisnpcf[elcomp*batchgamma_thetshift+elphi12];
@@ -1472,12 +1495,12 @@ void alloc_notomoMap4_tree_gggg(
                 int map4ind;
                 int map4threadshift = thisthread*8*nmapradii;
                 for (int elmapr=0; elmapr<nmapradii; elmapr++){
-                    y1=bin_centers_batch[elb1]/mapradii[elmapr];
-                    y2=bin_centers_batch[elb2]/mapradii[elmapr];
-                    y3=bin_centers_batch[elb3]/mapradii[elmapr];
-                    dy1 = (bin_edges[elb1+1]-bin_edges[elb1])/mapradii[elmapr];
-                    dy2 = (bin_edges[elb2+1]-bin_edges[elb2])/mapradii[elmapr];
-                    dy3 = (bin_edges[elb3+1]-bin_edges[elb3])/mapradii[elmapr];
+                    y1=bin_centers_batch[elb1t]/mapradii[elmapr];
+                    y2=bin_centers_batch[elb2t]/mapradii[elmapr];
+                    y3=bin_centers_batch[elb3t]/mapradii[elmapr];
+                    dy1 = (bin_edges[elb1t+1]-bin_edges[elb1t])/mapradii[elmapr];
+                    dy2 = (bin_edges[elb2t+1]-bin_edges[elb2t])/mapradii[elmapr];
+                    dy3 = (bin_edges[elb3t+1]-bin_edges[elb3t])/mapradii[elmapr];
                     fourpcf2M4correlators(1,
                                           y1, y2, y3, dy1, dy2, dy3,
                                           phibins, phibins, dbinsphi, dbinsphi, nbinsphi, nbinsphi,

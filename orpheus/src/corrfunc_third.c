@@ -167,6 +167,7 @@ void alloc_Gammans_discrete_ggg(
                                 nphirot *= phirot;
                                 nphirotc *= phirotc; 
                                 // n in [1, ..., nmax-1] x {+1,-1}
+                                nextnshift=0;
                                 for (nextn=1;nextn<nmax;nextn++){
                                     nextnshift = nextn*nbinszr;
                                     nextGns[ind_Gn+nextnshift] += wshape*nphirot;
@@ -545,6 +546,7 @@ void alloc_Gammans_tree_ggg(
                                     nphirot *= phirot;
                                     nphirotc *= phirotc; 
                                     // n in [1, ..., nmax-1] x {+1,-1}
+                                    nextnshift = 0;
                                     for (nextn=1;nextn<nmax;nextn++){
                                         nextnshift = nextn*nbinszr;
                                         nextGns[ind_Gn+nextnshift] += wshape*nphirot;
@@ -627,17 +629,6 @@ void alloc_Gammans_tree_ggg(
                     for (int zbin2=0; zbin2<nbinsz; zbin2++){
                         for (int elb1=0; elb1<nbinsr; elb1++){
                             zrshift = zbin2*nbinsr + elb1;
-                            // Double counting correction
-                            if (dccorr==1){
-                                r12shift = elb1*nbinsr+elb1;
-                                gammashift = 4*(gammashift1 + elb1);
-                                gammashiftt = gammashiftt1 + r12shift;
-                                tmpGammans[gammashift] += wshape*nextG2ns[zrshift];
-                                tmpGammans[gammashift+1] += conj(wshape)*nextG2ns[nbinszr+zrshift];
-                                tmpGammans[gammashift+2] += wshape*nextG2ns[2*nbinszr+zrshift];
-                                tmpGammans[4*gammashiftt+3] += wshape*nextG2ns[3*nbinszr+zrshift];
-                                tmpGammans_norm[gammashiftt] -= w1*nextG2ns_norm[zrshift];
-                            }
                             h0 = -wshape * nextGns[ind_nm3 + zrshift];
                             h1 = -conj(wshape) * nextGns[ind_nm1 + zrshift];
                             h2 = -wshape * conj(nextGns[ind_mnm1 + zrshift]);
@@ -647,6 +638,17 @@ void alloc_Gammans_tree_ggg(
                                 zcombi = zbin1*nbinsz*nbinsz+zbin2*nbinsz+zbin3;
                                 gammashift1 = thisnshift + zcombi*gamma_zshift + elb1*nbinsr;
                                 gammashiftt1 = thisnshift + zcombi*gamma_zshift;
+                                // Double counting correction
+                                if (zbin1==zbin2 && zbin1==zbin3 && dccorr==1){
+                                    r12shift = elb1*nbinsr+elb1;
+                                    gammashift = 4*(gammashift1 + elb1);
+                                    gammashiftt = gammashiftt1 + r12shift;
+                                    tmpGammans[gammashift] += wshape*nextG2ns[zrshift];
+                                    tmpGammans[gammashift+1] += conj(wshape)*nextG2ns[nbinszr+zrshift];
+                                    tmpGammans[gammashift+2] += wshape*nextG2ns[2*nbinszr+zrshift];
+                                    tmpGammans[4*gammashiftt+3] += wshape*nextG2ns[3*nbinszr+zrshift];
+                                    tmpGammans_norm[gammashiftt] -= w1*nextG2ns_norm[zrshift];
+                                }
                                 // Nominal allocation
                                 for (elb2=0; elb2<nbinsr; elb2++){
                                     zrshift = zbin3*nbinsr + elb2;
@@ -1059,6 +1061,7 @@ void alloc_Gammans_doubletree_ggg(
                                 nphirotc *= phirotc; 
                                 
                                 // n in [1, ..., nmax-1] x {+1,-1}
+                                nextnshift = 0;
                                 for (nextn=1;nextn<nmax;nextn++){
                                     nextnshift = nextn*nbinszr_reso;
                                     nextGns[ind_Gn+nextnshift] += wshape_gal2*nphirot;
@@ -2011,6 +2014,7 @@ void alloc_Gammans_basetree_ggg(
                                 nphirotc *= phirotc; 
 
                                 // n in [1, ..., nmax-1] x {+1,-1}
+                                nextnshift = 0;
                                 for (nextn=1;nextn<nmax;nextn++){
                                     nextnshift = nextn*nbinszr_reso;
                                     nextGns[ind_Gn+nextnshift] += wshape_gal2*nphirot;
@@ -3418,7 +3422,7 @@ void alloc_Gammans_discrete_NGG(
         double drbin = log(rmax/rmin)/nbinsr;
         
         for (int elregion=0; elregion<nregions; elregion++){
-            int region_debug=(int) (nthreads/2) * nregions_per_thread;
+            //int region_debug=(int) (nthreads/2) * nregions_per_thread;
             //int region_debug=99999;
             // Check if this thread is responsible for the region
             int nthread_target = mymin(elregion/nregions_per_thread, nthreads-1);
@@ -3674,7 +3678,7 @@ void alloc_Gammans_discrete_NGG(
 // that while the Gn allocation only happens on the `reduced' catalog, the preparation of this `reduced'
 // catalog still scales as O(N_gal). Even worse, the size of the reduced catalog is nbinsr*nphi*nbinsz which
 // can very well approach the size of the full catalog....thus, this is not intended to be used.
-void alloc_Gammans_phitree_NGG(
+/*void alloc_Gammans_phitree_NGG(
     double *w_source, double *pos1_source, double *pos2_source, double *e1_source, double *e2_source, int *zbin_source, int nbinsz_source, int ngal_source,
     int *isinner_lens, double *w_lens, double *pos1_lens, double *pos2_lens, int *zbin_lens, int nbinsz_lens, int ngal_lens, 
     int nmax, double rmin, double rmax, int nbinsr, int dccorr,
@@ -4031,7 +4035,7 @@ void alloc_Gammans_phitree_NGG(
     free(totcounts);
     free(totnorms);
 }
-        
+*/        
 
 // Discrete estimator of Lens-Source-Source Correlator
 void alloc_Gammans_tree_NGG(
@@ -4094,7 +4098,7 @@ void alloc_Gammans_tree_NGG(
         
         
         for (int elregion=0; elregion<nregions; elregion++){
-            int region_debug=(int) (nthreads/2) * nregions_per_thread;
+            //int region_debug=(int) (nthreads/2) * nregions_per_thread;
             //int region_debug=99999;
             // Check if this thread is responsible for the region
             int nthread_target = mymin(elregion/nregions_per_thread, nthreads-1);
@@ -4110,7 +4114,6 @@ void alloc_Gammans_tree_NGG(
             double pos1_gal2, pos2_gal2, w_gal2, e1_gal2, e2_gal2;
             double complex wshape_gal2;
             int ind_red, ind_gal1, ind_gal2, lower1, upper1, isinner_gal1, lower2, upper2;
-            int pix1_lower, pix2_lower, pix1_upper, pix2_upper;
             int ind_inpix1, ind_inpix2;
             lower1 = pixs_galind_bounds_lens[elregion];
             upper1 = pixs_galind_bounds_lens[elregion+1];
@@ -4402,13 +4405,8 @@ void alloc_Gammans_doubletree_NGG(
         int upsilon_threadshift = elthread*ncomp_Upsilon*upsilon_compshift;
         int norm_zshift = nbinsr*nbinsr;
         int norm_nshift = norm_zshift*nzcombis;
-        int norm_compshift = nnvals_Norm*norm_nshift;
         int norm_threadshift = elthread*nnvals_Norm*norm_nshift;
         int counts_threadshift = elthread*nbinsz_lens*nbinsz_source*nbinsr;
-        int nbinszr_Gn = nbinsz_source*nbinsr;
-        int nbinszr_Wn = nbinsz_source*nbinsr;
-        double rmin_sq = rmin*rmin;
-        double rmax_sq = rmax*rmax;
         double drbin = log(rmax/rmin)/nbinsr;
         
         // Largest possible nshift: each zbin does completely fill out the lowest reso grid.
@@ -4590,7 +4588,7 @@ void alloc_Gammans_doubletree_NGG(
             double pos1_gal1, pos2_gal1, pos1_gal2, pos2_gal2, w_gal1, w_gal2, e1_gal2, e2_gal2;
             double rel1, rel2, dist;
             double complex wshape_gal2;
-            double complex nphirot, phirot, phirotc;
+            double complex nphirot, phirot;
             double rmin_reso, rmax_reso, rmin_reso_sq, rmax_reso_sq;
             int elreso_leaf, rbinmin, rbinmax, rbinmin1, rbinmax1, rbinmin2, rbinmax2;
             

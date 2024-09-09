@@ -32,7 +32,8 @@ class BinnedNPCF:
     def __init__(self, order, spins, n_cfs, min_sep, max_sep, nbinsr=None, binsize=None, nbinsphi=100, 
                  nmaxs=30, method="DoubleTree", multicountcorr=True, diagrenorm=False, shuffle_pix=1,
                  tree_resos=[0,0.25,0.5,1.,2.], tree_redges=None, rmin_pixsize=20, 
-                 resoshift_leafs=0, minresoind_leaf=None, maxresoind_leaf=None,  nthreads=16):
+                 resoshift_leafs=0, minresoind_leaf=None, maxresoind_leaf=None,  
+                 methods_avail=["Discrete", "Tree", "BaseTree", "DoubleTree"], nthreads=16):
         r"""Class of an binned N-point correlation function of various arbitrary tracer catalogs. 
         This class contains attributes and metods that can be used across any its children.
         
@@ -124,7 +125,7 @@ class BinnedNPCF:
         self.multicountcorr = int(multicountcorr)
         self.diagrenorm = int(diagrenorm)
         self.shuffle_pix = shuffle_pix
-        self.methods_avail = ["Discrete", "Tree", "BaseTree", "DoubleTree"]
+        self.methods_avail = methods_avail
         self.tree_resos = np.asarray(tree_resos, dtype=np.float64)
         self.tree_nresos = int(len(self.tree_resos))
         self.tree_redges = tree_redges
@@ -183,7 +184,7 @@ class BinnedNPCF:
         assert(isinstance(self.nbinsr, int))
         self.bin_edges = np.geomspace(self.min_sep, self.max_sep, self.nbinsr+1)
         self.binsize = np.log(self.bin_edges[1]/self.bin_edges[0])
-        # Setup variable for tree estimator
+        # Setup variable for tree estimator according to input
         if self.tree_redges != None:
             assert(isinstance(self.tree_redges, np.ndarray))
             self.tree_redges = self.tree_redges.astype(np.float64)
@@ -202,6 +203,11 @@ class BinnedNPCF:
             if rbin > self.tree_redges[_tmpreso+1]:
                 _tmpreso += 1
             self.tree_resosatr[elbin] = _tmpreso
+        # Update tree resolutions to make sure that `tree_redges` is monotonous
+        # (This is i.e. not fulfilled for a default tree setup and a large value of `rmin`)
+        _resomin = self.tree_resosatr[0]
+        _resomax = self.tree_resosatr[-1]
+        self._updatetree(self.tree_resos[_resomin:_resomax+1])
             
         # Prepare leaf resolutions
         if np.abs(self.resoshift_leafs)>=self.tree_nresos:
@@ -479,7 +485,7 @@ class BinnedNPCF:
                 ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
                 p_i32, ct.c_int32, p_f64, p_f64, ct.c_int32,
                 ct.c_int32, p_f64, p_i32,
-                p_f64, p_f64, p_f64, p_f64, p_f64, p_i32, p_f64,
+                p_i32, p_f64, p_f64, p_f64, p_f64, p_f64,
                 p_i32, p_i32, p_i32, ct.c_int32, 
                 ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, 
                 p_i32, p_i32, p_i32, ct.c_int32, 
@@ -487,7 +493,7 @@ class BinnedNPCF:
                 ct.c_int32, ct.c_int32, np.ctypeslib.ndpointer(dtype=np.float64), 
                 np.ctypeslib.ndpointer(dtype=np.complex128),np.ctypeslib.ndpointer(dtype=np.complex128),
                 np.ctypeslib.ndpointer(dtype=np.complex128),np.ctypeslib.ndpointer(dtype=np.complex128)]
-            
+         
             self.clib.multipoles2npcf_gggg.restype = ct.c_void_p
             self.clib.multipoles2npcf_gggg.argtypes = [
                 p_c128, p_c128, p_f64, ct.c_int32, 
@@ -560,6 +566,12 @@ class BinnedNPCF:
                 p_f64, p_f64, p_f64, p_f64, ct.c_int32, ct.c_int32, 
                 ct.c_int32,
                 np.ctypeslib.ndpointer(dtype=np.complex128), np.ctypeslib.ndpointer(dtype=np.complex128)] 
+            
+            # [DEBUG]: Recover 4pcf permutations from symmetry relations
+            self.clib.getMultiplolesFromSymm.restype = ct.c_void_p
+            self.clib.getMultiplolesFromSymm.argtypes = [
+                p_c128, p_c128, ct.c_int32, ct.c_int32, p_i32, ct.c_int32,
+                np.ctypeslib.ndpointer(dtype=np.complex128), np.ctypeslib.ndpointer(dtype=np.complex128)]
                         
     ############################################################
     ## Functions that deal with different projections of NPCF ##
@@ -613,7 +625,28 @@ class BinnedNPCF:
                 thiscat = cats[els]
             assert(thiscat.spin == s)
             
+    def _updatetree(self, new_resos):
+        
+        new_resos = np.asarray(new_resos, dtype=np.float64)
+        new_nresos = int(len(new_resos))
+        
+        new_redges = np.zeros(len(new_resos)+1)
+        new_redges[0] = self.min_sep
+        new_redges[-1] = self.max_sep
+        for elreso, reso in enumerate(new_resos[1:]):
+            new_redges[elreso+1] = self.rmin_pixsize*reso
+        _tmpreso = 0
+        new_resosatr = np.zeros(self.nbinsr, dtype=np.int32)
+        for elbin, rbin in enumerate(self.bin_edges[:-1]):
+            if rbin > new_redges[_tmpreso+1]:
+                _tmpreso += 1
+            new_resosatr[elbin] = _tmpreso 
             
+        self.tree_resos = new_resos
+        self.tree_nresos = new_nresos
+        self.tree_redges = new_redges
+        self.tree_resosatr = new_resosatr
+                        
     """
     # TODO: Put stuff from __init__ in here
     def _update_tree(self, new_resos, new_edges):
@@ -2299,7 +2332,7 @@ class FFFCorrelation(BinnedNPCF):
 #############################
 class GGGGCorrelation_NoTomo(BinnedNPCF):
     
-    def __init__(self, min_sep, max_sep, verbose=False, thetabatchsize_max=10000, **kwargs):
+    def __init__(self, min_sep, max_sep, verbose=False, thetabatchsize_max=10000, method="Tree", **kwargs):
         r""" Class containing methods to measure and and obtain statistics that are built
         from nontomographic fourth-order shear correlation functions.
         
@@ -2378,15 +2411,14 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
             Flag signifying on wheter the NPCF multipoles have beed edge-corrected. Defaults to ``False``.
         """
         super().__init__(order=4, spins=np.array([2,2,2,2], dtype=np.int32),
-                         n_cfs=8, min_sep=min_sep, max_sep=max_sep, **kwargs)
+                         n_cfs=8, min_sep=min_sep, max_sep=max_sep, 
+                         method=method, methods_avail=["Discrete", "Tree"], **kwargs)
         
         self.thetabatchsize_max = thetabatchsize_max
         self.verbose = verbose
         self.projection = None
         self.projections_avail = [None, "X", "Centroid"]
         self.proj_dict = {"X":0, "Centroid":1}
-        self.methods_avail = ["Discrete"] # Default right now. See if tree-methods make sense.
-        self.method = "Discrete" # Default right now 
         self.nbinsz = 1
         self.nzcombis = 1
         
@@ -2395,7 +2427,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
         self.project["X"]["Centroid"] = self._x2centroid
         
     def process(self, cat, statistics="all", tofile=False, apply_edge_correction=False, projection="X",
-                lowmem=None, mapradii=None, batchsize=None, cutlen=2**31-1):
+                lowmem=None, mapradii=None, batchsize=None, custom_thetacombis=None, cutlen=2**31-1):
         r"""
         Arguments:
         
@@ -2413,6 +2445,8 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
         * - Set to true if any aperture statistics is in stats or we will run into mem error
         * - Set to false otherwise
         * - Raise error if lowmen=False and we will have more that 2^31-1 elements at any stage of the computation
+        
+        custom_thetacombis: array of inds which theta combis will be selected
         """
         
         ## Preparations ##
@@ -2560,6 +2594,10 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                     N_n)
             func = self.clib.alloc_notomoGammans_discrete_gggg 
         if self.method=="Discrete" and lowmem:
+            _resradial = self.__gen_thetacombis(batchsize=batchsize, ordered=False, custom=custom_thetacombis)
+            _, _, thetacombis_batches, cumnthetacombis_batches, nthetacombis_batches, nbatches = _resradial
+            
+            """
             if batchsize is None:
                 batchsize = min(_nbinsr3,min(self.thetabatchsize_max,_nbinsr3/self.nthreads))
                 print("Using batchsize of %i for radial bins"%batchsize)
@@ -2574,6 +2612,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
             nthetacombis_batches[-1] = _nbinsr3-cumnthetacombis_batches[-2]
             thetacombis_batches = thetacombis_batches.flatten().astype(np.int32)
             nbatches = len(nthetacombis_batches)
+            """
             args_basesetup = (np.int32(_nmax), 
                               np.float64(self.min_sep), np.float64(self.max_sep), np.int32(self.nbinsr), 
                               np.int32(self.multicountcorr),
@@ -2592,29 +2631,50 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                     *args_map4,
                     *args_4pcf)
             func = self.clib.alloc_notomoMap4_disc_gggg  
-            func = self.clib.alloc_notomoGammans_discrete_gggg 
         if self.method=="Tree" and lowmem:
             # Prepare mask for nonredundant theta- and multipole configurations
-            _resradial = self.__gen_thetacombis(self.nbinsr, ordered=True)
-            nbinsr3, allelbs, thetacombis_batches, cumnthetacombis_batches, nthetacombis_batches, nbatches = _resradial
+            _resradial = self.__gen_thetacombis(batchsize=batchsize, ordered=True, custom=custom_thetacombis)
+            _, _, thetacombis_batches, cumnthetacombis_batches, nthetacombis_batches, nbatches = _resradial
             assert(self.nmaxs[0]==self.nmaxs[1])
-            _resmultipoles = self.__gen_indices_Ups(self.nmaxs[0])
+            _resmultipoles = __class__.__gen_indices_Ups(self.nmaxs[0])
             _shape, _inds, _n2s, _n3s = _resmultipoles
-            # Prepare reduced catalogs
             
+            # Prepare reduced catalogs
+            cutfirst = np.int32(self.tree_resos[0]==0.)
+            mhash = cat.multihash(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1], 
+                                  shuffle=self.shuffle_pix, w2field=True, normed=True)
+            (ngal_resos, pos1s, pos2s, weights, zbins, isinners, allfields, 
+             index_matchers, pixs_galind_bounds, pix_gals, dpixs1_true, dpixs2_true) = mhash
+            weight_resos = np.concatenate(weights).astype(np.float64)
+            pos1_resos = np.concatenate(pos1s).astype(np.float64)
+            pos2_resos = np.concatenate(pos2s).astype(np.float64)
+            zbin_resos = np.concatenate(zbins).astype(np.int32)
+            isinner_resos = np.concatenate(isinners).astype(np.int32)
+            e1_resos = np.concatenate([allfields[i][0] for i in range(len(allfields))]).astype(np.float64)
+            e2_resos = np.concatenate([allfields[i][1] for i in range(len(allfields))]).astype(np.float64)
+            index_matcher_resos = np.concatenate(index_matchers).astype(np.int32)
+            pixs_galind_bounds_resos = np.concatenate(pixs_galind_bounds).astype(np.int32)
+            pix_gals_resos = np.concatenate(pix_gals).astype(np.int32)
+            index_matcher_flat = np.argwhere(cat.index_matcher>-1).flatten()
+            nregions = len(index_matcher_flat)
             # Build args
             args_basesetup = (np.int32(_nmax), 
                               np.float64(self.min_sep), np.float64(self.max_sep), np.int32(self.nbinsr), 
                               np.int32(self.multicountcorr),
                               _inds, np.int32(len(_inds)), self.phis[0].astype(np.float64), 
-                              2*np.pi/_nphis*np.ones(_nphis, dtype=np.float64), np.int32(_nphis))
-            args_resos = ()
-            args_4pcf = (np.int32(alloc_4pcfmultipoles), np.int32(alloc_4pcfreal), 
-                         bin_centers, Upsilon_n, N_n, fourpcf, fourpcf_norm, )
+                              2*np.pi/_nphis*np.ones(_nphis, dtype=np.float64), np.int32(_nphis), )
+            args_resos = (np.int32(self.tree_nresos), self.tree_redges, np.array(ngal_resos, dtype=np.int32),
+                          isinner_resos, weight_resos, pos1_resos, pos2_resos, e1_resos, e2_resos,
+                          index_matcher_resos, pixs_galind_bounds_resos, pix_gals_resos, np.int32(nregions), )
+            args_hash = (np.float64(cat.pix1_start), np.float64(cat.pix1_d), np.int32(cat.pix1_n), 
+                         np.float64(cat.pix2_start), np.float64(cat.pix2_d), np.int32(cat.pix2_n), )
             args_thetas = (thetacombis_batches, nthetacombis_batches, cumnthetacombis_batches, nbatches, )
             args_map4 = (mapradii, np.int32(len(mapradii)), M4correlators)
+            args_4pcf = (np.int32(alloc_4pcfmultipoles), np.int32(alloc_4pcfreal), 
+                         bin_centers, Upsilon_n, N_n, fourpcf, fourpcf_norm, )
             args = (*args_basecat,
                     *args_basesetup,
+                    *args_resos,
                     *args_hash,
                     *args_thetas,
                     np.int32(self.nthreads),
@@ -2622,28 +2682,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                     *args_map4,
                     *args_4pcf)
             func = self.clib.alloc_notomoMap4_tree_gggg  
-            """
-            void alloc_notomoMap4_tree_gggg(
-                int *isinner, double *weight, double *pos1, double *pos2, double *e1, double *e2, int ngal, 
-                int nmax, double rmin, double rmax, int nbinsr, int dccorr, 
-                int *nindices, int len_nindices, double *phibins, double *dbinsphi, int nbinsphi,
-                
-                int nresos, double *reso_redges, int *ngal_resos, 
-                double *weight_resos, double *pos1_resos, double *pos2_resos, 
-                double *e1_resos, double *e2_resos, int *zbin_resos, double *weightsq_resos,
-                int *index_matcher_hash, int *pixs_galind_bounds, int *pix_gals, int nregions, 
-                double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n,
-                int *thetacombis_batches, int *nthetacombis_batches, int *cumthetacombis_batches, int nthetbatches,
-                int nthreads, int projection, double *mapradii, int nmapradii, double complex *M4correlators, 
-                
-                int alloc_4pcfmultipoles, int alloc_4pcfreal,
-                double *bin_centers, double complex *Upsilon_n, double complex *N_n, double complex *Gammas, 
-                double complex *Norms);
 
-            void getMultiplolesFromSymm(double complex *Upsn_in, double complex *Nn_in,
-                                        int nmax, int eltrafo, int *nindices, int len_nindices,
-                                        double complex *Upsn_out, double complex *Nn_out);
-            """
         # Optionally print the arguments 
         if self.verbose:
             print("We pass the following arguments:")
@@ -3113,8 +3152,8 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                                      self.bin_edges.astype(np.float64),self.nbinsr.astype(np.int32),
                                      self.phis[0].astype(np.float64), np.int32(len(self.phis[0])),
                                      xip_arr.astype(np.float64), xim_arr.astype(np.float64),
-                                     thetamin_xi.astype(np.float64), 
-                                     thetamax_xi.astype(np.float64), 
+                                     np.float64(thetamin_xi), 
+                                     np.float64(thetamax_xi), 
                                      dtheta_xi.astype(np.float64),
                                      gausss_4pcf)
         return gauss_4pcf.reshape((8, self.phis[0], self.phis[0]))
@@ -3175,10 +3214,32 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
         
         return M4correlators.reshape((8,self.nzcombis,len(mapradii)))
     
+    def getMultiplolesFromSymm(self, nmax_rec, itheta1, itheta2, itheta3, eltrafo):
+    
+        nmax_alloc = 2*nmax_rec+1
+        assert(nmax_alloc<=self.nmaxs[0])
+
+        # Only select relevant n1/n2 indices
+        _dn = self.nmaxs[0]-nmax_alloc
+
+        _shape, _inds, _n2s, _n3s = __class__.__gen_indices_Ups(nmax_rec)
+        Upsn_in = self.npcf_multipoles[:,_dn:-_dn,_dn:-_dn,0,itheta1,itheta2,itheta3].flatten()
+        Nn_in = self.npcf_multipoles_norm[_dn:-_dn,_dn:-_dn,0,itheta1,itheta2,itheta3].flatten()
+        Upsn_out = np.zeros(8*(2*nmax_rec+1)*(2*nmax_rec+1), dtype=np.complex128)
+        Nn_out = np.zeros(1*(2*nmax_rec+1)*(2*nmax_rec+1), dtype=np.complex128)
+
+        self.clib.getMultiplolesFromSymm(
+            Upsn_in, Nn_in, nmax_rec, eltrafo, _inds, len(_inds), Upsn_out, Nn_out)
+
+        Upsn_out = Upsn_out.reshape((8,(2*nmax_rec+1),(2*nmax_rec+1)))
+        Nn_out = Nn_out.reshape(((2*nmax_rec+1),(2*nmax_rec+1)))
+
+        return Upsn_out, Nn_out
+
     @staticmethod
     def __gen_indices_Ups(nmax):
         """ List of flattened indices corresponding to selection """
-        nmax_alloc = 2*(nmax+1)+1
+        nmax_alloc = 2*nmax+1
         reconstructed = np.zeros((2*nmax_alloc+1,2*nmax_alloc+1),dtype=int)
         for _n2 in range(-nmax-1,nmax+2):
             for _n3 in range(-nmax-1,nmax+2):
@@ -3197,23 +3258,42 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                 reconstructed[nmax_alloc+_n2,nmax_alloc+_n3] += 1
         _shape = reconstructed.shape
         _inds = np.argwhere((reconstructed>0).flatten())[:,0].astype(np.int32)
-        _n2s = np.argwhere(reconstructed>0)[:,0].astype(np.int32)
-        _n3s = np.argwhere(reconstructed>0)[:,1].astype(np.int32)
+        _n2s = np.argwhere(reconstructed>0)[:,0].astype(np.int32)-nmax_alloc
+        _n3s = np.argwhere(reconstructed>0)[:,1].astype(np.int32)-nmax_alloc
         return _shape, _inds, _n2s, _n3s
-    
-    @staticmethod
-    def __gen_thetacombis(nthetas, ordered=True):
+        
+    def __gen_thetacombis(self, batchsize, ordered=True, custom=None):
+        
+        # Allocate selector for custom bins
+        if custom is None:
+            customsel = np.ones(self.nbinsr*self.nbinsr*self.nbinsr, dtype=bool)
+        else:
+            custom = custom.astype(int)
+            assert(np.max(custom)<self.nbinsr*self.nbinsr*self.nbinsr)
+            assert(np.min(custom)>=0)
+            customsel = np.zeros(self.nbinsr*self.nbinsr*self.nbinsr, dtype=bool)
+            customsel[custom] = True
+            
+        # Build the bins    
         allelbs = []
+        thetacombis_batches = []
         nbinsr3 = 0
         cutlo_2 = 0
         cutlo_3 = 0
+        tmpind = 0
         for elb1 in range(self.nbinsr):
-            if ordered:cutlo_2=elb1
-            for elb2 in range(cutlo_2,self.nbinsr):
-                if ordered:cutlo_3=elb2
-                for elb3 in range(cutlo_3,self.nbinsr):
-                    allelbs.append([elb1,elb2,elb3])
-                    nbinsr3 += 1
+            for elb2 in range(self.nbinsr):
+                for elb3 in range(self.nbinsr):
+                    valid = True
+                    if ordered:
+                        if elb1>elb2 or elb1>elb3 or elb2>elb3:
+                            valid = False
+                    if valid and customsel[tmpind]:
+                        thetacombis_batches.append([tmpind])
+                        allelbs.append([elb1,elb2,elb3])
+                        nbinsr3 += 1
+                    tmpind += 1
+        thetacombis_batches = np.asarray(thetacombis_batches,dtype=np.int32)
         allelbs = np.asarray(allelbs,dtype=np.int32)
         if batchsize is None:
             batchsize = min(nbinsr3,min(self.thetabatchsize_max,nbinsr3/self.nthreads))
@@ -3222,7 +3302,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
             nbatches = np.int32(np.ceil(nbinsr3/batchsize))
         else:
             nbatches = np.int32(nbinsr3/batchsize)
-        thetacombis_batches = np.arange(nbinsr3).astype(np.int32)
+        #thetacombis_batches = np.arange(nbinsr3).astype(np.int32)
         cumnthetacombis_batches = (np.arange(nbatches+1)*nbinsr3/(nbatches)).astype(np.int32)
         nthetacombis_batches = (cumnthetacombis_batches[1:]-cumnthetacombis_batches[:-1]).astype(np.int32)
         cumnthetacombis_batches[-1] = nbinsr3
@@ -3232,11 +3312,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
         
         return nbinsr3, allelbs, thetacombis_batches, cumnthetacombis_batches, nthetacombis_batches, nbatches
             
-        
-    
 
-            
-    
 class GGGGCorrelation(BinnedNPCF):
     """ This class stores the natural components of the shear four point correlation functions.""
     
