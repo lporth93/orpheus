@@ -748,10 +748,11 @@ void alloc_Gammans_doubletree_ggg(
     int *ngal_resos, int nbinsz, int *isinner_resos, double *weight_resos, double *pos1_resos, double *pos2_resos, 
     double *e1_resos, double *e2_resos, int *zbin_resos, double *weightsq_resos,
     int *index_matcher, int *pixs_galind_bounds, int *pix_gals, 
-    double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n, int nregions, int *index_matcher_hash,
+    double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n,
+    int *index_matcher_hash, int nregions, int *filledregions, int nfilledregions, 
     int nmax, double rmin, double rmax, int nbinsr, int dccorr, 
     int nthreads, double *bin_centers, double complex *Gammans, double complex *Gammans_norm){
-    
+        
     // Index shift for the Gamman
     int _gamma_zshift = nbinsr*nbinsr;
     int _gamma_nshift = _gamma_zshift*nbinsz*nbinsz*nbinsz;
@@ -768,7 +769,7 @@ void alloc_Gammans_doubletree_ggg(
     
     #pragma omp parallel for num_threads(nthreads)
     for(int elthread=0;elthread<nthreads;elthread++){
-        int nregions_per_thread = nregions/nthreads;
+        int nregions_per_thread = nfilledregions/nthreads;
         int hasdiscrete = nresos-nresos_grid;
         int nnvals_Gn = 2*nmax+3;
         int nnvals_Nn = nmax+1;
@@ -785,17 +786,17 @@ void alloc_Gammans_doubletree_ggg(
         double complex *Nncache = calloc(nnvals_Nn*size_max_nshift, sizeof(double complex));
         double complex *wNncache = calloc(nnvals_Nn*size_max_nshift, sizeof(double complex));
         int *Nncache_updates = calloc(size_max_nshift, sizeof(int));
-        for (int elregion=0; elregion<nregions; elregion++){
+        for (int _elregion=0; _elregion<nfilledregions; _elregion++){
             int region_debug=99999;
             // Check if this thread is responsible for the region
-            int nthread_target = mymin(elregion/nregions_per_thread, nthreads-1);
+            int nthread_target = mymin(_elregion/nregions_per_thread, nthreads-1);
             if (nthread_target!=elthread){continue;}
             // printf("Region %d is in thread %d\n",elregion,elthread);
-            if (elregion==region_debug){printf("Region %d is in thread %d\n",elregion,elthread);}
+            if (_elregion==region_debug){printf("Region %d is in thread %d\n",_elregion,elthread);}
             if (elthread==nthreads/2){
-                printf("\rDone %.2f per cent",100*((double) elregion-nregions_per_thread*(int)(nthreads/2))/nregions_per_thread);
+                printf("\rDone %.2f per cent",100*((double) _elregion-nregions_per_thread*(int)(nthreads/2))/nregions_per_thread);
             }
-            
+            int elregion = filledregions[_elregion];
             
             // Check which sets of radii are evaluated for each resolution
             int *reso_rindedges = calloc(nresos+1, sizeof(int));
@@ -1703,7 +1704,8 @@ void alloc_Gammans_basetree_ggg(
     int *isinner_resos, double *weight_resos, double *pos1_resos, double *pos2_resos, 
     double *e1_resos, double *e2_resos, int *zbin_resos, double *weightsq_resos,
     int *index_matcher, int *pixs_galind_bounds, int *pix_gals, 
-    double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n, int nregions, int *index_matcher_hash,
+    double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n, 
+    int *index_matcher_hash, int nregions, int *filledregions, int nfilledregions, 
     int nmax, double rmin, double rmax, int nbinsr, int dccorr, 
     int nthreads, double *bin_centers, double complex *Gammans, double complex *Gammans_norm){
     

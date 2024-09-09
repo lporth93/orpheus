@@ -321,7 +321,8 @@ class BinnedNPCF:
                 ct.c_int32, ct.c_int32, p_f64, p_f64, p_f64, p_i32, ct.c_int32, 
                 p_i32, p_f64, p_f64, p_f64, p_f64, p_f64, p_i32, p_f64,
                 p_i32, p_i32, p_i32, 
-                ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, p_i32, 
+                ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, 
+                p_i32, ct.c_int32, p_i32, ct.c_int32, 
                 ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, ct.c_int32, 
                 np.ctypeslib.ndpointer(dtype=np.float64), 
                 np.ctypeslib.ndpointer(dtype=np.complex128),
@@ -334,7 +335,8 @@ class BinnedNPCF:
                 ct.c_int32, ct.c_int32, ct.c_int32, 
                 p_i32, ct.c_int32, p_i32, p_f64, p_f64, p_f64, p_f64, p_f64, p_i32, p_f64,
                 p_i32, p_i32, p_i32, 
-                ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, p_i32, 
+                ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, 
+                p_i32, ct.c_int32, p_i32, ct.c_int32, 
                 ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, ct.c_int32, 
                 np.ctypeslib.ndpointer(dtype=np.float64), 
                 np.ctypeslib.ndpointer(dtype=np.complex128),
@@ -1089,6 +1091,14 @@ class GGGCorrelation(BinnedNPCF):
                 args_resos = (isinner_resos, ) + args_resos
                 index_matcher_flat = np.argwhere(cat.index_matcher>-1).flatten()
                 nregions = len(index_matcher_flat)
+                # Select regions with at least one inner galaxy (TODO: Optimize)
+                filledregions = []
+                for elregion in range(nregions):
+                    _ = cat.pix_gals[cat.pixs_galind_bounds[elregion]:cat.pixs_galind_bounds[elregion+1]]
+                    if np.sum(cat.isinner[_])>0:filledregions.append(elregion)
+                filledregions = np.asarray(filledregions, dtype=np.int32)
+                nfilledregions = np.int32(len(filledregions))
+                args_regions = (index_matcher_flat.astype(np.int32), np.int32(nregions), filledregions, nfilledregions, )
                 args_basesetup_dtree = (np.int32(self.nmax), np.float64(self.min_sep), np.float64(self.max_sep), 
                                         np.int32(self.nbinsr), np.int32(self.multicountcorr), )
                 args_treeresos = (np.int32(self.tree_nresos), np.int32(self.tree_nresos-cutfirst),
@@ -1105,8 +1115,7 @@ class GGGCorrelation(BinnedNPCF):
                         np.int32(self.nbinsz),
                         *args_resos,
                         *args_pixgrid,
-                        np.int32(nregions),
-                        index_matcher_flat.astype(np.int32),
+                        *args_regions,
                         *args_basesetup_dtree,
                         np.int32(self.nthreads),
                         *args_output)
@@ -1386,12 +1395,12 @@ class GGGCorrelation(BinnedNPCF):
 
         return T0, T3_123, T3_231, T3_312
     
-    def __map3_filtergrid_multiR(self, R1, R2, R3):
-        return self.__map3_filtergrid_multiR(self, R1, R2, R3, self.bin_edges, self.bin_centers_mean, self.phi, include_measure=True)
+    def _map3_filtergrid_multiR(self, R1, R2, R3):
+        return self.__map3_filtergrid_multiR(R1, R2, R3, self.bin_edges, self.bin_centers_mean, self.phi, include_measure=True)
     
     @staticmethod
     @jit(nopython=True)
-    def __map3_filtergrid_multiR(self, R1, R2, R3, normys_edges, normys_centers, phis, include_measure=True):
+    def __map3_filtergrid_multiR(R1, R2, R3, normys_edges, normys_centers, phis, include_measure=True):
         nbinsr = len(normys_centers)
         nbinsphi = len(phis)
         _cphis = np.cos(phis)
