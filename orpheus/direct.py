@@ -122,7 +122,7 @@ class DirectEstimator:
         p_f64_nof = ndpointer(np.float64)    
         
     def get_pixelization(self, cat, R_ap, accuracy, R_crop=None, mgrid=True):
-        """ Computes pixel grid on survey field.
+        """ Computes pixel grid on inner region of survey field.
 
         Arguments:
         ----------
@@ -146,37 +146,42 @@ class DirectEstimator:
         the galaxy catalogue.
         """
         
-        start1 = cat.min1
-        start2 = cat.min2
-        end1 = cat.max1
-        end2 = cat.max2
-        if R_crop is not None:
-            start1 += R_crop
-            start2 += R_crop
-            end1 -= R_crop
-            end2 -= R_crop
-        
-        len_1 = end1 - start1
-        len_2 = end2 - start2
-
-        npixels_1 = int(np.ceil(accuracy * len_1 / R_ap))
-        npixels_2 = int(np.ceil(accuracy * len_2 / R_ap))
-
-        stepsize_1 = len_1 / npixels_1
-        stepsize_2 = len_2 / npixels_2
-
-        _centers_1 = [start1 + npixel *
-                     stepsize_1 for npixel in range(npixels_1 + 1)]
-        _centers_2 = [start2 + npixel *
-                     stepsize_2 for npixel in range(npixels_2 + 1)]
-        
-        if mgrid:
-            centers_1, centers_2 = np.meshgrid(_centers_1,_centers_2)
-            centers_1 = centers_1.flatten()
-            centers_2 = centers_2.flatten()
+        if float(accuracy)==-1.:
+            centers_1 = cat.pos1[cat.isinner>=0.5]
+            centers_2 = cat.pos2[cat.isinner>=0.5]
+            
         else:
-            centers_1 = np.asarray(_centers_1, dtype=np.float64)
-            centers_2 = np.asarray(_centers_2, dtype=np.float64)
+            start1 = cat.min1
+            start2 = cat.min2
+            end1 = cat.max1
+            end2 = cat.max2
+            if R_crop is not None:
+                start1 += R_crop
+                start2 += R_crop
+                end1 -= R_crop
+                end2 -= R_crop
+
+            len_1 = end1 - start1
+            len_2 = end2 - start2
+
+            npixels_1 = int(np.ceil(accuracy * len_1 / R_ap))
+            npixels_2 = int(np.ceil(accuracy * len_2 / R_ap))
+
+            stepsize_1 = len_1 / npixels_1
+            stepsize_2 = len_2 / npixels_2
+
+            _centers_1 = [start1 + npixel *
+                         stepsize_1 for npixel in range(npixels_1 + 1)]
+            _centers_2 = [start2 + npixel *
+                         stepsize_2 for npixel in range(npixels_2 + 1)]
+
+            if mgrid:
+                centers_1, centers_2 = np.meshgrid(_centers_1,_centers_2)
+                centers_1 = centers_1.flatten()
+                centers_2 = centers_2.flatten()
+            else:
+                centers_1 = np.asarray(_centers_1, dtype=np.float64)
+                centers_2 = np.asarray(_centers_2, dtype=np.float64)
             
         return centers_1, centers_2
         
@@ -189,6 +194,7 @@ class Direct_MapnEqual(DirectEstimator):
     def __init__(self, order_max, Rmin, Rmax, field="polar", filter_form="C02", ap_weights="InvShot", **kwargs):
         super().__init__(Rmin=Rmin, Rmax=Rmax, **kwargs)
         self.order_max = order_max
+        self.nbinsz = None
         self.field = field
         self.filter_form = filter_form
         self.ap_weights = ap_weights
@@ -244,7 +250,7 @@ class Direct_MapnEqual(DirectEstimator):
             ct.c_int32, p_f64, p_f64, p_f64, p_f64, p_f64, p_f64]
                
                        
-    def process(self, cat, dotomo=True, Emodeonly=True, connected=True):
+    def process(self, cat, dotomo=True, Emodeonly=True, connected=True, dpix_innergrid=2.):
         """
        "Mapn" --> [[Map,Mx], 
                    [Map2, MapMx, (MxMap), Mx2], 
@@ -260,6 +266,7 @@ class Direct_MapnEqual(DirectEstimator):
         nbinsz = cat.nbinsz
         if not dotomo:
             nbinsz = 1
+        self.nbinsz = nbinsz
          
         nzcombis = self._nzcombis_tot(nbinsz,dotomo)
         result_Mapn = np.zeros((self.nbinsr, self.nfrac_covs, nzcombis), dtype=np.float64)
@@ -271,10 +278,14 @@ class Direct_MapnEqual(DirectEstimator):
         else:
             raise NotImplementedError
             
+        # Build a grid that only covers inner part of patch
+        # This will be used to preselelct aperture centers
+        args_innergrid = cat.togrid(fields=[cat.isinner], dpix=dpix_innergrid, method="NGP", normed=True, tomo=False)
+        
         for elr, R in enumerate(self.radii):
             nextmap_out = np.zeros(nzcombis*self.nfrac_covs ,dtype=np.float64)
             nextwmap_out = np.zeros(nzcombis*self.nfrac_covs ,dtype=np.float64)
-            args = self._buildargs(cat, dotomo, elr, forfunc="Equal")
+            args = self._buildargs(cat, args_innergrid, dotomo, elr, forfunc="Equal")
             func(*args)
             result_Mapn[elr] = args[-2].reshape((self.nfrac_covs, nzcombis))[:]
             result_wMapn[elr] = args[-1].reshape((self.nfrac_covs, nzcombis))[:]
@@ -286,7 +297,7 @@ class Direct_MapnEqual(DirectEstimator):
     def _getindex(self, order, mode, zcombi):
         pass
     
-    def _buildargs(self, cat, dotomo, indR, forfunc="Equal"):
+    def _buildargs(self, cat, args_innergrid, dotomo, indR, forfunc="Equal"):
         
         assert(forfunc in ["Equal", "EqualGrid"])
         
@@ -305,14 +316,22 @@ class Direct_MapnEqual(DirectEstimator):
             
         # Parameters related to the aperture grid
         if forfunc=="Equal":
+            # Get centers and check that they are in the interior of the inner catalog
             centers_1, centers_2 = self.get_pixelization(cat, self.radii[indR], self.accuracies[indR], R_crop=0., mgrid=True)
+            _f, _s1, _s2, _dpixi, _, _, = args_innergrid
+            pixs_c = (((centers_2-_s2)//_dpixi)*_f[0,1].shape[1] + (centers_1-_s1)//_dpixi).astype(int)
+            sel_inner = _f[0,1]>0.
+            sel_centers = sel_inner.flatten()[pixs_c]
+            centers_1 = centers_1[sel_centers]
+            centers_2 = centers_2[sel_centers]
             ncenters = len(centers_1)
         elif forfunc=="EqualGrid": 
+            # Get centers along each dimension
             centers_1, centers_2 = self.get_pixelization(cat, self.radii[indR], self.accuracies[indR], R_crop=0., mgrid=False)
             ncenters = len(centers_1)*len(centers_2)
         
         cat.build_spatialhash(dpix=self.dpix_hash, extent=[None, None, None, None])
-        hashgrid = FlatPixelGrid_2D(cat.pix1_start, cat.pix1_start, 
+        hashgrid = FlatPixelGrid_2D(cat.pix1_start, cat.pix2_start, 
                                     cat.pix1_n, cat.pix2_n, cat.pix1_d, cat.pix2_d)
         regridded_mask = cat.mask.regrid(hashgrid).data.flatten().astype(np.float64)
         
@@ -391,8 +410,11 @@ class Direct_MapnEqual(DirectEstimator):
             res += self._nzcombis_order(order, nbinsz, dotomo)
         return res
         
-    def genzcombi(self,nbinsz,zs):
-        
+    def genzcombi(self, zs, nbinsz=None):
+        if nbinsz is None:
+            nbinsz = self.nbinsz
+        if nbinsz is None:
+            raise ValueError("No value for `nbinsz` has been allocated yet.")
         if len(zs)>self.order_max:
             raise ValueError("We only computed the statistics up to order %i."%self.order_max)
         if max(zs) >= nbinsz:
@@ -409,7 +431,7 @@ class Direct_MapnEqual(DirectEstimator):
         if not dotomo:
             nbinsz = 1
             
-        args = self._buildargs(cat, dotomo, indR, forfunc="EqualGrid")
+        args = self._buildargs(cat, None, dotomo, indR, forfunc="EqualGrid")
         ncenters_1 = args[3]
         ncenters_2 = args[4]
         self.clib.ApertureMassMap_Equal(*args)
@@ -702,7 +724,7 @@ class MapCombinatorics:
         >>> print(res)
 
         Notes:
-        * The recursion reads as follows:bonn
+        * The recursion reads as follows:
           s(m,0) = 1
           s(m,n) = \sum_{i=1}^{m-1} s(m-1,n-1)
           [Have not formally proved that but checked with pen and paper

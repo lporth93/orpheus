@@ -602,22 +602,24 @@ class Catalog:
 
         return failed, ngals, pos1s, pos2s, weights, zbins, isinners, allfields, \
                index_matchers, pixs_galind_bounds, pix_gals, resos1, resos2, pixmatcher
-
+    
     def create_mask(self, method="Basic", pixsize=1., apply=False):
-        
+
         assert(method in ["Basic", "Density", "File"])
-        
-        
+
         if method=="Basic":
             npix_1 = int(np.ceil((self.max1-(self.min1))/pixsize))
             npix_2 = int(np.ceil((self.max2-(self.min2))/pixsize))
             self.mask = FlatDataGrid_2D(np.zeros((npix_2,npix_1), dtype=np.float64), 
                                         self.min1, self.min2, pixsize, pixsize)
         if method=="Density":
-            raise 
+            start1, start2, n1, n2 = self._gengridprops(pixsize, pixsize)
+            reduced = self.togrid(dpix=pixsize,method="NGP",fields=[], tomo=False)
+            mask = (reduced[0].reshape((n2,n1))==0).astype(np.float64)
+            self.mask = FlatDataGrid_2D(mask, start1, start2, pixsize, pixsize)
         if method=="File":
             raise NotImplementedError
-        
+
         self. __checkmask()
         
         self. __applymask(apply)
@@ -634,7 +636,7 @@ class Catalog:
         
 
     # Maps catalog to grid
-    def togrid(self, fields, dpix, normed=False, weighted=True, 
+    def togrid(self, fields, dpix, normed=False, weighted=True, tomo=True,
                extent=[None,None,None,None], method="CIC", forcedivide=1, 
                asgrid=None, nthreads=1, ret_inst=False):
         r"""Paints a catalog of discrete tracers to a grid.
@@ -706,6 +708,8 @@ class Catalog:
         
         # Prepare arguments
         zbinarr = self.zbins.astype(np.int32)
+        if not tomo:
+            zbinarr = np.zeros_like(zbinarr)
         nbinsz = len(np.unique(zbinarr))
         nfields = len(fields)
         if not weighted:

@@ -498,7 +498,7 @@ void MapnSingleEonlyDisc(
 // Weight methods:
 //  * 0 --> Identity weights
 //  * 1 --> Inverse shape noise weights (for Map-part of stats) 
-// We define z_{1l}<=z_{2l}<=...z_{zbins_ll}<=z_{1s}<=z_{2s}<=...<=z_{2s}
+// We define z_{1_l}<=z_{2_l}<=...z_{zbinsl_l}<=z_{1_s}<=z_{2_s}<=...<=z_{zbins_s}
 void NapmMapnSingleEonlyDisc(
     double R_ap, double *centers_1, double *centers_2, int ncenters,
     int max_order, int ind_filter, int weight_method, int do_subtractions,
@@ -839,6 +839,7 @@ void singleAp_MapnSingleEonlyDisc(
                 rel2 = pos2[ind_gal]-center_2;
                 d2gal = (rel1*rel1 + rel2*rel2);
                 if (d2gal > supp_Q2*R2_ap){continue;} 
+                if (d2gal < 1e-5){continue;}
                 //printf("Start allocating stuff for next galaxy\n");
                 // Get tangential ellipticity and value of Q filter
                 w = weight[ind_gal];
