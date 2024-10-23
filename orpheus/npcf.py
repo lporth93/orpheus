@@ -139,6 +139,7 @@ class BinnedNPCF:
         self.bin_centers = None
         self.bin_centers_mean = None
         self.phis = [None]*self.order
+        self.dphis = [None]*self.order
         self.npcf = None
         self.npcf_norm = None
         self.npcf_multipoles = None
@@ -235,7 +236,8 @@ class BinnedNPCF:
         # Setup phi bins
         for elp in range(self.order-2):
             _ = np.linspace(0,2*np.pi,self.nbinsphi[elp]+1)
-            self.phis[elp] = .5*(_[1:] + _[:-1])      
+            self.phis[elp] = .5*(_[1:] + _[:-1])
+            self.dphis[elp] = _[1:] - _[:-1] 
           
         #############################
         ## Link compiled libraries ##
@@ -529,7 +531,17 @@ class BinnedNPCF:
                 p_c128, p_c128,
                 ct.c_int32, ct.c_int32, p_i32, ct.c_int32,
                 np.ctypeslib.ndpointer(dtype=np.complex128),np.ctypeslib.ndpointer(dtype=np.complex128)]
-                        
+                       
+            # Transformaton between 4pcf multipoles and M4 correlators of Map4 statistics
+            self.clib.fourpcfmultipoles2M4correlators.restype = ct.c_void_p
+            self.clib.fourpcfmultipoles2M4correlators.argtypes = [
+                ct.c_int32,
+                p_f64, p_f64, ct.c_int32,
+                p_f64, ct.c_int32,
+                p_f64, p_f64, p_f64, p_f64, ct.c_int32, ct.c_int32, 
+                ct.c_int32, ct.c_int32, 
+                p_c128, p_c128, np.ctypeslib.ndpointer(dtype=np.complex128)]
+            
             # [DEBUG]: Shear 4pt function in terms of xip/xim
             self.clib.gauss4pcf_analytic.restype = ct.c_void_p
             self.clib.gauss4pcf_analytic.argtypes = [
@@ -2803,6 +2815,24 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                 
         return npcf_out, npcf_norm_out
     
+    def multipoles2M4correlators(self, radii):
+        
+        M4correlators = np.zeros(8*len(radii), dtype=np.complex128)
+        
+        self.clib.fourpcfmultipoles2M4correlators(
+            np.int32(self.nmaxs[0]),
+            self.bin_edges, self.bin_centers_mean, np.int32(self.nbinsr),
+            radii.astype(np.float64), np.int32(len(radii)),
+            self.phis[0].astype(np.float64), self.phis[1].astype(np.float64), 
+            self.dphis[0].astype(np.float64), self.dphis[1].astype(np.float64), 
+            len(self.phis[0]), len(self.phis[1]),
+            np.int32(self.proj_dict[self.projection]), np.int32(self.nthreads),
+            self.npcf_multipoles.flatten(), self.npcf_multipoles_norm.flatten(),
+            M4correlators)
+        
+        return M4correlators.reshape((8,len(radii)))
+        
+                                     
     def computeMap4(self, radii, do_multiscale=False, tofile=False, filtercache=None):
         
         # Prepare real space 4pcf in X-projection
