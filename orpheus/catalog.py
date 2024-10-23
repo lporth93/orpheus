@@ -603,13 +603,13 @@ class Catalog:
         return failed, ngals, pos1s, pos2s, weights, zbins, isinners, allfields, \
                index_matchers, pixs_galind_bounds, pix_gals, resos1, resos2, pixmatcher
     
-    def create_mask(self, method="Basic", pixsize=1., apply=False):
+    def create_mask(self, method="Basic", pixsize=1., apply=False, extend=0.):
 
-        assert(method in ["Basic", "Density", "File"])
+        assert(method in ["Basic", "Density", "Random"])
 
         if method=="Basic":
-            npix_1 = int(np.ceil((self.max1-(self.min1))/pixsize))
-            npix_2 = int(np.ceil((self.max2-(self.min2))/pixsize))
+            npix_1 = int(np.ceil((self.max1-self.min1)/pixsize))
+            npix_2 = int(np.ceil((self.max2-self.min2)/pixsize))
             self.mask = FlatDataGrid_2D(np.zeros((npix_2,npix_1), dtype=np.float64), 
                                         self.min1, self.min2, pixsize, pixsize)
         if method=="Density":
@@ -617,8 +617,15 @@ class Catalog:
             reduced = self.togrid(dpix=pixsize,method="NGP",fields=[], tomo=False)
             mask = (reduced[0].reshape((n2,n1))==0).astype(np.float64)
             self.mask = FlatDataGrid_2D(mask, start1, start2, pixsize, pixsize)
-        if method=="File":
-            raise NotImplementedError
+            
+        # Add a masked buffer region around enclosing rectangle
+        if extend>0.:
+            npix_ext = int(np.ceil(extend/pixsize))
+            extstart1 = self.mask.start_1 - npix_ext*pixsize
+            extstart2 = self.mask.start_2 - npix_ext*pixsize
+            extmask = np.ones((self.mask.npix_2+2*npix_ext, self.mask.npix_1+2*npix_ext))
+            extmask[npix_ext:-npix_ext,npix_ext:-npix_ext] = self.mask.data
+            self.mask = FlatDataGrid_2D(extmask, extstart1, extstart2, pixsize, pixsize)
 
         self. __checkmask()
         

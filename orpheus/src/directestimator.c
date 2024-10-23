@@ -246,7 +246,6 @@ void ApertureMassMap_Equal(
             //       out_Msn[1*ncenters + c2*ncenters_1+c1]);
         }
         
-        
         free(nextcounts);
         free(nextcovs);
         free(nextMsn);
@@ -364,17 +363,22 @@ void MapnSingleEonlyDisc(
                     nextMapn_singlez[i]=0; nextMapn_norm_singlez[i]=0; 
                     nextMapn_var_singlez[i]=0; nextMapn_var_norm_singlez[i]=0;
                     }
+                double norm_var;
                 int tmpind = elbinz*max_order+0;
                 bellargs_Msn[0] = -nextMsn[tmpind];
                 bellargs_Sn[0] = -nextSn[tmpind];
                 bellargs_Sn_w[0] = -nextSn_w[tmpind];
                 bellargs_S2n_w[0] = -nextS2n_w[tmpind];
+                norm_var = nextSn_w[elbinz*max_order];
+                // We renorm the bellargs_Sn_w/bellargs_Sn_2w variables to keep the numbers finite
+                // and such that the renorm factor cancels out in the nextMapn_var allocation.
                 for (order=1; order<max_order; order++){ 
                     tmpind += 1;
                     bellargs_Msn[order] = -factorials[order]*nextMsn[tmpind];
                     bellargs_Sn[order] = -factorials[order]*nextSn[tmpind];
-                    bellargs_Sn_w[order] = -factorials[order]*nextSn_w[tmpind];
-                    bellargs_S2n_w[order] = -factorials[order]*nextS2n_w[tmpind];
+                    bellargs_Sn_w[order] = -factorials[order]*nextSn_w[tmpind]/norm_var; 
+                    bellargs_S2n_w[order] = -factorials[order]*nextS2n_w[tmpind]/norm_var/norm_var;
+                    norm_var *= norm_var;
                 }
                 getBellRecursive(max_order, bellargs_Msn, factorials, nextMapn_singlez);
                 getBellRecursive(max_order, bellargs_Sn,  factorials, nextMapn_norm_singlez);
@@ -384,7 +388,7 @@ void MapnSingleEonlyDisc(
                     if ((nextMapn_norm_singlez[order+1]!=0)&&(nextMapn_var_norm_singlez[order+1]!=0)){
                         nextMapn[elbinz*max_order+order] = nextMapn_singlez[order+1]/nextMapn_norm_singlez[order+1];
                         nextMapn_var[elbinz*max_order+order] = nextMapn_var_singlez[order+1] / (
-                            nextMapn_var_norm_singlez[order+1]*abs(nextMapn_var_norm_singlez[order+1]));
+                            nextMapn_var_norm_singlez[order+1]*nextMapn_var_norm_singlez[order+1]);
                     }
                 }   
             }
@@ -451,6 +455,9 @@ void MapnSingleEonlyDisc(
                     }
                     nextzcombination(nbinsz, order, thiszcombi);
                     cumzcombi += 1;
+                    
+                    //if (ind_ap%1000==0){printf("ap:%d order:%d\n  toadd_Mapn_var:%.30f\n.  toadd_Mapn_w:%.30f \n\n",
+                    //                           ind_ap,order,toadd_Mapn_var,toadd_Mapn_w);}
                 }
                 free(thiszcombi);
             }
@@ -867,8 +874,8 @@ void singleAp_MapnSingleEonlyDisc(
                     
                     Msn[zbin*max_order+order] += tmp_et;
                     Sn[zbin*max_order+order] += tmp_w;
-                    Sn_w[zbin*max_order+order] += tmp_wmmult;
-                    S2n_w[zbin*max_order+order] += tmp_wmmult*tmp_wmmult;
+                    Sn_w[zbin*max_order+order] += tmp_wm;
+                    S2n_w[zbin*max_order+order] += tmp_wm*tmp_wm;
                 //printf(" Updated powersums. Done.\n");
                 }
                 //if ((ind_pix1==pix1_lower+(pix1_upper-pix1_lower)/2+2*(int)(R_ap/mask1_d))&&
@@ -902,7 +909,7 @@ void singleAp_MapnSingleEonlyDisc(
         if (Sn_w[zbin*max_order]!=0){fac_normw = 1./(Sn_w[zbin*max_order]);}else{fac_normw = 0;}
         fac_normvol = supp_Q2;
         tmp_norm = 1;
-        tmp_normw = 1;
+        tmp_normw = 1./R_ap/R_ap;
         tmp_normvol = 1;
         for (order=0; order<max_order; order++){
             thiscomp = zbin*max_order+order;

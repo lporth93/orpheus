@@ -346,7 +346,7 @@ class Direct_MapnEqual(DirectEstimator):
                         np.int32(self.multicountcorr), )
         elif forfunc=="EqualGrid":
             args_ofw = (self.order_max, self.filters_dict[self.filter_form], self.ap_weights_dict[self.ap_weights], )
-        args_cat = (cat.weight.astype(np.float64), np.ones(cat.ngal, dtype=np.float64),
+        args_cat = (cat.weight.astype(np.float64), cat.isinner.astype(np.float64),
                     cat.pos1.astype(np.float64), cat.pos2.astype(np.float64), 
                     cat.tracer_1.astype(np.float64)+1j*cat.tracer_2.astype(np.float64), 
                     zbins, np.int32(nbinsz), np.int32(cat.ngal), )
