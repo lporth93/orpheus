@@ -30,7 +30,7 @@ void multipoles2npcf_gggg_singletheta_nconvergence(
     int projection, double complex *npcf, double complex *npcf_norm);
 
 void fourpcfmultipoles2M4correlators(
-    int nmax,
+    int nmax, int nmax_trafo,
     double *theta_edges, double *theta_centers, int nthetas, 
     double *mapradii, int nmapradii,
     double *phis1, double *phis2, double *dphis1, double *dphis2, int nbinsphi1, int nbinsphi2,

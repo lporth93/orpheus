@@ -533,7 +533,7 @@ void fourpcf2M4correlators_parallel(int nzcombis,
 }
 
 void fourpcfmultipoles2M4correlators(
-    int nmax,
+    int nmax, int nmax_trafo,
     double *theta_edges, double *theta_centers, int nthetas, 
     double *mapradii, int nmapradii,
     double *phis1, double *phis2, double *dphis1, double *dphis2, int nbinsphi1, int nbinsphi2,
@@ -552,6 +552,7 @@ void fourpcfmultipoles2M4correlators(
         
         int nphicombis = nbinsphi1*nbinsphi2;
         int n2n3combis = (2*nmax+1)*(2*nmax+1);
+        int n2n3combis_trafo = (2*nmax_trafo+1)*(2*nmax_trafo+1);
         int nthetas2 = nthetas*nthetas;
         int nthetas3 = nthetas*nthetas*nthetas;
         int compshift = n2n3combis*nthetas3;
@@ -571,19 +572,25 @@ void fourpcfmultipoles2M4correlators(
         }
         
         // Transform multipoles to 4pcf
+        int thisn1, thisn2, n2n3combi_trafo;
         double complex *thisnpcf = calloc(8*nphicombis, sizeof(double complex));
         double complex *thisnpcf_norm = calloc(nphicombis, sizeof(double complex));
-        double complex *Upsn_single = calloc(8*(2*nmax+1)*(2*nmax+1), sizeof(double complex));
-        double complex *Nn_single = calloc(1*(2*nmax+1)*(2*nmax+1), sizeof(double complex));
+        double complex *Upsn_single = calloc(8*n2n3combis_trafo, sizeof(double complex));
+        double complex *Nn_single = calloc(1*n2n3combis_trafo, sizeof(double complex));
         for (int elcomp=0; elcomp<8; elcomp++){
             for (int n2n3combi=0; n2n3combi<n2n3combis; n2n3combi++){
-                Upsn_single[elcomp*n2n3combis+n2n3combi] = 
-                    Upsilon_n[elcomp*compshift+n2n3combi*nthetas3+thetacombi];
-                Nn_single[n2n3combi] = 
-                    N_n[n2n3combi*nthetas3+thetacombi];
+                thisn1 = n2n3combi/(2*nmax+1) - nmax;
+                thisn2 = n2n3combi%(2*nmax+1) - nmax;
+                if ((abs(thisn1)<=nmax_trafo) && (abs(thisn2)<=nmax_trafo)){
+                    n2n3combi_trafo = (thisn1+nmax_trafo)*(2*nmax_trafo+1) + (thisn2+nmax_trafo);
+                    Upsn_single[elcomp*n2n3combis_trafo+n2n3combi_trafo] = 
+                        Upsilon_n[elcomp*compshift+n2n3combi*nthetas3+thetacombi];
+                    Nn_single[n2n3combi_trafo] = 
+                        N_n[n2n3combi*nthetas3+thetacombi];
                 }
+            }
         }
-        multipoles2npcf_gggg_singletheta(Upsn_single, Nn_single, nmax, nmax,
+        multipoles2npcf_gggg_singletheta(Upsn_single, Nn_single, nmax_trafo, nmax_trafo,
                                          theta1, theta2, theta3,
                                          phis1, phis2, nbinsphi1, nbinsphi2,
                                          projection, thisnpcf, thisnpcf_norm);
@@ -617,16 +624,16 @@ void fourpcfmultipoles2M4correlators(
         trafos_finished+=1;
         
         printf("\r Done %.2f per cent of Multipole to M4 trafos.",100.0*trafos_finished/nthetas3);
-        int tmpprint=(int) (100.0*trafos_finished/nthetas3);
-        if (tmpprint > lastprint){
-            printf("\rStatus after %i per cent:",tmpprint);
-            for (int elmapr=0; elmapr<nmapradii; elmapr++){
-                double complex thisM4 = allm4corr[map4threadshift+0*nmapradii+elmapr];
-                printf("  M4(%.2f) = 1e12*(%.2f + i*%.2f)\n", mapradii[elmapr], 1e12*creal(thisM4), 1e12*cimag(thisM4));
-            } 
-            #pragma omp critical
-            {lastprint = tmpprint;}
-        }
+        //int tmpprint=(int) (100.0*trafos_finished/nthetas3);
+        //if (tmpprint > lastprint){
+        //    printf("\rStatus after %i per cent:",tmpprint);
+        //    for (int elmapr=0; elmapr<nmapradii; elmapr++){
+        //        double complex thisM4 = allm4corr[map4threadshift+0*nmapradii+elmapr];
+        //        printf("  M4(%.2f) = 1e12*(%.2f + i*%.2f)\n", mapradii[elmapr], 1e12*creal(thisM4), 1e12*cimag(thisM4));
+        //    } 
+        //    #pragma omp critical
+        //    {lastprint = tmpprint;}
+        //}
     }
     
     // Accumulate the M4correlators

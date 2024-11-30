@@ -1768,7 +1768,8 @@ void alloc_twotomoMap4_tree_gggg(
                     int pix2_upper = mymin(pix2_n_z2-1, (int) floor((p12 + (rmax_reso+pix2_d_z2) - pix2_start_z2)/pix2_d_z2));
                     for (int ind_pix1=pix1_lower; ind_pix1<pix1_upper; ind_pix1++){
                         for (int ind_pix2=pix2_lower; ind_pix2<pix2_upper; ind_pix2++){
-                            ind_red = index_matcher_hash_z2[rshift_index_matcher_hash_z2[elreso] + ind_pix2*pix1_n_z2 + ind_pix1];
+                            ind_red = index_matcher_hash_z2[rshift_index_matcher_hash_z2[elreso] + 
+                                                            ind_pix2*pix1_n_z2 + ind_pix1];
                             if (ind_red==-1){continue;}
                             lower = pixs_galind_bounds_z2[rshift_pixs_galind_bounds_z2[elreso]+ind_red];
                             upper = pixs_galind_bounds_z2[rshift_pixs_galind_bounds_z2[elreso]+ind_red+1];
