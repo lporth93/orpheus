@@ -535,7 +535,7 @@ class BinnedNPCF:
             # Transformaton between 4pcf multipoles and M4 correlators of Map4 statistics
             self.clib.fourpcfmultipoles2M4correlators.restype = ct.c_void_p
             self.clib.fourpcfmultipoles2M4correlators.argtypes = [
-                ct.c_int32,
+                ct.c_int32, ct.c_int32,
                 p_f64, p_f64, ct.c_int32,
                 p_f64, ct.c_int32,
                 p_f64, p_f64, p_f64, p_f64, ct.c_int32, ct.c_int32, 
@@ -1245,7 +1245,7 @@ class GGGCorrelation(BinnedNPCF):
                     _const = 1./(2*np.pi) * np.exp(1J*n*phi)
                     tmp += _const * self.npcf_multipoles[elm,n].astype(complex)
                     tmp += _const.conj() * self.npcf_multipoles[conjmap[elm],n][ztiler].astype(complex).transpose(0,2,1)
-                self.npcf[elm,...,elphi] = tmp/N0.real
+                self.npcf[elm,...,elphi] = tmp
         # Number of triangles
         for elphi, phi in enumerate(self.phi):
             tmptotnorm = 1./(2*np.pi) * self.npcf_multipoles_norm[0].astype(complex)
@@ -1254,8 +1254,20 @@ class GGGCorrelation(BinnedNPCF):
                 tmptotnorm += _const * self.npcf_multipoles_norm[n].astype(complex)
                 tmptotnorm += _const.conj() * self.npcf_multipoles_norm[n][ztiler].astype(complex).transpose(0,2,1)
             self.npcf_norm[...,elphi] = tmptotnorm
+          
+        if self.is_edge_corrected:
+            dphi = self.phi[1] - self.phi[0]
+            N0 = dphi/(2*np.pi) * self.npcf_multipoles_norm[self.nmax].astype(complex)
+            sel_zero = np.isnan(N0)
+            _a = self.npcf
+            _b = N0.real[np.newaxis, :, :, :, np.newaxis]
+            self.npcf = np.divide(_a, _b, out=np.zeros_like(_a), where=_b>0)
+        else:
+            _a = self.npcf
+            _b = self.npcf_norm
+            self.npcf = np.divide(_a, _b, out=np.zeros_like(_a), where=_b>0)
         self.projection = "X"
-    
+            
     ## PROJECTIONS ##
     def projectnpcf(self, projection):
         super()._projectnpcf(self, projection)
@@ -2815,12 +2827,15 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                 
         return npcf_out, npcf_norm_out
     
-    def multipoles2M4correlators(self, radii):
+    def multipoles2M4correlators(self, radii, nmax_trafo=None):
         
+        if nmax_trafo is None:
+            nmax_trafo=self.nmaxs[0]
+            
         M4correlators = np.zeros(8*len(radii), dtype=np.complex128)
         
         self.clib.fourpcfmultipoles2M4correlators(
-            np.int32(self.nmaxs[0]),
+            np.int32(self.nmaxs[0]), np.int32(nmax_trafo),
             self.bin_edges, self.bin_centers_mean, np.int32(self.nbinsr),
             radii.astype(np.float64), np.int32(len(radii)),
             self.phis[0].astype(np.float64), self.phis[1].astype(np.float64), 
@@ -3183,19 +3198,25 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
     # [Debug] Gaussian 4pcf from analytic 2pcf
     def gauss4pcf_analytic_integrated(self, itheta1, itheta2, itheta3, nsubr, 
                                  xip_arr, xim_arr, thetamin_xi, thetamax_xi, dtheta_xi):
-        gausss_4pcf = np.zeros(8*len(self.phis[0])*len(self.phis[0]),dtype=np.complex128)
-        self.clib.gauss4pcf_analytic_integrated(itheta1.astype(np.int32), 
-                                     itheta2.astype(np.int32),
-                                     itheta3.astype(np.int32),
-                                     nsubr.astype(np.int32),
-                                     self.bin_edges.astype(np.float64),self.nbinsr.astype(np.int32),
-                                     self.phis[0].astype(np.float64), np.int32(len(self.phis[0])),
-                                     xip_arr.astype(np.float64), xim_arr.astype(np.float64),
-                                     np.float64(thetamin_xi), 
-                                     np.float64(thetamax_xi), 
-                                     dtheta_xi.astype(np.float64),
-                                     gausss_4pcf)
-        return gauss_4pcf.reshape((8, self.phis[0], self.phis[0]))
+    
+        gauss_4pcf = np.zeros(8*self.nbinsphi[0]*self.nbinsphi[1],dtype=np.complex128)
+
+        self.clib.gauss4pcf_analytic_integrated(
+            np.int32(itheta1), 
+            np.int32(itheta2), 
+            np.int32(itheta3), 
+            np.int32(nsubr), 
+            self.bin_edges.astype(np.float64),
+            np.int32(self.nbinsr),
+            self.phis[0].astype(np.float64),
+            np.int32(self.nbinsphi[0]),
+            xip_arr.astype(np.float64), 
+            xim_arr.astype(np.float64),
+            np.float64(thetamin_xi), 
+            np.float64(thetamax_xi), 
+            np.float64(dtheta_xi), 
+            gauss_4pcf)
+        return gauss_4pcf.reshape((8, self.nbinsphi[0], self.nbinsphi[1]))
     
     # [Debug] Disconnected part of Map^4 from analytic 2pcf
     def Map4analytic(self, mapradii, xip_spl, xim_spl, thetamin_xi, thetamax_xi, ntheta_xi, 
@@ -3384,6 +3405,355 @@ class GGGGCorrelation(BinnedNPCF):
             pass
             
         return map4 
+    
+    
+class GNNNCorrelation(BinnedNPCF):
+    def __init__(self, min_sep, max_sep, **kwargs):
+        r""" Class containing methods to measure and and obtain statistics that are built
+        from third-order source-lens-lens (G3L) correlation functions.
+        
+        Attributes
+        ----------
+        min_sep: float
+            The smallest distance of each vertex for which the NPCF is computed.
+        max_sep: float
+            The largest distance of each vertex for which the NPCF is computed.
+        nbinsr: int, optional
+            The number of radial bins for each vertex of the NPCF. If set to
+            ``None`` this attribute is inferred from the ``binsize`` attribute.
+        binsize: int, optional
+            The logarithmic slize of the radial bins for each vertex of the NPCF. If set to
+            ``None`` this attribute is inferred from the ``nbinsr`` attribute.
+        nbinsphi: float, optional
+            The number of angular bins for the NPCF in the real-space basis. 
+            Defaults to ``100``.
+        nmaxs: list, optional
+            The largest multipole component considered for the NPCF in the multipole basis. 
+            Defaults to ``30``.
+        method: str, optional
+            The method to be employed for the estimator. Defaults to ``DoubleTree``.
+        multicountcorr: bool, optional
+            Flag on whether to subtract of multiplets in which the same tracer appears more
+            than once. Defaults to ``True``.
+        diagrenorm: bool, optional
+            Deprecated
+        shuffle_pix: int, optional
+            Choice of how to define centers of the cells in the spatial hash structure.
+            Defaults to ``1``, i.e. random positioning.
+        tree_resos: list, optional
+            The cell sizes of the hierarchical spatial hash structure
+        tree_edges: list, optional
+            Deprecated(?)
+        rmin_pixsize: int, optional
+            The limiting radial distance relative to the cell of the spatial hash
+            after which one switches to the next hash in the hierarchy. Defaults to ``20``.
+        resoshift_leafs: int, optional
+            Allows for a difference in how the hierarchical spatial hash is traversed for
+            pixels at the base of the NPCF and pixels at leafs. I.e. positive values indicate
+            that leafs will be evaluated at a courser resolutions than the base. Defaults to ``0``.
+        minresoind_leaf: int, optional
+            Sets the smallest resolution in the spatial hash hierarchy which can be used to access
+            tracers at leaf positions. If set to ``None`` uses the smallest specified cell size. 
+            Defaults to ``None``.
+        maxresoind_leaf: int, optional
+            Sets the largest resolution in the spatial hash hierarchy which can be used to access
+            tracers at leaf positions. If set to ``None`` uses the largest specified cell size. 
+            Defaults to ``None``.
+        nthreads: int, optional
+            The number of openmp threads used for the reduction procedure. Defaults to ``16``.
+        bin_centers: numpy.ndarray
+            The centers of the radial bins for each combination of tomographic redshifts.
+        bin_centers_mean: numpy.ndarray
+            The centers of the radial bins averaged over all combination of tomographic redshifts.
+        phis: list
+            The bin centers for the N-2 angles describing the NPCF 
+            in the real-space basis.
+        npcf: numpy.ndarray
+            The natural components of the NPCF in the real space basis. The different axes
+            are specified as follows: ``(component, zcombi, rbin_1, ..., rbin_N-1, phiin_1, phibin_N-2)``.
+        npcf_norm: numpy.ndarray
+            The normalization of the natural components of the NPCF in the real space basis. The different axes
+            are specified as follows: ``(zcombi, rbin_1, ..., rbin_N-1, phiin_1, phibin_N-2)``.
+        npcf_multipoles: numpy.ndarray
+            The natural components of the NPCF in the multipole basis. The different axes
+            are specified as follows: ``(component, zcombi, multipole_1, ..., multipole_N-2, rbin_1, ..., rbin_N-1)``.
+        npcf_multipoles_norm: numpy.ndarray
+            The normalization of the natural components of the NPCF in the multipole basis. The different axes
+            are specified as follows: ``(zcombi, multipole_1, ..., multipole_N-2, rbin_1, ..., rbin_N-1)``.
+        is_edge_corrected: bool, optional
+            Flag signifying on wheter the NPCF multipoles have beed edge-corrected. Defaults to ``False``.
+        """
+        super().__init__(4, [2,0,0,0], n_cfs=1, min_sep=min_sep, max_sep=max_sep, **kwargs)
+        self.nmax = self.nmaxs[0]
+        self.phi = self.phis[0]
+        self.projection = None
+        self.projections_avail = [None, "X"]
+        self.nbinsz_source = None
+        self.nbinsz_lens = None
+        
+        # (Add here any newly implemented projections)
+        self._initprojections(self)
+        
+    def process(self, cat_source, cat_lens, nthreads=16, dotomo_source=True, dotomo_lens=True, apply_edge_correction=False):
+        self._checkcats([cat_source, cat_lens, cat_lens], [2, 0, 0])
+        
+        if not dotomo_lens and self.zweighting:
+            print("Redshift-weighting requires tomographic computation for the lenses.")
+            dotomo_lens = True
+            
+        if not dotomo_source:
+            self.nbinsz_source = 1
+            zbins_source = np.zeros(cat_source.ngal, dtype=np.int32)
+        else:
+            self.nbinsz_source = cat_source.nbinsz
+            zbins_source = cat_source.zbins
+        if not dotomo_lens:
+            self.nbinsz_lens = 1
+            zbins_lens = np.zeros(cat_lens.ngal, dtype=np.int32)
+        else:
+            self.nbinsz_lens = cat_lens.nbinsz
+            zbins_lens= cat_lens.zbins
+            
+        if self.zweighting:
+            if cat_lens.zbins_mean is None:
+                print("Redshift-weighting requires information about mean redshift in tomo bins of lens catalog")
+            if cat_lens.zbins_std is None:
+                print("Warning: Redshift-dispersion in tomo bins of lens catalog not given. Set to zero.")
+                cat_lens.zbins_std = np.zeros(self.nbinsz_lens)
+                
+        _z3combis = self.nbinsz_source*self.nbinsz_lens*self.nbinsz_lens
+        _r2combis = self.nbinsr*self.nbinsr
+        sc = (self.n_cfs, self.nmax+1, _z3combis, self.nbinsr, self.nbinsr)
+        sn = (self.nmax+1, _z3combis, self.nbinsr,self.nbinsr)
+        szr = (self.nbinsz_source, self.nbinsz_lens, self.nbinsr)
+        bin_centers = np.zeros(reduce(operator.mul, szr)).astype(np.float64)
+        Upsilon_n = np.zeros(reduce(operator.mul, sc)).astype(np.complex128)
+        Norm_n = np.zeros(reduce(operator.mul, sn)).astype(np.complex128)
+        args_sourcecat = (cat_source.isinner.astype(np.int32), cat_source.weight.astype(np.float64), 
+                          cat_source.pos1.astype(np.float64), cat_source.pos2.astype(np.float64), 
+                          cat_source.tracer_1.astype(np.float64), cat_source.tracer_2.astype(np.float64), 
+                          zbins_source.astype(np.int32), np.int32(self.nbinsz_source), np.int32(cat_source.ngal), )
+        args_lenscat = (cat_lens.weight.astype(np.float64), cat_lens.pos1.astype(np.float64), 
+                        cat_lens.pos2.astype(np.float64), zbins_lens.astype(np.int32), 
+                        np.int32(self.nbinsz_lens), np.int32(cat_lens.ngal), )
+        args_basesetup = (np.int32(self.nmax), np.float64(self.min_sep), np.float64(self.max_sep),
+                          np.int32(self.nbinsr), np.int32(self.multicountcorr), )
+        if self.method=="Discrete":
+            hash_dpix = max(1.,self.max_sep//10.)
+            jointextent = list(cat_source._jointextent([cat_lens], extend=self.tree_resos[-1]))
+            cat_source.build_spatialhash(dpix=hash_dpix, extent=jointextent)
+            cat_lens.build_spatialhash(dpix=hash_dpix, extent=jointextent)
+            nregions = np.int32(len(np.argwhere(cat_source.index_matcher>-1).flatten()))
+            args_hash = (cat_source.index_matcher, cat_source.pixs_galind_bounds, cat_source.pix_gals,
+                         cat_lens.index_matcher, cat_lens.pixs_galind_bounds, cat_lens.pix_gals, nregions, )
+            args_pixgrid = (np.float64(cat_lens.pix1_start), np.float64(cat_lens.pix1_d), np.int32(cat_lens.pix1_n), 
+                            np.float64(cat_lens.pix2_start), np.float64(cat_lens.pix2_d), np.int32(cat_lens.pix2_n), )
+            args = (*args_sourcecat,
+                    *args_lenscat,
+                    *args_basesetup,
+                    *args_hash,
+                    *args_pixgrid,
+                    np.int32(self.nthreads),
+                    bin_centers,
+                    Upsilon_n,
+                    Norm_n, )
+            func = self.clib.alloc_Gammans_discrete_GNN
+        #print("Doing %s"%self.method)
+        if False:
+            for elarg, arg in enumerate(args):
+                toprint = (elarg, type(arg),)
+                if isinstance(arg, np.ndarray):
+                    toprint += (type(arg[0]), arg.shape)
+                toprint += (func.argtypes[elarg], )
+                print(toprint)
+                print(arg)
+        
+        func(*args)
+        
+        self.bin_centers = bin_centers.reshape(szr)
+        self.bin_centers_mean = np.mean(self.bin_centers, axis=(0,1))
+        self.npcf_multipoles = Upsilon_n.reshape(sc)
+        self.npcf_multipoles_norm = Norm_n.reshape(sn)
+        self.projection = "X"
+        self.is_edge_corrected = False
+        
+        if apply_edge_correction:
+            self.edge_correction()
+            
+    def edge_correction(self, ret_matrices=False):
+        assert(not self.is_edge_corrected)
+        def gen_M_matrix(thet1,thet2,threepcf_n_norm):
+            nvals, ntheta, _ = threepcf_n_norm.shape
+            nmax = (nvals-1)//2
+            narr = np.arange(-nmax,nmax+1, dtype=np.int)
+            nextM = np.zeros((nvals,nvals))
+            for ind, ell in enumerate(narr):
+                lminusn = ell-narr
+                sel = np.logical_and(lminusn+nmax>=0, lminusn+nmax<nvals)
+                nextM[ind,sel] = threepcf_n_norm[(lminusn+nmax)[sel],thet1,thet2].real / threepcf_n_norm[nmax,thet1,thet2].real
+            return nextM
+    
+        nvals, nzcombis, ntheta, _ = self.npcf_multipoles_norm.shape
+        nmax = nvals-1
+        threepcf_n_full = np.zeros((1,2*nmax+1, nzcombis, ntheta, ntheta), dtype=complex)
+        threepcf_n_norm_full = np.zeros((2*nmax+1, nzcombis, ntheta, ntheta), dtype=complex)
+        threepcf_n_corr = np.zeros(threepcf_n_full.shape, dtype=np.complex)
+        threepcf_n_full[:,nmax:] = self.npcf_multipoles
+        threepcf_n_norm_full[nmax:] = self.npcf_multipoles_norm
+        for nextn in range(1,nvals):
+            threepcf_n_full[0,nmax-nextn] = self.npcf_multipoles[0,nextn].transpose(0,2,1)
+            threepcf_n_norm_full[nmax-nextn] = self.npcf_multipoles_norm[nextn].transpose(0,2,1)
+        
+        if ret_matrices:
+            mats = np.zeros((nzcombis,ntheta,ntheta,nvals,nvals))
+        for indz in range(nzcombis):
+            #sys.stdout.write("%i"%indz)
+            for thet1 in range(ntheta):
+                for thet2 in range(ntheta):
+                    nextM = gen_M_matrix(thet1,thet2,threepcf_n_norm_full[:,indz])
+                    nextM_inv = np.linalg.inv(nextM)
+                    if ret_matrices:
+                        mats[indz,thet1,thet2] = nextM
+                    threepcf_n_corr[0,:,indz,thet1,thet2] = np.matmul(nextM_inv,threepcf_n_full[0,:,indz,thet1,thet2])
+                        
+        self.npcf_multipoles = threepcf_n_corr[:,nmax:]
+        self.is_edge_corrected = True
+        
+        if ret_matrices:
+            return threepcf_n_corr[:,nmax:], mats
+     
+    # TODO: 
+    # * Include the z-weighting method
+    # * Include the 2pcf as spline --> Should we also add an option to compute it here? Might be a mess
+    #   as then we also would need methods to properly distribute randoms...
+    # * Do a voronoi-tesselation at the multipole level? Would be just 2D, but still might help? Eventually
+    #   bundle together cells s.t. tot_weight > theshold? However, this might then make the binning courser
+    #   for certain triangle configs(?)
+    def multipoles2npcf(self):
+        """
+        Notes:
+        ------
+        * The Upsilon and norms are only computed for the n>0 multipoles. We recover n<0 multipoles by symmetry
+        considerations (i.e. Upsilon_{-n}(thet1,thet2,z1,z2,z3) = Upsilon_{n}(thet2,thet1,z1,z3,z2)). As the
+        tomographic bin combinations are interpreted as a flat list, it needs to be appropriately shuffled --
+        this is what `ztiler' is doing. 
+        * When dividing by the (weighted) counts N, we set all contributions for which N<=0 to zero. 
+        """
+        _, nzcombis, rbins, rbins = np.shape(self.npcf_multipoles[0])
+        self.npcf = np.zeros((self.n_cfs, nzcombis, rbins, rbins, len(self.phi)), dtype=complex)
+        self.npcf_norm = np.zeros((nzcombis, rbins, rbins, len(self.phi)), dtype=float)
+        ztiler = np.arange(self.nbinsz_source*self.nbinsz_lens*self.nbinsz_lens).reshape(
+            (self.nbinsz_source,self.nbinsz_lens,self.nbinsz_lens)).transpose(0,2,1).flatten().astype(np.int32)
+        
+        # 3PCF components
+        conjmap = [0]
+        N0 = 1./(2*np.pi) * self.npcf_multipoles_norm[0].astype(complex)
+        for elm in range(self.n_cfs):
+            for elphi, phi in enumerate(self.phi):
+                tmp =  1./(2*np.pi) * self.npcf_multipoles[elm,0].astype(complex)
+                for n in range(1,self.nmax+1):
+                    _const = 1./(2*np.pi) * np.exp(1J*n*phi)
+                    tmp += _const * self.npcf_multipoles[elm,n].astype(complex)
+                    tmp += _const.conj() * self.npcf_multipoles[conjmap[elm],n][ztiler].astype(complex).transpose(0,2,1)
+                self.npcf[elm,...,elphi] = tmp
+        # Normalization
+        for elphi, phi in enumerate(self.phi):
+            tmptotnorm = 1./(2*np.pi) * self.npcf_multipoles_norm[0].astype(complex)
+            for n in range(1,self.nmax+1):
+                _const = 1./(2*np.pi) * np.exp(1J*n*phi)
+                tmptotnorm += _const * self.npcf_multipoles_norm[n].astype(complex)
+                tmptotnorm += _const.conj() * self.npcf_multipoles_norm[n][ztiler].astype(complex).transpose(0,2,1)
+            self.npcf_norm[...,elphi] = tmptotnorm.real
+            
+        if self.is_edge_corrected:
+            sel_zero = np.isnan(N0)
+            _a = self.npcf
+            _b = N0.real[:, :, np.newaxis]
+            self.npcf = np.divide(_a, _b, out=np.zeros_like(_a), where=np.abs(_b)>0)
+        else:
+            _a = self.npcf
+            _b = self.npcf_norm
+            self.npcf = np.divide(_a, _b, out=np.zeros_like(_a), where=np.abs(_b)>0)
+            #self.npcf = self.npcf/self.npcf_norm[0][None, ...].astype(complex)
+        self.projection = "X"
+            
+            
+    ## PROJECTIONS ##
+    def projectnpcf(self, projection):
+        super()._projectnpcf(self, projection)
+        
+    ## INTEGRATED MEASURES ##        
+    def computeNNM(self, radii, do_multiscale=False, tofile=False, filtercache=None):
+        """
+        Compute third-order aperture statistics
+        """
+        nb_config.NUMBA_DEFAULT_NUM_THREADS = self.nthreads
+        nb_config.NUMBA_NUM_THREADS = self.nthreads
+        
+        if self.npcf is None and self.npcf_multipoles is not None:
+            self.multipoles2npcf()
+            
+        nradii = len(radii)
+        if not do_multiscale:
+            nrcombis = nradii
+            _rcut = 1 
+        else:
+            nrcombis = nradii*nradii*nradii
+            _rcut = nradii
+        NNM = np.zeros((1, self.nbinsz_source*self.nbinsz_lens*self.nbinsz_lens, nrcombis), dtype=complex)
+        tmprcombi = 0
+        for elr1, R1 in enumerate(radii):
+            for elr2, R2 in enumerate(radii[:_rcut]):
+                for elr3, R3 in enumerate(radii[:_rcut]):
+                    if not do_multiscale:
+                        R2 = R1
+                        R3 = R1
+                    if filtercache is not None:
+                        A_NNM = filtercache[tmprcombi]
+                    else:
+                        A_NNM = self._NNM_filtergrid(R1, R2, R3)
+                    NNM[0,:,tmprcombi] = np.nansum(A_NNM*self.npcf[0,...],axis=(1,2,3))
+                    tmprcombi += 1
+        return NNM
+    
+    def _NNM_filtergrid(self, R1, R2, R3):
+        return self.__NNM_filtergrid(R1, R2, R3, self.bin_edges, self.bin_centers_mean, self.phi)
+        
+    @staticmethod
+    @jit(nopython=True, parallel=True)
+    def __NNM_filtergrid(R1, R2, R3, edges, centers, phis):
+        nbinsr = len(centers)
+        nbinsphi = len(phis)
+        _cphis = np.cos(phis)
+        _ephis = np.e**(1J*phis)
+        _ephisc = np.e**(-1J*phis)
+        Theta4 = 1./3. * (R1**2*R2**2 + R1**2*R3**2 + R2**2*R3**2) 
+        a2 = 2./3. * R1**2*R2**2*R3**2 / Theta4
+        ANNM = np.zeros((nbinsr,nbinsr,nbinsphi), dtype=nb_complex128)
+        for elb in prange(nbinsr*nbinsr):
+            elb1 = int(elb//nbinsr)
+            elb2 = elb%nbinsr
+            _y1 = centers[elb1]
+            _dbin1 = edges[elb1+1] - edges[elb1]
+            _y2 = centers[elb2]
+            _dbin2 = edges[elb2+1] - edges[elb2]
+            _dbinphi = phis[1] - phis[0]
+            b0 = _y1**2/(2*R1**2)+_y2**2/(2*R2**2) - a2/4.*(
+                _y1**2/R1**4 + 2*_y1*_y2*_cphis/(R1**2*R2**2) + _y2**2/R2**4)
+            g1 = _y1 - a2/2. * (_y1/R1**2 + _y2*_ephisc/R2**2)
+            g2 = _y2 - a2/2. * (_y2/R2**2 + _y1*_ephis/R1**2)
+            g1c = g1.conj()
+            g2c = g2.conj()
+            F1 = 2*R1**2 - g1*g1c
+            F2 = 2*R2**2 - g2*g2c
+            pref = np.e**(-b0)/(72*np.pi*Theta4**2)
+            sum1 = (g1-_y1)*(g2-_y2) * (1/a2*F1*F2 - (F1+F2) + 2*a2 + g1c*g2*_ephisc + g1*g2c*_ephis) 
+            sum2 = ((g2-_y2) + (g1-_y1)*_ephis) * (g1*(F2-2*a2) + g2*(F1-2*a2)*_ephisc)
+            sum3 = 2*g1*g2*a2 
+            _measures = _y1*_dbin1 * _y2*_dbin2 * _dbinphi
+            ANNM[elb1,elb2] = _measures * pref * (sum1-sum2+sum3)
+
+        return ANNM
     
 ###########################
 ## COVARIANCE STATISTICS ##

@@ -72,13 +72,39 @@ double getFilterU(int type_filter, double reff2){
         // Exponential (from Crittenden 2002)
         case 1:
             //reff2 = pow(dgal/R_ap,2);
-            res = 1/(2*area) *(1.-0.5*reff2)*exp(-0.5*reff2);
+            res = INV_2PI * (1.-0.5*reff2) * exp(-0.5*reff2);
             break;
     }
     return res;
 }
 
 double getFilterSupp(int type_filter){
+    double res = 1;
+    switch (type_filter){
+        // Polynominal Schneider
+        case 0:
+            res = 1.;
+            break;
+        // Exponential Crittenden
+        case 1:
+            res = 4;
+            break;
+        // NFW
+        case 2:
+            res = 1.25;
+            break;
+        // Poly-exp
+        case 3:
+            res = 2.5;
+            break;
+         default:
+            printf("Error! operator is not correct");
+            res = 0;
+    }
+    return res;
+}
+
+double getFilterSuppU(int type_filter){
     double res = 1;
     switch (type_filter){
         // Polynominal Schneider
@@ -128,6 +154,8 @@ void ApertureMassMap_Equal(
         double *nextSn = calloc(max_order*nbinsz, sizeof(double));
         double *nextSn_w = calloc(max_order*nbinsz, sizeof(double));
         double *nextS2n_w = calloc(max_order*nbinsz, sizeof(double));
+        double *nextMapn = calloc(max_order*nbinsz, sizeof(double));
+        double *nextMapn_var = calloc(max_order*nbinsz, sizeof(double));
         
         double *factorials_zcombis = calloc(max_order+nbinsz+1, sizeof(double));
         double *factorials = calloc(max_order+1, sizeof(double));
@@ -139,8 +167,6 @@ void ApertureMassMap_Equal(
         double *nextMapn_norm_singlez = calloc(max_order+1, sizeof(double));
         double *nextMapn_var_singlez = calloc(max_order+1, sizeof(double));
         double *nextMapn_var_norm_singlez = calloc(max_order+1, sizeof(double));
-        double *nextMapn = calloc(max_order*nbinsz, sizeof(double));
-        double *nextMapn_var = calloc(max_order*nbinsz, sizeof(double));
         
         gen_fac_table(max_order, factorials);
         gen_fac_table(max_order+nbinsz, factorials_zcombis);
@@ -189,6 +215,7 @@ void ApertureMassMap_Equal(
                 for (int i=0; i<max_order+1; i++){
                     nextMapn_singlez[i]=0; nextMapn_norm_singlez[i]=0; 
                     nextMapn_var_singlez[i]=0; nextMapn_var_norm_singlez[i]=0;
+                    nextMapn[elbinz*max_order+i]=0;nextMapn_var[elbinz*max_order+i]=0;
                 }
                 int tmpind = elbinz*max_order+0;
                 bellargs_Msn[0] = -nextMsn[tmpind];
@@ -265,6 +292,115 @@ void ApertureMassMap_Equal(
         free(nextMapn_var_norm_singlez);
         free(nextMapn);
         free(nextMapn_var);
+    }
+}
+
+// Computes Napn for single aperture scale, taking into account the multiple-counting corrections.  
+void ApertureCountsMap_Equal(
+    double R_ap, double *centers_1, double *centers_2, int ncenters_1, int ncenters_2,
+    int max_order, int ind_filter, int do_subtractions,
+    double *weight, double *insurvey, double *pos1, double *pos2, double *tracer, int *zbins, int nbinsz, int ngal, 
+    double *mask, 
+    double mask1_start, double mask2_start, double mask1_d, double mask2_d, int mask1_n, int mask2_n,
+    int *index_matcher, int *pixs_galind_bounds, int *pix_gals, 
+    int nthreads,
+    double *out_counts, double *out_covs, double *out_Msn, double *out_Sn, double *out_Napn, double *out_Napn_norm){
+    
+    
+    #pragma omp parallel for num_threads(nthreads)
+    for (int elthread=0; elthread<nthreads; elthread++){
+        //printf("Entered parallel region %d\n",elthread);
+        int ind_ap, elbinz, elzcombi, elcov_cut, order;
+        double *nextcounts = calloc(3*nbinsz, sizeof(double));
+        double *nextcovs = calloc(2, sizeof(double));
+        double *nextMsn = calloc(max_order*nbinsz, sizeof(double));
+        double *nextSn = calloc(max_order*nbinsz, sizeof(double));
+        
+        double *factorials_zcombis = calloc(max_order+nbinsz+1, sizeof(double));
+        double *factorials = calloc(max_order+1, sizeof(double));
+        double *bellargs_Msn = calloc(max_order, sizeof(double));
+        double *bellargs_Sn = calloc(max_order, sizeof(double));
+        double *nextNapn_singlez = calloc(max_order+1, sizeof(double));
+        double *nextNapn = calloc(max_order*nbinsz, sizeof(double));
+        double *nextNapn_norm_singlez = calloc(max_order+1, sizeof(double));
+        double *nextNapn_norm = calloc(max_order*nbinsz, sizeof(double));
+        
+        gen_fac_table(max_order, factorials);
+        gen_fac_table(max_order+nbinsz, factorials_zcombis);
+        
+        for (ind_ap=0; ind_ap<ncenters_1*ncenters_2; ind_ap++){
+            if ((ind_ap%nthreads)!=elthread){continue;}
+            int c1 = ind_ap%ncenters_1;
+            int c2 = ind_ap/ncenters_1;
+       
+            // Reset args to zeros
+            for (int i=0; i<3*nbinsz; i++){nextcounts[i]=0;}
+            nextcovs[0]=0;nextcovs[1]=0;
+            for (int i=0; i<max_order*nbinsz; i++){
+                nextMsn[i]=0;nextSn[i]=0;
+            }
+            
+            // Get all the statistics of the aperture in power sum basis
+            singleAp_NapnSingleDisc( R_ap, centers_1[c1], centers_2[c2], 
+                max_order, ind_filter, 
+                weight, insurvey, pos1, pos2, tracer, zbins, nbinsz, ngal,
+                mask, mask1_start, mask2_start, mask1_d, mask2_d, mask1_n, mask2_n,
+                index_matcher, pixs_galind_bounds, pix_gals,  
+                nextcounts, nextcovs, nextMsn, nextSn);
+            
+            
+            // Transform to Napn(zi)
+            for (elbinz=0; elbinz<nbinsz; elbinz++){
+                for (int i=0; i<max_order+1; i++){
+                    nextNapn_singlez[i]=0; nextNapn_norm_singlez[i]=0; 
+                    nextNapn[elbinz*max_order+i]=0;nextNapn_norm[elbinz*max_order+i]=0;
+                    }
+                int tmpind = elbinz*max_order+0;
+                bellargs_Msn[0] = -nextMsn[tmpind];
+                bellargs_Sn[0] = -nextSn[tmpind];
+                for (order=1; order<max_order; order++){ 
+                    tmpind += 1;
+                    bellargs_Msn[order] = -factorials[order]*nextMsn[tmpind];
+                    bellargs_Sn[order] = -factorials[order]*nextSn[tmpind];
+                }
+                getBellRecursive(max_order, bellargs_Msn, factorials, nextNapn_singlez);
+                getBellRecursive(max_order, bellargs_Sn,  factorials, nextNapn_norm_singlez);
+                for (order=0; order<max_order; order++){
+                    if ((nextNapn_norm_singlez[order+1]!=0)){
+                        nextNapn[elbinz*max_order+order] = pow(-1,order+1)*nextNapn_singlez[order+1];
+                        nextNapn_norm[elbinz*max_order+order] = pow(-1,order+1)*nextNapn_norm_singlez[order+1];
+                    }
+                }   
+            }
+            
+            // Update output grids
+            int ncenters = ncenters_1*ncenters_2;
+            out_covs[0*ncenters + c2*ncenters_1+c1] = nextcovs[0];
+            out_covs[1*ncenters + c2*ncenters_1+c1] = nextcovs[1];
+            for (int i=0; i<3*nbinsz; i++){
+                out_counts[i*ncenters + c2*ncenters_1+c1] =  nextcounts[i];
+            }
+            for (int i=0; i<max_order*nbinsz; i++){
+                out_Sn[i*ncenters + c2*ncenters_1+c1] = nextSn[i];
+                out_Msn[i*ncenters + c2*ncenters_1+c1] = nextMsn[i];
+                out_Napn[i*ncenters + c2*ncenters_1+c1] = nextNapn[i];
+                out_Napn_norm[i*ncenters + c2*ncenters_1+c1] = nextNapn_norm[i];
+            }
+        }
+        
+        free(nextcounts);
+        free(nextcovs);
+        free(nextMsn);
+        free(nextSn);
+        
+        free(factorials_zcombis);
+        free(factorials);
+        free(bellargs_Msn);
+        free(bellargs_Sn);
+        free(nextNapn_singlez);
+        free(nextNapn_norm_singlez);
+        free(nextNapn);
+        free(nextNapn_norm);
     }
 }
 
@@ -499,6 +635,554 @@ void MapnSingleEonlyDisc(
     free(fac_zcombis);
     free(tmpMapn);
     free(tmpwtot_Mapn);
+}
+
+// Computes statistics on single aperture
+void singleAp_MapnSingleEonlyDisc(
+    double R_ap, double center_1, double center_2, 
+    int max_order, int ind_filter, 
+    double *weight, double *insurvey, double *pos1, double *pos2, double complex *g, int *zbins, int nbinsz, int ngal, 
+    double *mask,
+    double mask1_start, double mask2_start, double mask1_d, double mask2_d, int mask1_n, int mask2_n,
+    int *index_matcher, int *pixs_galind_bounds, int *pix_gals, 
+    double *counts, double *covs, double *Msn, double *Sn, double *Sn_w, double *S2n_w){
+
+    // Variables for counting components
+    int order;
+    // Helper precomputations
+    double R2_ap=R_ap*R_ap;
+    double max_d = mymax(mask1_d,mask2_d);
+    double R2_ap_d = (R_ap + max_d) * (R_ap + max_d);
+    
+    // Variables used for updating the mask and selecting useful galaxies
+    int lower, upper;
+    double Qpix, mask_frac;
+    double pix_center1, pix_center2, dpix_ap_sq;
+    bool pixinap, badpixel;
+    // All the indices
+    int ind_pix1, ind_pix2, ind_raw, ind_red, ind_inpix, ind_gal, zbin;
+    // Helper variables being used for the actual Mapn computation
+    double complex phirotc_sq;
+    double rel1, rel2, d2gal, w, frac_insurvey, et, Qval;
+    double tmp_et, tmp_w, tmp_wm, tmp_etmult, tmp_wmmult;
+    double tmp_norm, tmp_normw, tmp_normvol, fac_norm, fac_normw, fac_normvol;
+    
+    int npix = mask1_n*mask2_n; 
+    double npix_m=0.; double Qpix_m=0; double npix_t=0.; double Qpix_t=0;
+    double supp_filter = getFilterSupp(ind_filter);
+    double supp_Q2 = supp_filter*supp_filter;
+    int pix1_lower = (int) floor((center_1 - (supp_filter*R_ap+mask1_d) - mask1_start)/mask1_d);
+    int pix1_upper = (int) floor((center_1 + (supp_filter*R_ap+mask1_d) - mask1_start)/mask1_d);
+    int pix2_lower = (int) floor((center_2 - (supp_filter*R_ap+mask2_d) - mask2_start)/mask2_d);
+    int pix2_upper = (int) floor((center_2 + (supp_filter*R_ap+mask2_d) - mask2_start)/mask2_d);
+   
+    // Compute Map statistics for this aperture
+    //  1) Check if pixel is within suitable range of aperture
+    //  2) If so, update aperture coverage and loop through galaxies in that pixel to update the sums for Mapn
+    //  3) Finally, check if there were sufficiently many galaxies in the aperture; if not set result to  zero
+    // As we loop through the pixels in the square encompassing the aperture
+    // we needlessly compute distances for ~25% of pixels (subdominant!).
+    for (ind_pix1=pix1_lower; ind_pix1<pix1_upper; ind_pix1++){
+        for (ind_pix2=pix2_lower; ind_pix2<pix2_upper; ind_pix2++){
+            
+            pix_center1 = mask1_start + ind_pix1*mask1_d;
+            pix_center2 = mask2_start + ind_pix2*mask2_d;
+            dpix_ap_sq = (pix_center1 - center_1)*(pix_center1 - center_1) +
+                         (pix_center2 - center_2)*(pix_center2 - center_2);
+
+            // Only care about pixels within aperture
+            if (dpix_ap_sq > supp_Q2*R2_ap_d){continue;}
+            
+            // These out of bounds cases will occur as we are searching within a
+            // rectangle that exceeds the survey footprint
+            // --> Treat those as fully masked and continue;
+            ind_raw = ind_pix2*mask1_n + ind_pix1;
+            badpixel = (ind_raw >= npix || ind_raw < 0 ||
+                        ind_pix1<0 || ind_pix2<0 || 
+                        ind_pix1>=mask1_n || ind_pix2>=mask2_n);
+            // Update coverage fraction
+            pixinap = dpix_ap_sq <= supp_Q2*R2_ap;
+            Qpix = getFilterQ(ind_filter, dpix_ap_sq/R2_ap);
+            if (badpixel && pixinap){
+                npix_m+=1; Qpix_m+=Qpix;npix_t+=1; Qpix_t+=Qpix;} 
+            if (!badpixel && pixinap){
+                mask_frac = mask[ind_raw];
+                npix_m+=mask_frac; Qpix_m+=mask_frac*Qpix; npix_t+=1; Qpix_t+=Qpix; }
+            if (badpixel){continue;}
+
+            // Go through the galaxies in the pixel
+            ind_red = index_matcher[ind_raw];
+            if (ind_red==-1){continue;}
+            lower = pixs_galind_bounds[ind_red];
+            upper = pixs_galind_bounds[ind_red+1];
+            //printf("Go through galaxies in this pixel %d (%d %d)\n",ind_red,lower,upper);
+            for (ind_inpix=lower; ind_inpix<upper; ind_inpix++){
+                ind_gal = pix_gals[ind_inpix];
+                rel1 = pos1[ind_gal]-center_1;
+                rel2 = pos2[ind_gal]-center_2;
+                d2gal = (rel1*rel1 + rel2*rel2);
+                if (d2gal > supp_Q2*R2_ap){continue;} 
+                if (d2gal < 1e-5){continue;}
+                //printf("Start allocating stuff for next galaxy\n");
+                // Get tangential ellipticity and value of Q filter
+                w = weight[ind_gal];
+                frac_insurvey = insurvey[ind_gal];
+                phirotc_sq = (rel1*rel1-rel2*rel2-2*I*rel1*rel2)/d2gal;
+                et = -creal(g[ind_gal]*phirotc_sq);
+                Qval = getFilterQ(ind_filter, d2gal/R2_ap);
+                //printf(" Got main quantities\n");
+                // Update raw/weighted counts
+                zbin = zbins[ind_gal];
+                counts[zbin*3 + 0] += 1;
+                counts[zbin*3 + 1] += w;
+                counts[zbin*3 + 2] += w*frac_insurvey;
+                //printf(" Updated counts\n");
+                // Update power sums
+                tmp_et = 1;
+                tmp_w = 1;
+                tmp_wm = 1;
+                tmp_etmult = w*Qval*et;
+                tmp_wmmult = w*frac_insurvey;
+                for (order=0; order<max_order; order++){
+                    tmp_w *= w;
+                    tmp_wm *= tmp_wmmult;
+                    tmp_et *= tmp_etmult;
+                    
+                    Msn[zbin*max_order+order] += tmp_et;
+                    Sn[zbin*max_order+order] += tmp_w;
+                    Sn_w[zbin*max_order+order] += tmp_wm;
+                    S2n_w[zbin*max_order+order] += tmp_wm*tmp_wm;
+                //printf(" Updated powersums. Done.\n");
+                }
+                //if ((ind_pix1==pix1_lower+(pix1_upper-pix1_lower)/2+2*(int)(R_ap/mask1_d))&&
+                //    (ind_pix2==pix2_lower+(pix2_upper-pix2_lower)/2+2*(int)(R_ap/mask2_d))&&(ind_inpix==lower)){
+                //    printf("w=%.4f  reff=%.4f  Q=%.4f  ang=%.4f+i%.4ff  et=%.4f  toadd=%.4f S1=%.4f  Ms0=%.4f\n", 
+                //           w,sqrt(d2gal/R2_ap),Qval,creal(phirotc_sq),cimag(phirotc_sq),et,tmp_etmult, 
+                //           Sn[zbin*max_order+1], Msn[zbin*max_order]);
+               // }
+            }
+        }
+    }
+    //printf("R2=%.2f R2d=%.2f, maxd=%.4f, R=%.2f, Rext=%.4f counts=%.4f  S0=%.4f  Ms0=%.4f\n",
+    //       R2_ap,R2_ap_d, max_d, R_ap, R_ap+max_d, counts[1], Sn[zbin*max_order], Msn[zbin*max_order]);
+    
+    // Raw and Q-weighted masked coverage fraction
+    covs[0] = npix_m/npix_t;
+    covs[1] = Qpix_m/Qpix_t;
+    //printf("lower1=%d lower2=%d upper1=%d upper2=%d, npixm=%.2f, npixt=%.2f",
+    //       pix1_lower,pix2_lower,pix1_upper,pix2_upper,npix_m,npix_t);
+    //printf("covs=%.2f %.2f; counts=%.2f %.2f %.2f\n",covs[0],covs[1],counts[0],counts[1],counts[2]);
+    
+    // Renormalize the S_n/Ms_n components s.t. they match eqns (22),(23) in 2106.04594.
+    // Note that if there are not sufficient galaxies to form closed n-side polygons,
+    // the transformation equations will set those components to zero in the Mapn basis,
+    // so we do not worry about this here.
+    
+    
+    int thiscomp;
+    for (zbin=0; zbin<nbinsz; zbin++){
+        if (Sn[zbin*max_order]!=0){fac_norm = 1./(Sn[zbin*max_order]);}else{fac_norm = 0;}
+        if (Sn_w[zbin*max_order]!=0){fac_normw = 1./(Sn_w[zbin*max_order]);}else{fac_normw = 0;}
+        fac_normvol = supp_Q2;
+        tmp_norm = 1;
+        tmp_normw = 1./R_ap/R_ap;
+        tmp_normvol = 1;
+        for (order=0; order<max_order; order++){
+            thiscomp = zbin*max_order+order;
+            tmp_norm *= fac_norm;
+            tmp_normw *= fac_normw;
+            tmp_normvol *= fac_normvol;
+            Msn[thiscomp] *= tmp_normvol*tmp_norm;
+            Sn[thiscomp] *= tmp_norm;
+            Sn_w[thiscomp] *= tmp_normw;
+            S2n_w[thiscomp] *= tmp_normw*tmp_normw;
+        }
+    }
+    
+    //printf(" * covs=%.5f %.5f counts=%.5f\n",covs[0],counts[0]);
+    //printf("After: R2=%.2f R2d=%.2f, maxd=%.4f, R=%.2f, Rext=%.4f counts=%.4f  S0=%.6f  S1=%.6f  Ms0=%.6f\n",
+    //           R2_ap,R2_ap_d, max_d, R_ap, R_ap+max_d, counts[1], Sn[0*max_order], Sn[0*max_order+1], Msn[0*max_order]);
+}
+
+// Computes Napn for single aperture scale, taking into account the multiple-counting corrections.              
+void NapnSingleDisc(
+    double R_ap, double *centers_1, double *centers_2, int ncenters,
+    int max_order, int ind_filter, int do_subtractions,
+    double *weight, double *insurvey, double *pos1, double *pos2, double *tracer, int *zbins, int nbinsz, int ngal, 
+    double *mask, double *fraccov_cuts, int nfrac_cuts, int fraccov_method,
+    double mask1_start, double mask2_start, double mask1_d, double mask2_d, int mask1_n, int mask2_n,
+    int *index_matcher, int *pixs_galind_bounds, int *pix_gals, 
+    int nthreads, double *Napn, double *wtot_Napn){
+    
+    double *fac_zcombis = calloc(max_order+nbinsz+1, sizeof(double));
+    gen_fac_table(max_order+nbinsz, fac_zcombis);
+    int nzcombis = zcombis_tot(nbinsz, max_order, fac_zcombis);
+    double *tmpNapn = calloc(nthreads*nfrac_cuts*nzcombis, sizeof(double));
+    double *tmpwtot_Napn = calloc(nthreads*nfrac_cuts*nzcombis, sizeof(double));
+    
+    #pragma omp parallel for num_threads(nthreads)
+    for (int elthread=0; elthread<nthreads; elthread++){
+        int ind_ap, elbinz, elzcombi, elcov_cut, order;
+        double *nextcounts = calloc(3*nbinsz, sizeof(double));
+        double *nextcovs = calloc(2, sizeof(double));
+        double *nextMsn = calloc(max_order*nbinsz, sizeof(double));
+        double *nextSn = calloc(max_order*nbinsz, sizeof(double));
+        
+        double *factorials_zcombis = calloc(max_order+nbinsz+1, sizeof(double));
+        double *factorials = calloc(max_order+1, sizeof(double));
+        double *bellargs_Msn = calloc(max_order, sizeof(double));
+        double *bellargs_Sn = calloc(max_order, sizeof(double));
+        double *nextNapn_singlez = calloc(max_order+1, sizeof(double));
+        double *nextNapn_norm_singlez = calloc(max_order+1, sizeof(double));
+        double *nextNapn = calloc(max_order*nbinsz, sizeof(double));
+        
+        gen_fac_table(max_order, factorials);
+        gen_fac_table(max_order+nbinsz, factorials_zcombis);
+        int thread_nzcombis = zcombis_tot(nbinsz, max_order, factorials_zcombis);
+        int thisthreadshift = elthread*nfrac_cuts*thread_nzcombis;
+        
+        for (ind_ap=0; ind_ap<ncenters; ind_ap++){
+            if ((ind_ap%nthreads)!=elthread){continue;}
+            
+            // Reset args to zeros
+            nextcovs[0]=0;nextcovs[1]=0;
+            for (int i=0; i<max_order*nbinsz; i++){
+                nextMsn[i]=0;nextSn[i]=0;
+            }
+            for (int i=0; i<3*nbinsz; i++){nextcounts[i]=0;}
+            
+            // Get all the statistics of the aperture in power sum basis
+            singleAp_NapnSingleDisc( R_ap, centers_1[ind_ap], centers_2[ind_ap], 
+                max_order, ind_filter, 
+                weight, insurvey, pos1, pos2, tracer, zbins, nbinsz, ngal,
+                mask, mask1_start, mask2_start, mask1_d, mask2_d, mask1_n, mask2_n,
+                index_matcher, pixs_galind_bounds, pix_gals,  
+                nextcounts, nextcovs, nextMsn, nextSn);
+            
+            // Transform to Napn(zi)
+            for (elbinz=0; elbinz<nbinsz; elbinz++){
+                for (int i=0; i<max_order+1; i++){
+                    nextNapn_singlez[i]=0; nextNapn_norm_singlez[i]=0; 
+                    }
+                int tmpind = elbinz*max_order+0;
+                bellargs_Msn[0] = -nextMsn[tmpind];
+                bellargs_Sn[0] = -nextSn[tmpind];
+                for (order=1; order<max_order; order++){ 
+                    tmpind += 1;
+                    bellargs_Msn[order] = -factorials[order]*nextMsn[tmpind];
+                    bellargs_Sn[order] = -factorials[order]*nextSn[tmpind];
+                }
+                getBellRecursive(max_order, bellargs_Msn, factorials, nextNapn_singlez);
+                getBellRecursive(max_order, bellargs_Sn,  factorials, nextNapn_norm_singlez);
+                for (order=0; order<max_order; order++){
+                    if ((nextNapn_norm_singlez[order+1]!=0)){
+                        nextNapn[elbinz*max_order+order] = pow(-1,order+1)*nextNapn_singlez[order+1];
+                    }
+                }   
+            }
+            
+            // Build all zcombis
+            // Nap^n(z_1,...,z_n) = \prod_{i=1}^nbinsz Nap^{alpha_i}(z_i)
+            int elzbin, tmpzbin, tmporder, thisind;
+            int cumzcombi = 0;
+            double toadd_Napn, toadd_Napn_w;
+            for (order=1; order<=max_order; order++){
+                int *thiszcombi = calloc(order, sizeof(int));
+                for (elzcombi=0; elzcombi<zcombis_order(nbinsz,order,factorials_zcombis); elzcombi++){
+                    // Compute Nap^n and its weight for this zcombi 
+                    // Do double counting corrs
+                    if (do_subtractions){
+                        toadd_Napn = 1;
+                        if (order>1){
+                            tmpzbin = thiszcombi[0];
+                            tmporder = 0;
+                            for (elzbin=1; elzbin<order; elzbin++){
+                                if (thiszcombi[elzbin]==tmpzbin){tmporder+=1;}
+                                else{
+                                    toadd_Napn *= nextNapn[tmpzbin*max_order+tmporder];
+                                    tmporder = 0;
+                                    tmpzbin = thiszcombi[elzbin];
+                                }
+                            }
+                            toadd_Napn *= nextNapn[tmpzbin*max_order+tmporder];
+                        }
+                        else{
+                            toadd_Napn = nextNapn[elzcombi*max_order+0];
+                        }
+                    }
+                    // No subtractions
+                    else{
+                        toadd_Napn = 1;
+                        for (elzbin=0; elzbin<order; elzbin++){
+                            tmpzbin = thiszcombi[elzbin];
+                            toadd_Napn *= nextNapn[tmpzbin*max_order+0];
+                        }
+                    }
+                    toadd_Napn_w = 1.; // Dummy for aperture weight that has to be unity
+                    // Apply coverage cuts
+                    for (elcov_cut=1;elcov_cut<=nfrac_cuts;elcov_cut++){  
+                        if ((nextcovs[0]>fraccov_cuts[nfrac_cuts-elcov_cut])){break;}
+                        thisind = thisthreadshift + (nfrac_cuts-elcov_cut)*thread_nzcombis + cumzcombi;
+                        tmpNapn[thisind] += toadd_Napn_w*toadd_Napn;
+                        tmpwtot_Napn[thisind] += toadd_Napn_w;
+                    }
+                    nextzcombination(nbinsz, order, thiszcombi);
+                    cumzcombi += 1;
+                }
+                free(thiszcombi);
+            }
+        }
+        
+        free(nextcounts);
+        free(nextcovs);
+        free(nextMsn);
+        free(nextSn);
+        
+        free(factorials_zcombis);
+        free(factorials);
+        free(bellargs_Msn);
+        free(bellargs_Sn);
+        free(nextNapn_singlez);
+        free(nextNapn_norm_singlez);
+        free(nextNapn);   
+    }
+    
+    // Accumulate the Napn across the threads
+    //#pragma omp parallel for num_threads(nthreads)
+    for (int fzcombi=0; fzcombi<nfrac_cuts*nzcombis; fzcombi++){
+        int thisind;
+        for (int elthread=0; elthread<nthreads; elthread++){
+            thisind = elthread*nfrac_cuts*nzcombis+fzcombi;
+            Napn[fzcombi] += tmpNapn[thisind];
+            wtot_Napn[fzcombi] += tmpwtot_Napn[thisind];
+        }
+        Napn[fzcombi] /= wtot_Napn[fzcombi];
+    }
+    free(tmpNapn);
+    free(tmpwtot_Napn);
+    free(fac_zcombis);
+}
+
+// Computes statistics on single aperture
+void singleAp_NapnSingleDisc(
+    double R_ap, double center_1, double center_2, 
+    int max_order, int ind_filter, 
+    double *weight, double *insurvey, double *pos1, double *pos2, double *tracer, int *zbins, int nbinsz, int ngal, 
+    double *mask,
+    double mask1_start, double mask2_start, double mask1_d, double mask2_d, int mask1_n, int mask2_n,
+    int *index_matcher, int *pixs_galind_bounds, int *pix_gals, 
+    double *counts, double *covs, double *Msn, double *Sn){
+
+    // Variables for counting components
+    int order;
+    // Helper precomputations
+    double R2_ap=R_ap*R_ap;
+    double max_d = mymax(mask1_d,mask2_d);
+    double R2_ap_d = (R_ap + max_d) * (R_ap + max_d);
+    
+    // Variables used for updating the mask and selecting useful galaxies
+    int lower, upper;
+    double Upix, mask_frac;
+    double pix_center1, pix_center2, dpix_ap_sq;
+    bool pixinap, badpixel;
+    // All the indices
+    int ind_pix1, ind_pix2, ind_raw, ind_red, ind_inpix, ind_gal, zbin;
+    // Helper variables being used for the actual Mapn computation
+    double complex phirotc_sq;
+    double rel1, rel2, d2gal, w, tr, frac_insurvey, Uval;
+    double tmp_n, tmp_w, tmp_nmult, tmp_wmult;
+    double tmp_norm, tmp_normw, tmp_normvol, fac_norm, fac_normvol;
+    
+    int npix = mask1_n*mask2_n; 
+    double npix_m=0.; double Upix_m=0; double npix_t=0.; double Upix_t=0;
+    double supp_filter = getFilterSuppU(ind_filter);
+    double supp_U2 = supp_filter*supp_filter;
+    int pix1_lower = (int) floor((center_1 - (supp_filter*R_ap+mask1_d) - mask1_start)/mask1_d);
+    int pix1_upper = (int) floor((center_1 + (supp_filter*R_ap+mask1_d) - mask1_start)/mask1_d);
+    int pix2_lower = (int) floor((center_2 - (supp_filter*R_ap+mask2_d) - mask2_start)/mask2_d);
+    int pix2_upper = (int) floor((center_2 + (supp_filter*R_ap+mask2_d) - mask2_start)/mask2_d);
+   
+    // Compute Nap statistics for this aperture
+    //  1) Check if pixel is within suitable range of aperture
+    //  2) If so, update aperture coverage and loop through galaxies in that pixel to update the sums for Mapn
+    //  3) Finally, check if there were sufficiently many galaxies in the aperture; if not set result to  zero
+    // As we loop through the pixels in the square encompassing the aperture
+    // we needlessly compute distances for ~25% of pixels (subdominant!).
+    for (ind_pix1=pix1_lower; ind_pix1<pix1_upper; ind_pix1++){
+        for (ind_pix2=pix2_lower; ind_pix2<pix2_upper; ind_pix2++){
+            
+            pix_center1 = mask1_start + ind_pix1*mask1_d;
+            pix_center2 = mask2_start + ind_pix2*mask2_d;
+            dpix_ap_sq = (pix_center1 - center_1)*(pix_center1 - center_1) +
+                         (pix_center2 - center_2)*(pix_center2 - center_2);
+
+            // Only care about pixels within aperture
+            if (dpix_ap_sq > supp_U2*R2_ap_d){continue;}
+            
+            // These out of bounds cases will occur as we are searching within a
+            // rectangle that exceeds the survey footprint
+            // --> Treat those as fully masked and continue;
+            ind_raw = ind_pix2*mask1_n + ind_pix1;
+            badpixel = (ind_raw >= npix || ind_raw < 0 ||
+                        ind_pix1<0 || ind_pix2<0 || 
+                        ind_pix1>=mask1_n || ind_pix2>=mask2_n);
+            // Update coverage fraction
+            pixinap = dpix_ap_sq <= supp_U2*R2_ap;
+            Upix = getFilterU(ind_filter, dpix_ap_sq/R2_ap);
+            if (badpixel && pixinap){
+                npix_m+=1; Upix_m+=Upix;npix_t+=1; Upix_t+=Upix;} 
+            if (!badpixel && pixinap){
+                mask_frac = mask[ind_raw];
+                npix_m+=mask_frac; Upix_m+=mask_frac*Upix; npix_t+=1; Upix_t+=Upix; }
+            if (badpixel){continue;}
+
+            // Go through the galaxies in the pixel
+            ind_red = index_matcher[ind_raw];
+            if (ind_red==-1){continue;}
+            lower = pixs_galind_bounds[ind_red];
+            upper = pixs_galind_bounds[ind_red+1];
+            for (ind_inpix=lower; ind_inpix<upper; ind_inpix++){
+                ind_gal = pix_gals[ind_inpix];
+                rel1 = pos1[ind_gal]-center_1;
+                rel2 = pos2[ind_gal]-center_2;
+                d2gal = (rel1*rel1 + rel2*rel2);
+                if (d2gal > supp_U2*R2_ap){continue;} 
+                if (d2gal < 1e-15){continue;}
+                // Get relevant base quantities
+                w = weight[ind_gal];
+                tr = tracer[ind_gal];
+                frac_insurvey = insurvey[ind_gal];
+                Uval = getFilterU(ind_filter, d2gal/R2_ap)/R2_ap;
+                // Update raw/weighted counts
+                zbin = zbins[ind_gal];
+                counts[zbin*3 + 0] += 1;
+                counts[zbin*3 + 1] += w;
+                counts[zbin*3 + 2] += w*frac_insurvey;
+                // Update power sums
+                tmp_w = 1;
+                tmp_n = 1;
+                tmp_wmult = w;
+                tmp_nmult = tr*Uval;
+                for (order=0; order<max_order; order++){
+                    tmp_w *= tmp_wmult;
+                    tmp_n *= tmp_nmult;
+                    Msn[zbin*max_order+order] += tmp_n;
+                    Sn[zbin*max_order+order] += tmp_w;
+                }
+            }
+        }
+    }
+    
+    // Raw and Q-weighted masked coverage fraction
+    covs[0] = npix_m/npix_t;
+    covs[1] = Upix_m/Upix_t;
+    // If the simple norms are correct then this bit can be removed
+    // -- eventually need to be updated when looking at kg fields
+    // Renormalize the S_n/Ms_n components s.t. they match eqns (22),(23) in 2106.04594.
+    // Note that if there are not sufficient galaxies to form closed n-side polygons,
+    // the transformation equations will set those components to zero in the Mapn basis,
+    // so we do not worry about this here.
+    int thiscomp;
+    for (zbin=0; zbin<nbinsz; zbin++){
+        fac_norm = 1;
+        fac_normvol = 1;
+        tmp_norm = 1;
+        tmp_normvol = 1;
+        for (order=0; order<max_order; order++){
+            thiscomp = zbin*max_order+order;
+            tmp_norm *= fac_norm;
+            tmp_normvol *= fac_normvol;
+            Msn[thiscomp] *= tmp_normvol*tmp_norm;
+            Sn[thiscomp] *= tmp_norm;
+        }
+    }
+}
+
+
+/*
+// Compute MapNap, Nap2, Map2, Nap2Map, NapMap2, Nap3Map, Nap2Map2, NapMap3 and its disconnected part for two distinct radii
+// output = [Nap2, MapNap, Map2, Map3, Nap2Map, NapMap2, Map3, Nap4, Nap3Map, Nap2Map2, NapMap3, Map4]
+// output_weights = [w_L2, w_LS, w_S2, w_L2S, w_LS2, w_L3S, w_L2S2, w_LS3]
+void NapmMapm_fourth_TwoScaleEonlyDisc_Notomo(
+    double R_ap_lens, double R_ap_source, double *centers_1, double *centers_2, int ncenters,
+    int ind_filter, int weight_method, int do_subtractions,
+    double *mask, double *fraccov_cuts, int nfrac_cuts, int fraccov_method,
+    double mask1_start, double mask2_start, double mask1_d, double mask2_d, int mask1_n, int mask2_n,
+    double *weight_l, double *insurvey_l, double *pos1_l, double *pos2_l, double *kappa_g, 
+    int ngal_l, int *index_matcher_l, int *pixs_galind_bounds_l, int *pix_gals_l,
+    double *weight_s, double *insurvey_s, double *pos1_s, double *pos2_s, double complex *g, 
+    int ngal_s, int *index_matcher_s, int *pixs_galind_bounds_s, int *pix_gals_s,
+    int nthreads,
+    double *output, double *output_weights){
+    
+    double *tmpoutput = calloc(nthreads*12*nfrac_cuts, sizeof(double));
+    double *tmpoutput_weights = calloc(nthreads*12*nfrac_cuts, sizeof(double));
+    
+    for (int elthread=0; elthread<nthreads; elthread++){
+        
+        int ind_ap, elcov_cut, order, order_s, order_l;
+        double *nextcounts_s = calloc(3, sizeof(double));
+        double *nextcounts_l = calloc(3, sizeof(double));
+        double *nextcovs_s = calloc(2, sizeof(double));
+        double *nextcovs_l = calloc(2, sizeof(double));
+        double *nextMsn_s = calloc(max_order, sizeof(double));
+        double *nextSn_s = calloc(max_order, sizeof(double));
+        double *nextSn_s_w = calloc(max_order, sizeof(double));
+        double *nextS2n_s_w = calloc(max_order, sizeof(double));
+        double *nextMsn_l = calloc(max_order, sizeof(double));
+        double *nextSn_l = calloc(max_order, sizeof(double));
+        double *nextSn_l_w = calloc(max_order, sizeof(double));
+        
+        double *factorials = calloc(max_order+1, sizeof(double));
+        double *bellargs_Msn_s = calloc(max_order, sizeof(double));
+        double *bellargs_Sn_s = calloc(max_order, sizeof(double));
+        double *bellargs_Sn_s_w = calloc(max_order, sizeof(double));
+        double *bellargs_S2n_s_w = calloc(max_order, sizeof(double));
+        double *bellargs_Msn_l = calloc(max_order, sizeof(double));
+        double *bellargs_Sn_l = calloc(max_order, sizeof(double));
+        double *nextNapm_tmp = calloc(max_order+1, sizeof(double));
+        double *nextMapn_tmp = calloc(max_order+1, sizeof(double));
+        double *nextMapn_norm_tmp = calloc(max_order+1, sizeof(double));
+        double *nextMapn_var_tmp = calloc(max_order+1, sizeof(double));
+        double *nextMapn_var_norm_tmp = calloc(max_order+1, sizeof(double));
+        double *nextNapm = calloc(max_order, sizeof(double));
+        double *nextMapn = calloc(max_order, sizeof(double));
+        double *nextMapn_var = calloc(max_order, sizeof(double));
+        
+        gen_fac_table(max_order, factorials);
+        int thisthreadshift = elthread*nfrac_cuts*thread_nzcombis;
+        
+        
+        //printf("%d %d \n ",ncenters, thread_nzcombis);
+        //printf("Done preps for parallel region %d\n",elthread);
+        for (ind_ap=0; ind_ap<ncenters_1*ncenters_2; ind_ap++){
+            if ((ind_ap%nthreads)!=elthread){continue;}
+            int c1 = ind_ap%ncenters_1;
+            int c2 = ind_ap/ncenters_1;
+            
+            
+            //if (elthread==0){printf("Start setting stuff to zero for ap %d on thread %d\n",ind_ap,elthread);}
+            // Reset args to zeros
+            nextcovs[0]=0;nextcovs[1]=0;
+            for (int i=0; i<3; i++){nextcounts[i]=0;}
+            for (int i=0; i<max_order; i++){
+                nextMsn_s[i]=0;nextSn_s[i]=0;nextSn_w[i]=0;nextS2n_w[i]=0;
+            }
+                    
+            // Get all the statistics of the aperture in power sum basis
+            //if (elthread==0){printf("Get power sums from ap %d on thread %d\n",ind_ap,elthread);}
+            singleAp_MapnSingleEonlyDisc( R_ap, centers_1[c1], centers_2[c2], 
+                max_order, ind_filter, 
+                weight, insurvey, pos1, pos2, g, zbins, 1, ngal,
+                mask, mask1_start, mask2_start, mask1_d, mask2_d, mask1_n, mask2_n,
+                index_matcher, pixs_galind_bounds, pix_gals,  
+                nextcounts, nextcovs, nextMsn, nextSn, nextSn_w, nextS2n_w);
+        }
+        
+    }
+    
+    
+    
 }
 
 // Computes NapmMapn for single aperture scale, taking into account the multiple-counting corrections.
@@ -760,16 +1444,18 @@ void NapmMapnSingleEonlyDisc(
     free(tmpNapmMapn);
     free(tmpwtot_NapmMapn);
 }
+*/
 
+/*
 // Computes statistics on single aperture
-void singleAp_MapnSingleEonlyDisc(
+void singleAp_NapnSingleEonlyDisc(
     double R_ap, double center_1, double center_2, 
     int max_order, int ind_filter, 
-    double *weight, double *insurvey, double *pos1, double *pos2, double complex *g, int *zbins, int nbinsz, int ngal, 
+    double *weight, double *insurvey, double *pos1, double *pos2, int *zbins, int nbinsz, int ngal, double *nbar_zs, 
     double *mask,
     double mask1_start, double mask2_start, double mask1_d, double mask2_d, int mask1_n, int mask2_n,
     int *index_matcher, int *pixs_galind_bounds, int *pix_gals, 
-    double *counts, double *covs, double *Msn, double *Sn, double *Sn_w, double *S2n_w){
+    double *counts, double *covs, double *Msn){
 
     // Variables for counting components
     int order;
@@ -780,19 +1466,18 @@ void singleAp_MapnSingleEonlyDisc(
     
     // Variables used for updating the mask and selecting useful galaxies
     int lower, upper;
-    double Qpix, mask_frac;
+    double Upix, mask_frac;
     double pix_center1, pix_center2, dpix_ap_sq;
     bool pixinap, badpixel;
     // All the indices
     int ind_pix1, ind_pix2, ind_raw, ind_red, ind_inpix, ind_gal, zbin;
     // Helper variables being used for the actual Mapn computation
     double complex phirotc_sq;
-    double rel1, rel2, d2gal, w, frac_insurvey, et, Qval;
-    double tmp_et, tmp_w, tmp_wm, tmp_etmult, tmp_wmmult;
-    double tmp_norm, tmp_normw, tmp_normvol, fac_norm, fac_normw, fac_normvol;
+    double rel1, rel2, d2gal, w, frac_insurvey, Uval;
+    double tmp_w, tmp_wm;
     
     int npix = mask1_n*mask2_n; 
-    double npix_m=0.; double Qpix_m=0; double npix_t=0.; double Qpix_t=0;
+    double npix_m=0.; double Upix_m=0; double npix_t=0.; double Upix_t=0;
     double supp_filter = getFilterSupp(ind_filter);
     double supp_Q2 = supp_filter*supp_filter;
     int pix1_lower = (int) floor((center_1 - (supp_filter*R_ap+mask1_d) - mask1_start)/mask1_d);
@@ -826,12 +1511,12 @@ void singleAp_MapnSingleEonlyDisc(
                         ind_pix1>=mask1_n || ind_pix2>=mask2_n);
             // Update coverage fraction
             pixinap = dpix_ap_sq <= supp_Q2*R2_ap;
-            Qpix = getFilterQ(ind_filter, dpix_ap_sq/R2_ap);
+            Upix = getFilterQ(ind_filter, dpix_ap_sq/R2_ap);
             if (badpixel && pixinap){
-                npix_m+=1; Qpix_m+=Qpix;npix_t+=1; Qpix_t+=Qpix;} 
+                npix_m+=1; Upix_m+=Upix;npix_t+=1; Upix_t+=Upix;} 
             if (!badpixel && pixinap){
                 mask_frac = mask[ind_raw];
-                npix_m+=mask_frac; Qpix_m+=mask_frac*Qpix; npix_t+=1; Qpix_t+=Qpix; }
+                npix_m+=mask_frac; Upix_m+=mask_frac*Upix; npix_t+=1; Upix_t+=Upix; }
             if (badpixel){continue;}
 
             // Go through the galaxies in the pixel
@@ -851,9 +1536,7 @@ void singleAp_MapnSingleEonlyDisc(
                 // Get tangential ellipticity and value of Q filter
                 w = weight[ind_gal];
                 frac_insurvey = insurvey[ind_gal];
-                phirotc_sq = (rel1*rel1-rel2*rel2-2*I*rel1*rel2)/d2gal;
-                et = -creal(g[ind_gal]*phirotc_sq);
-                Qval = getFilterQ(ind_filter, d2gal/R2_ap);
+                Uval = getFilterU(ind_filter, d2gal/R2_ap);
                 //printf(" Got main quantities\n");
                 // Update raw/weighted counts
                 zbin = zbins[ind_gal];
@@ -862,28 +1545,13 @@ void singleAp_MapnSingleEonlyDisc(
                 counts[zbin*3 + 2] += w*frac_insurvey;
                 //printf(" Updated counts\n");
                 // Update power sums
-                tmp_et = 1;
-                tmp_w = 1;
-                tmp_wm = 1;
-                tmp_etmult = w*Qval*et;
-                tmp_wmmult = w*frac_insurvey;
+                tmp_wU = 1;
+                tmp_wUmult = w*Uval;
                 for (order=0; order<max_order; order++){
                     tmp_w *= w;
-                    tmp_wm *= tmp_wmmult;
-                    tmp_et *= tmp_etmult;
-                    
-                    Msn[zbin*max_order+order] += tmp_et;
-                    Sn[zbin*max_order+order] += tmp_w;
-                    Sn_w[zbin*max_order+order] += tmp_wm;
-                    S2n_w[zbin*max_order+order] += tmp_wm*tmp_wm;
-                //printf(" Updated powersums. Done.\n");
+                    tmp_wU *= tmp_wUmult;
+                    Msn[zbin*max_order+order] += tmp_wU;
                 }
-                //if ((ind_pix1==pix1_lower+(pix1_upper-pix1_lower)/2+2*(int)(R_ap/mask1_d))&&
-                //    (ind_pix2==pix2_lower+(pix2_upper-pix2_lower)/2+2*(int)(R_ap/mask2_d))&&(ind_inpix==lower)){
-                //    printf("w=%.4f  reff=%.4f  Q=%.4f  ang=%.4f+i%.4ff  et=%.4f  toadd=%.4f S1=%.4f  Ms0=%.4f\n", 
-                //           w,sqrt(d2gal/R2_ap),Qval,creal(phirotc_sq),cimag(phirotc_sq),et,tmp_etmult, 
-                //           Sn[zbin*max_order+1], Msn[zbin*max_order]);
-               // }
             }
         }
     }
@@ -897,37 +1565,27 @@ void singleAp_MapnSingleEonlyDisc(
     //       pix1_lower,pix2_lower,pix1_upper,pix2_upper,npix_m,npix_t);
     //printf("covs=%.2f %.2f; counts=%.2f %.2f %.2f\n",covs[0],covs[1],counts[0],counts[1],counts[2]);
     
-    // Renormalize the S_n/Ms_n components s.t. they match eqns (22),(23) in 2106.04594.
+    // Renormalize the Ms_n components s.t. they match eqns (22),(23) in 2106.04594.
     // Note that if there are not sufficient galaxies to form closed n-side polygons,
     // the transformation equations will set those components to zero in the Mapn basis,
     // so we do not worry about this here.
-    
-    
-    int thiscomp;
+    int thiscomp, fac_norm, tmp_norm;
     for (zbin=0; zbin<nbinsz; zbin++){
-        if (Sn[zbin*max_order]!=0){fac_norm = 1./(Sn[zbin*max_order]);}else{fac_norm = 0;}
-        if (Sn_w[zbin*max_order]!=0){fac_normw = 1./(Sn_w[zbin*max_order]);}else{fac_normw = 0;}
-        fac_normvol = supp_Q2;
+        fac_norm = 1/(nbar_zs[zbin]*M_PI*R_ap*R_ap);
         tmp_norm = 1;
-        tmp_normw = 1./R_ap/R_ap;
-        tmp_normvol = 1;
         for (order=0; order<max_order; order++){
             thiscomp = zbin*max_order+order;
             tmp_norm *= fac_norm;
-            tmp_normw *= fac_normw;
-            tmp_normvol *= fac_normvol;
-            Msn[thiscomp] *= tmp_normvol*tmp_norm;
-            Sn[thiscomp] *= tmp_norm;
-            Sn_w[thiscomp] *= tmp_normw;
-            S2n_w[thiscomp] *= tmp_normw*tmp_normw;
+            Msn[thiscomp] *= tmp_norm;
         }
     }
-    //printf("After: R2=%.2f R2d=%.2f, maxd=%.4f, R=%.2f, Rext=%.4f counts=%.4f  S0=%.6f  S1=%.6f  Ms0=%.6f\n",
-    //           R2_ap,R2_ap_d, max_d, R_ap, R_ap+max_d, counts[1], Sn[0*max_order], Sn[0*max_order+1], Msn[0*max_order]);
 }
+*/
+    
+    
 
 // Computes statistics on single aperture
-void singleAp_NapnSingleEonlyDisc(
+void _singleAp_NapnSingleEonlyDisc(
     double R_ap, double center_1, double center_2, 
     int max_order, int ind_filter, 
     double *weight, double *insurvey, double *pos1, double *pos2, double *kappa_g, int *zbins, int nbinsz, int ngal, 
