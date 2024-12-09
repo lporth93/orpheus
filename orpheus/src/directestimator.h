@@ -27,7 +27,7 @@ void ApertureMassMap_Equal(
 
 void ApertureCountsMap_Equal(
     double R_ap, double *centers_1, double *centers_2, int ncenters_1, int ncenters_2,
-    int max_order, int ind_filter, int do_subtractions,
+    int max_order, int ind_filter, int do_subtractions, int Nbar_policy,
     double *weight, double *insurvey, double *pos1, double *pos2, double *tracer, int *zbins, int nbinsz, int ngal, 
     double *mask, 
     double mask1_start, double mask2_start, double mask1_d, double mask2_d, int mask1_n, int mask2_n,
@@ -37,7 +37,7 @@ void ApertureCountsMap_Equal(
 
 void MapnSingleEonlyDisc(
     double R_ap, double *centers_1, double *centers_2, int ncenters,
-    int max_order, int ind_filter, int weight_method, int do_subtractions,
+    int max_order, int ind_filter, int weight_method, int do_subtractions, 
     double *weight, double *insurvey, double *pos1, double *pos2, double complex *g, int *zbins, int nbinsz, int ngal, 
     double *mask, double *fraccov_cuts, int nfrac_cuts, int fraccov_method,
     double mask1_start, double mask2_start, double mask1_d, double mask2_d, int mask1_n, int mask2_n,
@@ -55,7 +55,7 @@ void singleAp_MapnSingleEonlyDisc(
 
 void NapnSingleDisc(
     double R_ap, double *centers_1, double *centers_2, int ncenters,
-    int max_order, int ind_filter, int do_subtractions,
+    int max_order, int ind_filter, int do_subtractions, int Nbar_policy,
     double *weight, double *insurvey, double *pos1, double *pos2, double *tracer, int *zbins, int nbinsz, int ngal, 
     double *mask, double *fraccov_cuts, int nfrac_cuts, int fraccov_method,
     double mask1_start, double mask2_start, double mask1_d, double mask2_d, int mask1_n, int mask2_n,
@@ -64,7 +64,7 @@ void NapnSingleDisc(
     
 void singleAp_NapnSingleDisc(
     double R_ap, double center_1, double center_2, 
-    int max_order, int ind_filter, 
+    int max_order, int ind_filter, int Nbar_policy,
     double *weight, double *insurvey, double *pos1, double *pos2, double *tracer, int *zbins, int nbinsz, int ngal, 
     double *mask,
     double mask1_start, double mask2_start, double mask1_d, double mask2_d, int mask1_n, int mask2_n,

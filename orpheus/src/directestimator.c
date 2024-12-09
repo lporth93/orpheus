@@ -298,7 +298,7 @@ void ApertureMassMap_Equal(
 // Computes Napn for single aperture scale, taking into account the multiple-counting corrections.  
 void ApertureCountsMap_Equal(
     double R_ap, double *centers_1, double *centers_2, int ncenters_1, int ncenters_2,
-    int max_order, int ind_filter, int do_subtractions,
+    int max_order, int ind_filter, int do_subtractions, int Nbar_policy, 
     double *weight, double *insurvey, double *pos1, double *pos2, double *tracer, int *zbins, int nbinsz, int ngal, 
     double *mask, 
     double mask1_start, double mask2_start, double mask1_d, double mask2_d, int mask1_n, int mask2_n,
@@ -342,7 +342,7 @@ void ApertureCountsMap_Equal(
             
             // Get all the statistics of the aperture in power sum basis
             singleAp_NapnSingleDisc( R_ap, centers_1[c1], centers_2[c2], 
-                max_order, ind_filter, 
+                max_order, ind_filter, Nbar_policy,
                 weight, insurvey, pos1, pos2, tracer, zbins, nbinsz, ngal,
                 mask, mask1_start, mask2_start, mask1_d, mask2_d, mask1_n, mask2_n,
                 index_matcher, pixs_galind_bounds, pix_gals,  
@@ -807,7 +807,7 @@ void singleAp_MapnSingleEonlyDisc(
 // Computes Napn for single aperture scale, taking into account the multiple-counting corrections.              
 void NapnSingleDisc(
     double R_ap, double *centers_1, double *centers_2, int ncenters,
-    int max_order, int ind_filter, int do_subtractions,
+    int max_order, int ind_filter, int do_subtractions, int Nbar_policy,
     double *weight, double *insurvey, double *pos1, double *pos2, double *tracer, int *zbins, int nbinsz, int ngal, 
     double *mask, double *fraccov_cuts, int nfrac_cuts, int fraccov_method,
     double mask1_start, double mask2_start, double mask1_d, double mask2_d, int mask1_n, int mask2_n,
@@ -819,6 +819,8 @@ void NapnSingleDisc(
     int nzcombis = zcombis_tot(nbinsz, max_order, fac_zcombis);
     double *tmpNapn = calloc(nthreads*nfrac_cuts*nzcombis, sizeof(double));
     double *tmpwtot_Napn = calloc(nthreads*nfrac_cuts*nzcombis, sizeof(double));
+    double *tmpcountstot_Napn = calloc(nthreads*nfrac_cuts*nbinsz, sizeof(double)); // Helper for allocating global Nbar
+    double *countstot_Napn = calloc(nfrac_cuts*nbinsz, sizeof(double)); // Helper for allocating global Nbar
     
     #pragma omp parallel for num_threads(nthreads)
     for (int elthread=0; elthread<nthreads; elthread++){
@@ -853,7 +855,7 @@ void NapnSingleDisc(
             
             // Get all the statistics of the aperture in power sum basis
             singleAp_NapnSingleDisc( R_ap, centers_1[ind_ap], centers_2[ind_ap], 
-                max_order, ind_filter, 
+                max_order, ind_filter, Nbar_policy,
                 weight, insurvey, pos1, pos2, tracer, zbins, nbinsz, ngal,
                 mask, mask1_start, mask2_start, mask1_d, mask2_d, mask1_n, mask2_n,
                 index_matcher, pixs_galind_bounds, pix_gals,  
@@ -885,7 +887,9 @@ void NapnSingleDisc(
             // Nap^n(z_1,...,z_n) = \prod_{i=1}^nbinsz Nap^{alpha_i}(z_i)
             int elzbin, tmpzbin, tmporder, thisind;
             int cumzcombi = 0;
-            double toadd_Napn, toadd_Napn_w;
+            double toadd_Napn, toadd_countsn, toadd_Napn_w;
+            //double area_ap = getFilterSuppU(ind_filter)*getFilterSuppU(ind_filter)*R_ap*R_ap*M_PI;
+            double area_ap = pow(getFilterSuppU(ind_filter),2)*R_ap*R_ap*M_PI;
             for (order=1; order<=max_order; order++){
                 int *thiszcombi = calloc(order, sizeof(int));
                 for (elzcombi=0; elzcombi<zcombis_order(nbinsz,order,factorials_zcombis); elzcombi++){
@@ -893,6 +897,7 @@ void NapnSingleDisc(
                     // Do double counting corrs
                     if (do_subtractions){
                         toadd_Napn = 1;
+                        toadd_countsn = 1;
                         if (order>1){
                             tmpzbin = thiszcombi[0];
                             tmporder = 0;
@@ -910,27 +915,34 @@ void NapnSingleDisc(
                             toadd_Napn = nextNapn[elzcombi*max_order+0];
                         }
                     }
-                    // No subtractions
+                    // No double counting corrs
                     else{
                         toadd_Napn = 1;
+                        toadd_countsn = 1;
                         for (elzbin=0; elzbin<order; elzbin++){
                             tmpzbin = thiszcombi[elzbin];
                             toadd_Napn *= nextNapn[tmpzbin*max_order+0];
                         }
                     }
                     toadd_Napn_w = 1.; // Dummy for aperture weight that has to be unity
+                    int ind_counts;
                     // Apply coverage cuts
                     for (elcov_cut=1;elcov_cut<=nfrac_cuts;elcov_cut++){  
                         if ((nextcovs[0]>fraccov_cuts[nfrac_cuts-elcov_cut])){break;}
                         thisind = thisthreadshift + (nfrac_cuts-elcov_cut)*thread_nzcombis + cumzcombi;
                         tmpNapn[thisind] += toadd_Napn_w*toadd_Napn;
                         tmpwtot_Napn[thisind] += toadd_Napn_w;
+                        // Update global counts mean
+                        if (order==1){
+                            ind_counts = elthread*nfrac_cuts*nbinsz+(nfrac_cuts-elcov_cut)*nbinsz+elzcombi;
+                            tmpcountstot_Napn[ind_counts] += nextcounts[elzcombi*3+1]/area_ap;
+                        }
                     }
                     nextzcombination(nbinsz, order, thiszcombi);
                     cumzcombi += 1;
                 }
                 free(thiszcombi);
-            }
+            }            
         }
         
         free(nextcounts);
@@ -947,26 +959,73 @@ void NapnSingleDisc(
         free(nextNapn);   
     }
     
+    // Get the global Nbar per redshift bin
+    for (int elcov_cut=1;elcov_cut<=nfrac_cuts;elcov_cut++){
+        for (int elbinz=0; elbinz<nbinsz; elbinz++){
+            for (int elthread=0; elthread<nthreads; elthread++){
+                int fzcombi = (nfrac_cuts-elcov_cut)*nbinsz+elbinz;
+                countstot_Napn[fzcombi] += tmpcountstot_Napn[elthread*nfrac_cuts*nbinsz+fzcombi];
+            }
+        }
+    }
     // Accumulate the Napn across the threads
     //#pragma omp parallel for num_threads(nthreads)
-    for (int fzcombi=0; fzcombi<nfrac_cuts*nzcombis; fzcombi++){
-        int thisind;
-        for (int elthread=0; elthread<nthreads; elthread++){
-            thisind = elthread*nfrac_cuts*nzcombis+fzcombi;
-            Napn[fzcombi] += tmpNapn[thisind];
-            wtot_Napn[fzcombi] += tmpwtot_Napn[thisind];
+    int cumzcombi = 0;
+    int thread_nzcombis = zcombis_tot(nbinsz, max_order, fac_zcombis);
+    for (int order=1; order<=max_order; order++){
+        int *thiszcombi = calloc(order, sizeof(int));
+        for (int elzcombi=0; elzcombi<zcombis_order(nbinsz,order,fac_zcombis); elzcombi++){
+            for (int elcov_cut=1;elcov_cut<=nfrac_cuts;elcov_cut++){ 
+                int fzcombi = (nfrac_cuts-elcov_cut)*thread_nzcombis + cumzcombi;
+                // Recover global Napn and number of apertures
+                for (int elthread=0; elthread<nthreads; elthread++){
+                    int thisind = elthread*nfrac_cuts*nzcombis+fzcombi;
+                    Napn[fzcombi] += tmpNapn[thisind];
+                    wtot_Napn[fzcombi] += tmpwtot_Napn[thisind];
+                }
+                // Recover global mean of Nbar(z1) \cdots Nbar(zk)
+                double thiscountstot = 1;
+                for (int elzbin=0; elzbin<order; elzbin++){
+                    thiscountstot *= countstot_Napn[(nfrac_cuts-elcov_cut)*nbinsz+thiszcombi[elzbin]];
+                }
+                // * Local/no nbar policy
+                //   We have N_ap^n/(Nbar_ap)^n per aperture --> Only need to divide by number of apertures
+                // * Global nbar policy
+                //   * We computed the nbar per aperture, summed over all apertures in 
+                //     countstot_Napn = sum_ap nextcounts_ap(z_i) ~ Num_aps*<Nbar(z_i)>
+                //   * We computed for each zcombination the product 
+                //     thiscountstot = countstot_Napn(z_i1) \cdots countstot_Napn(z_il) 
+                //                     ~ Num_aps^l* <Nbar(z_i1)> \cdots <Nbar(z_il)>
+                //   * As our basis we have Napn = sum_ap Nap^n 
+                //                               ~ Num_aps * <Nap'^n> 
+                //   * We want to get 
+                //     <Nap^n(zi1,...,z_il)> 
+                //           = 1/(<Nbar(z_i1)> \cdots <Nbar(z_il)>) * <Nap'^n>
+                //           = 1/(Num_aps^l*<Nbar(z_i1)> \cdots <Nbar(z_il)>) * (Num_aps*<Nap'^n>) * Num_aps^(l-1)
+                //           ~ wtot_Napn^(l-1) * Napn/thiscountstot        
+                if ((Nbar_policy==0) || (Nbar_policy==2)){Napn[fzcombi] /= wtot_Napn[fzcombi];} 
+                else if (Nbar_policy==1){
+                    Napn[fzcombi] /= thiscountstot/pow(wtot_Napn[fzcombi],order-1);
+                } // Use global Nbar policy
+                //printf("%.5f ", countstot_Napn[fzcombi]/wtot_Napn[fzcombi]);
+            }
+            nextzcombination(nbinsz, order, thiszcombi);
+            cumzcombi += 1;
         }
-        Napn[fzcombi] /= wtot_Napn[fzcombi];
+        free(thiszcombi);
     }
+    
     free(tmpNapn);
     free(tmpwtot_Napn);
+    free(tmpcountstot_Napn);
+    free(countstot_Napn);
     free(fac_zcombis);
 }
 
 // Computes statistics on single aperture
 void singleAp_NapnSingleDisc(
     double R_ap, double center_1, double center_2, 
-    int max_order, int ind_filter, 
+    int max_order, int ind_filter, int Nbar_policy,
     double *weight, double *insurvey, double *pos1, double *pos2, double *tracer, int *zbins, int nbinsz, int ngal, 
     double *mask,
     double mask1_start, double mask2_start, double mask1_d, double mask2_d, int mask1_n, int mask2_n,
@@ -1076,16 +1135,18 @@ void singleAp_NapnSingleDisc(
     // Raw and Q-weighted masked coverage fraction
     covs[0] = npix_m/npix_t;
     covs[1] = Upix_m/Upix_t;
-    // If the simple norms are correct then this bit can be removed
-    // -- eventually need to be updated when looking at kg fields
-    // Renormalize the S_n/Ms_n components s.t. they match eqns (22),(23) in 2106.04594.
+    // Renormalize the Ms_n to account for the Nbar in the estimator of Schneider 1998.
     // Note that if there are not sufficient galaxies to form closed n-side polygons,
     // the transformation equations will set those components to zero in the Mapn basis,
     // so we do not worry about this here.
     int thiscomp;
+    double inv_Nbar;
     for (zbin=0; zbin<nbinsz; zbin++){
+        if ((Nbar_policy==0) && (counts[zbin*3+1]>0)){inv_Nbar = M_PI*supp_U2*R2_ap/counts[zbin*3+1];}
+        else if ((Nbar_policy==0) && (counts[zbin*3+1]==0)){inv_Nbar=0;}
+        else if ((Nbar_policy==1) || (Nbar_policy==2)){inv_Nbar=1;}
         fac_norm = 1;
-        fac_normvol = 1;
+        fac_normvol = inv_Nbar;
         tmp_norm = 1;
         tmp_normvol = 1;
         for (order=0; order<max_order; order++){

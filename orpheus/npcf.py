@@ -23,11 +23,50 @@ __all__ = ["BinnedNPCF",
            "GGGCorrelation", "FFFCorrelation", "GNNCorrelation", "NGGCorrelation",
            "GGGGCorrelation_NoTomo", "GGGGCorrelation", "XipmMixedCovariance"]
 
+if False:
+    class BinnedNPCFEnsemble:
+
+        def __init__(self, fpaths,
+                     keep_npcfs=False, keep_npcfs_sel=False, keep_apstats=False,
+                     get_mean_npcf=False, get_std_npcf=False, get_cov_npcf=False, 
+                     get_mean_npcfsel=False, get_std_npcfsel=False, get_cov_npcfsel=False, npcf_selinds=None,
+                     get_mean_apstat=False, get_std_apstat=False, get_cov_apstat=False,
+                     order=None, spins=None, n_cfs=None, min_sep=None, max_sep=None,
+                     nbinsr=None, binsize=None, nbinsphi=100, 
+                     nmaxs=30, method="DoubleTree", multicountcorr=True, diagrenorm=False, shuffle_pix=0,
+                     tree_resos=[0,0.25,0.5,1.,2.], tree_redges=None, rmin_pixsize=20, 
+                     resoshift_leafs=0, minresoind_leaf=None, maxresoind_leaf=None,  
+                     methods_avail=["Discrete", "Tree", "BaseTree", "DoubleTree"], nthreads=16):
+
+            # Open first file and from there init the relevant settings
+
+            # Loop over files to build mean. For apstats
+
+            super().__init__(order=order, spins=spins, n_cfs=n_cfs, 
+                             min_sep=min_sep, max_sep=max_sep, nbinsr=nbinsr, binsize=binsize,
+                             nbinsphi=nbinsphi, nmaxs=nmaxs,
+                             method=method, multicountcorr=multicountcorr, diagrenorm=diagrenorm, shuffle_pix=shuffle_pix,
+                             tree_resos=tree_resos, tree_redges=tree_redges, rmin_pixsize=rmin_pixsize, 
+                             resoshift_leafs=resoshift_leafs, minresoind_leaf=minresoind_leaf, maxresoind_leaf=maxresoind_leaf,  
+                             methods_avail=methods_avail, nthreads=nthreads)
+
+            self.fpaths = fpaths
+            self.statistics = {}
+            self.statistics["Pars"] = {}
+            self.statistics["Pars"]["fpaths"]
+            # Now build the statistics
+            # We build the mean of all statistics present in the dict and keep all the statistics for the  stats in
+            # the `statistics_tokeep` parameter
+
+        def build(self, cov_method="Jackknife"):
+            """ Think how we want to structure this -- i.e. for 2pcf we can get the cov, 
+            but for >2PCF this will most likely explode..."""
+            raise NotImplementedError
+        
 ################################################
 ## BASE CLASSES FOR NPCF AND THEIR MULTIPOLES ##
 ################################################        
 class BinnedNPCF:
-    
     
     def __init__(self, order, spins, n_cfs, min_sep, max_sep, nbinsr=None, binsize=None, nbinsphi=100, 
                  nmaxs=30, method="DoubleTree", multicountcorr=True, diagrenorm=False, shuffle_pix=0,
@@ -145,6 +184,7 @@ class BinnedNPCF:
         self.npcf_multipoles = None
         self.npcf_multipoles_norm = None
         self.is_edge_corrected = False
+        self.__processed = False
         
         # Check types or arguments
         if isinstance(self.nbinsphi, int):
@@ -927,6 +967,15 @@ class GGCorrelation(BinnedNPCF):
             result[3,:,elr] =  t2.imag  # MxMap (Difference from MapMx gives ~level of estimator uncertainty)
             
         return result
+    
+    
+    def tofile(self, fname, write_npcf=True, write_apstats=True):
+        np.savez("")
+        
+        
+        
+                                
+                                
         
         
 
@@ -1025,6 +1074,9 @@ class GGGCorrelation(BinnedNPCF):
         self.project["X"]["Centroid"] = self._x2centroid
         
     def process(self, cat, dotomo=True, apply_edge_correction=False, adjust_tree=False):
+        """
+        
+        """
         self._checkcats(cat, self.spins)
         if not dotomo:
             self.nbinsz = 1

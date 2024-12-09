@@ -490,7 +490,7 @@ class Direct_NapnEqual(DirectEstimator):
         self.clib.NapnSingleDisc.restype = ct.c_void_p
         self.clib.NapnSingleDisc.argtypes = [
             ct.c_double, p_f64, p_f64, ct.c_int32,
-            ct.c_int32, ct.c_int32, ct.c_int32,
+            ct.c_int32, ct.c_int32, ct.c_int32,  ct.c_int32,
             p_f64, p_f64, p_f64, p_f64, p_f64, p_i32, ct.c_int32, ct.c_int32,
             p_f64, p_f64, ct.c_int32, ct.c_int32,
             ct.c_double, ct.c_double, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
@@ -501,16 +501,19 @@ class Direct_NapnEqual(DirectEstimator):
         self.clib.singleAp_NapnSingleDisc.restype = ct.c_void_p
         self.clib.singleAp_NapnSingleDisc.argtypes = [
             ct.c_double, ct.c_double, ct.c_double, 
-            ct.c_int32, ct.c_int32,
+            ct.c_int32, ct.c_int32,  ct.c_int32,
             p_f64, p_f64, p_f64, p_f64, p_f64, p_i32, ct.c_int32, ct.c_int32,
             p_f64, 
             ct.c_double, ct.c_double, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
             p_i32, p_i32, p_i32,
             p_f64, p_f64, p_f64, p_f64]
                
-    def process(self, cat, dotomo=True, Emodeonly=True, connected=True, dpix_innergrid=2.):
+    def process(self, cat, dotomo=True, Nbar_policy=1, connected=True, dpix_innergrid=2.):
         """
         Each given for all zcombis with z1<=z2<=...<=zm
+        Nbar_policy: 0 --> Use local Nbar for normalisation
+                     1 --> Use global Nbar for normalisation
+                     2 --> No Nbar for normalisation
         """
         
         assert(isinstance(cat, ScalarTracerCatalog))
@@ -523,9 +526,9 @@ class Direct_NapnEqual(DirectEstimator):
         nzcombis = self._nzcombis_tot(nbinsz,dotomo)
         result_Napn = np.zeros((self.nbinsr, self.nfrac_covs, nzcombis), dtype=np.float64)
         result_wNapn = np.zeros((self.nbinsr, self.nfrac_covs, nzcombis), dtype=np.float64)
-        if (self.method in ["Discrete", "BaseTree"]) and Emodeonly:
+        if (self.method in ["Discrete", "BaseTree"]):
             func = self.clib.NapnSingleDisc
-        elif (self.method in ["Discrete", "BaseTree"]) and not Emodeonly:
+        elif (self.method in ["Discrete", "BaseTree"]):
             raise NotImplementedError
         else:
             raise NotImplementedError
@@ -537,7 +540,7 @@ class Direct_NapnEqual(DirectEstimator):
         for elr, R in enumerate(self.radii):
             nextnap_out = np.zeros(nzcombis*self.nfrac_covs ,dtype=np.float64)
             nextwnap_out = np.zeros(nzcombis*self.nfrac_covs ,dtype=np.float64)
-            args = self._buildargs(cat, args_innergrid, dotomo, elr, forfunc="Equal")
+            args = self._buildargs(cat, args_innergrid, dotomo, Nbar_policy, elr, forfunc="Equal")
             func(*args)
             result_Napn[elr] = args[-2].reshape((self.nfrac_covs, nzcombis))[:]
             result_wNapn[elr] = args[-1].reshape((self.nfrac_covs, nzcombis))[:]
@@ -549,7 +552,7 @@ class Direct_NapnEqual(DirectEstimator):
     def _getindex(self, order, mode, zcombi):
         pass
     
-    def _buildargs(self, cat, args_innergrid, dotomo, indR, forfunc="Equal"):
+    def _buildargs(self, cat, args_innergrid, dotomo, Nbar_policy, indR, forfunc="Equal"):
         
         assert(forfunc in ["Equal", "EqualGrid"])
         
@@ -581,7 +584,8 @@ class Direct_NapnEqual(DirectEstimator):
             # Get centers along each dimension
             centers_1, centers_2 = self.get_pixelization(cat, self.radii[indR], self.accuracies[indR], R_crop=0., mgrid=False)
             ncenters = len(centers_1)*len(centers_2)
-        
+
+        #self.dpix_hash = max(0.25, self.radii[indR])
         cat.build_spatialhash(dpix=self.dpix_hash, extent=[None, None, None, None])
         hashgrid = FlatPixelGrid_2D(cat.pix1_start, cat.pix2_start, 
                                     cat.pix1_n, cat.pix2_n, cat.pix1_d, cat.pix2_d)
@@ -593,7 +597,7 @@ class Direct_NapnEqual(DirectEstimator):
             args_centers = (self.radii[indR], centers_1, centers_2, len(centers_1), len(centers_2), )  
         if forfunc=="Equal":
             args_ofw = (self.order_max, self.filters_dict[self.filter_form], 
-                        np.int32(self.multicountcorr), )
+                        np.int32(self.multicountcorr), np.int32(Nbar_policy), )
         elif forfunc=="EqualGrid":
             args_ofw = (self.order_max, self.filters_dict[self.filter_form], self.ap_weights_dict[self.ap_weights], )
         args_cat = (cat.weight.astype(np.float64), cat.isinner.astype(np.float64),
@@ -1007,7 +1011,7 @@ class MapCombinatorics:
         Notes:
         * The recursion reads as follows:
           s(m,0) = 1
-          s(m,n) = \sum_{i=1}^{m-1} s(m-1,n-1)
+          s(m,n) = sum_{i=1}^{m-1} s(m-1,n-1)
           [Have not formally proved that but checked with pen and paper
           up until n=3 on examples and the underlying geometry does make 
           sense. Testing against nested loops also works as long as the
