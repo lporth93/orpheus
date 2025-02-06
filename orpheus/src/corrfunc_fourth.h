@@ -38,3 +38,16 @@ void alloc_notomoMap4_tree_gggg(
     int nthreads, int projection, double *mapradii, int nmapradii, double complex *M4correlators, 
     int alloc_4pcfmultipoles, int alloc_4pcfreal,
     double *bin_centers, double complex *Upsilon_n, double complex *N_n, double complex *Gammas, double complex *Norms);
+
+void alloc_notomoNap4_tree_nnnn(
+    int *isinner, double *weight, double *pos1, double *pos2, int ngal, 
+    int nmax, double rmin, double rmax, int nbinsr, int dccorr, 
+    int *nindices, int len_nindices, double *phibins, double *dbinsphi, int nbinsphi,
+    int nresos, double *reso_redges, int *ngal_resos, 
+    int *isinner_resos, double *weight_resos, double *pos1_resos, double *pos2_resos, 
+    int *index_matcher_hash, int *pixs_galind_bounds, int *pix_gals, int nregions, 
+    double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n, 
+    int *thetacombis_batches, int *nthetacombis_batches, int *cumthetacombis_batches, int nthetbatches,
+    int nthreads, int projection, double *napradii, int nnapradii, double complex *N4correlators, 
+    int alloc_4pcfmultipoles, int alloc_4pcfreal,
+    double *bin_centers, double complex *N_n, double complex *Counts);

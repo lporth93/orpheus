@@ -122,6 +122,59 @@ void getMultiplolesFromSymm(double complex *Upsn_in, double complex *Nn_in,
     }
 }
 
+// Reconstructs all multipole components from the ones with theta1<=theta2<=theta3
+// Nn_in ~ Nn[elthetbatch] ~ shape (2*nmax_alloc+1,2*nmax_alloc+1)
+// Nn_out ~  shape (2*nmax+1,2*nmax+1)
+// 
+// Ordering for eltrafo: [123, 231, 312, 132, 213, 321]
+// Different configs: 
+//  * All three elbs equal --> No permutations needed, i.e. eltrafo in [0]
+//  * Only two elbs equal  --> Only cyclic permutations needed, i.e. eltrafo in [0,1,2]
+//  * All elbs unequal     --> All permutations needed, i.e. eltrafo in [0,1,2,3,4,5]   
+void getMultiplolesFromSymm_NNNN(double complex *Nn_in,
+                                 int nmax, int eltrafo, int *nindices, int len_nindices,
+                                 double complex *Nn_out){
+    
+    int nmax_alloc = 2*nmax+1;
+    int nzero_in = nmax_alloc;
+    int nzero_out = nmax;
+    int n2shift_in = 2*nmax_alloc+1;
+    int n2shift_out = 2*nmax+1;
+    
+    int n2, n2_N;
+    int n3, n3_N;
+    for (int nindex=0; nindex<len_nindices; nindex++){
+        n2 = nindices[nindex]/(2*nmax_alloc+1) - nzero_in;
+        n3 = nindices[nindex]%(2*nmax_alloc+1) - nzero_in;
+        switch (eltrafo){
+            case 0:
+                n2_N=n2; n3_N=n3;
+                break;
+            case 1:
+                n2_N=n3; n3_N=-n2-n3;
+                break;
+            case 2:
+                n2_N=-n2-n3; n3_N=n2;
+                break;
+            case 3:
+                n2_N=n3; n3_N=n2;
+                break;
+            case 4:
+                n2_N=-n2-n3; n3_N=n3;
+                break;
+            case 5:
+                n2_N=n2; n3_N=-n2-n3;
+                break;
+            default:
+                n2_N=0; n3_N=0;
+                break;
+        }
+        if ((abs(n2_N)<=nmax) && (abs(n3_N)<=nmax)){
+            Nn_out[(nzero_out+n2_N)*n2shift_out+(nzero_out+n3_N)] = Nn_in[(nzero_in+n2)*n2shift_in+(nzero_in+n3)];
+        }
+    }
+}
+
 // Upsilon_n has shape (8,nphi12,nphi13)
 void multipoles2npcf_gggg_singletheta(double complex *Upsilon_n, double complex *N_n, int n1max, int n2max,
                                       double theta1, double theta2, double theta3,
@@ -198,6 +251,46 @@ void multipoles2npcf_gggg_singletheta(double complex *Upsilon_n, double complex 
     free(expphi12s);
     free(expphi13s);
     free(projdir);
+}
+
+// Upsilon_n has shape (8,nphi12,nphi13)
+void multipoles2npcf_nnnn_singletheta(double complex *N_n, int n1max, int n2max,
+                                      double theta1, double theta2, double theta3,
+                                      double *phis12, double *phis13, int nbinsphi12, int nbinsphi13,
+                                      double complex *npcf){
+    int nmax = n1max;
+    int nns = 2*nmax+1;
+    double complex expphi12, expphi13;
+    double complex *expphi12s = calloc(nns, sizeof(double complex));
+    double complex *expphi13s = calloc(nns, sizeof(double complex));
+    int npcf_compshift = nbinsphi12*nbinsphi13;
+    int ups_compshift = nns*nns;
+    for (int elphi12=0; elphi12<nbinsphi12; elphi12++){
+        for (int elphi13=0; elphi13<nbinsphi13; elphi13++){
+            // Convert multipoles to npcf
+            expphi12s[nmax] = 1;
+            expphi13s[nmax] = 1;
+            expphi12 = cexp(I*phis12[elphi12]);
+            expphi13 = cexp(I*phis13[elphi13]);
+            for (int nextn=1; nextn<=nmax; nextn++){ 
+                expphi12s[nmax+nextn] = expphi12s[nmax+nextn-1]*expphi12;
+                expphi12s[nmax-nextn] = conj(expphi12s[nmax+nextn]);
+                expphi13s[nmax+nextn] = expphi13s[nmax+nextn-1]*expphi13;
+                expphi13s[nmax-nextn] = conj(expphi13s[nmax+nextn]);
+            }
+            double complex nextang;
+            int ind_npcf = elphi12*nbinsphi13 + elphi13;
+            for (int nextn1=0; nextn1<nns; nextn1++){
+                for (int nextn2=0; nextn2<nns; nextn2++){ 
+                    int ind_ups = nextn1*nns + nextn2;
+                    nextang = INV_2PI * expphi12s[nextn1] * expphi13s[nextn2];
+                    npcf[ind_npcf] += N_n[ind_ups]*nextang;
+                }
+            }
+        }
+    } 
+    free(expphi12s);
+    free(expphi13s);
 }
 
 // Upsilon_n has shape (8,n1max+1,n2max+1,nphi12,nphi13)

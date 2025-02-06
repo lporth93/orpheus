@@ -17,16 +17,79 @@ __all__ = ["DirectEstimator", "Direct_MapnEqual", "Direct_NapnEqual", "MapCombin
 class DirectEstimator:
     
     def __init__(self, Rmin, Rmax, nbinsr=None, binsize=None, 
-                 accuracies=2., frac_covs=[0.,0.1,0.3,0.5,1.], dpix_hash=1.,
+                 aperture_centers="grid", accuracies=2., 
+                 frac_covs=[0.,0.1,0.3,0.5,1.], dpix_hash=1.,
                  method="Discrete", multicountcorr=True, shuffle_pix=1, 
                  tree_resos=[0,0.25,0.5,1.,2.], tree_redges=None, rmin_pixsize=20, 
                  resoshift_leafs=0, minresoind_leaf=None, maxresoind_leaf=None,nthreads=16):
+        
+        r"""Class of aperture statistics up to nth order for various arbitrary tracer catalogs. 
+        This class contains attributes and metods that can be used across any its children.
+        
+        Attributes 
+        ----------
+        Rmin: float
+            The smallest aperture radius for which the cumulants are computed.
+        Rmax: float
+            The largest aperture radius for which the cumulants are computed.
+        nbinsr: int, optional
+            The number of radial bins for the aperture radii. If set to
+            ``None`` this attribute is inferred from the ``binsize`` attribute.
+        binsize: int, optional
+            The logarithmic slize of the radial bins for the aperture radii. If set to
+            ``None`` this attribute is inferred from the ``nbinsr`` attribute.
+        aperture_centers: string, optional
+            How to sample the apertures. Can be 'grid' or 'density'
+        accuracies: int or numpy.ndarray, optional
+            The sampling density of aperture centers. 
+            * If aperture_centers is set to 'grid', setting accuracy==x places the apertures
+              on a regular grid with pixel size R_ap/x.
+            * If aperture_centers is set to 'density' randomly selects as many galaxies as 
+              there would be aperture centers on the regular grid.
+        frac_covs: numpy.ndarray, optional
+            The different aperture coverage bins for which the statistics are evaulated. The first bin
+            only includes apertures with coverage<=frac_covs[0] while the other coverage bins include the
+            intervals between frac_covs[i] and frac_covs[i+1]. We define the coverage as the percentage of 
+            the aperture area that is not within the survey area.
+        dpix_hash: float, optional
+            The pixel size of the spatial hash used to search through the catalog
+        method: str, optional
+            The method to be employed for the estimator. Defaults to ``Discrete``.
+        multicountcorr: bool, optional
+            Flag on whether to subtract of multiplets in which the same tracer appears more
+            than once. Defaults to ``True``.
+        shuffle_pix: int, optional
+            Choice of how to define centers of the cells in the spatial hash structure.
+            Defaults to ``1``, i.e. random positioning.
+        tree_resos: list, optional
+            The cell sizes of the hierarchical spatial hash structure
+        tree_edges: list, optional
+            Deprecated(?)
+        rmin_pixsize: int, optional
+            The limiting radial distance relative to the cell of the spatial hash
+            after which one switches to the next hash in the hierarchy. Defaults to ``20``.
+        resoshift_leafs: int, optional
+            Allows for a difference in how the hierarchical spatial hash is traversed for
+            pixels at the base of the NPCF and pixels at leafs. I.e. positive values indicate
+            that leafs will be evaluated at a courser resolutions than the base. Defaults to ``0``.
+        minresoind_leaf: int, optional
+            Sets the smallest resolution in the spatial hash hierarchy which can be used to access
+            tracers at leaf positions. If set to ``None`` uses the smallest specified cell size. 
+            Defaults to ``None``.
+        maxresoind_leaf: int, optional
+            Sets the largest resolution in the spatial hash hierarchy which can be used to access
+            tracers at leaf positions. If set to ``None`` uses the largest specified cell size. 
+            Defaults to ``None``.
+        nthreads: int, optional
+            The number of openmp threads used for the reduction procedure. Defaults to ``16``.
+        """
         
         self.Rmin = Rmin
         self.Rmax = Rmax
         self.method = method
         self.multicountcorr = int(multicountcorr)
         self.shuffle_pix = shuffle_pix
+        self.aperture_centers = aperture_centers
         self.accuracies = accuracies
         self.frac_covs = np.asarray(frac_covs, dtype=np.float64)
         self.nfrac_covs = len(self.frac_covs)
@@ -44,6 +107,7 @@ class DirectEstimator:
         # Check types or arguments
         assert(isinstance(self.Rmin, float))
         assert(isinstance(self.Rmax, float))
+        assert(self.aperture_centers in ["grid","density"])
         assert(self.method in self.methods_avail)
         assert(isinstance(self.tree_resos, np.ndarray))
         assert(isinstance(self.tree_resos[0], np.float64))
@@ -192,6 +256,23 @@ class DirectEstimator:
 class Direct_MapnEqual(DirectEstimator):
     
     def __init__(self, order_max, Rmin, Rmax, field="polar", filter_form="C02", ap_weights="InvShot", **kwargs):
+        r"""Class of aperture statistics up to nth order for equal aperture radii.
+        
+        Attributes 
+        ----------
+        order_max: int
+            The largest order that is evaluated for the cumulants.
+        Rmin: float
+            The smallest aperture radius for which the cumulants are computed.
+        Rmax: float
+            The largest aperture radius for which the cumulants are computed.
+        field: str, optional
+            Deprecated
+        filter_form: str, optional
+            Choice uf Q-filter used for convolution with the cosmic shear field.
+        ap_weights: str, optional
+            Choice of weighting scheme used to average over the ensemble of apertures
+        """
         super().__init__(Rmin=Rmin, Rmax=Rmax, **kwargs)
         self.order_max = order_max
         self.nbinsz = None
@@ -252,6 +333,22 @@ class Direct_MapnEqual(DirectEstimator):
                        
     def process(self, cat, dotomo=True, Emodeonly=True, connected=True, dpix_innergrid=2.):
         """
+        Computes aperture statistics on catalog.
+        Arguments:
+        ----------
+        cat: orpheus.SpinTracerCatalog
+            The catalog instance to be processed
+        dotomo: bool, optional
+            Whether to compute the statistics for all tomographic bin combinations
+        Emodeonly: bool, optional
+            Does not have an impact at the moment
+        connected: bool, optional
+            Whether to output only the connected part of the aperture mass statistics.
+            Does not have an impact at the moment
+        dipix_innergrid: float, optional
+            Specifies the pixelsize for a rough reconstruction of the angular mask. Used
+            to preselect aperture centers in the interior of the survey.
+            
        "Mapn" --> [[Map,Mx], 
                    [Map2, MapMx, (MxMap), Mx2], 
                    [Map3, MapMapMx, (MapMxMap, MxMapMap), MapMxMx, (MxMapMx, MxMxMap), Mx3],
@@ -319,12 +416,25 @@ class Direct_MapnEqual(DirectEstimator):
             # Get centers and check that they are in the interior of the inner catalog
             centers_1, centers_2 = self.get_pixelization(cat, self.radii[indR], self.accuracies[indR], R_crop=0., mgrid=True)
             _f, _s1, _s2, _dpixi, _, _, = args_innergrid
+            #pixs_c = (((centers_1-_s1)//_dpixi)*_f[0,1].shape[0] + (centers_2-_s2)//_dpixi).astype(int)
             pixs_c = (((centers_2-_s2)//_dpixi)*_f[0,1].shape[1] + (centers_1-_s1)//_dpixi).astype(int)
+
             sel_inner = _f[0,1]>0.
             sel_centers = sel_inner.flatten()[pixs_c]
-            centers_1 = centers_1[sel_centers]
-            centers_2 = centers_2[sel_centers]
-            ncenters = len(centers_1)
+            # For regular grid, select aperture centers within the interior of the survey
+            if self.aperture_centers=="grid":
+                centers_1 = centers_1[sel_centers]
+                centers_2 = centers_2[sel_centers]
+                ncenters = len(centers_1)
+            # For density-based grid, select fraction of galaxy positions as aperture centers
+            # Note that this will not bias the result as the galaxy residing at the center is
+            # not taken into account in the directestimator.c code.
+            elif self.aperture_centers=="density":
+                rng = np.random.RandomState(1234567890)
+                ncenters = max(len(centers_1),cat.ngal)
+                sel_centers = rng.random.choice(np.arange(cat.ngal), ncenters, replace=False).astype(np.int32)
+                centers_1 = cat.pos1[sel_centers] 
+                centers_2 = cat.pos2[sel_centers] 
         elif forfunc=="EqualGrid": 
             # Get centers along each dimension
             centers_1, centers_2 = self.get_pixelization(cat, self.radii[indR], self.accuracies[indR], R_crop=0., mgrid=False)
@@ -425,7 +535,7 @@ class Direct_MapnEqual(DirectEstimator):
         
         
     def getmap(self, indR, cat, dotomo=True):
-        """ This simply computes an aperture mass map together with weights and coverages """
+        """ Computes an aperture mass map together with weights and coverages """
         
         nbinsz = cat.nbinsz
         if not dotomo:

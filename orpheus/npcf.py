@@ -3270,6 +3270,27 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
             gauss_4pcf)
         return gauss_4pcf.reshape((8, self.nbinsphi[0], self.nbinsphi[1]))
     
+    # Compute disconnected part of 4pcf in multiple basis
+    def gauss4pcf_multipolebasis(self, itheta1, itheta2, itheta3, nsubr, 
+                                 xip_arr, xim_arr, thetamin_xi, thetamax_xi, dtheta_xi):
+        
+        # Obtain integrated 4pcf
+        int_4pcf = self.gauss4pcf_analytic_integrated(itheta1, itheta2, itheta3, nsubr, 
+                                                      xip_arr, xim_arr, 
+                                                      thetamin_xi, thetamax_xi, dtheta_xi)
+        
+        # Transform to multiple basis (cf eq xxx in P25)
+        phigrid1, phigrid2 = np.meshgrid(self.phis[0],self.phis[1])
+        gauss_multipoles = np.zeros((8,2*self.nmaxs[0]+1,2*self.nmaxs[1]+1),dtype=complex)
+        for eln2,n2 in enumerate(np.arange(-self.nmaxs[0],self.nmaxs[0]+1)):
+            fac1 = np.e**(-1J*n2*phigrid1)
+            for eln3,n3 in enumerate(np.arange(-self.nmaxs[1],self.nmaxs[1]+1)):
+                fac2 = np.e**(-1J*n3*phigrid2)
+                for elcomp in range(8):
+                    gauss_multipoles[elcomp,eln2,eln3] = np.mean(int_4pcf[elcomp]*fac1*fac2)
+                    
+        return gauss_multipoles
+    
     # [Debug] Disconnected part of Map^4 from analytic 2pcf
     def Map4analytic(self, mapradii, xip_spl, xim_spl, thetamin_xi, thetamax_xi, ntheta_xi, 
                      nsubr=1, nsubsample_filter=1, batchsize=None):
@@ -3806,6 +3827,384 @@ class GNNNCorrelation(BinnedNPCF):
             ANNM[elb1,elb2] = _measures * pref * (sum1-sum2+sum3)
 
         return ANNM
+    
+    
+class NNNNCorrelation_NoTomo(BinnedNPCF):
+    
+    def __init__(self, min_sep, max_sep, verbose=False, thetabatchsize_max=10000, method="Tree", **kwargs):
+        r""" Class containing methods to measure and and obtain statistics that are built
+        from nontomographic fourth-order shear correlation functions.
+        
+        Attributes
+        ----------
+        min_sep: float
+            The smallest distance of each vertex for which the NPCF is computed.
+        max_sep: float
+            The largest distance of each vertex for which the NPCF is computed.
+        nbinsr: int, optional
+            The number of radial bins for each vertex of the NPCF. If set to
+            ``None`` this attribute is inferred from the ``binsize`` attribute.
+        binsize: int, optional
+            The logarithmic slize of the radial bins for each vertex of the NPCF. If set to
+            ``None`` this attribute is inferred from the ``nbinsr`` attribute.
+        thetabatchsize_max: int, optional
+            The largest number of radial bin combinations that are processed in parallel.
+            Defaults to ``10 000``.
+        nbinsphi: float, optional
+            The number of angular bins for the NPCF in the real-space basis. 
+            Defaults to ``100``.
+        nmaxs: list, optional
+            The largest multipole component considered for the NPCF in the multipole basis. 
+            Defaults to ``30``.
+        method: str, optional
+            The method to be employed for the estimator. Defaults to ``DoubleTree``.
+        multicountcorr: bool, optional
+            Flag on whether to subtract of multiplets in which the same tracer appears more
+            than once. Defaults to ``True``.
+        diagrenorm: bool, optional
+            Deprecated
+        shuffle_pix: int, optional
+            Choice of how to define centers of the cells in the spatial hash structure.
+            Defaults to ``1``, i.e. random positioning.
+        tree_resos: list, optional
+            The cell sizes of the hierarchical spatial hash structure
+        tree_edges: list, optional
+            Deprecated(?)
+        rmin_pixsize: int, optional
+            The limiting radial distance relative to the cell of the spatial hash
+            after which one switches to the next hash in the hierarchy. Defaults to ``20``.
+        resoshift_leafs: int, optional
+            Allows for a difference in how the hierarchical spatial hash is traversed for
+            pixels at the base of the NPCF and pixels at leafs. I.e. positive values indicate
+            that leafs will be evaluated at a courser resolutions than the base. Defaults to ``0``.
+        minresoind_leaf: int, optional
+            Sets the smallest resolution in the spatial hash hierarchy which can be used to access
+            tracers at leaf positions. If set to ``None`` uses the smallest specified cell size. 
+            Defaults to ``None``.
+        maxresoind_leaf: int, optional
+            Sets the largest resolution in the spatial hash hierarchy which can be used to access
+            tracers at leaf positions. If set to ``None`` uses the largest specified cell size. 
+            Defaults to ``None``.
+        nthreads: int, optional
+            The number of openmp threads used for the reduction procedure. Defaults to ``16``.
+        bin_centers: numpy.ndarray
+            The centers of the radial bins for each combination of tomographic redshifts.
+        bin_centers_mean: numpy.ndarray
+            The centers of the radial bins averaged over all combination of tomographic redshifts.
+        phis: list
+            The bin centers for the N-2 angles describing the NPCF 
+            in the real-space basis.
+        npcf: numpy.ndarray
+            The natural components of the NPCF in the real space basis. The different axes
+            are specified as follows: ``(component, zcombi, rbin_1, ..., rbin_N-1, phiin_1, phibin_N-2)``.
+        npcf_norm: numpy.ndarray
+            The normalization of the natural components of the NPCF in the real space basis. The different axes
+            are specified as follows: ``(zcombi, rbin_1, ..., rbin_N-1, phiin_1, phibin_N-2)``.
+        npcf_multipoles: numpy.ndarray
+            The natural components of the NPCF in the multipole basis. The different axes
+            are specified as follows: ``(component, zcombi, multipole_1, ..., multipole_N-2, rbin_1, ..., rbin_N-1)``.
+        npcf_multipoles_norm: numpy.ndarray
+            The normalization of the natural components of the NPCF in the multipole basis. The different axes
+            are specified as follows: ``(zcombi, multipole_1, ..., multipole_N-2, rbin_1, ..., rbin_N-1)``.
+        is_edge_corrected: bool, optional
+            Flag signifying on wheter the NPCF multipoles have beed edge-corrected. Defaults to ``False``.
+        """
+        super().__init__(order=4, spins=np.array([0,0,0,0], dtype=np.int32),
+                         n_cfs=1, min_sep=min_sep, max_sep=max_sep, 
+                         method=method, methods_avail=["Tree"], **kwargs)
+        
+        self.thetabatchsize_max = thetabatchsize_max
+        self.verbose = verbose
+        self.nbinsz = 1
+        self.nzcombis = 1
+        
+    def process(self, cat, statistics="all", tofile=False, apply_edge_correction=False, 
+                lowmem=True, mapradii=None, batchsize=None, custom_thetacombis=None, cutlen=2**31-1):
+        r"""
+        Arguments:
+        
+        Logic works as follows:
+        * Keyword 'statistics' \in [4pcf_real, 4pcf_multipoles, M4, Map4, M4c, Map4c, allMap, all4pcf, all]
+        * - If 4pcf_multipoles in statistics --> save 4pcf_multipoles
+        * - If 4pcf_real in statistics --> save 4pcf_real
+        * - If only M4 in statistics --> Do not save any 4pcf. This is really the lowmem case.
+        * - allMap, all4pcf, all are abbreviations as expected
+        * If lowmem=True, uses the inefficient, but lowmem function for computation and output statistics 
+        from there as wanted.
+        * If lowmem=False, use the fast functions to do the 4pcf multipole computation and do 
+        the potential conversions lateron.
+        * Default lowmem to None and
+        * - Set to true if any aperture statistics is in stats or we will run into mem error
+        * - Set to false otherwise
+        * - Raise error if lowmen=False and we will have more that 2^31-1 elements at any stage of the computation
+        
+        custom_thetacombis: array of inds which theta combis will be selected
+        """
+        
+        ## Preparations ##
+        # Build list of statistics to be calculated
+        statistics_avail_4pcf = ["4pcf_real", "4pcf_multipole"]
+        statistics_avail_map4 = ["N4", "Map4", "N4c", "Nap4c"]
+        statistics_avail_comp = ["allNap", "all4pcf", "all"]
+        statistics_avail_phys = statistics_avail_4pcf + statistics_avail_nap4
+        statistics_avail = statistics_avail_4pcf + statistics_avail_nap4 + statistics_avail_comp        
+        _statistics = []
+        hasintegratedstats = False
+        _strbadstats = lambda stat: ("The statistics `%s` has not been implemented yet. "%stat + 
+                                     "Currently supported statistics are:\n" + str(statistics_avail))
+        if type(statistics) not in [list, str]:
+            raise ValueError("The parameter `statistics` should either be a list or a string.")
+        if type(statistics) is str:
+            if statistics not in statistics_avail:
+                raise ValueError(_strbadstats)
+            statistics = [statistics]
+        if type(statistics) is list:
+            if "all" in statistics:
+                _statistics = statistics_avail_phys
+            elif "all4pcf" in statistics:
+                _statistics.append(statistics_avail_4pcf)
+            elif "allNap" in statistics:
+                _statistics.append(statistics_avail_nap4)
+            _statistics = flatlist(_statistics)
+            for stat in statistics:
+                if stat not in statistics_avail:
+                    raise ValueError(_strbadstats)
+                if stat in statistics_avail_phys and stat not in _statistics:
+                    _statistics.append(stat)
+        statistics = list(set(flatlist(_statistics)))
+        for stat in statistics:
+            if stat in statistics_avail_map4:
+                hasintegratedstats = True
+                
+        # Check if the output will fit in memory
+        if "4pcf_multipole" in statistics:
+            _nvals = self.nzcombis*(2*self.nmaxs[0]+1)*(2*self.nmaxs[1]+1)*self.nbinsr**3
+            if _nvals>cutlen:
+                raise ValueError(("4pcf in multipole basis will cause memory overflow " + 
+                                  "(requiring %.2fx10^9 > %.2fx10^9 elements)\n"%(_nvals/1e9, cutlen/1e9) + 
+                                  "If you are solely interested in integrated statistics (like Map4), you" +
+                                  "only need to add those to the `statistics` argument."))
+        if "4pcf_real" in statistics:
+            _nvals = self.nzcombis*self.nbinsphi[0]*self.nbinsphi[1]*self.nbinsr**3
+            if _nvals>cutlen:
+                raise ValueError(("4pcf in real basis will cause memory overflow " + 
+                                  "(requiring %.2fx10^9 > %.2fx10^9 elements)\n"%(_nvals/1e9, cutlen/1e9) + 
+                                  "If you are solely interested in integrated statistics (like Map4), you" +
+                                  "only need to add those to the `statistics` argument."))
+                
+        # Decide on whether to use low-mem functions or not
+        if hasintegratedstats:
+            if lowmem in [False, None]:
+                if not lowmem:
+                    print("Low-memory computation enforced for integrated measures of the 4pcf. " +
+                          "Set `lowmem` from `%s` to `True`"%str(lowmem))
+                lowmem = True
+        else:
+            if lowmem in [None, False]:
+                maxlen = 0
+                _lowmem = False
+                if "4pcf_multipole" in statistics:
+                    _nvals = self.nzcombis*(2*self.nmaxs[0]+1)*(2*self.nmaxs[1]+1)*self.nbinsr**3
+                    if _nvals > cutlen:
+                        if not lowmem:
+                            print("Switching to low-memory computation of 4pcf in multipole basis.")
+                        lowmem = True
+                    else:
+                        lowmem = False
+                if "4pcf_real" in statistics:
+                    nvals = self.nzcombis*self.nbinsphi[0]*self.nbinsphi[1]*self.nbinsr**3
+                    if _nvals > cutlen:
+                        if not lowmem:
+                            print("Switching to low-memory computation of 4pcf in real basis.")
+                        lowmem = True
+                    else:
+                        lowmem = False
+                        
+        # Misc checks            
+        self._checkcats(cat, self.spins)
+        
+        ## Build args for wrapped functions ##
+        # Shortcuts
+        _nmax = self.nmaxs[0]
+        _nnvals = (2*_nmax+1)*(2*_nmax+1)
+        _nbinsr3 = self.nbinsr*self.nbinsr*self.nbinsr
+        _nphis = len(self.phis[0])
+        sc = (2*_nmax+1,2*_nmax+1,self.nzcombis,self.nbinsr,self.nbinsr,self.nbinsr)
+        szr = (self.nbinsz, self.nbinsr)
+        s4pcf = (self.nzcombis,self.nbinsr,self.nbinsr,self.nbinsr,_nphis,_nphis)
+        # Init default args
+        bin_centers = np.zeros(self.nbinsz*self.nbinsr).astype(np.float64)
+        if not cat.hasspatialhash:
+            cat.build_spatialhash(dpix=max(1.,self.max_sep//10.))
+        nregions = np.int32(len(np.argwhere(cat.index_matcher>-1).flatten()))
+        args_basecat = (cat.isinner.astype(np.int32), cat.weight, cat.pos1, cat.pos2, 
+                        np.int32(cat.ngal), )
+        args_hash = (cat.index_matcher, cat.pixs_galind_bounds, cat.pix_gals, nregions, 
+                     np.float64(cat.pix1_start), np.float64(cat.pix1_d), np.int32(cat.pix1_n), 
+                     np.float64(cat.pix2_start), np.float64(cat.pix2_d), np.int32(cat.pix2_n), )
+        
+        # Init optional args
+        __lenflag = 10
+        __fillflag = -1
+        if "4pcf_multipole" in statistics:
+            N_n = np.zeros(_nnvals*self.nzcombis*_nbinsr3).astype(np.complex128)
+            alloc_4pcfmultipoles = 1
+        else:
+            N_n = __fillflag*np.zeros(__lenflag).astype(np.complex128)
+            alloc_4pcfmultipoles = 0
+        if "4pcf_real" in statistics:
+            fourpcf = np.zeros(_nphis*_nphis*self.nzcombis*_nbinsr3).astype(np.complex128)
+            alloc_4pcfreal = 1
+        else:
+            fourpcf = __fillflag*np.ones(__lenflag).astype(np.complex128)
+            alloc_4pcfreal = 0
+        if hasintegratedstats:
+            if mapradii is None:
+                raise ValueError("Aperture radii need to be specified in variable `mapradii`.")
+            mapradii = mapradii.astype(np.float64)
+            N4correlators = np.zeros(self.nzcombis*len(mapradii)).astype(np.complex128)
+        
+        # Build args based on chosen methods
+        if self.method=="Discrete" and not lowmem:
+            args_basesetup = (np.int32(_nmax), np.float64(self.min_sep), 
+                              np.float64(self.max_sep), np.array([-1.]).astype(np.float64), 
+                              np.int32(self.nbinsr), np.int32(self.multicountcorr), )
+            args = (*args_basecat,
+                    *args_basesetup,
+                    *args_hash,
+                    np.int32(self.nthreads),
+                    bin_centers,
+                    Upsilon_n,
+                    N_n)
+            func = self.clib.alloc_notomoGammans_discrete_gggg 
+        if self.method=="Discrete" and lowmem:
+            _resradial = self.__gen_thetacombis(batchsize=batchsize, ordered=False, custom=custom_thetacombis)
+            _, _, thetacombis_batches, cumnthetacombis_batches, nthetacombis_batches, nbatches = _resradial
+            
+            """
+            if batchsize is None:
+                batchsize = min(_nbinsr3,min(self.thetabatchsize_max,_nbinsr3/self.nthreads))
+                print("Using batchsize of %i for radial bins"%batchsize)
+            if batchsize==self.thetabatchsize_max:
+                nbatches = np.int32(np.ceil(_nbinsr3/batchsize))
+            else:
+                nbatches = np.int32(_nbinsr3/batchsize)
+            thetacombis_batches = np.arange(_nbinsr3).astype(np.int32)
+            cumnthetacombis_batches = (np.arange(nbatches+1)*_nbinsr3/(nbatches)).astype(np.int32)
+            nthetacombis_batches = (cumnthetacombis_batches[1:]-cumnthetacombis_batches[:-1]).astype(np.int32)
+            cumnthetacombis_batches[-1] = _nbinsr3
+            nthetacombis_batches[-1] = _nbinsr3-cumnthetacombis_batches[-2]
+            thetacombis_batches = thetacombis_batches.flatten().astype(np.int32)
+            nbatches = len(nthetacombis_batches)
+            """
+            args_basesetup = (np.int32(_nmax), 
+                              np.float64(self.min_sep), np.float64(self.max_sep), np.int32(self.nbinsr), 
+                              np.int32(self.multicountcorr),
+                              self.phis[0].astype(np.float64), 
+                              2*np.pi/_nphis*np.ones(_nphis, dtype=np.float64), np.int32(_nphis))
+            args_4pcf = (np.int32(alloc_4pcfmultipoles), np.int32(alloc_4pcfreal), 
+                         bin_centers, Upsilon_n, N_n, fourpcf, fourpcf_norm, )
+            args_thetas = (thetacombis_batches, nthetacombis_batches, cumnthetacombis_batches, nbatches, )
+            args_map4 = (mapradii, np.int32(len(mapradii)), M4correlators)
+            args = (*args_basecat,
+                    *args_basesetup,
+                    *args_hash,
+                    *args_thetas,
+                    np.int32(self.nthreads),
+                    projection,
+                    *args_map4,
+                    *args_4pcf)
+            func = self.clib.alloc_notomoMap4_disc_gggg  
+        if self.method=="Tree" and lowmem:
+            # Prepare mask for nonredundant theta- and multipole configurations
+            _resradial = self.__gen_thetacombis(batchsize=batchsize, ordered=True, custom=custom_thetacombis)
+            _, _, thetacombis_batches, cumnthetacombis_batches, nthetacombis_batches, nbatches = _resradial
+            assert(self.nmaxs[0]==self.nmaxs[1])
+            _resmultipoles = __class__.__gen_indices_Ups(self.nmaxs[0])
+            _shape, _inds, _n2s, _n3s = _resmultipoles
+            
+            # Prepare reduced catalogs
+            cutfirst = np.int32(self.tree_resos[0]==0.)
+            mhash = cat.multihash(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1], 
+                                  shuffle=self.shuffle_pix, w2field=True, normed=True)
+            (ngal_resos, pos1s, pos2s, weights, zbins, isinners, allfields, 
+             index_matchers, pixs_galind_bounds, pix_gals, dpixs1_true, dpixs2_true) = mhash
+            weight_resos = np.concatenate(weights).astype(np.float64)
+            pos1_resos = np.concatenate(pos1s).astype(np.float64)
+            pos2_resos = np.concatenate(pos2s).astype(np.float64)
+            zbin_resos = np.concatenate(zbins).astype(np.int32)
+            isinner_resos = np.concatenate(isinners).astype(np.int32)
+            e1_resos = np.concatenate([allfields[i][0] for i in range(len(allfields))]).astype(np.float64)
+            e2_resos = np.concatenate([allfields[i][1] for i in range(len(allfields))]).astype(np.float64)
+            index_matcher_resos = np.concatenate(index_matchers).astype(np.int32)
+            pixs_galind_bounds_resos = np.concatenate(pixs_galind_bounds).astype(np.int32)
+            pix_gals_resos = np.concatenate(pix_gals).astype(np.int32)
+            index_matcher_flat = np.argwhere(cat.index_matcher>-1).flatten()
+            nregions = len(index_matcher_flat)
+            # Build args
+            args_basesetup = (np.int32(_nmax), 
+                              np.float64(self.min_sep), np.float64(self.max_sep), np.int32(self.nbinsr), 
+                              np.int32(self.multicountcorr),
+                              _inds, np.int32(len(_inds)), self.phis[0].astype(np.float64), 
+                              2*np.pi/_nphis*np.ones(_nphis, dtype=np.float64), np.int32(_nphis), )
+            args_resos = (np.int32(self.tree_nresos), self.tree_redges, np.array(ngal_resos, dtype=np.int32),
+                          isinner_resos, weight_resos, pos1_resos, pos2_resos, e1_resos, e2_resos,
+                          index_matcher_resos, pixs_galind_bounds_resos, pix_gals_resos, np.int32(nregions), )
+            args_hash = (np.float64(cat.pix1_start), np.float64(cat.pix1_d), np.int32(cat.pix1_n), 
+                         np.float64(cat.pix2_start), np.float64(cat.pix2_d), np.int32(cat.pix2_n), )
+            args_thetas = (thetacombis_batches, nthetacombis_batches, cumnthetacombis_batches, nbatches, )
+            args_map4 = (mapradii, np.int32(len(mapradii)), M4correlators)
+            args_4pcf = (np.int32(alloc_4pcfmultipoles), np.int32(alloc_4pcfreal), 
+                         bin_centers, Upsilon_n, N_n, fourpcf, fourpcf_norm, )
+            args = (*args_basecat,
+                    *args_basesetup,
+                    *args_resos,
+                    *args_hash,
+                    *args_thetas,
+                    np.int32(self.nthreads),
+                    projection,
+                    *args_map4,
+                    *args_4pcf)
+            func = self.clib.alloc_notomoMap4_tree_gggg  
+
+        # Optionally print the arguments 
+        if self.verbose:
+            print("We pass the following arguments:")
+            for elarg, arg in enumerate(args):
+                toprint = (elarg, type(arg),)
+                if isinstance(arg, np.ndarray):
+                    toprint += (type(arg[0]), arg.shape)
+                try:
+                    toprint += (func.argtypes[elarg], )
+                    print(toprint)
+                    print(arg)
+                except:
+                    print("We did have a problem for arg %i"%elarg)
+        
+        ## Compute 4th order stats ##
+        func(*args)
+        
+        ## Massage the output ##
+        istatout = ()
+        self.bin_centers = bin_centers.reshape(szr)
+        self.bin_centers_mean = np.mean(self.bin_centers, axis=0)
+        if "4pcf_multipole" in statistics:
+            self.npcf_multipoles = Upsilon_n.reshape(sc)
+            self.npcf_multipoles_norm = N_n.reshape(sn)
+        if "4pcf_real" in statistics:
+            if lowmem:
+                self.npcf = fourpcf.reshape(s4pcf)
+                self.npcf_norm = fourpcf_norm.reshape(s4pcfn) 
+            else:
+                if self.verbose:
+                    print("Transforming output to real space basis")
+                self.multipoles2npcf_c(projection=projection)
+        if hasintegratedstats:
+            if "M4" in statistics:
+                istatout += (M4correlators.reshape((8,self.nzcombis,len(mapradii))), )
+            # TODO allocate map4, map4c etc.
+            
+        return istatout
     
 ###########################
 ## COVARIANCE STATISTICS ##

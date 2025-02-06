@@ -505,7 +505,7 @@ void MapnSingleEonlyDisc(
                 bellargs_Sn[0] = -nextSn[tmpind];
                 bellargs_Sn_w[0] = -nextSn_w[tmpind];
                 bellargs_S2n_w[0] = -nextS2n_w[tmpind];
-                norm_var = nextSn_w[elbinz*max_order];
+                norm_var = 1;//nextSn_w[elbinz*max_order];
                 // We renorm the bellargs_Sn_w/bellargs_Sn_2w variables to keep the numbers finite
                 // and such that the renorm factor cancels out in the nextMapn_var allocation.
                 for (order=1; order<max_order; order++){ 
@@ -671,6 +671,10 @@ void singleAp_MapnSingleEonlyDisc(
     double npix_m=0.; double Qpix_m=0; double npix_t=0.; double Qpix_t=0;
     double supp_filter = getFilterSupp(ind_filter);
     double supp_Q2 = supp_filter*supp_filter;
+    //int pix1_lower = mymin( mask1_n-1, mymax(0, (int) floor((center_1 - (supp_filter*R_ap+mask1_d) - mask1_start)/mask1_d)));
+    //int pix1_upper = mymin( mask1_n-1, mymax(0, (int) floor((center_1 + (supp_filter*R_ap+mask1_d) - mask1_start)/mask1_d)));
+    //int pix2_lower = mymin( mask2_n-1, mymax(0, (int) floor((center_2 - (supp_filter*R_ap+mask2_d) - mask2_start)/mask2_d)));
+    //int pix2_upper = mymin( mask2_n-1, mymax(0, (int) floor((center_2 + (supp_filter*R_ap+mask2_d) - mask2_start)/mask2_d)));
     int pix1_lower = (int) floor((center_1 - (supp_filter*R_ap+mask1_d) - mask1_start)/mask1_d);
     int pix1_upper = (int) floor((center_1 + (supp_filter*R_ap+mask1_d) - mask1_start)/mask1_d);
     int pix2_lower = (int) floor((center_2 - (supp_filter*R_ap+mask2_d) - mask2_start)/mask2_d);
@@ -785,7 +789,7 @@ void singleAp_MapnSingleEonlyDisc(
         if (Sn_w[zbin*max_order]!=0){fac_normw = 1./(Sn_w[zbin*max_order]);}else{fac_normw = 0;}
         fac_normvol = supp_Q2;
         tmp_norm = 1;
-        tmp_normw = 1./R_ap/R_ap;
+        tmp_normw = 1.;///R_ap/R_ap;
         tmp_normvol = 1;
         for (order=0; order<max_order; order++){
             thiscomp = zbin*max_order+order;
@@ -1056,10 +1060,10 @@ void singleAp_NapnSingleDisc(
     double npix_m=0.; double Upix_m=0; double npix_t=0.; double Upix_t=0;
     double supp_filter = getFilterSuppU(ind_filter);
     double supp_U2 = supp_filter*supp_filter;
-    int pix1_lower = (int) floor((center_1 - (supp_filter*R_ap+mask1_d) - mask1_start)/mask1_d);
-    int pix1_upper = (int) floor((center_1 + (supp_filter*R_ap+mask1_d) - mask1_start)/mask1_d);
-    int pix2_lower = (int) floor((center_2 - (supp_filter*R_ap+mask2_d) - mask2_start)/mask2_d);
-    int pix2_upper = (int) floor((center_2 + (supp_filter*R_ap+mask2_d) - mask2_start)/mask2_d);
+    int pix1_lower = mymax(0, (int) floor((center_1 - (supp_filter*R_ap+mask1_d) - mask1_start)/mask1_d));
+    int pix1_upper = mymin(mask1_n-1, (int) floor((center_1 + (supp_filter*R_ap+mask1_d) - mask1_start)/mask1_d));
+    int pix2_lower = mymax(0, (int) floor((center_2 - (supp_filter*R_ap+mask2_d) - mask2_start)/mask2_d));
+    int pix2_upper = mymin(mask2_n-1, (int) floor((center_2 + (supp_filter*R_ap+mask2_d) - mask2_start)/mask2_d));
    
     // Compute Nap statistics for this aperture
     //  1) Check if pixel is within suitable range of aperture
@@ -1678,11 +1682,11 @@ void _singleAp_NapnSingleEonlyDisc(
     double npix_m=0.; double Upix_m=0; double npix_w=0.; double Upix_w=0;
     double supp_filter = getFilterSupp(ind_filter);
     double supp_U2 = supp_filter*supp_filter;
-    int pix1_lower = (int) floor((center_1 - (supp_filter*R_ap+mask1_d) - mask1_start)/mask1_d);
-    int pix1_upper = (int) floor((center_1 + (supp_filter*R_ap+mask1_d) - mask1_start)/mask1_d);
-    int pix2_lower = (int) floor((center_2 - (supp_filter*R_ap+mask2_d) - mask2_start)/mask2_d);
-    int pix2_upper = (int) floor((center_2 + (supp_filter*R_ap+mask2_d) - mask2_start)/mask2_d);
-   
+    int pix1_lower = mymax(0, (int) floor((center_1 - (supp_filter*R_ap+mask1_d) - mask1_start)/mask1_d));
+    int pix1_upper = mymin(mask1_n-1, (int) floor((center_1 + (supp_filter*R_ap+mask1_d) - mask1_start)/mask1_d));
+    int pix2_lower = mymax(0, (int) floor((center_2 - (supp_filter*R_ap+mask2_d) - mask2_start)/mask2_d));
+    int pix2_upper = mymin(mask2_n-1, (int) floor((center_2 + (supp_filter*R_ap+mask2_d) - mask2_start)/mask2_d));
+    
     // Compute Map statistics for this aperture
     //  1) Check if pixel is within suitable range of aperture
     //  2) If so, update aperture coverage and loop through galaxies in that pixel to update the sums for Mapn

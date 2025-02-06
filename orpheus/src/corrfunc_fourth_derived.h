@@ -8,6 +8,11 @@
 void getMultiplolesFromSymm(double complex *Upsn_in, double complex *Nn_in,
                             int nmax, int eltrafo, int *nindices, int len_nindices,
                             double complex *Upsn_out, double complex *Nn_out);
+
+void multipoles2npcf_nnnn_singletheta(double complex *N_n, int n1max, int n2max,
+                                      double theta1, double theta2, double theta3,
+                                      double *phis12, double *phis13, int nbinsphi12, int nbinsphi13,
+                                      double complex *npcf);
     
 void multipoles2npcf_gggg(double complex *upsilon_n, double complex *N_n, double *rcenters, int projection,
                           int n_cfs, int nbinsr, int nmax, double *phis12, int nbinsphi12, double *phis13, int nbinsphi13,
@@ -22,6 +27,11 @@ void multipoles2npcf_gggg_singletheta(double complex *Upsilon_n, double complex 
                                       double theta1, double theta2, double theta3,
                                       double *phis12, double *phis13, int nbinsphi12, int nbinsphi13,
                                       int projection, double complex *npcf, double complex *npcf_norm);
+
+void multipoles2npcf_nnnn_singletheta(double complex *N_n, int n1max, int n2max,
+                                      double theta1, double theta2, double theta3,
+                                      double *phis12, double *phis13, int nbinsphi12, int nbinsphi13,
+                                      double complex *npcf);
 
 void multipoles2npcf_gggg_singletheta_nconvergence(
     double complex *Upsilon_n, double complex *N_n, int n1max, int n2max,
