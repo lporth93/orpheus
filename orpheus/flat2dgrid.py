@@ -42,4 +42,3 @@ class FlatDataGrid_2D(FlatPixelGrid_2D):
         
     def regrid(self, other_grid):
         return super()._regrid(other_grid, self.data)
-    

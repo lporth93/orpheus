@@ -17,6 +17,7 @@ else:
     # Force this for now as anacoda default compiler incompatible with newer gcc versions
     # See https://github.com/ContinuumIO/anaconda-issues/issues/11152
     os.environ["CC"] = "/usr/bin/gcc-12" 
+    #compiler_args = ["-shared", "-fopenmp", "-fPIC", "-Wall", "-lm", "-std=c99"]
     compiler_args = ["-shared", "-fopenmp", "-fPIC", "-Wall", "-lm", "-O3", "-ffast-math", "-std=c99"]
     #compiler_args = ["-shared", "-fopenmp", "-fPIC", "-Wall", "-lm", "-std=c99"]
     linker_args = ["-fopenmp", "-lm"]

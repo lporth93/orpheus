@@ -19,6 +19,7 @@ class DirectEstimator:
     def __init__(self, Rmin, Rmax, nbinsr=None, binsize=None, 
                  aperture_centers="grid", accuracies=2., 
                  frac_covs=[0.,0.1,0.3,0.5,1.], dpix_hash=1.,
+                 weight_outer=1., weight_inpainted=0.,
                  method="Discrete", multicountcorr=True, shuffle_pix=1, 
                  tree_resos=[0,0.25,0.5,1.,2.], tree_redges=None, rmin_pixsize=20, 
                  resoshift_leafs=0, minresoind_leaf=None, maxresoind_leaf=None,nthreads=16):
@@ -53,6 +54,12 @@ class DirectEstimator:
             the aperture area that is not within the survey area.
         dpix_hash: float, optional
             The pixel size of the spatial hash used to search through the catalog
+        weight_outer: float, optional
+            The fractional weight applied to galaxies not contained within the interior of the catalog. This
+            only affects catalogs which are overlapping patches of a full-sky catalog.
+        weight_inpainted: float, optional
+            The fractional weight applied to virtual galaxies inpainted into the catalog. This only
+            affects catalogs which have objects in them that are labelled as inpainted.
         method: str, optional
             The method to be employed for the estimator. Defaults to ``Discrete``.
         multicountcorr: bool, optional
@@ -94,6 +101,8 @@ class DirectEstimator:
         self.frac_covs = np.asarray(frac_covs, dtype=np.float64)
         self.nfrac_covs = len(self.frac_covs)
         self.dpix_hash = dpix_hash
+        self.weight_outer = weight_outer
+        self.weight_inpainted = weight_inpainted
         self.methods_avail = ["Discrete", "Tree", "BaseTree", "DoubleTree", "FFT"]
         self.tree_resos = np.asarray(tree_resos, dtype=np.float64)
         self.tree_nresos = int(len(self.tree_resos))
@@ -108,6 +117,8 @@ class DirectEstimator:
         assert(isinstance(self.Rmin, float))
         assert(isinstance(self.Rmax, float))
         assert(self.aperture_centers in ["grid","density"])
+        assert((self.weight_outer>=0.) and (self.weight_outer<=1.))
+        assert((self.weight_inpainted>=0.) and (self.weight_inpainted<=1.))
         assert(self.method in self.methods_avail)
         assert(isinstance(self.tree_resos, np.ndarray))
         assert(isinstance(self.tree_resos[0], np.float64))
@@ -303,31 +314,31 @@ class Direct_MapnEqual(DirectEstimator):
         self.clib.MapnSingleEonlyDisc.restype = ct.c_void_p
         self.clib.MapnSingleEonlyDisc.argtypes = [
             ct.c_double, p_f64, p_f64, ct.c_int32,
-            ct.c_int32, ct.c_int32, ct.c_int32, ct.c_int32,
+            ct.c_int32, ct.c_int32, ct.c_int32, ct.c_int32, ct.c_double, ct.c_double, 
             p_f64, p_f64, p_f64, p_f64, p_c128, p_i32, ct.c_int32, ct.c_int32,
             p_f64, p_f64, ct.c_int32, ct.c_int32,
             ct.c_double, ct.c_double, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
-            p_i32, p_i32, p_i32,
+            p_i32, p_i32, p_i32, 
             ct.c_int32, p_f64, p_f64]
         self.clib.singleAp_MapnSingleEonlyDisc.restype = ct.c_void_p
         self.clib.singleAp_MapnSingleEonlyDisc.argtypes = [
             ct.c_double, ct.c_double, ct.c_double,
-            ct.c_int32, ct.c_int32, 
+            ct.c_int32, ct.c_int32, ct.c_double, ct.c_double, 
             p_f64, p_f64, p_f64, p_f64, p_c128, p_i32, ct.c_int32, ct.c_int32,
             p_f64,
             ct.c_double, ct.c_double, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
             p_i32, p_i32, p_i32,
-            p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, p_f64]    
+            p_f64, p_f64, p_f64, p_f64, p_f64, p_f64]    
         
         # Compute aperture mass map for equal-scale stats
         self.clib.ApertureMassMap_Equal.restype = ct.c_void_p
         self.clib.ApertureMassMap_Equal.argtypes = [
             ct.c_double, p_f64, p_f64, ct.c_int32, ct.c_int32, 
-            ct.c_int32, ct.c_int32, ct.c_int32,
+            ct.c_int32, ct.c_int32, ct.c_int32, ct.c_double, ct.c_double, 
             p_f64, p_f64, p_f64, p_f64, p_c128, p_i32, ct.c_int32, ct.c_int32,
             p_f64,
             ct.c_double, ct.c_double, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
-            p_i32, p_i32, p_i32,
+            p_i32, p_i32, p_i32, 
             ct.c_int32, p_f64, p_f64, p_f64, p_f64, p_f64, p_f64]
                
                        
@@ -453,9 +464,10 @@ class Direct_MapnEqual(DirectEstimator):
             args_centers = (self.radii[indR], centers_1, centers_2, len(centers_1), len(centers_2), )  
         if forfunc=="Equal":
             args_ofw = (self.order_max, self.filters_dict[self.filter_form], self.ap_weights_dict[self.ap_weights], 
-                        np.int32(self.multicountcorr), )
+                        np.int32(self.multicountcorr), np.float64(self.weight_outer), np.float64(self.weight_inpainted), )
         elif forfunc=="EqualGrid":
-            args_ofw = (self.order_max, self.filters_dict[self.filter_form], self.ap_weights_dict[self.ap_weights], )
+            args_ofw = (self.order_max, self.filters_dict[self.filter_form], self.ap_weights_dict[self.ap_weights], 
+                        np.float64(self.weight_outer), np.float64(self.weight_inpainted), )
         args_cat = (cat.weight.astype(np.float64), cat.isinner.astype(np.float64),
                     cat.pos1.astype(np.float64), cat.pos2.astype(np.float64), 
                     cat.tracer_1.astype(np.float64)+1j*cat.tracer_2.astype(np.float64), 
@@ -589,7 +601,7 @@ class Direct_NapnEqual(DirectEstimator):
         self.clib.ApertureCountsMap_Equal.restype = ct.c_void_p
         self.clib.ApertureCountsMap_Equal.argtypes = [
             ct.c_double, p_f64, p_f64, ct.c_int32, ct.c_int32,
-            ct.c_int32, ct.c_int32, ct.c_int32,
+            ct.c_int32, ct.c_int32, ct.c_int32, ct.c_int32, ct.c_double, ct.c_double, 
             p_f64, p_f64, p_f64, p_f64, p_f64, p_i32, ct.c_int32, ct.c_int32,
             p_f64, 
             ct.c_double, ct.c_double, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
@@ -600,7 +612,7 @@ class Direct_NapnEqual(DirectEstimator):
         self.clib.NapnSingleDisc.restype = ct.c_void_p
         self.clib.NapnSingleDisc.argtypes = [
             ct.c_double, p_f64, p_f64, ct.c_int32,
-            ct.c_int32, ct.c_int32, ct.c_int32,  ct.c_int32,
+            ct.c_int32, ct.c_int32, ct.c_int32,  ct.c_int32, ct.c_double, ct.c_double, 
             p_f64, p_f64, p_f64, p_f64, p_f64, p_i32, ct.c_int32, ct.c_int32,
             p_f64, p_f64, ct.c_int32, ct.c_int32,
             ct.c_double, ct.c_double, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
@@ -611,7 +623,7 @@ class Direct_NapnEqual(DirectEstimator):
         self.clib.singleAp_NapnSingleDisc.restype = ct.c_void_p
         self.clib.singleAp_NapnSingleDisc.argtypes = [
             ct.c_double, ct.c_double, ct.c_double, 
-            ct.c_int32, ct.c_int32,  ct.c_int32,
+            ct.c_int32, ct.c_int32,  ct.c_int32, ct.c_double, ct.c_double, 
             p_f64, p_f64, p_f64, p_f64, p_f64, p_i32, ct.c_int32, ct.c_int32,
             p_f64, 
             ct.c_double, ct.c_double, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
@@ -848,7 +860,7 @@ class Direct_NapmMapnEqual(DirectEstimator):
         self.clib.NapmMapnSingleEonlyDisc.restype = ct.c_void_p
         self.clib.NapmMapnSingleEonlyDisc.argtypes = [
             ct.c_double, p_f64, p_f64, ct.c_int32,
-            ct.c_int32, ct.c_int32, ct.c_int32, ct.c_int32,
+            ct.c_int32, ct.c_int32, ct.c_int32, ct.c_int32, 
             p_f64, p_f64, p_f64, p_f64, p_c128, p_i32, ct.c_int32, ct.c_int32,
             p_f64, p_f64, ct.c_int32, ct.c_int32,
             ct.c_double, ct.c_double, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,

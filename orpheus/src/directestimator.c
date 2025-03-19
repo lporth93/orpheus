@@ -136,7 +136,7 @@ double getFilterSuppU(int type_filter){
 // TODO: For multi-scale estimator might be good to use tree-methods here s.t. we can overlay centers?
 void ApertureMassMap_Equal(
     double R_ap, double *centers_1, double *centers_2, int ncenters_1, int ncenters_2,
-    int max_order, int ind_filter, int weight_method, 
+    int max_order, int ind_filter, int weight_method, double weight_outer, double weight_inpainted, 
     double *weight, double *insurvey, double *pos1, double *pos2, double complex *g, int *zbins, int nbinsz, int ngal, 
     double *mask, 
     double mask1_start, double mask2_start, double mask1_d, double mask2_d, int mask1_n, int mask2_n,
@@ -198,10 +198,10 @@ void ApertureMassMap_Equal(
             // Get all the statistics of the aperture in power sum basis
             //if (elthread==0){printf("Get power sums from ap %d on thread %d\n",ind_ap,elthread);}
             singleAp_MapnSingleEonlyDisc( R_ap, centers_1[c1], centers_2[c2], 
-                max_order, ind_filter, 
+                max_order, ind_filter, weight_outer, weight_inpainted, 
                 weight, insurvey, pos1, pos2, g, zbins, nbinsz, ngal,
                 mask, mask1_start, mask2_start, mask1_d, mask2_d, mask1_n, mask2_n,
-                index_matcher, pixs_galind_bounds, pix_gals,  
+                index_matcher, pixs_galind_bounds, pix_gals,
                 nextcounts, nextcovs, nextMsn, nextSn, nextSn_w, nextS2n_w);
             
             //if (elthread==0){printf("Got stats for ap %d on thread %d\n",ind_ap,elthread);}
@@ -298,7 +298,7 @@ void ApertureMassMap_Equal(
 // Computes Napn for single aperture scale, taking into account the multiple-counting corrections.  
 void ApertureCountsMap_Equal(
     double R_ap, double *centers_1, double *centers_2, int ncenters_1, int ncenters_2,
-    int max_order, int ind_filter, int do_subtractions, int Nbar_policy, 
+    int max_order, int ind_filter, int do_subtractions, int Nbar_policy, double weight_outer, double weight_inpainted, 
     double *weight, double *insurvey, double *pos1, double *pos2, double *tracer, int *zbins, int nbinsz, int ngal, 
     double *mask, 
     double mask1_start, double mask2_start, double mask1_d, double mask2_d, int mask1_n, int mask2_n,
@@ -342,7 +342,7 @@ void ApertureCountsMap_Equal(
             
             // Get all the statistics of the aperture in power sum basis
             singleAp_NapnSingleDisc( R_ap, centers_1[c1], centers_2[c2], 
-                max_order, ind_filter, Nbar_policy,
+                max_order, ind_filter, Nbar_policy, weight_outer, weight_inpainted, 
                 weight, insurvey, pos1, pos2, tracer, zbins, nbinsz, ngal,
                 mask, mask1_start, mask2_start, mask1_d, mask2_d, mask1_n, mask2_n,
                 index_matcher, pixs_galind_bounds, pix_gals,  
@@ -410,7 +410,7 @@ void ApertureCountsMap_Equal(
 //  * 1 --> Inverse shape noise weights               
 void MapnSingleEonlyDisc(
     double R_ap, double *centers_1, double *centers_2, int ncenters,
-    int max_order, int ind_filter, int weight_method, int do_subtractions,
+    int max_order, int ind_filter, int weight_method, int do_subtractions, double weight_outer, double weight_inpainted, 
     double *weight, double *insurvey, double *pos1, double *pos2, double complex *g, int *zbins, int nbinsz, int ngal, 
     double *mask, double *fraccov_cuts, int nfrac_cuts, int fraccov_method,
     double mask1_start, double mask2_start, double mask1_d, double mask2_d, int mask1_n, int mask2_n,
@@ -481,10 +481,10 @@ void MapnSingleEonlyDisc(
             // Get all the statistics of the aperture in power sum basis
             //if (elthread==0){printf("Get power sums from ap %d on thread %d\n",ind_ap,elthread);}
             singleAp_MapnSingleEonlyDisc( R_ap, centers_1[ind_ap], centers_2[ind_ap], 
-                max_order, ind_filter, 
+                max_order, ind_filter, weight_outer, weight_inpainted, 
                 weight, insurvey, pos1, pos2, g, zbins, nbinsz, ngal,
                 mask, mask1_start, mask2_start, mask1_d, mask2_d, mask1_n, mask2_n,
-                index_matcher, pixs_galind_bounds, pix_gals,  
+                index_matcher, pixs_galind_bounds, pix_gals, 
                 nextcounts, nextcovs, nextMsn, nextSn, nextSn_w, nextS2n_w);
             //if (elthread==0){printf("Got stats for ap %d on thread %d\n",ind_ap,elthread);}
             //for (order=0; order<max_order; order++){
@@ -640,7 +640,7 @@ void MapnSingleEonlyDisc(
 // Computes statistics on single aperture
 void singleAp_MapnSingleEonlyDisc(
     double R_ap, double center_1, double center_2, 
-    int max_order, int ind_filter, 
+    int max_order, int ind_filter, double weight_outer, double weight_inpainted, 
     double *weight, double *insurvey, double *pos1, double *pos2, double complex *g, int *zbins, int nbinsz, int ngal, 
     double *mask,
     double mask1_start, double mask2_start, double mask1_d, double mask2_d, int mask1_n, int mask2_n,
@@ -663,8 +663,8 @@ void singleAp_MapnSingleEonlyDisc(
     int ind_pix1, ind_pix2, ind_raw, ind_red, ind_inpix, ind_gal, zbin;
     // Helper variables being used for the actual Mapn computation
     double complex phirotc_sq;
-    double rel1, rel2, d2gal, w, frac_insurvey, et, Qval;
-    double tmp_et, tmp_w, tmp_wm, tmp_etmult, tmp_wmmult;
+    double rel1, rel2, d2gal, w, wc, frac_insurvey, et, Qval;
+    double tmp_et, tmp_w, tmp_wc, tmp_etmult;
     double tmp_norm, tmp_normw, tmp_normvol, fac_norm, fac_normw, fac_normvol;
     
     int npix = mask1_n*mask2_n; 
@@ -729,8 +729,12 @@ void singleAp_MapnSingleEonlyDisc(
                 if (d2gal < 1e-5){continue;}
                 //printf("Start allocating stuff for next galaxy\n");
                 // Get tangential ellipticity and value of Q filter
-                w = weight[ind_gal];
+                double frac_inpainted = 0.;
                 frac_insurvey = insurvey[ind_gal];
+                w = weight[ind_gal];
+                wc = w * (
+                    (1.-frac_inpainted)*(frac_insurvey + (1.-frac_insurvey)*weight_outer) +
+                    frac_inpainted*weight_inpainted*(frac_insurvey + (1.-frac_insurvey)*weight_outer));
                 phirotc_sq = (rel1*rel1-rel2*rel2-2*I*rel1*rel2)/d2gal;
                 et = -creal(g[ind_gal]*phirotc_sq);
                 Qval = getFilterQ(ind_filter, d2gal/R2_ap);
@@ -739,23 +743,22 @@ void singleAp_MapnSingleEonlyDisc(
                 zbin = zbins[ind_gal];
                 counts[zbin*3 + 0] += 1;
                 counts[zbin*3 + 1] += w;
-                counts[zbin*3 + 2] += w*frac_insurvey;
+                counts[zbin*3 + 2] += wc;
                 //printf(" Updated counts\n");
                 // Update power sums
                 tmp_et = 1;
                 tmp_w = 1;
-                tmp_wm = 1;
+                tmp_wc = 1;
                 tmp_etmult = w*Qval*et;
-                tmp_wmmult = w*frac_insurvey;
                 for (order=0; order<max_order; order++){
                     tmp_w *= w;
-                    tmp_wm *= tmp_wmmult;
+                    tmp_wc *= wc;
                     tmp_et *= tmp_etmult;
                     
                     Msn[zbin*max_order+order] += tmp_et;
                     Sn[zbin*max_order+order] += tmp_w;
-                    Sn_w[zbin*max_order+order] += tmp_wm;
-                    S2n_w[zbin*max_order+order] += tmp_wm*tmp_wm;
+                    Sn_w[zbin*max_order+order] += tmp_wc;
+                    S2n_w[zbin*max_order+order] += tmp_wc*tmp_wc;
                 //printf(" Updated powersums. Done.\n");
                 }
                 //if ((ind_pix1==pix1_lower+(pix1_upper-pix1_lower)/2+2*(int)(R_ap/mask1_d))&&
@@ -811,7 +814,7 @@ void singleAp_MapnSingleEonlyDisc(
 // Computes Napn for single aperture scale, taking into account the multiple-counting corrections.              
 void NapnSingleDisc(
     double R_ap, double *centers_1, double *centers_2, int ncenters,
-    int max_order, int ind_filter, int do_subtractions, int Nbar_policy,
+    int max_order, int ind_filter, int do_subtractions, int Nbar_policy, double weight_outer, double weight_inpainted, 
     double *weight, double *insurvey, double *pos1, double *pos2, double *tracer, int *zbins, int nbinsz, int ngal, 
     double *mask, double *fraccov_cuts, int nfrac_cuts, int fraccov_method,
     double mask1_start, double mask2_start, double mask1_d, double mask2_d, int mask1_n, int mask2_n,
@@ -859,7 +862,7 @@ void NapnSingleDisc(
             
             // Get all the statistics of the aperture in power sum basis
             singleAp_NapnSingleDisc( R_ap, centers_1[ind_ap], centers_2[ind_ap], 
-                max_order, ind_filter, Nbar_policy,
+                max_order, ind_filter, Nbar_policy, weight_outer, weight_inpainted, 
                 weight, insurvey, pos1, pos2, tracer, zbins, nbinsz, ngal,
                 mask, mask1_start, mask2_start, mask1_d, mask2_d, mask1_n, mask2_n,
                 index_matcher, pixs_galind_bounds, pix_gals,  
@@ -1029,7 +1032,7 @@ void NapnSingleDisc(
 // Computes statistics on single aperture
 void singleAp_NapnSingleDisc(
     double R_ap, double center_1, double center_2, 
-    int max_order, int ind_filter, int Nbar_policy,
+    int max_order, int ind_filter, int Nbar_policy, double weight_outer, double weight_inpainted, 
     double *weight, double *insurvey, double *pos1, double *pos2, double *tracer, int *zbins, int nbinsz, int ngal, 
     double *mask,
     double mask1_start, double mask2_start, double mask1_d, double mask2_d, int mask1_n, int mask2_n,
