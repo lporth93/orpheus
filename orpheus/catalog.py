@@ -72,7 +72,7 @@ class Catalog:
         self.weight = weight
         self.zbins = zbins
         self.ngal = len(self.pos1)
-        # Normalize weight s.t. <weight> = 1
+        # Allocate weights
         if self.weight is None:
             self.weight = np.ones(self.ngal)
         self.weight = self.weight.astype(np.float64)
@@ -97,6 +97,7 @@ class Catalog:
         assert(len(self.pos2)==self.ngal)
         assert(len(self.weight)==self.ngal)
         assert(len(self.zbins)==self.ngal)
+        assert(np.min(self.weight)>0.)
         
         self.zbins_mean = zbins_mean
         self.zbins_std = zbins_std

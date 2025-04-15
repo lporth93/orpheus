@@ -9,3 +9,4 @@ This is where the tutorials go
    tutorial_catalog
    tutorial_third
    tutorial_fourth
+   tutorial_direct

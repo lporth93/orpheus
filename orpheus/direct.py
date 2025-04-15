@@ -70,7 +70,7 @@ class DirectEstimator:
             Defaults to ``1``, i.e. random positioning.
         tree_resos: list, optional
             The cell sizes of the hierarchical spatial hash structure
-        tree_edges: list, optional
+        tree_redges: list, optional
             Deprecated(?)
         rmin_pixsize: int, optional
             The limiting radial distance relative to the cell of the spatial hash
@@ -263,27 +263,38 @@ class DirectEstimator:
     def __getmap(self, R, cat, dotomo, field, filter_form):
         """ This simply computes an aperture mass map together with weights and coverages """
         
+        
                 
 class Direct_MapnEqual(DirectEstimator):
     
     def __init__(self, order_max, Rmin, Rmax, field="polar", filter_form="C02", ap_weights="InvShot", **kwargs):
-        r"""Class of aperture statistics up to nth order for equal aperture radii.
-        
-        Attributes 
+        r"""
+        Initialize a Direct_MapnEqual estimator for equal-scale aperture statistics.
+
+        Parameters
         ----------
-        order_max: int
-            The largest order that is evaluated for the cumulants.
-        Rmin: float
-            The smallest aperture radius for which the cumulants are computed.
-        Rmax: float
-            The largest aperture radius for which the cumulants are computed.
-        field: str, optional
-            Deprecated
-        filter_form: str, optional
-            Choice uf Q-filter used for convolution with the cosmic shear field.
-        ap_weights: str, optional
-            Choice of weighting scheme used to average over the ensemble of apertures
+        order_max : int
+            Maximum order of the statistics to be computed.
+        Rmin : float
+            Minimum aperture radius.
+        Rmax : float
+            Maximum aperture radius.
+        field : str, optional
+            Type of input field ("scalar" or "polar").
+        filter_form : str, optional
+            Filter type used in the aperture function ("S98", "C02", "Sch04", etc.).
+        ap_weights : str, optional
+            Aperture weighting strategy ("Identity", "InvShot").
+        **kwargs : dict
+            Additional keyword arguments passed to DirectEstimator.
+
+        Notes
+        -----
+        Sets up compiled C function interfaces and internal configuration for
+        Mapn aperture statistic evaluation at equal scales.
         """
+
+
         super().__init__(Rmin=Rmin, Rmax=Rmax, **kwargs)
         self.order_max = order_max
         self.nbinsz = None
@@ -533,6 +544,21 @@ class Direct_MapnEqual(DirectEstimator):
         return res
         
     def genzcombi(self, zs, nbinsz=None):
+        """ Returns index of tomographic bin combination of Map^n output.
+        
+        Arguments:
+        ----------
+        zs: list of integers
+            Target combination of tomographic redshifts ([z1, ..., zk]).
+        nbinsz: int, optional
+            The number of tomographic bins in the computation of Map^n. If not set,
+            reverts to corresponding class attribute.
+            
+        Returns
+        -------
+        zind_flat: int
+            Index of flattened Map^k(z1,...,zk) datavector in global output.
+        """
         if nbinsz is None:
             nbinsz = self.nbinsz
         if nbinsz is None:
@@ -543,11 +569,30 @@ class Direct_MapnEqual(DirectEstimator):
             raise ValueError("We only have %i tomographic bins available."%nbinsz)
         
         order = len(zs)
-        return self._cumnzcombis_order(order-1,nbinsz,True) + self.combinatorics[order].sel2ind(zs)
+        zind_flat = self._cumnzcombis_order(order-1,nbinsz,True) + self.combinatorics[order].sel2ind(zs)
+        
+        return zind_flat
         
         
     def getmap(self, indR, cat, dotomo=True):
-        """ Computes an aperture mass map together with weights and coverages """
+        """ Computes various maps that are part of the basis of the Map^n estimator.
+        
+        Arguments:
+        ----------
+        indR: int
+            Index of aperture radius for which maps are computed
+        cat: orpheus.SpinTracerCatalog
+            The catalog instance to be processed
+        dotomo: bool, optional
+            Whether the tomographic information in `cat` should be 
+            used for the map construction
+            
+        Returns:
+        --------
+        counts: ndarray
+            Aperture number counts
+        
+        """
         
         nbinsz = cat.nbinsz
         if not dotomo:
@@ -569,6 +614,7 @@ class Direct_MapnEqual(DirectEstimator):
     
     
 class Direct_NapnEqual(DirectEstimator):
+
     
     def __init__(self, order_max, Rmin, Rmax, field="scalar", filter_form="C02", ap_weights="Identity", **kwargs):
         super().__init__(Rmin=Rmin, Rmax=Rmax, **kwargs)
