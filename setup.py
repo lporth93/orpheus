@@ -32,6 +32,7 @@ ext_modules = [
                  "orpheus/src/directestimator.c", 
                  "orpheus/src/corrfunc_second.c", 
                  "orpheus/src/corrfunc_third.c",
+                 "orpheus/src/corrfunc_third_derived.c",
                  "orpheus/src/corrfunc_fourth.c",
                  "orpheus/src/corrfunc_fourth_derived.c",
                  "orpheus/src/covariance_second.c"],

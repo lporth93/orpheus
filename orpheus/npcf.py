@@ -384,6 +384,21 @@ class BinnedNPCF:
                 np.ctypeslib.ndpointer(dtype=np.complex128),
                 np.ctypeslib.ndpointer(dtype=np.complex128)] 
             
+            # Conversion between 3pcf multipoles and 3pcf
+            self.clib.multipoles2npcf_ggg.restype = ct.c_void_p
+            self.clib.multipoles2npcf_ggg.argtypes = [
+                p_c128, p_c128, ct.c_int32, ct.c_int32, 
+                p_f64, ct.c_int32, p_f64, ct.c_int32, ct.c_int32,
+                ct.c_int32, 
+                np.ctypeslib.ndpointer(dtype=np.complex128),
+                np.ctypeslib.ndpointer(dtype=np.complex128)]
+            
+            # Change projection of 3pcf between x and centroid
+            self.clib._x2centroid_ggg.restype = ct.c_void_p
+            self.clib._x2centroid_ggg.argtypes = [
+                p_c128, ct.c_int32, 
+                p_f64, ct.c_int32, p_f64, ct.c_int32, ct.c_int32]
+            
         ## Third-order source-lens-lens statistics ##
         if self.order==3 and np.array_equal(self.spins, np.array([2, 0, 0], dtype=np.int32)):
             # Discrete estimator of third-order source-lens-lens (G3L) correlation function
@@ -1279,7 +1294,8 @@ class GGGCorrelation(BinnedNPCF):
         if ret_matrices:
             return threepcf_n_corr[:,nmax:], mats
     
-    def multipoles2npcf(self):
+    # Legacy transform in pure python -- now upgraded to .c
+    def _multipoles2npcf_py(self):
         
         _, nzcombis, rbins, rbins = np.shape(self.npcf_multipoles[0])
         self.npcf = np.zeros((4, nzcombis, rbins, rbins, len(self.phi)), dtype=complex)
@@ -1319,8 +1335,22 @@ class GGGCorrelation(BinnedNPCF):
             _b = self.npcf_norm
             self.npcf = np.divide(_a, _b, out=np.zeros_like(_a), where=_b>0)
         self.projection = "X"
+        
+    def multipoles2npcf(self, projection='Centroid'):
+        assert(projection in self.projections_avail)
+        int_projection = {'X':0,'Centroid':1}
+        _, nzcombis, rbins, rbins = np.shape(self.npcf_multipoles[0])
+        thisnpcf = np.zeros(4*self.nbinsz*self.nbinsz*self.nbinsz*self.nbinsr*self.nbinsr*len(self.phi), dtype=np.complex128)
+        thisnpcf_norm = np.zeros(self.nbinsz*self.nbinsz*self.nbinsz*self.nbinsr*self.nbinsr*len(self.phi), dtype=np.complex128)
+        self.clib.multipoles2npcf_ggg(
+            self.npcf_multipoles.flatten(), self.npcf_multipoles_norm.flatten(), np.int32(self.nmax), np.int32(self.nbinsz),
+            self.bin_centers_mean, np.int32(self.nbinsr), self.phi.astype(np.float64), np.int32(self.nbinsphi[0]), 
+            np.int32(int_projection[projection]), np.int32(self.nthreads), thisnpcf, thisnpcf_norm)
+        self.npcf = thisnpcf.reshape((4,nzcombis,self.nbinsr,self.nbinsr,len(self.phi)))
+        self.npcf_norm = thisnpcf_norm.reshape((nzcombis,self.nbinsr,self.nbinsr,len(self.phi)))
+        self.projection = projection
             
-    ## PROJECTIONS ##
+    ## PROJECTIONS (Preferably use direct in c-level) ##
     def projectnpcf(self, projection):
         super()._projectnpcf(self, projection)
     
@@ -1346,8 +1376,7 @@ class GGGCorrelation(BinnedNPCF):
                 rot_nom[2] = pimod(np.angle(prod1*prod2_inv*prod3*np.exp(3*1J*self.phi)))
                 rot_nom[3] = pimod(np.angle(prod1*prod2*prod3_inv*np.exp(-1J*self.phi)))
                 gammas_cen[:,:,elb1,elb2] = self.npcf[:,:,elb1,elb2]*np.exp(1j*rot_nom)[:,np.newaxis,:]
-        return gammas_cen
-        
+        return gammas_cen        
         
     def computeMap3(self, radii, do_multiscale=False, tofile=False, filtercache=None):
         """
@@ -1355,7 +1384,7 @@ class GGGCorrelation(BinnedNPCF):
         """
         
         if self.npcf is None and self.npcf_multipoles is not None:
-            self.multipoles2npcf()
+            self.multipoles2npcf(projection='Centroid')
             
         if self.projection != "Centroid":
             self.projectnpcf("Centroid")

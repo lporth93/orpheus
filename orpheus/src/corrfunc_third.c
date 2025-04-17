@@ -786,7 +786,7 @@ void alloc_Gammans_doubletree_ggg(
         double complex *wNncache = calloc(nnvals_Nn*size_max_nshift, sizeof(double complex));
         int *Nncache_updates = calloc(size_max_nshift, sizeof(int));
         for (int _elregion=0; _elregion<nfilledregions; _elregion++){
-            int region_debug=99999;
+            int region_debug=-99999;
             // Check if this thread is responsible for the region
             int nthread_target = mymin(_elregion/nregions_per_thread, nthreads-1);
             if (nthread_target!=elthread){continue;}
