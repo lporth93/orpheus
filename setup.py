@@ -58,7 +58,7 @@ setup(name='orpheus',
       license='MIT',
       packages=find_packages(),
       install_requires=[
-          'numpy', 'pathlib'],
+          'astropy', 'healpy', 'numba', 'numpy', 'pathlib', 'scipy'],
       ext_modules=ext_modules,
       #cmdclass={'compile_ext': compile_ext},
       include_package_data=True,

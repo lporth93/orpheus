@@ -1441,6 +1441,14 @@ class GGGCorrelation(BinnedNPCF):
     @staticmethod
     @jit(nopython=True)
     def __map3_filtergrid_singleR(R1, R2, R3, normys_edges, normys_centers, phis):
+        
+        # To avoid zero divisions we set some default bin centers for the evaluation of the filter
+        # As for those positions the 3pcf is zero those will not contribute to the map3 integral
+        if (np.min(normys_centers)==0):
+            _sel = normys_centers!=0
+            _avratios = np.mean(normys_centers[_sel]/normys_edges[_sel])
+            normys_centers[~_sel] = _avratios*normys_edges[~_sel]
+        
         R_ap = R1
         nbinsr = len(normys_centers)
         nbinsphi = len(phis)
@@ -1506,6 +1514,14 @@ class GGGCorrelation(BinnedNPCF):
     @staticmethod
     @jit(nopython=True)
     def __map3_filtergrid_multiR(R1, R2, R3, normys_edges, normys_centers, phis, include_measure=True):
+        
+        # To avoid zero divisions we set some default bin centers for the evaluation of the filter
+        # As for those positions the 3pcf is zero those will not contribute to the map3 integral
+        if (np.min(normys_centers)==0):
+            _sel = normys_centers!=0
+            _avratios = np.mean(normys_centers[_sel]/normys_edges[_sel])
+            normys_centers[~_sel] = _avratios*normys_edges[~_sel]
+        
         nbinsr = len(normys_centers)
         nbinsphi = len(phis)
         _cphis = np.cos(phis)
