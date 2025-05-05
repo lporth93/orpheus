@@ -16,7 +16,7 @@ if (sys.platform[:6] == "darwin"
 else:
     # Force this for now as anacoda default compiler incompatible with newer gcc versions
     # See https://github.com/ContinuumIO/anaconda-issues/issues/11152
-    os.environ["CC"] = "/usr/bin/gcc-12" 
+    os.environ["CC"] = "/usr/bin/gcc-11" 
     #compiler_args = ["-shared", "-fopenmp", "-fPIC", "-Wall", "-lm", "-std=c99"]
     compiler_args = ["-shared", "-fopenmp", "-fPIC", "-Wall", "-lm", "-O3", "-ffast-math", "-std=c99"]
     #compiler_args = ["-shared", "-fopenmp", "-fPIC", "-Wall", "-lm", "-std=c99"]
