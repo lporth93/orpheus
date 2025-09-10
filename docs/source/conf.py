@@ -12,7 +12,7 @@
 #
 import os
 import sys
-sys.path.insert(0, os.path.abspath('../..'))
+sys.path.insert(0, os.path.abspath('../../orpheus/'))
 
 
 # -- Project information -----------------------------------------------------
@@ -52,6 +52,10 @@ extensions = [
 ]
 
 napoleon_google_docstring = False
+nbsphinx_allow_errors = True
+
+#suppress_warnings = ['misc.highlighting', 'numpydoc']
+
 
 # Include init in class documentation.
 autoclass_content = 'both'
@@ -73,6 +77,8 @@ numpydoc_show_class_members = False
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
+
+
 
 # The suffix(es) of source filenames.
 # You can specify multiple suffix as a list of string:

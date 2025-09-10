@@ -380,22 +380,32 @@ class Direct_MapnEqual(DirectEstimator):
                
                        
     def process(self, cat, dotomo=True, Emodeonly=True, connected=True, dpix_innergrid=2.):
-        """
-        Computes aperture statistics on catalog.
-        Arguments:
+        r"""
+        Computes aperture statistics on a catalog.
+
+        Parameters
         ----------
-        cat: orpheus.SpinTracerCatalog
-            The catalog instance to be processed
-        dotomo: bool, optional
-            Whether to compute the statistics for all tomographic bin combinations
-        Emodeonly: bool, optional
-            Does not have an impact at the moment
-        connected: bool, optional
+        cat : orpheus.SpinTracerCatalog
+            The catalog instance to be processed.
+        dotomo : bool, optional
+            Whether to compute the statistics for all tomographic bin combinations.
+            Default is True.
+        Emodeonly : bool, optional
+            Currently does not have an impact.
+            Default is False.
+        connected : bool, optional
             Whether to output only the connected part of the aperture mass statistics.
-            Does not have an impact at the moment
-        dipix_innergrid: float, optional
-            Specifies the pixelsize for a rough reconstruction of the angular mask. Used
-            to preselect aperture centers in the interior of the survey.
+            Does not have an impact at the moment.
+            Default is True.
+        dpix_innergrid : float, optional
+            Pixel size for a rough reconstruction of the angular mask. Used to preselect
+            aperture centers in the interior of the survey.
+            Default is 2.
+
+        Returns
+        -------
+        None
+            Currently does not return any value.
         """
         
         nbinsz = cat.nbinsz
@@ -724,26 +734,36 @@ class Direct_NapnEqual(DirectEstimator):
             p_f64, p_f64, p_f64, p_f64]
                
     def process(self, cat, dotomo=True, Nbar_policy=1, connected=True, dpix_innergrid=2.):
-        """
-        Computes aperture statistics on catalog.
-        Arguments:
+        r"""
+        Computes aperture statistics on a catalog.
+
+        Parameters
         ----------
-        cat: orpheus.SpinTracerCatalog
-            The catalog instance to be processed
-        dotomo: bool, optional
-            Whether to compute the statistics for all tomographic bin combinations
-        Nbar_policy: int, optional
-            What normalisation to use:
-            0 --> Use local Nbar for normalisation
-            1 --> Use global Nbar for normalisation
-            2 --> No Nbar for normalisation
-            Defaults to `1`
-        connected: bool, optional
+        cat : orpheus.SpinTracerCatalog
+            The catalog instance to be processed.
+        dotomo : bool, optional
+            Whether to compute the statistics for all tomographic bin combinations.
+            Default is True.
+        Nbar_policy : int, optional
+            What normalization to use:
+
+            0 : Use local Nbar for normalization
+            1 : Use global Nbar for normalization
+            2 : No Nbar for normalization
+
+            Default is 1.
+        connected : bool, optional
             Whether to output only the connected part of the aperture mass statistics.
-            Does not have an impact at the moment
-        dipix_innergrid: float, optional
-            Specifies the pixelsize for a rough reconstruction of the angular mask. Used
-            to preselect aperture centers in the interior of the survey.
+            Does not have an impact at the moment.
+        dpix_innergrid : float, optional
+            Pixel size for a rough reconstruction of the angular mask. Used to preselect
+            aperture centers in the interior of the survey.
+            Default is 2.
+
+        Returns
+        -------
+        None
+            Currently does not return any value.
         """
         
         assert(isinstance(cat, ScalarTracerCatalog))
