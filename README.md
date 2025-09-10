@@ -5,7 +5,7 @@
 Orpheus is python package for the calculation of second- third- and fourth-order correlation functions of scalar and polar fields such as weak lensing shear. To efficiently perform the calculations, orpheus makes use of a mulitpole decomposition of the N>2 correlation functions and uses parallelized C code for the heavy lifting.
 
 ## Installation, Documentation and Examples
-Installation steps, documentation and examples are provided at [orpheus.readthedocs.io](https://orpheus.readthedocs.io/en/latest/).
+Installation steps, documentation and examples are provided at [orpheus.readthedocs.io](https://orpheus.readthedocs.io/).
 
 ### Installation
  First clone the directory via:
@@ -25,7 +25,7 @@ pip install .
 ```
 
 ### Documentation
-In the [documentation](https://orpheus.readthedocs.io/en/latest/) you find more information about the algorithms and approximation schemes employed in orpheus, as well as a series of jupyter notebooks that give examples of how to use the different estimators implemented in orpheus.
+In the [documentation](https://orpheus.readthedocs.io/) you find more information about the algorithms and approximation schemes employed in orpheus, as well as a series of jupyter notebooks that give examples of how to use the different estimators implemented in orpheus.
 
 ## Using the code
 As at this moment there is no dedicated orpheus paper, please cite the paper that introduced the functionality implemented in orpheus:
