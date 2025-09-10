@@ -12,5 +12,4 @@ Each of the above classes is a sub-class of the base class npcf, so they have a 
 features in common about how they are constructed. The common features are documented here.
 
 .. autoclass:: orpheus.npcf.BinnedNPCF
-    :no-index:
     :members:

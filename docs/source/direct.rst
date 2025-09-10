@@ -13,5 +13,4 @@ Each of the above classes is a sub-class of the base class DirectEstimator, so t
 features in common about how they are constructed. The common features are documented here.
 
 .. autoclass:: orpheus.direct.DirectEstimator
-    :no-index:
     :members:
