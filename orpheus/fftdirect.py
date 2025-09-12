@@ -3,6 +3,7 @@ from scipy.signal import fftconvolve
 from scipy.special import erf
 import ctypes as ct
 from numpy.ctypeslib import ndpointer
+from scipy.special import factorial
 import glob
 from pathlib import Path
 
@@ -318,9 +319,7 @@ class FlatPixelGrid(object):
 
 class FFTDirectEstimator(FlatPixelGrid):
 
-    def __init__(self, pixsize, grid=None, min1=None, min2=None, max1=None, max2=None, n1=None, n2=None, units="arcmin"):
-        self.pixsize = pixsize
-
+    def __init__(self, grid, min1=None, min2=None, max1=None, max2=None, n1=None, n2=None, units="arcmin"):
         #############################
         ## Link compiled libraries ##
         #############################
@@ -329,31 +328,409 @@ class FFTDirectEstimator(FlatPixelGrid):
         self.library_path = str(Path(__import__('orpheus').__file__).parent.parent.absolute())
         self.clib = ct.CDLL(glob.glob(self.library_path+"/orpheus_clib*.so")[0])
         
-        # In case the environment is weird, compile code manually and load it here...
-        #self.clib = ct.CDLL("/vol/euclidraid4/data/lporth/HigherOrderLensing/Estimator/orpheus/orpheus/src/discrete.so")
-        
         # Method that works for RR (but not for LP with a local HPC install)
-        #self.clib = ct.CDLL(search_file_in_site_package(get_site_packages_dir(),"orpheus_clib"))
-        #self.library_path = str(Path(__import__('orpheus').__file__).parent.parent.absolute())
-        #print(self.library_path)
-        #print(self.clib)
-        p_c128 = ndpointer(complex, flags="C_CONTIGUOUS")
-        p_f64 = ndpointer(np.float64, flags="C_CONTIGUOUS")
-        p_f32 = ndpointer(np.float32, flags="C_CONTIGUOUS")
-        p_i32 = ndpointer(np.int32, flags="C_CONTIGUOUS")
-        p_f64_nof = ndpointer(np.float64)
+        p_double = ndpointer(ct.c_double, flags="C_CONTIGUOUS")
 
-        if grid is not None:
-            self.grid = grid
-            super().__init__(pixsize=self.pixsize, shape=(self.grid["gamma"].shape[0],grid["gamma"].shape[1]))
-    
-    def makegrid(self, x, y, gamma1, gamma2, weight, zbingals, isinnermask, zlensbin, zsourcebin, 
-                 lensfrac=1., dec=None, ra=None, orderN=1, orderM=1):
-        galbinning = Galaxy_binning(x, y, gamma1, gamma2, weight, zbingals, isinnermask, dec, ra, orderN, orderM)
-        galbinning.selectzbins(zlensbin=zlensbin, zsourcebin=zsourcebin, lensfrac=lensfrac)
-        galbinning.galaxy_grid(orderM=orderM)
+        self.grid = grid
+        self.pixsize = grid["pixsize"]
+        self.cuts = {"Schneider":1, "Crittenden":4}
+        if "weight_Map" not in self.grid.keys():
+            self.grid["weight_Map"] = np.ones_like(self.grid[list(self.grid)[0]].shape)
+        self.factorials_list = factorial(np.arange(170)).astype(np.double)
+        self.bins_x = self.grid["gamma"].shape[0]
+        self.bins_y = self.grid["gamma"].shape[1]
+        
         super().__init__(pixsize=self.pixsize, shape=(self.grid["gamma"].shape[0],self.grid["gamma"].shape[1]))
+        self.clib.fftBellRec.restype = None
+        self.clib.fftBellRec.argtypes = [ct.c_int, p_double, p_double, p_double, ct.c_int, ct.c_int]
+
+        #testargs = np.random.rand(2,2,3).astype(np.double)
+        #print(testargs)
+        #print(np.ravel(testargs, order="F"))
+        #print(testargs[0,0,0], testargs[1,0,0], testargs[0,1,0], testargs[0,0,1])
+        #testres = np.zeros_like(testargs).astype(np.double)
+        #testpy = self.getBellRecursive(3,testargs,testres)
+        #print(testpy)
+        #testargs = np.ravel(testargs, order="F").astype(np.double)
+        #testres = np.zeros_like(testargs)
+        #self.clib.fftBellRec(3, testargs, self.factorials_list, testres, 2,2)
+        #print(np.reshape(testres, (2,2,3), order="F"))
     
+    def _getFilter(self, radius, rmax, func="U_Schneider", *pars):
+        assert(hasattr(self, func))
+        func = getattr(self, func)
+        if func == self.U_Schneider:
+            args = [radius]
+        if func == self.U_Crittenden:
+            args = [radius, rmax]
+        if func == self.Q_Schneider:
+            args = [radius]
+        if func == self.Q_Crittenden:
+            args = [radius, rmax]
+        return func(*args, *pars)
+
+    def Q_Schneider(self, R):
+        # Setup basic Q
+        rgrid, phigrid = self.polargrid(R)
+        Q = 6. / (np.pi * R**2) * (rgrid / R)**2 * (1. - (rgrid / R)**2)
+        Q *= (rgrid < self.cuts["Schneider"]*R)
+        # Get phase correction
+        res = Q * np.e**(-2. * 1J * phigrid)
+        return -res
+    
+    # We are using this one
+    def Q_Crittenden(self, R, Rmax):
+        # Setup basic Q
+        rgrid, phigrid = self.polargrid(self.cuts["Crittenden"]*Rmax)
+        if self.pixavgfilter:
+            x=rgrid*np.cos(phigrid)
+            y=rgrid*np.sin(phigrid)
+            xerf = (erf((x-0.5*self.pixsize)/(np.sqrt(2)*R)) - erf((x+0.5*self.pixsize)/(np.sqrt(2)*R)))
+            yerf = (erf((y-0.5*self.pixsize)/(np.sqrt(2)*R)) - erf((y+0.5*self.pixsize)/(np.sqrt(2)*R)))
+            Q = np.exp(-0.5*(y/R)**2)*((y+0.5*self.pixsize)*np.exp(-0.5*y*self.pixsize/R**2) - (y-0.5*self.pixsize)*np.exp(0.5*y*self.pixsize/R**2))*xerf
+            Q += np.exp(-0.5*(x/R)**2)*((x+0.5*self.pixsize)*np.exp(-0.5*x*self.pixsize/R**2) - (x-0.5*self.pixsize)*np.exp(0.5*x*self.pixsize/R**2))*yerf
+            Q *= np.exp(-0.125*(self.pixsize/R)**2)/(4*np.sqrt(2*np.pi)*R*self.pixsize**2)
+            Q += 0.25*xerf*yerf/self.pixsize**2
+        else:
+            Q = 1. / (4*np.pi * R**2) * (rgrid / R)**2 * np.exp(-rgrid**2/(2*R**2))
+            Q *= (rgrid < self.cuts["Crittenden"]*R)
+        # Get phase correction
+        res = Q * np.e**(-2. * 1J * phigrid)
+        return -res
+
+    def U_Schneider(self, R):
+        rgrid = self.rgrid(R)
+        U = 9. / (np.pi * R**2) * (1. - (rgrid / R)**2) * \
+            (1. / 3. - (rgrid / R)**2)
+        U *= (rgrid < self.cuts["Schneider"]*R)
+        return U / np.sum(rgrid < R)
+    
+    def U_Crittenden(self, R, Rmax):
+        rgrid, phigrid = self.polargrid(self.cuts["Crittenden"]*Rmax)
+        if self.pixavgfilter:
+            x=rgrid*np.cos(phigrid)
+            y=rgrid*np.sin(phigrid)
+            U = np.exp(-0.5*(y/R)**2)*((y+0.5*self.pixsize)*np.exp(-0.5*y*self.pixsize/R**2) - (y-0.5*self.pixsize)*np.exp(0.5*y*self.pixsize/R**2)) * \
+                (erf((x+0.5*self.pixsize)/(np.sqrt(2)*R)) - erf((x-0.5*self.pixsize)/(np.sqrt(2)*R)))
+            U += np.exp(-0.5*(x/R)**2)*((x+0.5*self.pixsize)*np.exp(-0.5*x*self.pixsize/R**2) - (x-0.5*self.pixsize)*np.exp(0.5*x*self.pixsize/R**2)) * \
+                (erf((y+0.5*self.pixsize)/(np.sqrt(2)*R)) - erf((y-0.5*self.pixsize)/(np.sqrt(2)*R)))
+            U *= np.exp(-0.125*(self.pixsize/R)**2)/(4*np.sqrt(2*np.pi)*R*self.pixsize**2)
+        else:
+            U = 1. / (2*np.pi * R**2) * (1.-0.5*(rgrid / R)**2) * np.exp(-rgrid**2/(2*R**2))
+            U *= (rgrid < self.cuts["Crittenden"]*R)
+        return U
+    
+    def apcounts(self, r, rmax, filter):
+        rgrid, _ = self.polargrid(self.cuts[filter]*rmax)
+        return (rgrid < self.cuts[filter]*r)
+        
+    def compNapmoments(self, rN, rmax):
+        filtNap = self._getFilter(rN, rmax, "U_"+self.filter)
+        lenscountsfilt = self.apcounts(rN, rmax, self.filter)
+        # 1 / Number of lenses in the the integration range of every aperture, for normalization
+        N_lensinaps = fftconvolve(self.grid[self.fieldNap], lenscountsfilt, mode="same").real
+        eps_norm = 1e-4
+        N_lensinaps_inv = np.divide(1., N_lensinaps, out=np.zeros_like(N_lensinaps), where=N_lensinaps>eps_norm)
+        N_pix = np.sum(lenscountsfilt)
+                    
+        Nbar = np.mean(self.grid[self.fieldNap][self.grid["field_sel"]])
+        #starttime = time.time()
+        # Compute Nsm fields, normalized by the m-th power of Nbar
+        Nsm_Nnorm = np.zeros(self.shapeN)
+        for order in range(1,self.orderN+1):
+            Nsm_Nnorm[...,order-1] = fftconvolve(self.grid[self.fieldNap], filtNap**order, mode="same").real
+            if self.Nbar_global:
+                Nsm_Nnorm[...,order-1] *= (self.pixsize**2/Nbar)**order
+            else:
+                # Normalize density field, accounting for fluctuating density in different apertures
+                Nsm_Nnorm[...,order-1] *= (self.pixsize**2*N_lensinaps_inv*N_pix)**order
+            Nsm_Nnorm[...,order-1] *= -factorial(order-1) # For the getBellRecursive function
+        #print("Nap convolutions: %.2f s"%(starttime-time.time()))
+
+        # Compute all Napm moments for all apertures
+        #self.Napm = self.getBellRecursive(self.orderN, Nsm_Nnorm, self.Napm)
+        # Use getBellRecursive from combinatorics.c, add iteration over apertures
+        Napm_help = np.ravel(Nsm_Nnorm, order="F").astype(np.double)
+        Napm_res = np.zeros_like(Napm_help).astype(np.double)
+        self.clib.fftBellRec(self.orderN, Napm_help, self.factorials_list, Napm_res, self.bins_x, self.bins_y)
+        self.Napm = np.reshape(Napm_res, self.shapeN, order="F")
+        #print((self.Napm-Napm_py)[100:110,100:110,0], (self.Napm-Napm_py)[100:110,100:110,1])
+        # Compute all pure Nap moments with the help of the Nsm fields
+        for ordN in range(1,self.orderN+1):
+            # Compute the normalization factors for the Nap moments, and the aperture weights
+            self.wNapm[...,ordN-1] *= N_lensinaps
+            if ordN>1:
+                for k in range(1,ordN):
+                    self.wNapm[...,ordN-1] *= N_lensinaps-k
+                norm = np.divide(N_lensinaps**ordN, self.wNapm[...,ordN-1], out=np.zeros_like(self.Napm[...,ordN-1]), where=self.wNapm[...,ordN-1]>eps_norm)
+                self.Napm[...,ordN-1] *= norm
+            self.wNapm[...,ordN-1] = np.where(self.wNapm[...,ordN-1]>eps_norm, self.wNapm[...,ordN-1], 0.)
+    
+    def compMapmoments(self, rM, rmax):
+        filtMap = self._getFilter(rM, rmax, "Q_"+self.filter)
+        shearcountsfilt = self.apcounts(rM, rmax, self.filter)  
+        A_Map = np.pi*(self.cuts[self.filter]*rM)**2  
+        Sm, norm = np.zeros_like(self.grid["weight_Map"]), np.zeros_like(self.grid["weight_Map"])
+        for ord in range(1,self.orderM+1):
+            norm[...,ord-1] = fftconvolve(self.grid["weight_Map"][...,ord-1], shearcountsfilt, mode="same").real
+            Sm[...,ord-1] = np.divide(norm[...,ord-1],norm[...,0]**ord, out=np.zeros_like(norm[...,0]), where=norm[...,0]>0.)
+            Sm[...,ord-1] *= -factorial(ord-1) # For the getBellRecursive function
+        
+        #starttime = time.time()
+        # Compute Msm fields, normalized by the shear weights
+        self.Msm = np.zeros(self.shapeM, dtype=complex)
+        for ord in range(1,self.orderM+1):
+            for star in range(int(np.ceil((ord+1)/2))):
+                self.Msm[...,ord-1,star] = A_Map**ord*fftconvolve(self.grid["weight_Map"][...,ord-1]*self.grid[self.fieldMap][...,ord-1,star], 
+                                                             filtMap**(ord-star)*np.conj(filtMap)**star, mode="same")
+                self.Msm[...,ord-1,star] = np.divide(self.Msm[...,ord-1,star], norm[...,0]**ord, out=np.zeros_like(self.Msm[...,ord-1,star]), where=norm[...,0]>0.)
+                if star!=ord-star and ord-star<=self.nMMstar-1:
+                    self.Msm[...,ord-1,ord-star] = np.conj(self.Msm[...,ord-1,star])
+        #print("Map convolutions: %.2f s"%(starttime-time.time()))
+        #starttime = time.time()
+        for ord in range(1,self.orderM+1):
+            for star in range(int(np.ceil((ord+1)/2))):
+                self.getMapmoment(ord, ord-star)
+        #print("getMapmoments: %.2f s"%(starttime-time.time()))
+        # Compute all Mapm moments for all apertures, and the corresponding weight normalisation
+        norm_Mapm = np.zeros(self.shapewM, dtype=float)
+        norm_Mapm = self.getBellRecursive(self.orderM, Sm, norm_Mapm)
+        for ordM in range(1,self.orderM+1):
+            norm_div = np.divide(1., norm_Mapm[...,ordM-1], out=np.zeros_like(norm_Mapm[...,ordM-1]), where=norm_Mapm[...,ordM-1]>0.)
+            for star in range(self.nMMstar):
+                self.Mapm[...,ordM-1,star] *= norm_div
+            self.wMapm[...,ordM-1] = np.where(norm[...,0]>0., norm[...,0], 0.)
+        
+    def getStats(self, Rap, samplingrate, orderN=1, orderM=1,
+                 fieldNap="N_lens", fieldMap="gamma", Nbar_global=False,
+                 pixavgfilter=False, filter="Crittenden"):
+        Stats = {"Rap":Rap}
+        leaveout = [fieldNap,fieldMap,"weight_Map","field_sel"]
+        for key in self.grid.keys():
+            if key not in leaveout:
+                Stats[key] = self.grid[key]
+        nRap = Rap.shape[1]
+        statnames, orderlist = self.getstatnames(orderN, orderM)
+        nsampling = len(samplingrate)
+        for key in statnames:
+            Stats[key] = np.zeros((nsampling,nRap))
+        Stats["stats"] = statnames
+        Stats["orderlist"] = orderlist
+        Stats["samplingrate"] = samplingrate
+        
+        assert(fieldNap in self.grid.keys())
+        assert(fieldMap in self.grid.keys())
+        #assert(orderN == self.grid["N_lens"].shape[2])
+        if "field_sel" not in self.grid.keys():
+            self.grid["field_sel"] = np.ones_like(self.grid[fieldNap][...,0])
+        
+        self.orderN = orderN
+        self.orderM = orderM
+        self.fieldNap = fieldNap
+        self.fieldMap = fieldMap
+        self.Nbar_global = Nbar_global
+        self.pixavgfilter = pixavgfilter
+        self.filter = filter
+
+        self.shapeN = (self.grid[fieldNap].shape[0], self.grid[fieldNap].shape[1], orderN)
+        #self.shapeM = (self.grid[fieldMap].shape[0], self.grid[fieldMap].shape[1], orderM)
+        self.nMMstar = int(np.ceil((self.orderM+1)/2))
+        self.shapeM = (self.grid[fieldMap].shape[0], self.grid[fieldMap].shape[1], orderM, self.nMMstar)
+        self.shapewM = (self.grid[fieldMap].shape[0], self.grid[fieldMap].shape[1], orderM)
+        
+        for elr in range(nRap):
+            rN = Rap[0,elr]
+            rM = Rap[1,elr]
+            rmax = max(rM, rN)
+            #starttime=time.time()
+            if orderN>0:
+                self.Napm = np.zeros(self.shapeN, dtype=float)
+                self.wNapm = np.ones(self.shapeN, dtype=float)
+                self.compNapmoments(rN,rmax)
+                #starttime=time.time()
+                # Average the Nap moments over the whole survey field (aperture weighted)
+                for elsr,sr in enumerate(samplingrate):
+                    aperture_mask = self.getaperturemask(rN, sr)
+                    for ordN in range(1,orderN+1):
+                        Stats["Nap"+self.getstrfromint(ordN)][elsr,elr] = np.average(self.Napm[...,ordN-1][aperture_mask], 
+                                                                                weights=self.wNapm[...,ordN-1][aperture_mask])
+                #print("Nap averaging: %.2f s"%(starttime-time.time()))
+            
+            if orderM>0:
+                self.Mapm = np.zeros(self.shapeM, dtype=complex)
+                self.wMapm = np.ones(self.shapewM, dtype=float)
+                #starttime=time.time()
+                self.compMapmoments(rM,rmax)
+                #print("Map moments: %.2f s"%(starttime-time.time()))
+                #starttime=time.time()
+                # Average the Map moments over the whole survey field (aperture weighted)                
+                for ordM in range(1,self.orderM+1):
+                    for m in range(ordM+1):
+                        Ks = self.getKsnm(ordM,m)
+                        MMstarfield = 0.
+                        for elk,k in enumerate(Ks):
+                            MMstarfield += k*self.Mapm[...,ordM-1,elk]
+                        name = statnames[np.argwhere(np.sum(np.abs(np.array(orderlist)-[0,m,ordM-m]), axis=1)==0)[0,0]]
+                        for elsr,sr in enumerate(samplingrate):
+                            aperture_mask = self.getaperturemask(rM, sr)
+                            if (ordM-m)%2==0:
+                                Stats[name][elsr,elr] = np.average(MMstarfield[aperture_mask].real, 
+                                                                    weights=self.wMapm[...,ordM-1][aperture_mask])
+                            else:
+                                Stats[name][elsr,elr] = np.average(MMstarfield[aperture_mask].imag, 
+                                                                    weights=self.wMapm[...,ordM-1][aperture_mask])
+                #print("Map averaging: %.2f s"%(starttime-time.time()))    
+            
+            #starttime=time.time()
+            if orderN>0 and orderM>0:
+                for ordN in range(1,orderN+1):
+                    for ordM in range(1,self.orderM+1):
+                        for m in range(ordM+1):
+                            Ks = self.getKsnm(ordM,m)
+                            NapMMstarfield = 0.
+                            for elk,k in enumerate(Ks):
+                                NapMMstarfield += k*self.Mapm[...,ordM-1,elk]
+                            if (ordM-m)%2==0:
+                                NapMMstarfield = self.Napm[...,ordN-1]*NapMMstarfield.real
+                            else:
+                                NapMMstarfield = self.Napm[...,ordN-1]*NapMMstarfield.imag
+                            wNapMapfield = self.wNapm[...,ordN-1]*self.wMapm[...,ordM-1]
+                            name = statnames[np.argwhere(np.sum(np.abs(np.array(orderlist)-[ordN,m,ordM-m]), axis=1)==0)[0,0]]
+                            for elsr,sr in enumerate(samplingrate):
+                                aperture_mask = self.getaperturemask(min(rM,rN), sr)
+                                Stats[name][elsr,elr] = np.average(NapMMstarfield[aperture_mask], weights=wNapMapfield[aperture_mask])
+            #print("NapMap averaging: %.2f s"%(starttime-time.time()))
+            #print("Nap,Map,NapMap : %.2f s"%(starttime-time.time()))
+        return Stats
+                        
+    def getaperturemask(self,r,samplingrate):
+        samplingsep = max(int(r/self.pixsize/samplingrate), 1)
+        aperture_mask = np.zeros_like(self.grid["field_sel"],dtype=int)
+        aperture_mask[::samplingsep,::samplingsep] = 1
+        return (self.grid["field_sel"]==True)&(aperture_mask==1)
+    
+    def getBellRecursive(self, order, arguments, result):
+        result[...,0]=arguments[...,0]
+        for idxn in range(2,order+1):
+            result[...,idxn-1] += arguments[...,idxn-1]
+            for idxk in range(idxn-1):
+                binom = factorial(idxn-1)/(factorial(idxk)*factorial(idxn-1-idxk))
+                result[...,idxn-1] += binom*result[...,idxn-2-idxk]*arguments[...,idxk]
+        for k in range(order):
+            result[...,k] *= (-1)**(k+1)
+        return result
+    
+    def getMapmoment(self, order, nM):
+        for el in range(self.bell(order)):
+            if el == 0:
+                rgs, m = self.firstrgs(order)
+            else:
+                rgs, m = self.nextrgs(rgs, m)
+            self.Mapm[...,order-1,order-nM] += self.rgs2MsProd(rgs,nM)
+
+    def rgs2MsProd(self, rgs, nM):
+        n = len(rgs)
+        part = self.rgs2part(rgs)
+        res = 1.
+        # Get sign
+        if (n+np.max(rgs))%2:
+            sign = 1.
+        else:
+            sign = -1.
+        pref = 1.
+        for i in range(np.max(rgs)+1):
+            # Get prefactor
+            pref *= factorial(len(np.argwhere(rgs==i)) - 1)
+            # Get expr
+            rel_part = part[n*i:n*(i+1)]
+            ord = int(np.sum(rel_part))
+            star = ord - int(np.sum(rel_part[:nM]))
+            res *= self.Msm[...,ord-1,star]
+        res *= sign*pref
+        return res
+
+    @staticmethod
+    def firstrgs(n):
+        k = np.zeros(n).astype(np.int32)
+        m = np.zeros(n).astype(np.int32)
+        return k, m
+
+    @staticmethod
+    def nextrgs(k, m, order=None):
+        """ Returns the next largest rgs """
+        if order is None:
+            order = len(k) 
+        i = order-1
+
+        while i>=1:
+            if k[i] <= m[i-1]:
+                k[i] += 1
+                m[i] = max(m[i],k[i])
+                for j in range(i+1, order):
+                    k[j] = k[0]
+                    m[j] = m[i]
+                return (k,m)
+            i -=1
+        
+    @staticmethod
+    def rgs2part(rgs):
+        """ Maps rgs to partition selecection
+        i.e. (0,1,0,2) --> [1 0 1 0   0 1 0 0   0 0 0 1]  
+        """
+        lensel = len(rgs)
+        nparts = np.max(rgs)+1
+        res = np.zeros(lensel*nparts)
+        for ind, el in enumerate(rgs):
+            res[lensel*el+ind] += 1
+        return res
+
+    @staticmethod
+    def bell(n): 
+        bell = [[0 for i in range(n+1)] for j in range(n+1)] 
+        bell[0][0] = 1
+        for i in range(1, n+1): 
+            # Explicitly fill for j = 0 
+            bell[i][0] = bell[i-1][i-1] 
+            # Fill for remaining values of j 
+            for j in range(1, i+1): 
+                bell[i][j] = bell[i-1][j-1] + bell[i][j-1] 
+        return bell[n][0]
+
+    def getbincoeff(self, n,k):
+        return (factorial(n)/(factorial(k)*factorial(n-k)))
+
+    def getpnms(self, n,m,s):
+        res=0
+        for k in range(n-s+1):
+            for l in range(s+1):
+                if k+l==m:
+                    res += self.getbincoeff(n-s,k)*self.getbincoeff(s,l)*(-1)**(s-l)
+        return res
+
+    def getKsnm(self, n,m):
+        nrow = np.ceil((n+1)/2).astype(int)
+        evorodd = 0
+        if (n-m)%2!=0:
+            nrow = np.floor((n+1)/2).astype(int)
+            evorodd = 1
+        m_arr = np.zeros(nrow)
+        b = np.zeros(nrow)
+        if n%2==0:
+            for i in range(nrow):
+                m_arr[i] = 2*i+evorodd
+                if m_arr[i]==m:
+                    b[i] = (-1.)**((n-m-evorodd)/2)
+        else:
+            for i in range(nrow):
+                m_arr[i] = 2*i+1-evorodd
+                if m_arr[i]==m:
+                    b[i] = (-1.)**((n-m-evorodd)/2)
+        pmatrix = np.zeros((nrow,nrow))
+        for elx,x in enumerate(m_arr):
+            for s in range(nrow):
+                pmatrix[elx,s] = self.getpnms(n,x,s)
+        return np.linalg.solve(pmatrix, b)
+        
     @staticmethod
     def getstrfromint(i):
         if i==1:
@@ -575,445 +952,3 @@ class Galaxy_binning():
         Ngal += np.histogram2d(xgal, ygal+ystep*self.pixsize, bins=self.bins, weights=w_x*(1.-w_y)/w_norm)[0]
         Ngal += np.histogram2d(xgal+xstep*self.pixsize, ygal+ystep*self.pixsize, bins=self.bins, weights=(1.-w_x)*(1.-w_y)/w_norm)[0]
         return Ngal
-
-class FFTprocess(FFTDirectEstimator):
-    
-    def __init__(self, grid):
-        self.cuts = {"Schneider":1, "Crittenden":4}
-        if "weight_Map" not in self.grid.keys():
-            self.grid["weight_Map"] = np.ones_like(self.grid[list(self.grid)[0]].shape)
-        
-        self.clib.fftBellRec.restype = None
-        self.clib.fftBellRec.argtype = [ct.c_int, ndpointer(ct.c_double, flags="C_CONTIGUOUS"),
-                                              ndpointer(ct.c_double, flags="C_CONTIGUOUS"), ndpointer(ct.c_double, flags="C_CONTIGUOUS"),
-                                              ct.c_int, ct.c_int]
-
-    def _getFilter(self, radius, rmax, func="U_Schneider", *pars):
-        assert(hasattr(self, func))
-        func = getattr(self, func)
-        if func == self.U_Schneider:
-            args = [radius]
-        if func == self.U_Crittenden:
-            args = [radius, rmax]
-        if func == self.Q_Schneider:
-            args = [radius]
-        if func == self.Q_Crittenden:
-            args = [radius, rmax]
-        return func(*args, *pars)
-
-    def Q_Schneider(self, R):
-        # Setup basic Q
-        rgrid, phigrid = self.polargrid(R)
-        Q = 6. / (np.pi * R**2) * (rgrid / R)**2 * (1. - (rgrid / R)**2)
-        Q *= (rgrid < self.cuts["Schneider"]*R)
-        # Get phase correction
-        res = Q * np.e**(-2. * 1J * phigrid)
-        return -res
-    
-    # We are using this one
-    def Q_Crittenden(self, R, Rmax):
-        # Setup basic Q
-        rgrid, phigrid = self.polargrid(self.cuts["Crittenden"]*Rmax)
-        if self.pixavgfilter:
-            x=rgrid*np.cos(phigrid)
-            y=rgrid*np.sin(phigrid)
-            xerf = (erf((x-0.5*self.pixsize)/(np.sqrt(2)*R)) - erf((x+0.5*self.pixsize)/(np.sqrt(2)*R)))
-            yerf = (erf((y-0.5*self.pixsize)/(np.sqrt(2)*R)) - erf((y+0.5*self.pixsize)/(np.sqrt(2)*R)))
-            Q = np.exp(-0.5*(y/R)**2)*((y+0.5*self.pixsize)*np.exp(-0.5*y*self.pixsize/R**2) - (y-0.5*self.pixsize)*np.exp(0.5*y*self.pixsize/R**2))*xerf
-            Q += np.exp(-0.5*(x/R)**2)*((x+0.5*self.pixsize)*np.exp(-0.5*x*self.pixsize/R**2) - (x-0.5*self.pixsize)*np.exp(0.5*x*self.pixsize/R**2))*yerf
-            Q *= np.exp(-0.125*(self.pixsize/R)**2)/(4*np.sqrt(2*np.pi)*R*self.pixsize**2)
-            Q += 0.25*xerf*yerf/self.pixsize**2
-        else:
-            Q = 1. / (4*np.pi * R**2) * (rgrid / R)**2 * np.exp(-rgrid**2/(2*R**2))
-            Q *= (rgrid < self.cuts["Crittenden"]*R)
-        # Get phase correction
-        res = Q * np.e**(-2. * 1J * phigrid)
-        return -res
-
-    def U_Schneider(self, R):
-        rgrid = self.rgrid(R)
-        U = 9. / (np.pi * R**2) * (1. - (rgrid / R)**2) * \
-            (1. / 3. - (rgrid / R)**2)
-        U *= (rgrid < self.cuts["Schneider"]*R)
-        return U / np.sum(rgrid < R)
-    
-    def U_Crittenden(self, R, Rmax):
-        rgrid, phigrid = self.polargrid(self.cuts["Crittenden"]*Rmax)
-        if self.pixavgfilter:
-            x=rgrid*np.cos(phigrid)
-            y=rgrid*np.sin(phigrid)
-            U = np.exp(-0.5*(y/R)**2)*((y+0.5*self.pixsize)*np.exp(-0.5*y*self.pixsize/R**2) - (y-0.5*self.pixsize)*np.exp(0.5*y*self.pixsize/R**2)) * \
-                (erf((x+0.5*self.pixsize)/(np.sqrt(2)*R)) - erf((x-0.5*self.pixsize)/(np.sqrt(2)*R)))
-            U += np.exp(-0.5*(x/R)**2)*((x+0.5*self.pixsize)*np.exp(-0.5*x*self.pixsize/R**2) - (x-0.5*self.pixsize)*np.exp(0.5*x*self.pixsize/R**2)) * \
-                (erf((y+0.5*self.pixsize)/(np.sqrt(2)*R)) - erf((y-0.5*self.pixsize)/(np.sqrt(2)*R)))
-            U *= np.exp(-0.125*(self.pixsize/R)**2)/(4*np.sqrt(2*np.pi)*R*self.pixsize**2)
-        else:
-            U = 1. / (2*np.pi * R**2) * (1.-0.5*(rgrid / R)**2) * np.exp(-rgrid**2/(2*R**2))
-            U *= (rgrid < self.cuts["Crittenden"]*R)
-        return U
-    
-    def apcounts(self, r, rmax, filter):
-        rgrid, _ = self.polargrid(self.cuts[filter]*rmax)
-        return (rgrid < self.cuts[filter]*r)
-        
-    def compNapmoments(self, rN, rmax):
-        filtNap = self._getFilter(rN, rmax, "U_"+self.filter)
-        lenscountsfilt = self.apcounts(rN, rmax, self.filter)
-        # 1 / Number of lenses in the the integration range of every aperture, for normalization
-        N_lensinaps = fftconvolve(self.grid[self.fieldNap], lenscountsfilt, mode="same").real
-        eps_norm = 1e-4
-        N_lensinaps_inv = np.divide(1., N_lensinaps, out=np.zeros_like(N_lensinaps), where=N_lensinaps>eps_norm)
-        N_pix = np.sum(lenscountsfilt)
-                    
-        Nbar = np.mean(self.grid[self.fieldNap][self.grid["field_sel"]])
-        #starttime = time.time()
-        # Compute Nsm fields, normalized by the m-th power of Nbar
-        Nsm_Nnorm = np.zeros(self.shapeN)
-        for order in range(1,self.orderN+1):
-            Nsm_Nnorm[...,order-1] = fftconvolve(self.grid[self.fieldNap], filtNap**order, mode="same").real
-            if self.Nbar_global:
-                Nsm_Nnorm[...,order-1] *= (self.pixsize**2/Nbar)**order
-            else:
-                # Normalize density field, accounting for fluctuating density in different apertures
-                Nsm_Nnorm[...,order-1] *= (self.pixsize**2*N_lensinaps_inv*N_pix)**order
-            Nsm_Nnorm[...,order-1] *= -self.factorial(order-1) # For the getBellRecursive function
-        #print("Nap convolutions: %.2f s"%(starttime-time.time()))
-
-        # Compute all Napm moments for all apertures
-        self.Napm = self.getBellRecursive(self.orderN, Nsm_Nnorm, self.Napm)
-        # Use getBellRecursive from combinatorics.c, add iteration over apertures
-        #factorials = self.factorial(np.arange(170))
-        #self.clib.getBellRecursive(self.orderN, np.ravel(self.Napm), factorials, )
-        # Compute all pure Nap moments with the help of the Nsm fields
-        for ordN in range(1,self.orderN+1):
-            # Compute the normalization factors for the Nap moments, and the aperture weights
-            self.wNapm[...,ordN-1] *= N_lensinaps
-            if ordN>1:
-                for k in range(1,ordN):
-                    self.wNapm[...,ordN-1] *= N_lensinaps-k
-                norm = np.divide(N_lensinaps**ordN, self.wNapm[...,ordN-1], out=np.zeros_like(self.Napm[...,ordN-1]), where=self.wNapm[...,ordN-1]>eps_norm)
-                self.Napm[...,ordN-1] *= norm
-            self.wNapm[...,ordN-1] = np.where(self.wNapm[...,ordN-1]>eps_norm, self.wNapm[...,ordN-1], 0.)
-    
-    def compMapmoments(self, rM, rmax):
-        filtMap = self._getFilter(rM, rmax, "Q_"+self.filter)
-        shearcountsfilt = self.apcounts(rM, rmax, self.filter)  
-        A_Map = np.pi*(self.cuts[self.filter]*rM)**2  
-        Sm, norm = np.zeros_like(self.grid["weight_Map"]), np.zeros_like(self.grid["weight_Map"])
-        for ord in range(1,self.orderM+1):
-            norm[...,ord-1] = fftconvolve(self.grid["weight_Map"][...,ord-1], shearcountsfilt, mode="same").real
-            Sm[...,ord-1] = np.divide(norm[...,ord-1],norm[...,0]**ord, out=np.zeros_like(norm[...,0]), where=norm[...,0]>0.)
-            Sm[...,ord-1] *= -self.factorial(ord-1) # For the getBellRecursive function
-        
-        #starttime = time.time()
-        # Compute Msm fields, normalized by the shear weights
-        self.Msm = np.zeros(self.shapeM, dtype=complex)
-        for ord in range(1,self.orderM+1):
-            for star in range(int(np.ceil((ord+1)/2))):
-                self.Msm[...,ord-1,star] = A_Map**ord*fftconvolve(self.grid["weight_Map"][...,ord-1]*self.grid[self.fieldMap][...,ord-1,star], 
-                                                             filtMap**(ord-star)*np.conj(filtMap)**star, mode="same")
-                self.Msm[...,ord-1,star] = np.divide(self.Msm[...,ord-1,star], norm[...,0]**ord, out=np.zeros_like(self.Msm[...,ord-1,star]), where=norm[...,0]>0.)
-                if star!=ord-star and ord-star<=self.nMMstar-1:
-                    self.Msm[...,ord-1,ord-star] = np.conj(self.Msm[...,ord-1,star])
-        #print("Map convolutions: %.2f s"%(starttime-time.time()))
-        #starttime = time.time()
-        for ord in range(1,self.orderM+1):
-            for star in range(int(np.ceil((ord+1)/2))):
-                self.getMapmoment(ord, ord-star)
-        #print("getMapmoments: %.2f s"%(starttime-time.time()))
-        # Compute all Mapm moments for all apertures, and the corresponding weight normalisation
-        norm_Mapm = np.zeros(self.shapewM, dtype=float)
-        norm_Mapm = self.getBellRecursive(self.orderM, Sm, norm_Mapm)
-        for ordM in range(1,self.orderM+1):
-            norm_div = np.divide(1., norm_Mapm[...,ordM-1], out=np.zeros_like(norm_Mapm[...,ordM-1]), where=norm_Mapm[...,ordM-1]>0.)
-            for star in range(self.nMMstar):
-                self.Mapm[...,ordM-1,star] *= norm_div
-            self.wMapm[...,ordM-1] = np.where(norm[...,0]>0., norm[...,0], 0.)
-        
-        
-
-    def getStats(self, Rap, samplingrate, orderN=1, orderM=1,
-                 fieldNap="N_lens", fieldMap="gamma", Nbar_global=False,
-                 pixavgfilter=False, filter="Crittenden"):
-        Stats = {"Rap":Rap}
-        leaveout = [fieldNap,fieldMap,"weight_Map","field_sel"]
-        for key in self.grid.keys():
-            if key not in leaveout:
-                Stats[key] = self.grid[key]
-        nRap = Rap.shape[1]
-        statnames, orderlist = self.getstatnames(orderN, orderM)
-        nsampling = len(samplingrate)
-        for key in statnames:
-            Stats[key] = np.zeros((nsampling,nRap))
-        Stats["stats"] = statnames
-        Stats["orderlist"] = orderlist
-        Stats["samplingrate"] = samplingrate
-        
-        assert(fieldNap in self.grid.keys())
-        assert(fieldMap in self.grid.keys())
-        #assert(orderN == self.grid["N_lens"].shape[2])
-        if "field_sel" not in self.grid.keys():
-            self.grid["field_sel"] = np.ones_like(self.grid[fieldNap][...,0])
-        
-        self.orderN = orderN
-        self.orderM = orderM
-        self.fieldNap = fieldNap
-        self.fieldMap = fieldMap
-        self.Nbar_global = Nbar_global
-        self.pixavgfilter = pixavgfilter
-        self.filter = filter
-
-        self.shapeN = (self.grid[fieldNap].shape[0], self.grid[fieldNap].shape[1], orderN)
-        #self.shapeM = (self.grid[fieldMap].shape[0], self.grid[fieldMap].shape[1], orderM)
-        self.nMMstar = int(np.ceil((self.orderM+1)/2))
-        self.shapeM = (self.grid[fieldMap].shape[0], self.grid[fieldMap].shape[1], orderM, self.nMMstar)
-        self.shapewM = (self.grid[fieldMap].shape[0], self.grid[fieldMap].shape[1], orderM)
-        
-        for elr in range(nRap):
-            rN = Rap[0,elr]
-            rM = Rap[1,elr]
-            rmax = max(rM, rN)
-            #starttime=time.time()
-            if orderN>0:
-                self.Napm = np.zeros(self.shapeN, dtype=float)
-                self.wNapm = np.ones(self.shapeN, dtype=float)
-                self.compNapmoments(rN,rmax)
-                #starttime=time.time()
-                # Average the Nap moments over the whole survey field (aperture weighted)
-                for elsr,sr in enumerate(samplingrate):
-                    aperture_mask = self.getaperturemask(rN, sr)
-                    for ordN in range(1,orderN+1):
-                        Stats["Nap"+self.getstrfromint(ordN)][elsr,elr] = np.average(self.Napm[...,ordN-1][aperture_mask], 
-                                                                                weights=self.wNapm[...,ordN-1][aperture_mask])
-                #print("Nap averaging: %.2f s"%(starttime-time.time()))
-            
-            if orderM>0:
-                self.Mapm = np.zeros(self.shapeM, dtype=complex)
-                self.wMapm = np.ones(self.shapewM, dtype=float)
-                #starttime=time.time()
-                self.compMapmoments(rM,rmax)
-                #print("Map moments: %.2f s"%(starttime-time.time()))
-                #starttime=time.time()
-                # Average the Map moments over the whole survey field (aperture weighted)                
-                for ordM in range(1,self.orderM+1):
-                    for m in range(ordM+1):
-                        Ks = self.getKsnm(ordM,m)
-                        MMstarfield = 0.
-                        for elk,k in enumerate(Ks):
-                            MMstarfield += k*self.Mapm[...,ordM-1,elk]
-                        name = statnames[np.argwhere(np.sum(np.abs(np.array(orderlist)-[0,m,ordM-m]), axis=1)==0)[0,0]]
-                        for elsr,sr in enumerate(samplingrate):
-                            aperture_mask = self.getaperturemask(rM, sr)
-                            if (ordM-m)%2==0:
-                                Stats[name][elsr,elr] = np.average(MMstarfield[aperture_mask].real, 
-                                                                    weights=self.wMapm[...,ordM-1][aperture_mask])
-                            else:
-                                Stats[name][elsr,elr] = np.average(MMstarfield[aperture_mask].imag, 
-                                                                    weights=self.wMapm[...,ordM-1][aperture_mask])
-                #print("Map averaging: %.2f s"%(starttime-time.time()))    
-            
-            #starttime=time.time()
-            if orderN>0 and orderM>0:
-                for ordN in range(1,orderN+1):
-                    for ordM in range(1,self.orderM+1):
-                        for m in range(ordM+1):
-                            Ks = self.getKsnm(ordM,m)
-                            NapMMstarfield = 0.
-                            for elk,k in enumerate(Ks):
-                                NapMMstarfield += k*self.Mapm[...,ordM-1,elk]
-                            if (ordM-m)%2==0:
-                                NapMMstarfield = self.Napm[...,ordN-1]*NapMMstarfield.real
-                            else:
-                                NapMMstarfield = self.Napm[...,ordN-1]*NapMMstarfield.imag
-                            wNapMapfield = self.wNapm[...,ordN-1]*self.wMapm[...,ordM-1]
-                            name = statnames[np.argwhere(np.sum(np.abs(np.array(orderlist)-[ordN,m,ordM-m]), axis=1)==0)[0,0]]
-                            for elsr,sr in enumerate(samplingrate):
-                                aperture_mask = self.getaperturemask(min(rM,rN), sr)
-                                Stats[name][elsr,elr] = np.average(NapMMstarfield[aperture_mask], weights=wNapMapfield[aperture_mask])
-            #print("NapMap averaging: %.2f s"%(starttime-time.time()))
-            #print("Nap,Map,NapMap : %.2f s"%(starttime-time.time()))
-        return Stats
-    
-    def getstatmap(self, orderN, orderM, nMap, rN, rM, samplingrate,
-                   fieldNap="N_lens", fieldMap="gamma", Nbar_global=False, filter="Crittenden"):
-        self.orderN = orderN
-        self.orderM = orderM
-        self.fieldNap = fieldNap
-        self.fieldMap = fieldMap
-        self.Nbar_global = Nbar_global
-        self.filter = filter
-        self.nMMstar = int(np.ceil((self.orderM+1)/2))
-        self.shapeM = (self.grid[fieldMap].shape[0], self.grid[fieldMap].shape[1], orderM, self.nMMstar)
-        self.shapewM = (self.grid[fieldMap].shape[0], self.grid[fieldMap].shape[1], orderM)
-        mapdict = {"orderN":orderN, "orderM":orderM, "rN":rN, "rM":rM, "samplingrate":samplingrate}
-        if orderN>0:
-            self.shapeN = (self.grid[fieldNap].shape[0], self.grid[fieldNap].shape[1], orderN)
-            self.Napm = np.zeros(self.shapeN, dtype=float)
-            self.wNapm = np.ones(self.shapeN, dtype=float)
-            self.compNapmoments(rN,max(rN,rM))
-            if orderM==0:
-                aperture_mask = self.getaperturemask(rN, samplingrate)
-                mapdict["statmap"] = self.Napm[...,orderN-1]
-                mapdict["aperturemask"] = aperture_mask
-        if orderM>0:
-            self.Mapm = np.zeros(self.shapeM, dtype=complex)
-            self.wMapm = np.ones(self.shapewM, dtype=float)
-            self.compMapmoments(rM,max(rM, rN))
-            if orderN==0:
-                Ks = self.getKsnm(orderM,nMap)
-                MMstarfield = 0.
-                for elk,k in enumerate(Ks):
-                    MMstarfield += k*self.Mapm[...,orderM-1,elk]
-                aperture_mask = self.getaperturemask(rM, samplingrate)
-                if (orderM-nMap)%2==0:
-                    mapdict["statmap"] = MMstarfield.real
-                else:
-                    mapdict["statmap"] = MMstarfield.imag
-                mapdict["aperturemask"] = aperture_mask
-        if orderN>0 and orderM>0:
-            Ks = self.getKsnm(orderM,nMap)
-            NapMMstarfield = 0.
-            for elk,k in enumerate(Ks):
-                NapMMstarfield += k*self.Mapm[...,orderM-1,elk]
-            if (orderM-nMap)%2==0:
-                NapMMstarfield = self.Napm[...,orderN-1]*NapMMstarfield.real
-            else:
-                NapMMstarfield = self.Napm[...,orderN-1]*NapMMstarfield.imag
-            aperture_mask = self.getaperturemask(min(rM,rN), samplingrate)
-            mapdict["statmap"] = NapMMstarfield
-            mapdict["aperturemask"] = aperture_mask
-        return mapdict
-                    
-    def getaperturemask(self,r,samplingrate):
-        samplingsep = max(int(r/self.pixsize/samplingrate), 1)
-        aperture_mask = np.zeros_like(self.grid["field_sel"],dtype=int)
-        aperture_mask[::samplingsep,::samplingsep] = 1
-        return (self.grid["field_sel"]==True)&(aperture_mask==1)
-
-    def factorial(self, n):
-        if n>1:
-            return n*self.factorial(n-1)
-        else:
-            return 1
-    
-    def getBellRecursive(self, order, arguments, result):
-        result[...,0]=arguments[...,0]
-        for idxn in range(2,order+1):
-            result[...,idxn-1] += arguments[...,idxn-1]
-            for idxk in range(idxn-1):
-                binom = self.factorial(idxn-1)/(self.factorial(idxk)*self.factorial(idxn-1-idxk))
-                result[...,idxn-1] += binom*result[...,idxn-2-idxk]*arguments[...,idxk]
-        for k in range(order):
-            result[...,k] *= (-1)**(k+1)
-        return result
-    
-    def getMapmoment(self, order, nM):
-        for el in range(self.bell(order)):
-            if el == 0:
-                rgs, m = self.firstrgs(order)
-            else:
-                rgs, m = self.nextrgs(rgs, m)
-            self.Mapm[...,order-1,order-nM] += self.rgs2MsProd(rgs,nM)
-
-    def rgs2MsProd(self, rgs, nM):
-        n = len(rgs)
-        part = self.rgs2part(rgs)
-        res = 1.
-        # Get sign
-        if (n+np.max(rgs))%2:
-            sign = 1.
-        else:
-            sign = -1.
-        pref = 1.
-        for i in range(np.max(rgs)+1):
-            # Get prefactor
-            pref *= self.factorial(len(np.argwhere(rgs==i)) - 1)
-            # Get expr
-            rel_part = part[n*i:n*(i+1)]
-            ord = int(np.sum(rel_part))
-            star = ord - int(np.sum(rel_part[:nM]))
-            res *= self.Msm[...,ord-1,star]
-        res *= sign*pref
-        return res
-
-    @staticmethod
-    def firstrgs(n):
-        k = np.zeros(n).astype(np.int32)
-        m = np.zeros(n).astype(np.int32)
-        return k, m
-
-    @staticmethod
-    def nextrgs(k, m, order=None):
-        """ Returns the next largest rgs """
-        if order is None:
-            order = len(k) 
-        i = order-1
-
-        while i>=1:
-            if k[i] <= m[i-1]:
-                k[i] += 1
-                m[i] = max(m[i],k[i])
-                for j in range(i+1, order):
-                    k[j] = k[0]
-                    m[j] = m[i]
-                return (k,m)
-            i -=1
-        
-    @staticmethod
-    def rgs2part(rgs):
-        """ Maps rgs to partition selecection
-        i.e. (0,1,0,2) --> [1 0 1 0   0 1 0 0   0 0 0 1]  
-        """
-        lensel = len(rgs)
-        nparts = np.max(rgs)+1
-        res = np.zeros(lensel*nparts)
-        for ind, el in enumerate(rgs):
-            res[lensel*el+ind] += 1
-        return res
-
-    @staticmethod
-    def bell(n): 
-        bell = [[0 for i in range(n+1)] for j in range(n+1)] 
-        bell[0][0] = 1
-        for i in range(1, n+1): 
-            # Explicitly fill for j = 0 
-            bell[i][0] = bell[i-1][i-1] 
-            # Fill for remaining values of j 
-            for j in range(1, i+1): 
-                bell[i][j] = bell[i-1][j-1] + bell[i][j-1] 
-        return bell[n][0]
-
-    def getbincoeff(self, n,k):
-        return (self.factorial(n)/(self.factorial(k)*self.factorial(n-k)))
-
-    def getpnms(self, n,m,s):
-        res=0
-        for k in range(n-s+1):
-            for l in range(s+1):
-                if k+l==m:
-                    res += self.getbincoeff(n-s,k)*self.getbincoeff(s,l)*(-1)**(s-l)
-        return res
-
-    def getKsnm(self, n,m):
-        nrow = np.ceil((n+1)/2).astype(int)
-        evorodd = 0
-        if (n-m)%2!=0:
-            nrow = np.floor((n+1)/2).astype(int)
-            evorodd = 1
-        m_arr = np.zeros(nrow)
-        b = np.zeros(nrow)
-        if n%2==0:
-            for i in range(nrow):
-                m_arr[i] = 2*i+evorodd
-                if m_arr[i]==m:
-                    b[i] = (-1.)**((n-m-evorodd)/2)
-        else:
-            for i in range(nrow):
-                m_arr[i] = 2*i+1-evorodd
-                if m_arr[i]==m:
-                    b[i] = (-1.)**((n-m-evorodd)/2)
-        pmatrix = np.zeros((nrow,nrow))
-        for elx,x in enumerate(m_arr):
-            for s in range(nrow):
-                pmatrix[elx,s] = self.getpnms(n,x,s)
-        return np.linalg.solve(pmatrix, b)

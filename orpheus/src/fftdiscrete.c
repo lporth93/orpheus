@@ -7,17 +7,21 @@
 #include "combinatorics.h"
 
 void fftBellRec(int order, double *arguments, double *factorials, double *result, int bins_x, int bins_y){
-    double *helpres = malloc(sizeof(double)*(order+1));
+    //double *helpres = malloc(sizeof(double)*(order+1));
     double *helparg = malloc(sizeof(double)*order);
     int pixnum = bins_x*bins_y;
+    int flat_idx;
     for (int i=0; i<bins_x; i++){
         for (int j=0; j<bins_y; j++){
-            int flat_idx = i*bins_y + j;
+            flat_idx = i*bins_y + j;
             for (int k=0; k<order; k++){helparg[k] = arguments[flat_idx+k*pixnum];}
+            double *helpres = calloc(order+1, sizeof(double));
             getBellRecursive(order, helparg, factorials, helpres);
-            for (int k=1; k<order+1; k++){result[flat_idx+k*pixnum] = helpres[k];}
+            for (int k=0; k<order; k++){result[flat_idx+k*pixnum] = helpres[k+1]; if (k%2==0){result[flat_idx+k*pixnum] *= -1.;}}
+            free(helpres);
         }
     }
+    free(helparg);
 }
 
 // Enum für die unterstützten Statistik-Typen

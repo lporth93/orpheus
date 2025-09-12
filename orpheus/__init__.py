@@ -4,3 +4,4 @@ from .direct import *
 from .flat2dgrid import *
 from .utils import *
 from .patchutils import *
+from .fftdirect import *

@@ -93,6 +93,7 @@ ext_modules = [
             "orpheus/src/corrfunc_third_derived.c",
             "orpheus/src/corrfunc_fourth.c",
             "orpheus/src/corrfunc_fourth_derived.c",
+            "orpheus/src/fftdiscrete.c",
         ],
         include_dirs=["orpheus/src"],
     )
