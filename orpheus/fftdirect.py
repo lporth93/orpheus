@@ -343,6 +343,9 @@ class FFTDirectEstimator(FlatPixelGrid):
         super().__init__(pixsize=self.pixsize, shape=(self.grid["gamma"].shape[0],self.grid["gamma"].shape[1]))
         self.clib.fftBellRec.restype = None
         self.clib.fftBellRec.argtypes = [ct.c_int, p_double, p_double, p_double, ct.c_int, ct.c_int]
+        self.clib.getcomplexMapmoments.restype = None
+        self.clib.getcomplexMapmoments.argtypes = [ct.c_int, p_double, p_double, p_double, p_double, p_double,
+                                                   ct.c_int, ct.c_int]
 
         #testargs = np.random.rand(2,2,3).astype(np.double)
         #print(testargs)
@@ -488,9 +491,15 @@ class FFTDirectEstimator(FlatPixelGrid):
                     self.Msm[...,ord-1,ord-star] = np.conj(self.Msm[...,ord-1,star])
         #print("Map convolutions: %.2f s"%(starttime-time.time()))
         #starttime = time.time()
-        for ord in range(1,self.orderM+1):
-            for star in range(int(np.ceil((ord+1)/2))):
-                self.getMapmoment(ord, ord-star)
+        #for ord in range(1,self.orderM+1):
+        #    for star in range(int(np.ceil((ord+1)/2))):
+        #        self.getMapmoment(ord, ord-star)
+        Mapm_re = np.ravel(np.zeros(self.shapeM, dtype=float), order="F")
+        Mapm_im = np.ravel(np.zeros(self.shapeM, dtype=float), order="F")
+        self.clib.getcomplexMapmoments(self.orderM, self.factorials_list, np.ascontiguousarray(np.ravel(self.Msm.real, order="F")),
+                                       np.ascontiguousarray(np.ravel(self.Msm.imag, order="F")), Mapm_re, Mapm_im,
+                                       self.bins_x, self.bins_y)
+        self.Mapm = np.reshape(Mapm_re + 1j*Mapm_im, self.shapeM, order="F")
         #print("getMapmoments: %.2f s"%(starttime-time.time()))
         # Compute all Mapm moments for all apertures, and the corresponding weight normalisation
         norm_Mapm = np.zeros(self.shapewM, dtype=float)

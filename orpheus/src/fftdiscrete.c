@@ -5,7 +5,9 @@
 #include <stdio.h>
 
 #include "combinatorics.h"
+#include "utils.h"
 
+// Compute BellRecursive for all apertures (i.e. pixels)
 void fftBellRec(int order, double *arguments, double *factorials, double *result, int bins_x, int bins_y){
     //double *helpres = malloc(sizeof(double)*(order+1));
     double *helparg = malloc(sizeof(double)*order);
@@ -22,6 +24,106 @@ void fftBellRec(int order, double *arguments, double *factorials, double *result
         }
     }
     free(helparg);
+}
+
+void getcomplexMapmoments(int orderM, double *factorials, double *Msm_re, double *Msm_im, 
+                          double *res_re, double *res_im, int bins_x, int bins_y){
+    int *rgs, *helper;
+    int nproducts;
+    for (int ord=1; ord<=orderM; ord++){
+        int *rgs = malloc(ord * sizeof(int)); 
+        int *helper = malloc(ord * sizeof(int));
+        for (int star=0; star<(int)(ceil(0.5*(1.+(double)ord))); star++){
+            for (int el=0; el<bell(ord); el++){
+                if (el==0){
+                    rgs = calloc(ord, sizeof(int)); 
+                    helper = calloc(ord, sizeof(int));
+                }else{
+                    nextrgs(rgs, helper, ord);
+                }
+                int nproducts = maxarr(rgs, ord) + 1;
+                rgs2MsProd(rgs, ord, star, nproducts, factorials, Msm_re, Msm_im, 
+                           res_re, res_im, bins_x, bins_y);
+            }
+        }
+    }
+    free(rgs);
+    free(helper);
+}
+
+void rgs2MsProd(int *rgs, int ord, int star, int nproducts, double *factorials, double *Msm_re, double *Msm_im, 
+                double *res_re, double *res_im, int bins_x, int bins_y){
+    //printf("%d %d, rgs: ",ord,star);
+    //for(int i=0; i<ord; i++){printf("%d ",rgs[i]);}
+    //printf("\n");
+    int *part = calloc(ord*nproducts, sizeof(int));
+    for (int i=0; i<ord; i++){
+        part[ord*rgs[i]+i] += 1;
+    }
+    int pixnum = bins_x*bins_y;
+    double *tempres_re = malloc(pixnum * sizeof(double));
+    double *tempres_im = malloc(pixnum * sizeof(double));
+    for (int i=0; i<pixnum; i++){
+            tempres_re[i] = 1.;
+            tempres_im[i] = 1.;
+    }
+    double sign=1.;
+    if ((ord+nproducts)%2!=0){sign = -1.;}
+    double pref = 1.;
+    int ordind, starind;
+    for (int i=0; i<nproducts; i++){
+        // Get prefactor
+        pref *= factorials[numberofequalvals(rgs, ord, i) - 1];
+        // Get expression
+        ordind = 0;
+        starind = 0;
+        for (int j=0; j<ord; j++){
+            ordind += part[ord*i+j];
+            starind += part[ord*i+j];
+        }
+        for (int j=0; j<ord-star; j++){
+            starind -= part[ord*i+j];
+        }
+        ordind -= 1;
+        /*printf("ord%d star%d rgs ",ord,star);
+        for(int j=0; j<ord; j++){printf("%d ",rgs[j]);}
+        printf(", part ");
+        for(int j=0; j<ord; j++){printf("%d ",part[ord*i+j]);}
+        printf("\n");*/
+        for (int i=0; i<pixnum; i++){
+            tempres_re[i] *= Msm_re[i+pixnum*(ordind+ord*starind)];
+            tempres_im[i] *= Msm_im[i+pixnum*(ordind+ord*starind)];
+        }
+    }
+    for (int i=0; i<pixnum; i++){
+        res_re[i+pixnum*(ord-1+ord*star)] += tempres_re[i]*sign*pref;
+        res_im[i+pixnum*(ord-1+ord*star)] += tempres_im[i]*sign*pref;
+    }
+    free(part);
+    free(tempres_re);
+    free(tempres_im);
+}
+
+int findmax(int *arr, int len){
+    int maxval=arr[0];
+    for (int i=1; i<len; i++){
+        if (maxval<arr[i]){
+            maxval = arr[i];
+        }
+    }
+    if (len>=maxval){
+        return len;
+    } else{
+        return maxval;
+    }
+}
+
+int numberofequalvals(int *arr, int len, int val){
+    int n=0;
+    for (int i=0; i<len; i++){
+        if (val == arr[i]){n++;}
+    }
+    return n;
 }
 
 // Enum für die unterstützten Statistik-Typen
