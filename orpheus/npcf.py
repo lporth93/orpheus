@@ -458,6 +458,20 @@ class BinnedNPCF:
                 np.ctypeslib.ndpointer(dtype=np.float64), 
                 np.ctypeslib.ndpointer(dtype=np.complex128),
                 np.ctypeslib.ndpointer(dtype=np.complex128)] 
+
+            # Tree estimator of non-tomographic fourth-order shear correlation function
+            self.clib.alloc_notomoGammans_tree_gggg.restype = ct.c_void_p
+            self.clib.alloc_notomoGammans_tree_gggg.argtypes = [
+                p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, ct.c_int32, 
+                ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, ct.c_int32, 
+                p_i32,  ct.c_int32, 
+                ct.c_int32, p_f64, p_i32,
+                p_f64, p_f64, p_f64, p_f64, p_f64, p_f64,
+                p_i32, p_i32, p_i32, ct.c_int32, 
+                ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,  ct.c_int32, 
+                np.ctypeslib.ndpointer(dtype=np.float64), 
+                np.ctypeslib.ndpointer(dtype=np.complex128),
+                np.ctypeslib.ndpointer(dtype=np.complex128)] 
             
             # Discrete estimator of non-tomographic Map^4 statistics (low-mem)
             self.clib.alloc_notomoMap4_disc_gggg.restype = ct.c_void_p
@@ -743,7 +757,7 @@ class GGCorrelation(BinnedNPCF):
                 maxresoind_leaf=self.maxresoind_leaf,
                 nthreads=self.nthreads,
                 verbosity=self.verbosity)
-            pcorr.process(pcat, dotomo=dotomo)
+            pcorr.process(pcat, dotomo=dotomo, do_dc=do_dc)
             
             # Update the total measurement
             if elp == 0:
@@ -2792,11 +2806,11 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                     *args_map4,
                     *args_4pcf)
             func = self.clib.alloc_notomoMap4_disc_gggg  
-        if self.method=="Tree" and lowmem:
+        if self.method=="Tree":
             # Prepare mask for nonredundant theta- and multipole configurations
             _resradial = gen_thetacombis_fourthorder(nbinsr=self.nbinsr, nthreads=self.nthreads, batchsize=batchsize, 
                                                      batchsize_max=self.thetabatchsize_max, ordered=True, custom=custom_thetacombis,
-                                                     verbose=self._verbose_python)
+                                                     verbose=self._verbose_python*lowmem)
             _, _, thetacombis_batches, cumnthetacombis_batches, nthetacombis_batches, nbatches = _resradial
             assert(self.nmaxs[0]==self.nmaxs[1])
             _resmultipoles = gen_n2n3indices_Upsfourth(self.nmaxs[0])
@@ -2820,32 +2834,52 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
             pix_gals_resos = np.concatenate(pix_gals).astype(np.int32)
             index_matcher_flat = np.argwhere(cat.index_matcher>-1).flatten()
             nregions = len(index_matcher_flat)
-            # Build args
-            args_basesetup = (np.int32(_nmax), 
-                              np.float64(self.min_sep), np.float64(self.max_sep), np.int32(self.nbinsr), 
-                              np.int32(self.multicountcorr),
-                              _inds, np.int32(len(_inds)), self.phis[0].astype(np.float64), 
-                              2*np.pi/_nphis*np.ones(_nphis, dtype=np.float64), np.int32(_nphis), )
-            args_resos = (np.int32(self.tree_nresos), self.tree_redges, np.array(ngal_resos, dtype=np.int32),
-                          isinner_resos, weight_resos, pos1_resos, pos2_resos, e1_resos, e2_resos,
-                          index_matcher_resos, pixs_galind_bounds_resos, pix_gals_resos, np.int32(nregions), )
-            args_hash = (np.float64(cat.pix1_start), np.float64(cat.pix1_d), np.int32(cat.pix1_n), 
-                         np.float64(cat.pix2_start), np.float64(cat.pix2_d), np.int32(cat.pix2_n), )
-            args_thetas = (thetacombis_batches, nthetacombis_batches, cumnthetacombis_batches, nbatches, )
-            args_map4 = (mapradii, np.int32(len(mapradii)), M4correlators)
-            args_4pcf = (np.int32(alloc_4pcfmultipoles), np.int32(alloc_4pcfreal), 
-                         bin_centers, Upsilon_n, N_n, fourpcf, fourpcf_norm, )
-            args = (*args_basecat,
-                    *args_basesetup,
-                    *args_resos,
-                    *args_hash,
-                    *args_thetas,
-                    np.int32(self.nthreads),
-                    np.int32(self._verbose_c),
-                    projection,
-                    *args_map4,
-                    *args_4pcf)
-            func = self.clib.alloc_notomoMap4_tree_gggg  
+            if not lowmem:
+                args_basesetup = (np.int32(_nmax), 
+                                  np.float64(self.min_sep), np.float64(self.max_sep), np.int32(self.nbinsr), 
+                                  np.int32(cumnthetacombis_batches[-1]), np.int32(self.multicountcorr),
+                                  _inds, np.int32(len(_inds)),)
+                args_resos = (np.int32(self.tree_nresos), self.tree_redges, np.array(ngal_resos, dtype=np.int32),
+                            isinner_resos, weight_resos, pos1_resos, pos2_resos, e1_resos, e2_resos,
+                            index_matcher_resos, pixs_galind_bounds_resos, pix_gals_resos, np.int32(nregions), )
+                args_hash = (np.float64(cat.pix1_start), np.float64(cat.pix1_d), np.int32(cat.pix1_n), 
+                            np.float64(cat.pix2_start), np.float64(cat.pix2_d), np.int32(cat.pix2_n), )
+                args_out = ( bin_centers, Upsilon_n, N_n, )
+                args = (*args_basecat,
+                        *args_basesetup,
+                        *args_resos,
+                        *args_hash,
+                        np.int32(self.nthreads),
+                        np.int32(self._verbose_c),
+                        *args_out)
+                func = self.clib.alloc_notomoGammans_tree_gggg  
+            if lowmem:
+                # Build args
+                args_basesetup = (np.int32(_nmax), 
+                                np.float64(self.min_sep), np.float64(self.max_sep), np.int32(self.nbinsr), 
+                                np.int32(self.multicountcorr),
+                                _inds, np.int32(len(_inds)), self.phis[0].astype(np.float64), 
+                                2*np.pi/_nphis*np.ones(_nphis, dtype=np.float64), np.int32(_nphis), )
+                args_resos = (np.int32(self.tree_nresos), self.tree_redges, np.array(ngal_resos, dtype=np.int32),
+                            isinner_resos, weight_resos, pos1_resos, pos2_resos, e1_resos, e2_resos,
+                            index_matcher_resos, pixs_galind_bounds_resos, pix_gals_resos, np.int32(nregions), )
+                args_hash = (np.float64(cat.pix1_start), np.float64(cat.pix1_d), np.int32(cat.pix1_n), 
+                            np.float64(cat.pix2_start), np.float64(cat.pix2_d), np.int32(cat.pix2_n), )
+                args_thetas = (thetacombis_batches, nthetacombis_batches, cumnthetacombis_batches, nbatches, )
+                args_map4 = (mapradii, np.int32(len(mapradii)), M4correlators)
+                args_4pcf = (np.int32(alloc_4pcfmultipoles), np.int32(alloc_4pcfreal), 
+                            bin_centers, Upsilon_n, N_n, fourpcf, fourpcf_norm, )
+                args = (*args_basecat,
+                        *args_basesetup,
+                        *args_resos,
+                        *args_hash,
+                        *args_thetas,
+                        np.int32(self.nthreads),
+                        np.int32(self._verbose_c),
+                        projection,
+                        *args_map4,
+                        *args_4pcf)
+                func = self.clib.alloc_notomoMap4_tree_gggg  
 
         # Optionally print the arguments 
         if self._verbose_debug:
