@@ -200,7 +200,7 @@ class DirectEstimator:
         #############################
         # Method that works for LP
         target_path = __import__('orpheus').__file__
-        self.library_path = str(Path(__import__('orpheus').__file__).parent.parent.absolute())
+        self.library_path = str(Path(__import__('orpheus').__file__).parent.absolute())
         self.clib = ct.CDLL(glob.glob(self.library_path+"/orpheus_clib*.so")[0])
         
         # In case the environment is weird, compile code manually and load it here...
@@ -847,9 +847,10 @@ class Direct_NapnEqual(DirectEstimator):
             args_centers = (self.radii[indR], centers_1, centers_2, len(centers_1), len(centers_2), )  
         if forfunc=="Equal":
             args_ofw = (self.order_max, self.filters_dict[self.filter_form], 
-                        np.int32(self.multicountcorr), np.int32(Nbar_policy), )
+                        np.int32(self.multicountcorr), np.int32(Nbar_policy), np.float64(self.weight_outer), np.float64(self.weight_inpainted), )
         elif forfunc=="EqualGrid":
-            args_ofw = (self.order_max, self.filters_dict[self.filter_form], self.ap_weights_dict[self.ap_weights], )
+            args_ofw = (self.order_max, self.filters_dict[self.filter_form], self.ap_weights_dict[self.ap_weights],
+                        np.float64(self.weight_outer), np.float64(self.weight_inpainted), )
         args_cat = (cat.weight.astype(np.float64), cat.isinner.astype(np.float64),
                     cat.pos1.astype(np.float64), cat.pos2.astype(np.float64), cat.tracer.astype(np.float64),
                     zbins, np.int32(nbinsz), np.int32(cat.ngal), )
