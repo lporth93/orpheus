@@ -7,9 +7,6 @@ functions and integrated measures of those.
 .. note::
    This project is under active development.
 
-Contents
---------
-
 User Guide
 ----------
 .. toctree::

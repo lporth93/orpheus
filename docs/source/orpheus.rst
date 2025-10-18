@@ -1,5 +1,5 @@
-Catlog
------------------------
+Catalog
+=======
 
 .. automodule:: orpheus.catalog
    :members:
@@ -8,10 +8,17 @@ Catlog
    
    
 NPCF
------------------
+====
 
 .. automodule:: orpheus.npcf
    :members:
    :undoc-members:
    :show-inheritance:
 
+Direct
+======
+
+.. automodule:: orpheus.direct
+   :members:
+   :undoc-members:
+   :show-inheritance:
