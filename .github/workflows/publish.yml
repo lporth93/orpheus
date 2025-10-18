@@ -3,7 +3,7 @@ name: Build and Publish Wheels
 on:
   push:
     tags:
-      - "v*"  # Trigger on tags like v0.1.0
+      - "v*"
 
 jobs:
   build:
@@ -15,7 +15,6 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      # Optional: set up a runner Python for the job itself (not required for cibuildwheel)
       - name: Set up Python (runner)
         uses: actions/setup-python@v5
         with:
@@ -30,6 +29,11 @@ jobs:
           CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-*"
           CIBW_SKIP: "pp*"
         run: |
+          # On macOS runners set MACOSX_DEPLOYMENT_TARGET to match bundled libgomp
+          if [ "$(uname -s)" = "Darwin" ]; then
+            echo "Setting MACOSX_DEPLOYMENT_TARGET=15.0 for macOS build"
+            export MACOSX_DEPLOYMENT_TARGET=15.0
+          fi
           cibuildwheel --output-dir wheelhouse
 
       - name: Upload wheelhouse artifact
