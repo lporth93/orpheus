@@ -54,7 +54,7 @@ jobs:
           name: wheelhouse-${{ matrix.os }}
           path: wheelhouse/*.whl
 
-    publish:
+  publish:
     needs: build
     runs-on: ubuntu-latest
     steps:
