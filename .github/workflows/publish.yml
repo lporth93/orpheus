@@ -17,7 +17,7 @@ jobs:
     strategy:
       matrix:
         # Only linux and macos, no windows
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-14, macos-latest]
 
     steps:
       - name: Checkout repository
@@ -42,10 +42,16 @@ jobs:
         run: |
           # For macOS builds set deployment target to match libgomp dependency seen earlier
           if [ "$(uname -s)" = "Darwin" ]; then
-            echo "Setting MACOSX_DEPLOYMENT_TARGET=15.0 for macOS build"
-            export MACOSX_DEPLOYMENT_TARGET=15.0
+            mac_ver=$(sw_vers -productVersion | cut -d. -f1)
+            echo "Detected macOS version: $mac_ver"
+            if [[ "$mac_ver" == "14" ]]; then
+              export MACOSX_DEPLOYMENT_TARGET=14.0
+              echo "Setting MACOSX_DEPLOYMENT_TARGET=14.0"
+            else
+              export MACOSX_DEPLOYMENT_TARGET=15.0
+              echo "Setting MACOSX_DEPLOYMENT_TARGET=15.0 (default)"
+            fi
           fi
-
           cibuildwheel --output-dir wheelhouse
 
       - name: Upload wheelhouse artifact
