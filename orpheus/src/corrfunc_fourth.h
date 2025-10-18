@@ -15,6 +15,17 @@ void alloc_notomoGammans_discrete_gggg(
     double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n, 
     int nthreads, int verbose, double *bin_centers, double complex *Upsilon_n, double complex *N_n);
 
+void alloc_notomoGammans_tree_gggg(
+    double *isinner, double *weight, double *pos1, double *pos2, double *e1, double *e2, int ngal, 
+    int nmax, double rmin, double rmax, int nbinsr, int nthetacombis, int dccorr,
+    int *nindices, int len_nindices, 
+    int nresos, double *reso_redges, int *ngal_resos, 
+    double *isinner_resos, double *weight_resos, double *pos1_resos, double *pos2_resos, 
+    double *e1_resos, double *e2_resos,
+    int *index_matcher_hash, int *pixs_galind_bounds, int *pix_gals, int nregions, 
+    double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n, 
+    int nthreads, int verbose, double *bin_centers, double complex *Upsilon_n, double complex *N_n);
+
 void alloc_notomoMap4_disc_gggg(
     double *isinner, double *weight, double *pos1, double *pos2, double *e1, double *e2, int ngal, 
     int nmax, double rmin, double rmax, int nbinsr, int dccorr, double *phibins, double *dbinsphi, int nbinsphi,
@@ -38,6 +49,17 @@ void alloc_notomoMap4_tree_gggg(
     int nthreads, int verbose, int projection, double *mapradii, int nmapradii, double complex *M4correlators, 
     int alloc_4pcfmultipoles, int alloc_4pcfreal,
     double *bin_centers, double complex *Upsilon_n, double complex *N_n, double complex *Gammas, double complex *Norms);
+
+void alloc_notomoGammans_tree_nnnn(
+    double *isinner, double *weight, double *pos1, double *pos2, int ngal, 
+    int nmax, double rmin, double rmax, int nbinsr, int nthetacombis, int dccorr, 
+    int *nindices, int len_nindices, 
+    int nresos, double *reso_redges, int *ngal_resos, 
+    double *isinner_resos, double *weight_resos, double *pos1_resos, double *pos2_resos, 
+    int *index_matcher_hash, int *pixs_galind_bounds, int *pix_gals, int nregions, 
+    double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n, 
+    int nthreads, int verbose,
+    double *bin_centers, double complex *N_n);
 
 void alloc_notomoNap4_tree_nnnn(
     double *isinner, double *weight, double *pos1, double *pos2, int ngal, 

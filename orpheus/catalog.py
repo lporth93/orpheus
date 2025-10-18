@@ -166,7 +166,7 @@ class Catalog:
         ## Link compiled libraries ##
         # Method that works for LP
         target_path = __import__('orpheus').__file__
-        self.library_path = str(Path(__import__('orpheus').__file__).parent.parent.absolute())
+        self.library_path = str(Path(__import__('orpheus').__file__).parent.absolute())
         self.clib = ct.CDLL(glob.glob(self.library_path+"/orpheus_clib*.so")[0])
         # Method that works for RR (but not for LP with a local HPC install)
         #self.clib = ct.CDLL(search_file_in_site_package(get_site_packages_dir(),"orpheus_clib"))
@@ -214,7 +214,7 @@ class Catalog:
 
     def topatches(self, npatches=None, area_patch_deg2_target=None, patchextend_deg=2.,other_cats=None,
                   nside_hash=128,  verbose=False, method='kmeans_healpix',
-                  kmeanshp_maxiter=1000, kmeanshp_tol=1e-10, kmeanshp_randomstate=42):
+                  kmeanshp_maxiter=1000, kmeanshp_tol=1e-10, kmeanshp_randomstate=42,healpix_nside=8):
         r""" Decomposes a full-sky catalog into patches.
         """
         
@@ -230,8 +230,14 @@ class Catalog:
                                                   method=method,
                                                   kmeanshp_maxiter=kmeanshp_maxiter, 
                                                   kmeanshp_tol=kmeanshp_tol,
-                                                  kmeanshp_randomstate=kmeanshp_randomstate)
-            self.npatches = npatches
+                                                  kmeanshp_randomstate=kmeanshp_randomstate,
+                                                  healpix_nside=healpix_nside
+                                                  )
+            if method=='healpix':
+                self.npatches = 12*healpix_nside*healpix_nside
+            else:
+                self.npatches = npatches
+            
 
         # We want to create equivalent patches for multiple catalogs
         else:

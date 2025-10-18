@@ -59,7 +59,7 @@ def frompatchindices_preparerot(index, patchindices, ra, dec, rotsignflip):
     return inds_extpatch, patch_isinner, rotangle, ra_rot, dec_rot, rotangle_polars
     
 def gen_cat_patchindices(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_hash=128, verbose=False, method='kmeans_healpix',
-                         kmeanshp_maxiter=1000, kmeanshp_tol=1e-10, kmeanshp_randomstate=42):
+                         kmeanshp_maxiter=1000, kmeanshp_tol=1e-10, kmeanshp_randomstate=42, healpix_nside=8):
     """ Decomposes a spherical catalog in ~equal-area patches with a buffer region
     
     Parameters
@@ -155,6 +155,13 @@ def gen_cat_patchindices(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_ha
         # Step 3: Map the pixel centers back to the galaxy indices
         hashmap = np.vectorize({upix: center for upix, center in zip(hpx_uinds, clustinds)}.get)
         patchinds = hashmap(hpx_inds)
+    # Simply assign to healpix pixel. Fast and stable, but patchareas might strongly vary in size.
+    elif method == "healpix":
+        eq = SkyCoord(ra_deg, dec_deg, frame='galactic', unit='deg')
+        l, b = eq.galactic.l.value, eq.galactic.b.value
+        theta = np.radians(90. - b)
+        phi = np.radians(l)
+        patchinds = ang2pix(healpix_nside, theta, phi).astype(int)
     else:
         raise NotImplementedError
         
@@ -192,7 +199,7 @@ def gen_cat_patchindices(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_ha
     _pixreso = nside2resol(nside_hash,arcmin=True)
     if method == 'kmeans_treecorr':
         _patchcenters = cat.patch_centers
-    elif method == 'kmeans_healpix':
+    elif method == 'kmeans_healpix' or method=='healpix':
         _patchcenters = np.array([[np.mean(ra_deg[ patchinds==patchind]), np.mean(dec_deg[ patchinds==patchind])] for patchind in range(npatches)])
     else:
         raise NotImplementedError
@@ -291,6 +298,8 @@ def cat2hpx(lon, lat, nside, radec=True, do_counts=False, return_idx=False, retu
         Return the number of counts per HEALPix pixel
     return_idx : bool
         Return the set of non-empty HEALPix pixel indices
+    return_indices : bool
+        Returns the per-object HEALPix pixel indices
     weights: None or ndarray
         Needs to be given if each point carries an individual weight
 

@@ -3310,8 +3310,8 @@ void alloc_Gammans_discrete_NGG(
                     }
                 }
                 // Now allocate only nonzero bins
-                // Upsilon_-(thet1, thet2) ~ w * G_{+n-2}(thet1) * G_{-n-2}(thet2) + delta^K_{thet1,thet2} * (w * (we)^2*exp(4*phi))
-                // Upsilon_+(thet1, thet2) ~ w * G_{+n-2}(thet1) * conj(G_{+n-2})(thet2) + delta^K_{thet1,thet2} * (w * |we|^2)
+                // Upsilon_-(thet1, thet2) ~ w * G_{+n-2}(thet1) * G_{-n-2}(thet2) - delta^K_{thet1,thet2} * (w * (we)^2*exp(-4*phi))
+                // Upsilon_+(thet1, thet2) ~ w * G_{+n-2}(thet1) * conj(G_{+n-2})(thet2) - delta^K_{thet1,thet2} * (w * |we|^2)
                 // Norm(thet1, thet2)    ~   w  * W_{n}(thet1)   * W_{-n}(thet2)   - delta^K_{thet1,thet2} * (w  * w*w)
                 // Note that here we allocate also the negative multipoles as Upsilon_- does not have a symmetry connecting the 
                 // negative multipoles to the positive one (for this we would need also a <n gamma^* gamma> correlator, but this
@@ -3625,8 +3625,8 @@ void alloc_Gammans_tree_NGG(
                     }
                 }
                 // Now allocate only nonzero bins
-                // Upsilon_-(thet1, thet2) ~ w * G_{+n-2}(thet1) * G_{-n-2}(thet2) + delta^K_{thet1,thet2} * (w * (we)^2*exp(4*phi))
-                // Upsilon_+(thet1, thet2) ~ w * G_{+n-2}(thet1) * conj(G_{+n-2})(thet2) + delta^K_{thet1,thet2} * (w * |we|^2)
+                // Upsilon_-(thet1, thet2) ~ w * G_{+n-2}(thet1) * G_{-n-2}(thet2) - delta^K_{thet1,thet2} * (w * (we)^2*exp(4*phi))
+                // Upsilon_+(thet1, thet2) ~ w * G_{+n-2}(thet1) * conj(G_{+n-2})(thet2) - delta^K_{thet1,thet2} * (w * |we|^2)
                 // Norm(thet1, thet2)    ~   w  * W_{n}(thet1)   * W_{-n}(thet2)   - delta^K_{thet1,thet2} * (w  * w*w)
                 // Note that here we allocate also the negative multipoles as Upsilon_- does not have a symmetry connecting the 
                 // negative multipoles to the positive one (for this we would need also a <n gamma^* gamma> correlator, but this
@@ -4162,8 +4162,8 @@ void alloc_Gammans_doubletree_NGG(
                     // Now update the Upsilon_n
                     // tmpUpsilon have shape (nthreads, 2, 2*nmax+1, nz_lens, nz_source, nz_source, nbinsr, nbinsr)
                     // Gns have shape (nmax+5, nbinsz_source, nbinsr)
-                    // Upsilon_-(thet1, thet2) ~ w * G_{+n-2}(thet1) * G_{-n-2}(thet2) + delta^K_{thet1,thet2} * (w * (we)^2*exp(-4*phi))
-                    // Upsilon_+(thet1, thet2) ~ w * G_{+n-2}(thet1) * conj(G_{+n-2})(thet2) + delta^K_{thet1,thet2} * (w * |we|^2)
+                    // Upsilon_-(thet1, thet2) ~ w * G_{+n-2}(thet1) * G_{-n-2}(thet2) - delta^K_{thet1,thet2} * (w * (we)^2*exp(-4*phi))
+                    // Upsilon_+(thet1, thet2) ~ w * G_{+n-2}(thet1) * conj(G_{+n-2})(thet2) - delta^K_{thet1,thet2} * (w * |we|^2)
                     // Norm(thet1, thet2)    ~   w  * W_{n}(thet1)   * W_{-n}(thet2)   - delta^K_{thet1,thet2} * (w  * w*w)
                     for (int thisn=-nmax; thisn<=nmax; thisn++){
                         int elb1_full, elb2_full, z3r2shift, gammashift_ups, gammashift_norm;

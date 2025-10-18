@@ -10,6 +10,7 @@ import numpy as np
 from numpy.ctypeslib import ndpointer
 import operator
 from pathlib import Path
+from scipy.interpolate import interp1d
 import sys
 from .catalog import Catalog, ScalarTracerCatalog, SpinTracerCatalog
 from .utils import flatlist, gen_thetacombis_fourthorder, gen_n2n3indices_Upsfourth
@@ -244,7 +245,7 @@ class BinnedNPCF:
         #############################
         # Method that works for LP
         target_path = __import__('orpheus').__file__
-        self.library_path = str(Path(__import__('orpheus').__file__).parent.parent.absolute())
+        self.library_path = str(Path(__import__('orpheus').__file__).parent.absolute())
         self.clib = ct.CDLL(glob.glob(self.library_path+"/orpheus_clib*.so")[0])
         
         # In case the environment is weird, compile code manually and load it here...
@@ -429,6 +430,19 @@ class BinnedNPCF:
         ## Fourth-order counts-counts-counts-counts statistics ##
         if self.order==4 and np.array_equal(self.spins, np.array([0, 0, 0, 0], dtype=np.int32)):
 
+            # Tree estimator of non-tomographic fourth-order counts correlation function
+            self.clib.alloc_notomoGammans_tree_nnnn.restype = ct.c_void_p
+            self.clib.alloc_notomoGammans_tree_nnnn.argtypes = [
+                p_f64, p_f64, p_f64, p_f64, ct.c_int32, 
+                ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, ct.c_int32, 
+                p_i32,  ct.c_int32, 
+                ct.c_int32, p_f64, p_i32,
+                p_f64, p_f64, p_f64, p_f64,
+                p_i32, p_i32, p_i32, ct.c_int32, 
+                ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,  ct.c_int32, 
+                np.ctypeslib.ndpointer(dtype=np.float64), 
+                np.ctypeslib.ndpointer(dtype=np.complex128)] 
+
             # Tree-based estimator of non-tomographic Map^4 statistics (low-mem)
             self.clib.alloc_notomoNap4_tree_nnnn.restype = ct.c_void_p
             self.clib.alloc_notomoNap4_tree_nnnn.argtypes = [
@@ -444,6 +458,15 @@ class BinnedNPCF:
                 ct.c_int32, ct.c_int32, 
                 np.ctypeslib.ndpointer(dtype=np.float64), 
                 np.ctypeslib.ndpointer(dtype=np.complex128),np.ctypeslib.ndpointer(dtype=np.complex128)]
+
+            # Transformation between 4PCF from multipole-basis tp real-space basis for a fixed
+            # combination of radial bins
+            self.clib.multipoles2npcf_nnnn_singletheta.restype = ct.c_void_p
+            self.clib.multipoles2npcf_nnnn_singletheta.argtypes = [
+                p_c128, ct.c_int32, ct.c_int32, 
+                ct.c_double, ct.c_double, ct.c_double, 
+                p_f64, p_f64, ct.c_int32, ct.c_int32, 
+                np.ctypeslib.ndpointer(dtype=np.complex128)]
         
         ## Fourth-order shear-shear-shear-shear statistics ##
         if self.order==4 and np.array_equal(self.spins, np.array([2, 2, 2, 2], dtype=np.int32)):
@@ -1037,11 +1060,18 @@ class GGGCorrelation(BinnedNPCF):
                 self.bin_centers = np.zeros_like(pcorr.bin_centers)
                 self.npcf_multipoles = np.zeros_like(pcorr.npcf_multipoles)
                 self.npcf_multipoles_norm = np.zeros_like(pcorr.npcf_multipoles_norm)
+                _footnorm = np.zeros_like(pcorr.bin_centers)
                 if keep_patchres:
                     centers_patches = np.zeros((cat.npatches, *pcorr.bin_centers.shape), dtype=pcorr.bin_centers.dtype)
                     npcf_multipoles_patches = np.zeros((cat.npatches, *pcorr.npcf_multipoles.shape), dtype=pcorr.npcf_multipoles.dtype)
                     npcf_multipoles_norm_patches = np.zeros((cat.npatches, *pcorr.npcf_multipoles_norm.shape), dtype=pcorr.npcf_multipoles_norm.dtype)
-            self.bin_centers += pcorr.bin_centers/cat.npatches
+            _shelltriplets = np.array([[pcorr.npcf_multipoles_norm[0,z*self.nbinsz*self.nbinsz+z*self.nbinsz+z,i,i].real 
+                                        for i in range(pcorr.nbinsr)] for z in range(self.nbinsz)]) # Rough estimate of scaling of pair counts based on zeroth multipole of triplets
+            # Rough estimate of scaling of pair counts based on zeroth multipole of triplets. Note that we might get nans here due to numerical
+            # inaccuracies in the multiple counting corrections for bins with zero triplets, so we force those values to be zero.
+            _patchnorm = np.nan_to_num(np.sqrt(_shelltriplets)) 
+            self.bin_centers += _patchnorm*pcorr.bin_centers
+            _footnorm += _patchnorm
             self.npcf_multipoles += pcorr.npcf_multipoles
             self.npcf_multipoles_norm += pcorr.npcf_multipoles_norm
             if keep_patchres:
@@ -1052,6 +1082,7 @@ class GGGCorrelation(BinnedNPCF):
                 pcorr.saveinst(save_patchres, save_filebase+'_patch%i'%elp)
 
         # Finalize the measurement on the full footprint
+        self.bin_centers = np.divide(self.bin_centers,_footnorm, out=np.zeros_like(self.bin_centers), where=_footnorm>0)
         self.bin_centers_mean = np.mean(self.bin_centers,axis=0)
         self.projection = "X"
 
@@ -1670,11 +1701,18 @@ class GNNCorrelation(BinnedNPCF):
                 self.bin_centers = np.zeros_like(pcorr.bin_centers)
                 self.npcf_multipoles = np.zeros_like(pcorr.npcf_multipoles)
                 self.npcf_multipoles_norm = np.zeros_like(pcorr.npcf_multipoles_norm)
+                _footnorm = np.zeros_like(pcorr.bin_centers)
                 if keep_patchres:
                     centers_patches = np.zeros((cat_source.npatches, *pcorr.bin_centers.shape), dtype=pcorr.bin_centers.dtype)
                     npcf_multipoles_patches = np.zeros((cat_source.npatches, *pcorr.npcf_multipoles.shape), dtype=pcorr.npcf_multipoles.dtype)
                     npcf_multipoles_norm_patches = np.zeros((cat_source.npatches, *pcorr.npcf_multipoles_norm.shape), dtype=pcorr.npcf_multipoles_norm.dtype)
-            self.bin_centers += pcorr.bin_centers/cat_source.npatches
+            _shelltriplets = np.array([[[pcorr.npcf_multipoles_norm[0,zs*self.nbinsz_lens*self.nbinsz_lens+zl*self.nbinsz_lens+zl,i,i].real 
+                                         for i in range(pcorr.nbinsr)] for zl in range(self.nbinsz_lens)] for zs in range(self.nbinsz_source)])
+            # Rough estimate of scaling of pair counts based on zeroth multipole of triplets. Note that we might get nans here due to numerical
+            # inaccuracies in the multiple counting corrections for bins with zero triplets, so we force those values to be zero.
+            _patchnorm = np.nan_to_num(np.sqrt(_shelltriplets)) 
+            self.bin_centers += _patchnorm*pcorr.bin_centers
+            _footnorm += _patchnorm
             self.npcf_multipoles += pcorr.npcf_multipoles
             self.npcf_multipoles_norm += pcorr.npcf_multipoles_norm
             if keep_patchres:
@@ -1685,6 +1723,7 @@ class GNNCorrelation(BinnedNPCF):
                 pcorr.saveinst(save_patchres, save_filebase+'_patch%i'%elp)
 
         # Finalize the measurement on the full footprint
+        self.bin_centers = np.divide(self.bin_centers,_footnorm, out=np.zeros_like(self.bin_centers), where=_footnorm>0)
         self.bin_centers_mean =np.mean(self.bin_centers, axis=(0,1))
         self.projection = "X"
 
@@ -1889,8 +1928,8 @@ class GNNCorrelation(BinnedNPCF):
             
             self.bin_centers = bin_centers.reshape(szr)
             self.bin_centers_mean = np.mean(self.bin_centers, axis=(0,1))
-            self.npcf_multipoles = Upsilon_n.reshape(sc)
-            self.npcf_multipoles_norm = Norm_n.reshape(sn)
+            self.npcf_multipoles = np.nan_to_num(Upsilon_n.reshape(sc))
+            self.npcf_multipoles_norm = np.nan_to_num(Norm_n.reshape(sn))
             self.projection = "X"
             self.is_edge_corrected = False
             
@@ -2100,6 +2139,13 @@ class NGGCorrelation(BinnedNPCF):
     Inherits all other parameters and attributes from :class:`BinnedNPCF`.
     Additional child-specific parameters can be passed via ``kwargs``. 
     Either ``nbinsr`` or ``binsize`` has to be provided to fix the binning scheme .
+
+    Note that the different components of the NGG correlator are ordered as
+    .. math::
+
+            \left[ \tilde{G}_-, \tilde{G}_+, \right] \ ,
+    which is different to the usual conventions, but matches orpheus' conventions to
+    always start with a correlator in which not polar field is complex conjugated.
     """
     def __init__(self, min_sep, max_sep, **kwargs):
         
@@ -2151,11 +2197,18 @@ class NGGCorrelation(BinnedNPCF):
                 self.bin_centers = np.zeros_like(pcorr.bin_centers)
                 self.npcf_multipoles = np.zeros_like(pcorr.npcf_multipoles)
                 self.npcf_multipoles_norm = np.zeros_like(pcorr.npcf_multipoles_norm)
+                _footnorm = np.zeros_like(pcorr.bin_centers)
                 if keep_patchres:
                     centers_patches = np.zeros((cat_source.npatches, *pcorr.bin_centers.shape), dtype=pcorr.bin_centers.dtype)
                     npcf_multipoles_patches = np.zeros((cat_source.npatches, *pcorr.npcf_multipoles.shape), dtype=pcorr.npcf_multipoles.dtype)
                     npcf_multipoles_norm_patches = np.zeros((cat_source.npatches, *pcorr.npcf_multipoles_norm.shape), dtype=pcorr.npcf_multipoles_norm.dtype)
-            self.bin_centers += pcorr.bin_centers/cat_source.npatches
+            _shelltriplets = np.array([[[pcorr.npcf_multipoles_norm[pcorr.nmaxs[0],zl*self.nbinsz_source*self.nbinsz_source+zs*self.nbinsz_source+zs,i,i].real 
+                                        for i in range(pcorr.nbinsr)] for zs in range(self.nbinsz_source)] for zl in range(self.nbinsz_lens)])
+            # Rough estimate of scaling of pair counts based on zeroth multipole of triplets. Note that we might get nans here due to numerical
+            # inaccuracies in the multiple counting corrections for bins with zero triplets, so we force those values to be zero.
+            _patchnorm = np.nan_to_num(np.sqrt(_shelltriplets)) 
+            self.bin_centers += _patchnorm*pcorr.bin_centers
+            _footnorm += _patchnorm
             self.npcf_multipoles += pcorr.npcf_multipoles
             self.npcf_multipoles_norm += pcorr.npcf_multipoles_norm
             if keep_patchres:
@@ -2166,6 +2219,7 @@ class NGGCorrelation(BinnedNPCF):
                 pcorr.saveinst(save_patchres, save_filebase+'_patch%i'%elp)
 
         # Finalize the measurement on the full footprint
+        self.bin_centers = np.divide(self.bin_centers,_footnorm, out=np.zeros_like(self.bin_centers), where=_footnorm>0)
         self.bin_centers_mean =np.mean(self.bin_centers, axis=(0,1))
         self.projection = "X"
 
@@ -2430,15 +2484,6 @@ class NGGCorrelation(BinnedNPCF):
         r"""
         Notes
         -----
-        * The Upsilon and Norms are only computed for the n>0 multipoles. The n<0 multipoles are recovered by symmetry considerations, i.e.:
-
-        .. math::
-
-            \Upsilon_{-n}(\theta_1, \theta_2, z_1, z_2, z_3) =
-            \Upsilon_{n}(\theta_2, \theta_1, z_1, z_3, z_2)
-
-        As the tomographic bin combinations are interpreted as a flat list, they need to be appropriately shuffled. This is handled by ``ztiler``.
-
         * When dividing by the (weighted) counts ``N``, all contributions for which ``N <= 0`` are set to zero.
 
         """
@@ -2715,7 +2760,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
         # Misc checks            
         assert(projection in self.projections_avail)
         self._checkcats(cat, self.spins)
-        projection = np.int32(self.proj_dict[projection])
+        i_projection = np.int32(self.proj_dict[projection])
         
         ## Build args for wrapped functions ##
         # Shortcuts
@@ -2776,7 +2821,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                     *args_basesetup,
                     *args_hash,
                     np.int32(self.nthreads),
-                    np.int32(self._verbose_c),
+                    np.int32(self._verbose_c+self._verbose_debug),
                     bin_centers,
                     Upsilon_n,
                     N_n)
@@ -2801,8 +2846,8 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                     *args_hash,
                     *args_thetas,
                     np.int32(self.nthreads),
-                    np.int32(self._verbose_c),
-                    projection,
+                    np.int32(self._verbose_c+self._verbose_debug),
+                    i_projection,
                     *args_map4,
                     *args_4pcf)
             func = self.clib.alloc_notomoMap4_disc_gggg  
@@ -2850,7 +2895,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                         *args_resos,
                         *args_hash,
                         np.int32(self.nthreads),
-                        np.int32(self._verbose_c),
+                        np.int32(self._verbose_c+self._verbose_debug),
                         *args_out)
                 func = self.clib.alloc_notomoGammans_tree_gggg  
             if lowmem:
@@ -2875,8 +2920,8 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                         *args_hash,
                         *args_thetas,
                         np.int32(self.nthreads),
-                        np.int32(self._verbose_c),
-                        projection,
+                        np.int32(self._verbose_c+self._verbose_debug),
+                        i_projection,
                         *args_map4,
                         *args_4pcf)
                 func = self.clib.alloc_notomoMap4_tree_gggg  
@@ -2897,6 +2942,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
         
         ## Compute 4th order stats ##
         func(*args)
+        self.projection = projection
         
         ## Massage the output ##
         istatout = ()
@@ -3012,13 +3058,16 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                 
         return npcf_out, npcf_norm_out
     
-    def multipoles2M4correlators(self, radii, nmax_trafo=None):
+    def computeMap4(self, radii, nmax_trafo=None, basis='MapMx'):
+        r"""Computes the fourth-order aperture mass statistcs using the polynomial filter of Crittenden 2002."""
+
+        assert(basis in ['MapMx','MM*','both'])
         
         if nmax_trafo is None:
             nmax_trafo=self.nmaxs[0]
             
+        # Retrieve all the aperture measures in the MM* basis via the 5D transformation eqns
         M4correlators = np.zeros(8*len(radii), dtype=np.complex128)
-        
         self.clib.fourpcfmultipoles2M4correlators(
             np.int32(self.nmaxs[0]), np.int32(nmax_trafo),
             self.bin_edges, self.bin_centers_mean, np.int32(self.nbinsr),
@@ -3029,80 +3078,16 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
             np.int32(self.proj_dict[self.projection]), np.int32(self.nthreads),
             self.npcf_multipoles.flatten(), self.npcf_multipoles_norm.flatten(),
             M4correlators)
+        res_MMStar = M4correlators.reshape((8,len(radii)))
         
-        return M4correlators.reshape((8,len(radii)))
+        # Allocate result
+        res = ()
+        if basis=='MM*' or basis=='both':
+            res += (res_MMStar, )
+        if basis=='MapMx' or basis=='both':
+            res += ( GGGGCorrelation_NoTomo.MMStar2MapMx_fourth(res_MMStar), )
         
-                                     
-    def computeMap4(self, radii, do_multiscale=False, tofile=False, filtercache=None):
-        r"""Computes the fourth-order aperture mass statistcs using the polynomial filter of Crittenden 2002."""
-        
-        # Prepare real space 4pcf in X-projection
-        if self.npcf is None:
-            self.multipoles2npcf_c(projection="X")
-        if self.projection != "X":
-            self.projectnpcf("X")
-        
-        # Build aperture radii
-        nradii = len(radii)
-        if not do_multiscale:
-            nrcombis = nradii
-            filterfunc = self._map4_filtergrid_singleR
-            _rcut = 1 
-        else:
-            nrcombis = nradii*nradii*nradii
-            _rcut = nradii
-            raise NotImplementedError
-        
-        # Compute M4 basis
-        res_M4 = np.zeros((8,self.nzcombis,nradii), dtype=np.complex128)
-        res_Map4 = np.zeros((16,self.nzcombis,nradii))
-        # Do numerical integral by simple Riemann sums
-        for elb1 in range(self.nbinsr):
-            for elb2 in range(self.nbinsr):
-                for elb3 in range(self.nbinsr):
-                    sys.stdout.write("%i %i %i\r"%(elb1,elb2,elb3))
-                    npcf_f = self.npcf[:,:,elb1,elb2,elb3].flatten()
-                    for elR, R_ap in enumerate(radii):
-                        y1 = self.bin_centers_mean[elb1]/R_ap
-                        y2 = self.bin_centers_mean[elb2]/R_ap
-                        y3 = self.bin_centers_mean[elb3]/R_ap
-                        dy1 = (self.bin_edges[elb1+1]-self.bin_edges[elb1])/R_ap
-                        dy2 = (self.bin_edges[elb2+1]-self.bin_edges[elb2])/R_ap
-                        dy3 = (self.bin_edges[elb3+1]-self.bin_edges[elb3])/R_ap
-                        dphis1 = np.ones(self.nbinsphi[0])*(self.phis[0][1]-self.phis[0][0])
-                        dphis2 = np.ones(self.nbinsphi[1])*(self.phis[1][1]-self.phis[1][0])
-                        m4corr_meas = res_M4[:,0,elR]
-                        self.clib.fourpcf2M4correlators_parallel(self.nzcombis,
-                                                                 y1, y2, y3, dy1, dy2, dy3,
-                                                                 self.phis[0], self.phis[0], 
-                                                                 dphis1, dphis2, 
-                                                                 self.nbinsphi[0], self.nbinsphi[0],
-                                                                 self.nthreads, 
-                                                                 npcf_f, 
-                                                                 m4corr_meas)
-        
-        # Transform to Map basis
-        Mcorr2Map4_re = .125*np.array([[+1,+1,+1,+1,+1,+1,+1,+1],
-                                       [-1,-1,-1,+1,+1,-1,+1,+1],
-                                       [-1,-1,+1,-1,+1,+1,-1,+1],
-                                       [-1,-1,+1,+1,-1,+1,+1,-1],
-                                       [-1,+1,-1,-1,+1,+1,+1,-1],
-                                       [-1,+1,-1,+1,-1,+1,-1,+1],
-                                       [-1,+1,+1,-1,-1,-1,+1,+1],
-                                       [+1,-1,-1,-1,-1,+1,+1,+1]])
-        Mcorr2Map4_im = .125*np.array([[+1,-1,+1,+1,+1,-1,-1,-1],
-                                       [+1,+1,-1,+1,+1,-1,+1,+1],
-                                       [+1,+1,+1,-1,+1,+1,-1,+1],
-                                       [+1,+1,+1,+1,-1,+1,+1,-1],
-                                       [-1,-1,+1,+1,+1,+1,+1,+1],
-                                       [-1,+1,-1,+1,+1,+1,-1,-1],
-                                       [-1,+1,+1,-1,+1,-1,+1,-1],
-                                       [-1,+1,+1,+1,-1,-1,-1,+1]])
-        res_Map4[[0,5,6,7,8,9,10,15],0] = Mcorr2Map4_re@(res_M4[:,0].real)
-        res_Map4[[1,2,3,4,11,12,13,14],0] = Mcorr2Map4_im@(res_M4[:,0].imag)
-
-        return res_M4, res_Map4
-                    
+        return res               
     
     ## PROJECTIONS ##
     def projectnpcf(self, projection):
@@ -3141,6 +3126,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
         return gammas_cen
     
     ## GAUSSIAN-FIELD SPECIFIC FUNCTIONS ##
+    # Deprecate this as it has been ported to c
     @staticmethod
     def fourpcf_gauss_x(theta1, theta2, theta3, phi12, phi13, xipspl, ximspl):
         """ Computes disconnected part of the 4pcf in the 'x'-projection
@@ -3208,168 +3194,8 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
     
         return allgammas        
     
-    
-    ## MISC OLD FUNCTIONS ##
-    def __computeMap4(self, radii, do_multiscale=False, tofile=False, filtercache=None):
-        """
-        Compute fourth-order aperture statistics
-        """
-        
-        if self.npcf is None and self.npcf_multipoles is not None:
-            self.multipoles2npcf()
-            
-        if self.projection != "Centroid":
-            self.projectnpcf("Centroid")
-        
-        nradii = len(radii)
-        if not do_multiscale:
-            nrcombis = nradii
-            filterfunc = self._map4_filtergrid_singleR
-            _rcut = 1 
-        else:
-            nrcombis = nradii*nradii*nradii
-            _rcut = nradii
-            raise NotImplementedError
-            
-        map4s = np.zeros((16, self.nzcombis, nrcombis), dtype=complex)
-        M4 = np.zeros((self.nzcombis, nrcombis), dtype=complex)
-        M3Mc_0 = np.zeros((self.nzcombis, nrcombis), dtype=complex)
-        M3Mc_1 = np.zeros((self.nzcombis, nrcombis), dtype=complex)
-        M3Mc_2 = np.zeros((self.nzcombis, nrcombis), dtype=complex)
-        M3Mc_3 = np.zeros((self.nzcombis, nrcombis), dtype=complex)
-        M2M2_01 = np.zeros((self.nzcombis, nrcombis), dtype=complex)
-        M2M2_02 = np.zeros((self.nzcombis, nrcombis), dtype=complex)
-        M2M2_03 = np.zeros((self.nzcombis, nrcombis), dtype=complex)
-        tmprcombi = 0
-        for elr1, R1 in enumerate(radii):
-            for elr2, R2 in enumerate(radii[:_rcut]):
-                for elr3, R3 in enumerate(radii[:_rcut]):
-                    for elr4, R4 in enumerate(radii[:_rcut]):
-                        if self._verbose_python:
-                            sys.stdout.write("\r Doing %.i/%i aperture radii"%(elr1,nradii))
-                        if not do_multiscale:
-                            R2 = R1
-                            R3 = R1
-                            R4 = R1
-                        if filtercache is not None:
-                            F1, F1, F2, F3, F4, F5, F6, F7 = (filtercache[tmprcombi][i] for i in range(8))
-                        else:
-                            F0, F1, F2, F3, F4, F5, F6, F7 = filterfunc(R1, R2, R3, R4)
-                        M4[:,tmprcombi] = np.nansum(F0*self.npcf[0,...],axis=(1,2,3,4,5))
-                        M3Mc_0[:,tmprcombi] = np.nansum(F1*self.npcf[1,...],axis=(1,2,3,4,5))
-                        M3Mc_1[:,tmprcombi] = np.nansum(F2*self.npcf[2,...],axis=(1,2,3,4,5))
-                        M3Mc_2[:,tmprcombi] = np.nansum(F3*self.npcf[3,...],axis=(1,2,3,4,5))
-                        M3Mc_3[:,tmprcombi] = np.nansum(F4*self.npcf[4,...],axis=(1,2,3,4,5))
-                        M2M2_01[:,tmprcombi] = np.nansum(F5*self.npcf[5,...],axis=(1,2,3,4,5))
-                        M2M2_02[:,tmprcombi] = np.nansum(F6*self.npcf[6,...],axis=(1,2,3,4,5))
-                        M2M2_03[:,tmprcombi] = np.nansum(F7*self.npcf[7,...],axis=(1,2,3,4,5))
-                        tmprcombi += 1            
-        map4s[0]  = 1./8. * (+ M4 + M3Mc_0 + M3Mc_1 + M3Mc_2 + M3Mc_3 + M2M2_01 + M2M2_02 + M2M2_03).real # Map Map Map Map
-        map4s[1]  = 1./8. * (+ M4 - M3Mc_0 + M3Mc_1 + M3Mc_2 + M3Mc_3 - M2M2_01 - M2M2_02 - M2M2_03).imag # Mx Map Map Map
-        map4s[2]  = 1./8. * (+ M4 + M3Mc_0 - M3Mc_1 + M3Mc_2 + M3Mc_3 - M2M2_01 + M2M2_02 + M2M2_03).imag # Map Mx Map Map
-        map4s[3]  = 1./8. * (+ M4 + M3Mc_0 + M3Mc_1 - M3Mc_2 + M3Mc_3 + M2M2_01 - M2M2_02 + M2M2_03).imag # Map Map Mx Map
-        map4s[4]  = 1./8. * (+ M4 + M3Mc_0 + M3Mc_1 + M3Mc_2 - M3Mc_3 + M2M2_01 + M2M2_02 - M2M2_03).imag # Map Map Map Mx
-        map4s[5]  = 1./8. * (- M4 - M3Mc_0 - M3Mc_1 + M3Mc_2 + M3Mc_3 - M2M2_01 + M2M2_02 + M2M2_03).real # Map Map Mx  Mx
-        map4s[6]  = 1./8. * (- M4 - M3Mc_0 + M3Mc_1 - M3Mc_2 + M3Mc_3 + M2M2_01 - M2M2_02 + M2M2_03).real # Map Mx  Map Mx
-        map4s[7]  = 1./8. * (- M4 - M3Mc_0 + M3Mc_1 + M3Mc_2 - M3Mc_3 + M2M2_01 + M2M2_02 - M2M2_03).real # Map Mx  Mx  Map
-        map4s[8]  = 1./8. * (- M4 + M3Mc_0 - M3Mc_1 - M3Mc_2 + M3Mc_3 + M2M2_01 + M2M2_02 - M2M2_03).real # Mx  Map Map Mx
-        map4s[9]  = 1./8. * (- M4 + M3Mc_0 - M3Mc_1 + M3Mc_2 - M3Mc_3 + M2M2_01 - M2M2_02 + M2M2_03).real # Mx  Map Mx  Map
-        map4s[10] = 1./8. * (- M4 + M3Mc_0 + M3Mc_1 - M3Mc_2 - M3Mc_3 - M2M2_01 + M2M2_02 + M2M2_03).real # Mx  Mx  Map Map
-        map4s[11] = 1./8. * (- M4 - M3Mc_0 + M3Mc_1 + M3Mc_2 + M3Mc_3 + M2M2_01 + M2M2_02 + M2M2_03).imag # Map Map Map Map
-        map4s[12] = 1./8. * (- M4 + M3Mc_0 - M3Mc_1 + M3Mc_2 + M3Mc_3 + M2M2_01 - M2M2_02 - M2M2_03).imag # Map Map Map Map
-        map4s[13] = 1./8. * (- M4 + M3Mc_0 + M3Mc_1 - M3Mc_2 + M3Mc_3 - M2M2_01 + M2M2_02 - M2M2_03).imag # Map Map Map Map
-        map4s[14] = 1./8. * (- M4 + M3Mc_0 + M3Mc_1 + M3Mc_2 - M3Mc_3 - M2M2_01 - M2M2_02 + M2M2_03).imag # Map Map Map Map
-        map4s[15] = 1./8. * (+ M4 - M3Mc_0 - M3Mc_1 - M3Mc_2 - M3Mc_3 + M2M2_01 + M2M2_02 + M2M2_03).real # Mx  Mx  Mx  Mx
-                                            
-        if tofile:
-            # Write to file
-            pass
-            
-        return map4s
-    
-    def _map4_filtergrid_singleR(self, R1, R2, R3, R4):
-        return self.__map4_filtergrid_singleR(R1, R2, R3, R4, self.bin_edges, self.bin_centers_mean, self.phis[0])
-    
-    @staticmethod
-    @jit(nopython=True, parallel=True)
-    def __map4_filtergrid_singleR(R1, R2, R3, R4, normys_edges, normys_centers, phis):
-        R_ap = R1
-        R_ap2 = R_ap**2
-        R_ap4 = R_ap**4
-        R_ap6 = R_ap**6
-        R_ap8 = R_ap**8
-        nbinsr = len(normys_centers)
-        nbinsphi = len(phis)
-        F0 = np.zeros((nbinsr, nbinsr, nbinsr, nbinsphi, nbinsphi), dtype=nb_complex128)
-        F1 = np.zeros((nbinsr, nbinsr, nbinsr, nbinsphi, nbinsphi), dtype=nb_complex128)
-        F2 = np.zeros((nbinsr, nbinsr, nbinsr, nbinsphi, nbinsphi), dtype=nb_complex128)
-        F3 = np.zeros((nbinsr, nbinsr, nbinsr, nbinsphi, nbinsphi), dtype=nb_complex128)
-        F4 = np.zeros((nbinsr, nbinsr, nbinsr, nbinsphi, nbinsphi), dtype=nb_complex128)
-        F5 = np.zeros((nbinsr, nbinsr, nbinsr, nbinsphi, nbinsphi), dtype=nb_complex128)
-        F6 = np.zeros((nbinsr, nbinsr, nbinsr, nbinsphi, nbinsphi), dtype=nb_complex128)
-        F7 = np.zeros((nbinsr, nbinsr, nbinsr, nbinsphi, nbinsphi), dtype=nb_complex128)
-        # This is equal to phis12, phis13 = np.meshgrid(phis, phis), 
-        # but made st it compiles with numba
-        phis12 = np.empty((nbinsphi, nbinsphi))
-        phis13 = np.empty((nbinsphi, nbinsphi))
-        for i in range(nbinsphi):
-            for j in range(nbinsphi):
-                phis12[i, j] = phis[j]
-                phis13[i, j] = phis[i]
-        for elb in prange(nbinsr*nbinsr*nbinsr):
-            elb1 = int(elb//(nbinsr*nbinsr))
-            elb2 = int((elb-elb1*nbinsr*nbinsr)//nbinsr)
-            elb3 = elb%nbinsr
-            _y1 = normys_centers[elb1]
-            _dbin1 = normys_edges[elb1+1] - normys_edges[elb1]
-            _y2 = normys_centers[elb2]
-            _dbin2 = normys_edges[elb2+1] - normys_edges[elb2]
-            _y3 = normys_centers[elb3]
-            _dbin3 = normys_edges[elb3+1] - normys_edges[elb3]
-            _dbinphi = phis[1] - phis[0]
-            q1 = - 1./4. * ( + 1*_y1 + 1*_y2*np.exp(1j*phis12) + 1*_y3*np.exp(1j*phis13) )
-            q2 = + 1./4. * ( + 3*_y1 - 1*_y2*np.exp(1j*phis12) - 1*_y3*np.exp(1j*phis13) )
-            q3 = + 1./4. * ( - 1*_y1 + 3*_y2*np.exp(1j*phis12) - 1*_y3*np.exp(1j*phis13) )
-            q4 = + 1./4. * ( - 1*_y1 - 1*_y2*np.exp(1j*phis12) + 3*_y3*np.exp(1j*phis13) )
-            q1c=q1.conj(); q2c=q2.conj(); q3c=q3.conj(); q4c=q4.conj()
-            absq1_sq=np.abs(q1)**2; absq2_sq=np.abs(q2)**2; absq3_sq=np.abs(q3)**2; absq4_sq=np.abs(q4)**2
-            absq12_sq=absq1_sq*absq2_sq; absq13_sq=absq1_sq*absq3_sq; absq14_sq=absq1_sq*absq4_sq
-            absq23_sq=absq2_sq*absq3_sq; absq24_sq=absq2_sq*absq4_sq; absq34_sq=absq3_sq*absq4_sq
-            absq1p2_sq=np.abs(q1+q2)**2; absq1p3_sq=np.abs(q1+q3)**2; absq1p4_sq=np.abs(q1+q4)**2
-            q12c=q1c*q2c; q13c=q1c*q3c; q14c=q1c*q4c; q23c=q2c*q3c; q24c=q2c*q4c; q34c=q3c*q4c
-            _2p1=q1**2/absq1_sq; _2p2=q2**2/absq2_sq; _2p3=q3**2/absq3_sq; _2p4=q4**2/absq4_sq
-            q123=q1*q2*q3; q124=q1*q2*q4; q134=q1*q3*q4; q234=q2*q3*q4
-            _measures = _y1*_y2*_y3*_dbin1*_dbin2*_dbin3/(R_ap6) * (_dbinphi/(2*np.pi))**2
-            _exp = np.exp(-(absq1_sq+absq2_sq+absq3_sq+absq4_sq)/(2*R_ap2))
-            nextF0 = absq1_sq*absq2_sq*absq3_sq*absq4_sq/(64*R_ap8)
-            nextF1_1 = (q1c*q234*(q23c+q24c+q34c))/(32*R_ap6)
-            nextF2_1 = (q2c*q134*(q13c+q14c+q34c))/(32*R_ap6)
-            nextF3_1 = (q3c*q124*(q12c+q24c+q14c))/(32*R_ap6)
-            nextF4_1 = (q4c*q123*(q23c+q12c+q13c))/(32*R_ap6)
-            nextF1_2 = _2p1.conj()/(128*R_ap4) * ( absq23_sq*_2p4 + absq24_sq*_2p3 + absq34_sq*_2p2 -4*q1c*q234 )
-            nextF2_2 = _2p2.conj()/(128*R_ap4) * ( absq13_sq*_2p4 + absq14_sq*_2p3 + absq34_sq*_2p1 -4*q2c*q134 )
-            nextF3_2 = _2p3.conj()/(128*R_ap4) * ( absq12_sq*_2p4 + absq24_sq*_2p1 + absq14_sq*_2p2 -4*q3c*q124 )
-            nextF4_2 = _2p4.conj()/(128*R_ap4) * ( absq23_sq*_2p1 + absq12_sq*_2p3 + absq13_sq*_2p2 -4*q4c*q123 )
-            nextF5_1 = - q12c*q3*q4*absq1p2_sq/(32*R_ap6)
-            nextF6_1 = - q13c*q2*q4*absq1p3_sq/(32*R_ap6)
-            nextF7_1 = - q14c*q3*q2*absq1p4_sq/(32*R_ap6)
-            nextF5_2 = (_2p1*_2p2).conj()*_2p3*_2p4/(128*R_ap4) * ( absq1p2_sq**2 - 6*R_ap2*absq1p2_sq + 3*R_ap4 )
-            nextF6_2 = (_2p1*_2p3).conj()*_2p2*_2p4/(128*R_ap4) * ( absq1p3_sq**2 - 6*R_ap2*absq1p3_sq + 3*R_ap4 )
-            nextF7_2 = (_2p1*_2p4).conj()*_2p3*_2p2/(128*R_ap4) * ( absq1p4_sq**2 - 6*R_ap2*absq1p4_sq + 3*R_ap4 )
-            F0[elb1,elb2,elb3] = _measures * _exp * nextF0
-            F1[elb1,elb2,elb3] = _measures * _exp * (nextF0 + nextF1_1 + nextF1_2)
-            F2[elb1,elb2,elb3] = _measures * _exp * (nextF0 + nextF2_1 + nextF2_2)
-            F3[elb1,elb2,elb3] = _measures * _exp * (nextF0 + nextF3_1 + nextF3_2)
-            F4[elb1,elb2,elb3] = _measures * _exp * (nextF0 + nextF4_1 + nextF4_2)
-            F5[elb1,elb2,elb3] = _measures * _exp * (nextF0 + nextF5_1 + nextF5_2)
-            F6[elb1,elb2,elb3] = _measures * _exp * (nextF0 + nextF6_1 + nextF6_2)
-            F7[elb1,elb2,elb3] = _measures * _exp * (nextF0 + nextF7_1 + nextF7_2)
-                    
-        return F0, F1, F2, F3, F4, F5, F6, F7
-    
-    
-    # [Debug] Gaussian 4pcf from analytic 2pcf
-    def gauss4pcf_analytic(self, theta1, theta2, theta3, xip_arr, xim_arr, thetamin_xi, thetamax_xi, dtheta_xi):
+    # Disconnected 4pcf from binned 2pcf (might want to deprecate this as it is a special case of nsubr==1)
+    def __gauss4pcf_analytic(self, theta1, theta2, theta3, xip_arr, xim_arr, thetamin_xi, thetamax_xi, dtheta_xi):
         gausss_4pcf = np.zeros(8*len(self.phis[0])*len(self.phis[0]),dtype=np.complex128)
         self.clib.gauss4pcf_analytic(theta1.astype(np.float64), 
                                      theta2.astype(np.float64),
@@ -3381,8 +3207,8 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
         return gausss_4pcf
     
     
-    # [Debug] Gaussian 4pcf from analytic 2pcf
-    def gauss4pcf_analytic_integrated(self, itheta1, itheta2, itheta3, nsubr, 
+    # [Debug] Disconnected 4pcf from analytic 2pcf
+    def gauss4pcf_analytic(self, itheta1, itheta2, itheta3, nsubr, 
                                  xip_arr, xim_arr, thetamin_xi, thetamax_xi, dtheta_xi):
     
         gauss_4pcf = np.zeros(8*self.nbinsphi[0]*self.nbinsphi[1],dtype=np.complex128)
@@ -3425,9 +3251,36 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                     
         return gauss_multipoles
     
-    # [Debug] Disconnected part of Map^4 from analytic 2pcf
+
+    def estimateMap4disc(self, cat, radii, basis='MapMx',fac_minsep=0.05, fac_maxsep=2., binsize=0.1, nsubr=3, nsubsample_filter=1):
+        """ Estimate disconnected part of fourth-order aperture statistics on a shape catalog. """
+
+        # Compute shear 2pcf from data
+        min_sep_disc = fac_minsep*self.min_sep
+        max_sep_disc = fac_maxsep*self.max_sep
+        binsize_disc = min(0.1,self.binsize)
+        ggcorr = GGCorrelation(min_sep=min_sep_disc, max_sep=max_sep_disc,binsize=binsize_disc, 
+                               rmin_pixsize=self.rmin_pixsize, tree_resos=self.tree_resos, nthreads=self.nthreads)
+        ggcorr.process(cat)
+
+        # Convert this to fourth-order aperture statistics
+        linarr = np.linspace(min_sep_disc,max_sep_disc,int(max_sep_disc/(binsize_disc*min_sep_disc)))
+        xip_spl = interp1d(x=ggcorr.bin_centers_mean,y=ggcorr.xip[0].real,fill_value=0,bounds_error=False)
+        xim_spl = interp1d(x=ggcorr.bin_centers_mean,y=ggcorr.xim[0].real,fill_value=0,bounds_error=False)
+        mapstat = self.Map4analytic(mapradii=radii,
+                                    xip_spl=xip_spl, 
+                                    xim_spl=xim_spl,
+                                    thetamin_xi=linarr[0],
+                                    thetamax_xi=linarr[-1],
+                                    ntheta_xi=len(linarr),
+                                    nsubr=nsubr,nsubsample_filter=nsubsample_filter,basis=basis)
+        return mapstat
+
+
+    # Disconnected part of Map^4 from analytic 2pcf
+    # thetamin_xi, thetamax_xi, ntheta_xi is the linspaced array in which the xipm are passed to the external function
     def Map4analytic(self, mapradii, xip_spl, xim_spl, thetamin_xi, thetamax_xi, ntheta_xi, 
-                     nsubr=1, nsubsample_filter=1, batchsize=None):
+                     nsubr=1, nsubsample_filter=1, batchsize=None, basis='MapMx'):
         
         self.nbinsz = 1
         self.nzcombis = 1
@@ -3479,8 +3332,16 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                     print("We did have a problem for arg %i"%elarg)
 
         func(*args)
+
+        res_MMStar = M4correlators.reshape((8,len(mapradii)))
+        # Allocate result
+        res = ()
+        if basis=='MM*' or basis=='both':
+            res += (res_MMStar, )
+        if basis=='MapMx' or basis=='both':
+            res += (GGGGCorrelation_NoTomo.MMStar2MapMx_fourth(res_MMStar), )
         
-        return M4correlators.reshape((8,self.nzcombis,len(mapradii)))
+        return res
     
     def getMultipolesFromSymm(self, nmax_rec, itheta1, itheta2, itheta3, eltrafo):
     
@@ -3503,6 +3364,33 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
         Nn_out = Nn_out.reshape(((2*nmax_rec+1),(2*nmax_rec+1)))
 
         return Upsn_out, Nn_out
+
+    ## MISC HELPERS ##
+    @staticmethod
+    def MMStar2MapMx_fourth(res_MMStar):
+        """ Transforms fourth-order aperture correlators to fourth-order aperture mass.
+        See i.e. Eqs (32)-(36) in Silvestre-Rosello+ 2025 (arxiv.org/pdf/2509.07973).
+        """
+        res_MapMx = np.zeros((16,*res_MMStar.shape[1:]))
+        Mcorr2Map4_re = .125*np.array([[+1,+1,+1,+1,+1,+1,+1,+1],
+                                    [-1,-1,-1,+1,+1,-1,+1,+1],
+                                    [-1,-1,+1,-1,+1,+1,-1,+1],
+                                    [-1,-1,+1,+1,-1,+1,+1,-1],
+                                    [-1,+1,-1,-1,+1,+1,+1,-1],
+                                    [-1,+1,-1,+1,-1,+1,-1,+1],
+                                    [-1,+1,+1,-1,-1,-1,+1,+1],
+                                    [+1,-1,-1,-1,-1,+1,+1,+1]])
+        Mcorr2Map4_im = .125*np.array([[+1,-1,+1,+1,+1,-1,-1,-1],
+                                    [+1,+1,-1,+1,+1,-1,+1,+1],
+                                    [+1,+1,+1,-1,+1,+1,-1,+1],
+                                    [+1,+1,+1,+1,-1,+1,+1,-1],
+                                    [-1,-1,+1,+1,+1,+1,+1,+1],
+                                    [-1,+1,-1,+1,+1,+1,-1,-1],
+                                    [-1,+1,+1,-1,+1,-1,+1,-1],
+                                    [-1,+1,+1,+1,-1,-1,-1,+1]])
+        res_MapMx[[0,5,6,7,8,9,10,15]] = Mcorr2Map4_re@(res_MMStar.real)
+        res_MapMx[[1,2,3,4,11,12,13,14]] = Mcorr2Map4_im@(res_MMStar.imag)
+        return res_MapMx
 
 
 class NNNNCorrelation_NoTomo(BinnedNPCF):
@@ -3778,3 +3666,31 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
             # TODO allocate map4, map4c etc.
             
         return istatout
+
+    def multipoles2npcf_singlethetcombi(self, elthet1, elthet2, elthet3):
+        r""" Converts a 4PCF in the multipole basis in the real space basis for a fixed combination of radial bins.
+
+        Returns:
+        --------
+        npcf_out: np.ndarray
+            Natural 4PCF components in the real-space basis for all angular combinations.
+        npcf_norm_out: np.ndarray
+            4PCF weighted counts in the real-space basis for all angular combinations.
+        """
+        
+        _phis1 = self.phis[0].astype(np.float64)
+        _phis2 = self.phis[1].astype(np.float64)
+        _nphis1 = len(self.phis[0])
+        _nphis2 = len(self.phis[1])
+        nnvals, _, nzcombis, nbinsr, _, _ = np.shape(self.npcf_multipoles)
+        
+        N_in = self.npcf_multipoles[...,elthet1,elthet2,elthet3].flatten()
+        npcf_out = np.zeros(nzcombis*_nphis1*_nphis2, dtype=np.complex128)
+        
+        self.clib.multipoles2npcf_nnnn_singletheta(
+            N_in, self.nmaxs[0], self.nmaxs[1],
+            self.bin_centers_mean[elthet1], self.bin_centers_mean[elthet2], self.bin_centers_mean[elthet3],
+            _phis1, _phis2, _nphis1, _nphis2,
+            npcf_out)
+        
+        return npcf_out.reshape(( _nphis1,_nphis2))

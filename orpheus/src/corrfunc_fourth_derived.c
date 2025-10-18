@@ -853,8 +853,8 @@ void alloc_notomoMap4_analytic(
     #pragma omp parallel for num_threads(nthreads)
     for(int elthetbatch=0;elthetbatch<nthetbatches;elthetbatch++){
         int thisthread = omp_get_thread_num();
-        printf("Starting thetabatch %d/%d on thread %d with %d thetacombis\n",
-               elthetbatch,nthetbatches,thisthread,nthetacombis_batches[elthetbatch]);
+        //printf("Starting thetabatch %d/%d on thread %d with %d thetacombis\n",
+        //       elthetbatch,nthetbatches,thisthread,nthetacombis_batches[elthetbatch]);
         //int nbinsz = 1;
         int batch_nthetas = nthetacombis_batches[elthetbatch];   
         int batchgamma_thetshift = nbinsphi*nbinsphi;
