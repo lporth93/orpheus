@@ -176,7 +176,7 @@ class BuildExtWithDetect(build_ext):
 # All external modules from orpheus
 ext_modules = [
     Extension(
-        "orpheus_clib",
+        "orpheus.orpheus_clib",
         sources=[
             "orpheus/src/utils.c",
             "orpheus/src/assign.c",
@@ -192,22 +192,37 @@ ext_modules = [
     )
 ]
 
+# read long description from README
+thisfile = os.path.abspath(os.path.dirname(__file__))
+with open(os.path.join(thisfile, "README.md"), encoding="utf-8") as f:
+    long_description = f.read()
+
 setup(
-    name="orpheus",
+    name="orpheus-npcf",
     version="0.0.1",
     description="Compute N-point correlation functions of spin-s fields.",
+    long_description=long_description,
+    long_description_content_type="text/markdown",
     license="MIT",
+    url="https://github.com/lporth93/orpheus",
+    author="Lucas Porth",
     packages=["orpheus"],
+    python_requires=">=3.9",
     install_requires=[
-        "astropy",
-        "healpy",
-        "numba",
-        "numpy",
-        "pathlib",
-        "scipy",
+        "astropy>=6",
+        "healpy>=1.17",
+        "coverage>=7.6.1",
+        "numba>=0.58,<=0.62.1",
+        "numpy>=1.22,<1.27",
+        "scipy>=1.15",
         "scikit-learn",],
     ext_modules=ext_modules,
     cmdclass={"build_ext": BuildExtWithDetect},
     include_package_data=False,
     zip_safe=False,
+    classifiers=[
+        "Development Status :: 4 - Beta",
+        "Programming Language :: Python :: 3",
+        "License :: OSI Approved :: MIT License",
+    ],
 )

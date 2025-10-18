@@ -1,0 +1,4 @@
+include README.md
+include LICENSE
+graft orpheus
+recursive-include orpheus/src *.c *.h
