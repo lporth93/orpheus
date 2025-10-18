@@ -6,36 +6,66 @@ on:
       - "v*"  # Trigger on tags like v0.1.0
 
 jobs:
-  build-and-publish:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.9", "3.10", "3.11", "3.12"]
 
     steps:
       - uses: actions/checkout@v3
 
-      - name: Set up Python
+      # Optional: set up a runner Python for the job itself (not required for cibuildwheel)
+      - name: Set up Python (runner)
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install dependencies
-        run: python -m pip install --upgrade pip
+          python-version: "3.11"
 
       - name: Install cibuildwheel
-        run: pip install cibuildwheel
+        run: python -m pip install --upgrade pip && pip install cibuildwheel
 
       - name: Build wheels
         env:
-          CIBW_BUILD: "cp39-* cp310-* cp311-*"
+          # include cp312 and any other CPython versions you want to build
+          CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-*"
           CIBW_SKIP: "pp*"
         run: |
           cibuildwheel --output-dir wheelhouse
+
+      - name: Upload wheelhouse artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheelhouse-${{ matrix.os }}
+          path: wheelhouse/*.whl
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Linux wheelhouse
+        uses: actions/download-artifact@v4
+        with:
+          name: wheelhouse-ubuntu-latest
+          path: wheelhouse/ubuntu
+
+      - name: Download macOS wheelhouse
+        uses: actions/download-artifact@v4
+        with:
+          name: wheelhouse-macos-latest
+          path: wheelhouse/macos
+
+      - name: Download Windows wheelhouse
+        uses: actions/download-artifact@v4
+        with:
+          name: wheelhouse-windows-latest
+          path: wheelhouse/windows
+
+      - name: List wheels
+        run: ls -R wheelhouse
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@v1.6.0
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
           user: __token__
+          packages_dir: wheelhouse
