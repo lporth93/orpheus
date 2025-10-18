@@ -1,20 +1,31 @@
 name: Build and Publish Wheels
 
+# Trigger on tags like v0.1.0 and allow manual runs
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref (branch, tag or SHA) to run on. Leave empty for default branch.'
+        required: false
 
 jobs:
   build:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Only linux and macos, no windows
+        os: [ubuntu-latest, macos-latest]
 
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref || github.sha }}
 
+      # Optional: set up a Python on the runner (not required for cibuildwheel, but fine)
       - name: Set up Python (runner)
         uses: actions/setup-python@v5
         with:
@@ -24,24 +35,18 @@ jobs:
         run: python -m pip install --upgrade pip && pip install cibuildwheel
 
       - name: Build wheels
-        if: runner.os != 'Windows'
         env:
+          # build cp39..cp312 wheels (adjust as needed)
           CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-*"
           CIBW_SKIP: "pp*"
         run: |
+          # For macOS builds set deployment target to match libgomp dependency seen earlier
           if [ "$(uname -s)" = "Darwin" ]; then
             echo "Setting MACOSX_DEPLOYMENT_TARGET=15.0 for macOS build"
             export MACOSX_DEPLOYMENT_TARGET=15.0
           fi
-          cibuildwheel --output-dir wheelhouse
 
-      - name: Build wheels (Windows)
-        if: runner.os == 'Windows'
-        env:
-          CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-*"
-          CIBW_SKIP: "pp*"
-        run: cibuildwheel --output-dir wheelhouse
-        shell: bash
+          cibuildwheel --output-dir wheelhouse
 
       - name: Upload wheelhouse artifact
         uses: actions/upload-artifact@v4
@@ -65,12 +70,6 @@ jobs:
           name: wheelhouse-macos-latest
           path: wheelhouse/macos
 
-      - name: Download Windows wheelhouse
-        uses: actions/download-artifact@v4
-        with:
-          name: wheelhouse-windows-latest
-          path: wheelhouse/windows
-
       - name: List wheels
         run: ls -R wheelhouse
 
@@ -80,3 +79,4 @@ jobs:
           password: ${{ secrets.PYPI_API_TOKEN }}
           user: __token__
           packages_dir: wheelhouse
+
