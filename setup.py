@@ -199,7 +199,7 @@ with open(os.path.join(thisfile, "README.md"), encoding="utf-8") as f:
 
 setup(
     name="orpheus-npcf",
-    version="0.1.11",
+    version="0.1.14",
     description="Compute N-point correlation functions of spin-s fields.",
     long_description=long_description,
     long_description_content_type="text/markdown",
