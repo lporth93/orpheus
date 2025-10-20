@@ -37,7 +37,7 @@ jobs:
       - name: Build wheels
         env:
           # build cp39..cp312 wheels (adjust as needed)
-          CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-* cp313* cp314*"
+          CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-* cp313-* cp314-*"
           CIBW_SKIP: "pp*"
         run: |
           # For macOS builds set deployment target to match libgomp dependency seen earlier
