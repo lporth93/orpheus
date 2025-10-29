@@ -9,6 +9,7 @@ import pickle
 import os
 import sys
 from time import time
+from threadpoolctl import threadpool_limits
 
 from sklearn.cluster import KMeans
 
@@ -151,7 +152,11 @@ def gen_cat_patchindices(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_ha
                 copy_x=True, 
                 algorithm='lloyd')
         X = np.array(pix2vec(nside=nside_kmeans,ipix=hpx_uinds,nest=False)).T
-        clustinds = clust.fit_predict(X, y=None, sample_weight=None)
+        # Temorarily limit max number of OMP here as KMeans per default chooses all available
+        # cores and might crash in case scipy has not been compiled to handle this.
+        # Also I observed that KMeans becomes fairly inefficient for this many cores anyways.
+        with threadpool_limits(limits=32, user_api="openmp"):   
+            clustinds = clust.fit_predict(X, y=None, sample_weight=None)
         # Step 3: Map the pixel centers back to the galaxy indices
         hashmap = np.vectorize({upix: center for upix, center in zip(hpx_uinds, clustinds)}.get)
         patchinds = hashmap(hpx_inds)
