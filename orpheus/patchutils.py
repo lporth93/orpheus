@@ -167,6 +167,7 @@ def gen_cat_patchindices(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_ha
         theta = np.radians(90. - b)
         phi = np.radians(l)
         patchinds = ang2pix(healpix_nside, theta, phi).astype(int)
+        npatches = len(np.unique(patchinds).flatten())
     else:
         raise NotImplementedError
         
@@ -208,9 +209,16 @@ def gen_cat_patchindices(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_ha
         _patchcenters = np.array([[np.mean(ra_deg[ patchinds==patchind]), np.mean(dec_deg[ patchinds==patchind])] for patchind in range(npatches)])
     else:
         raise NotImplementedError
-        
+    
     cat_patchindices = {}
     cat_patchindices["info"] = {}
+    cat_patchindices["info"]["patchextend_deg"] = patchextend_arcmin/60.
+    cat_patchindices["info"]["nside_hash"] = nside_hash
+    cat_patchindices["info"]["method"] = method
+    cat_patchindices["info"]["kmeanshp_maxiter"] = kmeanshp_maxiter
+    cat_patchindices["info"]["kmeanshp_tol"] = kmeanshp_tol
+    cat_patchindices["info"]["kmeanshp_randomstate"] = kmeanshp_randomstate
+    cat_patchindices["info"]["healpix_nside"] = healpix_nside
     cat_patchindices["info"]["patchcenters"] = _patchcenters
     cat_patchindices["info"]["patchareas"] = np.zeros(npatches,dtype=float)
     cat_patchindices["info"]["patch_ngalsinner"] = np.zeros(npatches,dtype=int)

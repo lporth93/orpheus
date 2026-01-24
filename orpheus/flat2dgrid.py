@@ -42,3 +42,27 @@ class FlatDataGrid_2D(FlatPixelGrid_2D):
         
     def regrid(self, other_grid):
         return super()._regrid(other_grid, self.data)
+    
+    def samplePoints(self, nbar, method='Poisson', rng=None):
+        """ Sample points within all pixels ==0 """
+        assert(method in ["Poisson"])
+        if rng is None:
+            rng = np.random.RandomState()
+        mask1_lo = self.start_1
+        mask1_hi = self.start_1 + self.npix_1*self.dpix_1
+        mask2_lo = self.start_2
+        mask2_hi = self.start_2 + self.npix_2*self.dpix_2
+        mask_ext_area = (mask1_hi-mask1_lo)*(mask2_hi-mask2_lo)
+        # Assumes .data is mask s.t. we only sample in unmasked region, indexed by zero.
+        if method=="Poisson":
+            ngal_rand = int(nbar*mask_ext_area)
+            rand_1 = mask1_lo + (mask1_hi-mask1_lo)*rng.rand(ngal_rand)
+            rand_2 = mask2_lo + (mask2_hi-mask2_lo)*rng.rand(ngal_rand)
+            rand_ipix = np.floor((rand_2-mask2_lo)/self.dpix_2).astype(int)*self.npix_1 + np.floor((rand_1-mask1_lo)/self.dpix_1).astype(int)
+            infoot = self.data.flatten()[rand_ipix]==0
+            rand_1 = rand_1[infoot]
+            rand_2 = rand_2[infoot]
+        # Assumes .data is density map
+        if method=="LinBias":
+            raise NotImplementedError
+        return rand_1, rand_2

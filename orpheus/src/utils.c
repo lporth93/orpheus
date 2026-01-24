@@ -33,7 +33,8 @@ double linint(double *vec, double x, double xmin, double xmax, double dx){
     if (x>=(xmax-dx)){return 0;}
     int elb_lo = (int) ((x-xmin)/dx);
     double w = (x-(xmin+elb_lo*dx))/dx;
-    double res = w*vec[elb_lo] + (1-w)*vec[elb_lo+1];
+    //double res = w*vec[elb_lo] + (1-w)*vec[elb_lo+1];
+    double res = (1-w)*vec[elb_lo] + w*vec[elb_lo+1];
     //printf("%.9f %.9f %.9f %d %.9f %.9f %.9f %.9f\n",x,xmin,xmax,elb_lo,w,vec[elb_lo],vec[elb_lo+1],res);
     return res;
 }

@@ -11,5 +11,6 @@ There are currently two classes for calculating four-point auto-correlation func
 Each of the above classes is a sub-class of the base class npcf, so they have a number of
 features in common about how they are constructed. The common features are documented here.
 
-.. autoclass:: orpheus.npcf.BinnedNPCF
+.. autoclass:: orpheus.npcf_base.BinnedNPCF
     :members:
+    :no-index:

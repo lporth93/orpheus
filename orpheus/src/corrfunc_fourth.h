@@ -50,6 +50,39 @@ void alloc_notomoMap4_tree_gggg(
     int alloc_4pcfmultipoles, int alloc_4pcfreal,
     double *bin_centers, double complex *Upsilon_n, double complex *N_n, double complex *Gammas, double complex *Norms);
 
+void alloc_notomoGammans_discrete_gnnn(
+    double *isinner_source, double *weight_source, double *pos1_source, double *pos2_source, double *e1_source, double *e2_source, int ngal_source, 
+    double *weight_lens, double *pos1_lens, double *pos2_lens, int ngal_lens, 
+    int *index_matcher_lens, int *pixs_galind_bounds_lens, int *pix_gals_lens, int nregions, 
+    double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n,
+    int nmax, double rmin, double rmax, int nbinsr, int dccorr,
+    int nthreads, double *bin_centers, double complex *Gtilde_n, double complex *N_n);
+
+void alloc_notomoGammans_tree_gnnn(
+    int nresos, double *reso_redges,
+    double *isinner_source, double *weight_source, double *pos1_source, double *pos2_source, double *e1_source, double *e2_source, int ngal_source, 
+    double *weight_lens_resos, double *pos1_lens_resos, double *pos2_lens_resos, int *ngal_lens_resos, 
+    int *index_matcher_source, int *pixs_galind_bounds_source, int *pix_gals_source, 
+    int *index_matcher_lens, int *pixs_galind_bounds_lens, int *pix_gals_lens, int nregions, 
+    double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n,
+    int nmax, double rmin, double rmax, int nbinsr, int dccorr, int nthetacombis, 
+    int *nindices, int len_nindices, 
+    int nthreads, int verbose, double *bin_centers, double complex *Gtilde_n, double complex *N_n);
+
+void alloc_notomoMapNap3_tree_gnnn(
+    int nresos, double *reso_redges,
+    double *isinner_source, double *weight_source, double *pos1_source, double *pos2_source, double *e1_source, double *e2_source, int ngal_source, 
+    double *weight_lens_resos, double *pos1_lens_resos, double *pos2_lens_resos, int *ngal_lens_resos, 
+    int *index_matcher_source, int *pixs_galind_bounds_source, int *pix_gals_source, 
+    int *index_matcher_lens, int *pixs_galind_bounds_lens, int *pix_gals_lens, int nregions, 
+    double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n,
+    int nmax, double rmin, double rmax, int nbinsr, int dccorr,
+    int *nindices, int len_nindices, double *phibins, double *dbinsphi, int nbinsphi,
+    int *thetacombis_batches, int *nthetacombis_batches, int *cumthetacombis_batches, int nthetbatches,
+    int nthreads, double *apradii, int napradii, double complex *NM3correlator, 
+    int alloc_4pcfmultipoles, int alloc_4pcfreal,
+    double *bin_centers, double complex *Gtilde_n, double complex *N_n, double complex *Gtilde, double complex *Norms);
+
 void alloc_notomoGammans_tree_nnnn(
     double *isinner, double *weight, double *pos1, double *pos2, int ngal, 
     int nmax, double rmin, double rmax, int nbinsr, int nthetacombis, int dccorr, 

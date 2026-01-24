@@ -282,6 +282,13 @@ class Catalog:
             # Distribute the patchindices of the joint catalog to the individual instances
             self.patchinds = {}
             self.patchinds['info'] = {}
+            self.patchinds['info']['patchextend_deg'] = jointcat.patchinds['info']['patchextend_deg']
+            self.patchinds['info']['nside_hash'] = jointcat.patchinds['info']['nside_hash']
+            self.patchinds['info']['method'] = jointcat.patchinds['info']['method']
+            self.patchinds['info']['kmeanshp_maxiter'] = jointcat.patchinds['info']['kmeanshp_maxiter']
+            self.patchinds['info']['kmeanshp_tol'] = jointcat.patchinds['info']['kmeanshp_tol']
+            self.patchinds['info']['kmeanshp_randomstate'] = jointcat.patchinds['info']['kmeanshp_randomstate']
+            self.patchinds['info']['healpix_nside'] = jointcat.patchinds['info']['healpix_nside']
             self.patchinds['info']['patchcenters'] = jointcat.patchinds['info']['patchcenters']
             self.patchinds['info']['patchareas'] = jointcat.patchinds['info']['patchareas']
             self.patchinds['info']['patch_ngalsinner'] = np.zeros(jointcat.npatches)
@@ -299,6 +306,13 @@ class Catalog:
             for elcat, cat in enumerate(other_cats):
                 cat.patchinds = {}
                 cat.patchinds['info'] = {}
+                cat.patchinds['info']['patchextend_deg'] = jointcat.patchinds['info']['patchextend_deg']
+                cat.patchinds['info']['nside_hash'] = jointcat.patchinds['info']['nside_hash']
+                cat.patchinds['info']['method'] = jointcat.patchinds['info']['method']
+                cat.patchinds['info']['kmeanshp_maxiter'] = jointcat.patchinds['info']['kmeanshp_maxiter']
+                cat.patchinds['info']['kmeanshp_tol'] = jointcat.patchinds['info']['kmeanshp_tol']
+                cat.patchinds['info']['kmeanshp_randomstate'] = jointcat.patchinds['info']['kmeanshp_randomstate']
+                cat.patchinds['info']['healpix_nside'] = jointcat.patchinds['info']['healpix_nside']
                 cat.patchinds['info']['patchcenters'] = jointcat.patchinds['info']['patchcenters']
                 cat.patchinds['info']['patchareas'] = jointcat.patchinds['info']['patchareas']
                 cat.patchinds['info']['patch_ngalsinner'] = np.zeros(jointcat.npatches)
@@ -1030,9 +1044,9 @@ class ScalarTracerCatalog(Catalog):
         return res
     
     
-    def frompatchind(self, index, rotsignflip=False):
+    def frompatchind(self, index):
 
-        prepare = super()._patchind_preparerot(index, rotsignflip=rotsignflip)
+        prepare = super()._patchind_preparerot(index, rotsignflip=False)
         inds_extpatch, patch_isinner, rotangle, ra_rot, dec_rot, rotangle_polars = prepare
 
         patchcat = ScalarTracerCatalog(

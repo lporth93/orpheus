@@ -5,6 +5,19 @@
 #include <stdint.h>
 #include <complex.h>
 
+//////////////////////////
+/// Counts 3PCF related //
+//////////////////////////
+void alloc_Gammans_doubletree_nnn(
+    int nresos, int nresos_grid, double *dpix1_resos,  double *dpix2_resos, double *reso_redges, 
+    int resoshift_leafs, int minresoind_leaf, int maxresoind_leaf,
+    int *ngal_resos, int nbinsz, double *isinner_resos, double *weight_resos, double *pos1_resos, double *pos2_resos, 
+    int *zbin_resos, double *weightsq_resos,
+    int *index_matcher, int *pixs_galind_bounds, int *pix_gals, 
+    double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n,
+    int *index_matcher_hash, int nregions, int *filledregions, int nfilledregions, 
+    int nmax, double rmin, double rmax, int nbinsr, int dccorr, 
+    int nthreads, int verbose, double *bin_centers, double complex *Triplets_n);
 
 /////////////////////////
 /// Shear 3PCF related //

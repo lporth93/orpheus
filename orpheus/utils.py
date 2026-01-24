@@ -1,5 +1,5 @@
 import numpy as np
-from itertools import combinations_with_replacement
+from itertools import combinations_with_replacement, product
 import os
 import site
 
@@ -106,6 +106,31 @@ def gen_n2n3indices_Upsfourth(nmax):
         _n3s = np.argwhere(reconstructed>0)[:,1].astype(np.int32)-nmax_alloc
         return _shape, _inds, _n2s, _n3s
 
+def gen_n2n3indices_Gtildefourth(nmax):
+        """ List of flattened indices corresponding to selection """
+        nmax_alloc = 2*nmax+1
+        reconstructed = np.zeros((2*nmax_alloc+1,2*nmax_alloc+1),dtype=int)
+        for _n2 in range(-nmax-1,nmax+2):
+            for _n3 in range(-nmax-1,nmax+2):
+                reconstructed[nmax_alloc+_n2,nmax_alloc+_n3] += 1
+        for _n3 in range(-2*nmax,-nmax-1):
+            for _n2 in range(-nmax-1-_n3,nmax+2):
+                reconstructed[nmax_alloc+_n2,nmax_alloc+_n3] += 1
+        for _n2 in range(-2*nmax-1,-nmax-1):
+            for _n3 in range(-nmax-1-_n2,nmax+2):
+                reconstructed[nmax_alloc+_n2,nmax_alloc+_n3] += 1
+        for _n3 in range(nmax+2,2*nmax+1):
+            for _n2 in range(-nmax-1,nmax+2-_n3):
+                reconstructed[nmax_alloc+_n2,nmax_alloc+_n3] += 1
+        for _n2 in range(nmax+2,2*nmax+2):
+            for _n3 in range(-nmax-1,nmax+2-_n2):
+                reconstructed[nmax_alloc+_n2,nmax_alloc+_n3] += 1
+        _shape = reconstructed.shape
+        _inds = np.argwhere((reconstructed>0).flatten())[:,0].astype(np.int32)
+        _n2s = np.argwhere(reconstructed>0)[:,0].astype(np.int32)-nmax_alloc
+        _n3s = np.argwhere(reconstructed>0)[:,1].astype(np.int32)-nmax_alloc
+        return _shape, _inds, _n2s, _n3s
+
 def symmetrize_map3_multiscale(map3, return_list=False):
     """
     Symmetrizes third-order aperture mass over tomographic bin combinations
@@ -142,11 +167,32 @@ def symmetrize_map3_multiscale(map3, return_list=False):
     map3_symm = np.mean(all_perms_data, axis=(1, 3))
 
     # Allocate final result
-    res = (map3_symm,)
+    res = map3_symm
     if return_list:
+        res = (map3_symm, )
         # Rearrange and split the data to match original list format
         list_data = all_perms_data.transpose(3, 0, 1, 4, 2)
         map3_list = [arr.squeeze(axis=-1) for arr in np.split(list_data, indz3, axis=-1)]
         res += (map3_list,)
         
     return res
+
+def map_ztuples(ntomobins, order):
+    """
+    Maps indices of tomobin list with (z1,z2,...,zm): zi<n to indices with z1<=z2 etc.
+    Example: for ntomobins=3, order=2 we have
+       Sorted tuples = [00 01 02 11 12 22], unsorted tuples = [00 01 02 10 11 12 20 21 22]
+        --> index_mapper = [0, 1, 2, 1, 3, 4, 2, 4, 5]
+    """
+
+    # Build and annotated sorted tuples
+    sorted_tuples = list(combinations_with_replacement(range(ntomobins), order))
+    sorted_tuples_indices = {t: r for r, t in enumerate(sorted_tuples)}
+
+    # Map index of sorted tuples to unsorted tuples indices
+    index_mapper = np.zeros(ntomobins ** order, dtype=int)
+    for idx, t in enumerate(product(range(ntomobins), repeat=order)):
+        sorted_tuple = tuple(sorted(t))
+        index_mapper[idx] = sorted_tuples_indices[sorted_tuple]
+
+    return len(sorted_tuples), len(index_mapper), index_mapper

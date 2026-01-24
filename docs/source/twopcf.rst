@@ -1,17 +1,15 @@
-Three-point Correlation Functions
-=================================
+Two-point Correlation Functions
+===============================
 
-There are currently three differenct classes for calculating the different possible three-point correlation functions:
+There are currently two differenct classes for calculating the different possible two-point correlation functions:
 
 .. toctree::
 
-    ggg
-    gnn
-    ngg
+    nn
+    gg
 
 Each of the above classes is a sub-class of the base class npcf, so they have a number of
 features in common about how they are constructed. The common features are documented here.
 
 .. autoclass:: orpheus.npcf_base.BinnedNPCF
     :members:
-    :no-index:

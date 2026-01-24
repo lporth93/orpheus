@@ -22,6 +22,252 @@
 /// SECOND-ORDER SHEAR CORRELATION FUNCTIONS ///
 ////////////////////////////////////////////////
 
+void alloc_nn_doubletree(
+    int nresos, int nresos_grid, double *dpix1_resos,  double *dpix2_resos, double *reso_redges, 
+    int resoshift_leafs, int minresoind_leaf, int maxresoind_leaf,
+    int *ngal_resos, int nbinsz, double *isinner_resos, double *weight_resos, double *pos1_resos, double *pos2_resos, 
+    int *zbin_resos, 
+    int *index_matcher, int *pixs_galind_bounds, int *pix_gals, 
+    double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n,
+    int nregions, int *index_matcher_hash,
+    double rmin, double rmax, int nbinsr, int do_dc,
+    int nthreads, int verbose, double *bin_centers, double *npair, long long int *npair_cell){
+
+    double *totcount = calloc(nbinsz*nbinsz*nbinsr, sizeof(double));
+        
+    // Temporary arrays that are allocated in parallel and later reduced
+    int *tmpnpair = calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(int));
+    double *tmpwcount = calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(double));
+    double *tmpwnorm = calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(double));
+    
+    // Build array of filled regions (i.e. coarsest resolution grids with at least a single inner galaxy)
+    int *filledregions = calloc(nregions, sizeof(int)); 
+    int nfilledregions = 0;
+    int _regionshift = 0;    
+
+    // TODO: Replace this with debugged upper bit. Here we just choose every region
+    for (int elregion=0; elregion<nregions;elregion++){
+        filledregions[nfilledregions] = elregion;
+        nfilledregions += 1; 
+    }
+
+    // Helper array that checks how many regions have been already computed
+    int *regionsdone = calloc(nfilledregions, sizeof(int));
+    int nregionsdone = 0;
+    int progress_step = nfilledregions/100;
+    if (progress_step <= 0) progress_step = 1;
+    
+    #pragma omp parallel for num_threads(nthreads)
+    for(int elthread=0;elthread<nthreads;elthread++){
+        int nregions_per_thread = mymax(1,nfilledregions/nthreads);
+        
+        // Check which sets of radii are evaluated for each resolution
+        int *reso_rindedges = calloc(nresos+1, sizeof(int));
+        double *binedges = calloc(nbinsr+2, sizeof(double));
+        double logrmin = log(rmin);
+        double drbin = (log(rmax)-logrmin)/(nbinsr);
+        int tmpreso = 0;
+        double thisredge = 0;
+        double tmpr = rmin;
+        for (int elr=0;elr<nbinsr;elr++){
+            binedges[elr] = tmpr;
+            tmpr *= exp(drbin);
+            thisredge = reso_redges[mymin(nresos,tmpreso+1)];
+            
+            if (thisredge<tmpr){
+                reso_rindedges[mymin(nresos,tmpreso+1)] = elr;
+                if ((tmpr-thisredge)<(thisredge - (tmpr/exp(drbin)))){reso_rindedges[mymin(nresos,tmpreso+1)]+=1;}
+                tmpreso+=1;
+            }
+        }
+        binedges[nbinsr] = tmpr;
+        binedges[nbinsr+1] = tmpr* exp(drbin);
+        
+        // Very fine linear array between rmin/rmax
+        // We use it to get the bin indices of the log array fast.
+        double dbin_lin = 0.9*rmin*(exp(drbin)-1);
+        double dbin_lin_inv = 1./dbin_lin;
+        int nbinsr_lin = (int) ceil(binedges[nbinsr]/dbin_lin);
+        int *linarr_bins = calloc(nbinsr_lin+1, sizeof(int));
+        int tmplogbin = 0;
+        tmpr = rmin;
+        for (int elr=0;elr<=nbinsr_lin;elr++){
+            if (tmpr>binedges[tmplogbin+1]){tmplogbin+=1;}
+            linarr_bins[elr] = tmplogbin;
+            tmpr += dbin_lin;
+            if (tmpr>=binedges[nbinsr]){break;}
+        }
+            
+        // Shift variables for spatial hash
+        int npix_hash = pix1_n*pix2_n;
+        int *rshift_index_matcher = calloc(nresos, sizeof(int));
+        int *rshift_pixs_galind_bounds = calloc(nresos, sizeof(int));
+        int *rshift_pix_gals = calloc(nresos, sizeof(int));
+        for (int elreso=1;elreso<nresos;elreso++){
+            rshift_index_matcher[elreso] = rshift_index_matcher[elreso-1] + npix_hash;
+            rshift_pixs_galind_bounds[elreso] = rshift_pixs_galind_bounds[elreso-1] + ngal_resos[elreso-1]+1;
+            rshift_pix_gals[elreso] = rshift_pix_gals[elreso-1] + ngal_resos[elreso-1];
+        }
+        
+        for (int _elregion=0; _elregion<2*nfilledregions; _elregion++){
+
+            // Check if this thread needs to allocate the region. In the first pass we split the work evenly 
+            // while in the second pass we just work on the next best region, s.t. the 'fast' threads will
+            // steal work from the 'slow' threads.
+            int wasdone = 0;
+            int elfilledregion = _elregion%nfilledregions;
+            int elregion = filledregions[elfilledregion];
+
+            if (_elregion<nfilledregions){
+                int nthread_target = mymin(elfilledregion/nregions_per_thread, nthreads-1);
+                if (nthread_target!=elthread){continue;}
+            }
+            
+            #pragma omp critical
+            {   
+                if (regionsdone[elfilledregion]==1){wasdone = 1;}
+                else{
+                    regionsdone[elfilledregion]=1;
+                    nregionsdone+=1; 
+                }
+            }
+            if (wasdone==1){continue;}
+            reso_rindedges[nresos] = nbinsr;
+            
+            // Now, for each resolution, loop over all the galaxies in the region and
+            int ind_pix1, ind_pix2, ind_inpix1, ind_inpix2, ind_red, ind_gal1, ind_gal2, z_gal1, z_gal2;
+            int pix1_lower, pix2_lower, pix1_upper, pix2_upper;
+            int lower1, upper1, lower2, upper2;
+            double innergal;
+            int rbin, nbinsz2r, nbinszr, ind_rbin;
+            double pos1_gal1, pos2_gal1, pos1_gal2, pos2_gal2, w_gal1, w_gal2;
+            double rel1, rel2, dist, dist_sq;
+            double rmin_reso, rmax_reso, rmin_reso_sq, rmax_reso_sq;
+
+            int elreso_leaf, rbinmin, rbinmax;
+            nbinsz2r =  nbinsz*nbinsz*nbinsr;
+            nbinszr =  nbinsz*nbinsr;
+            for (int elreso=0;elreso<nresos;elreso++){
+                elreso_leaf = mymin(mymax(minresoind_leaf,elreso+resoshift_leafs),maxresoind_leaf);
+                //elreso_leaf = elreso;
+                rbinmin = reso_rindedges[elreso];
+                rbinmax = reso_rindedges[elreso+1];
+                rmin_reso = rmin*exp(rbinmin*drbin);
+                rmax_reso = rmin*exp(rbinmax*drbin);
+                rmin_reso_sq = rmin_reso*rmin_reso;
+                rmax_reso_sq = rmax_reso*rmax_reso;
+                lower1 = pixs_galind_bounds[rshift_pixs_galind_bounds[elreso]+elregion];
+                upper1 = pixs_galind_bounds[rshift_pixs_galind_bounds[elreso]+elregion+1];
+                //if (elregion==region_debug){printf("rbinmin=%d, rbinmax%d\n",rbinmin,rbinmax);}
+                for (ind_inpix1=lower1; ind_inpix1<upper1; ind_inpix1++){
+                    ind_gal1 = rshift_pix_gals[elreso] + pix_gals[rshift_pix_gals[elreso]+ind_inpix1];
+                    innergal = isinner_resos[ind_gal1];
+                    if (innergal<1e-5){continue;}
+                    z_gal1 = zbin_resos[ind_gal1];
+                    pos1_gal1 = pos1_resos[ind_gal1];
+                    pos2_gal1 = pos2_resos[ind_gal1];
+                    w_gal1 = innergal*weight_resos[ind_gal1];
+                    
+                    pix1_lower = mymax(0, (int) floor((pos1_gal1 - (rmax_reso+pix1_d) - pix1_start)/pix1_d));
+                    pix2_lower = mymax(0, (int) floor((pos2_gal1 - (rmax_reso+pix2_d) - pix2_start)/pix2_d));
+                    pix1_upper = mymin(pix1_n-1, (int) floor((pos1_gal1 + (rmax_reso+pix1_d) - pix1_start)/pix1_d));
+                    pix2_upper = mymin(pix2_n-1, (int) floor((pos2_gal1 + (rmax_reso+pix2_d) - pix2_start)/pix2_d));
+                    for (ind_pix1=pix1_lower; ind_pix1<pix1_upper; ind_pix1++){
+                        for (ind_pix2=pix2_lower; ind_pix2<pix2_upper; ind_pix2++){
+                            ind_red = index_matcher[rshift_index_matcher[elreso_leaf] + ind_pix2*pix1_n + ind_pix1];
+                            if (ind_red==-1){continue;}
+                            lower2 = pixs_galind_bounds[rshift_pixs_galind_bounds[elreso_leaf]+ind_red];
+                            upper2 = pixs_galind_bounds[rshift_pixs_galind_bounds[elreso_leaf]+ind_red+1];
+                            for (ind_inpix2=lower2; ind_inpix2<upper2; ind_inpix2++){
+                                ind_gal2 = rshift_pix_gals[elreso_leaf] + pix_gals[rshift_pix_gals[elreso_leaf]+ind_inpix2];
+                                pos1_gal2 = pos1_resos[ind_gal2];
+                                pos2_gal2 = pos2_resos[ind_gal2];
+                                rel1 = pos1_gal2 - pos1_gal1;
+                                rel2 = pos2_gal2 - pos2_gal1;
+                                dist_sq = rel1*rel1 + rel2*rel2;
+                                if(rel1<0 && do_dc==0){continue;}
+                                if(dist_sq < rmin_reso_sq || dist_sq >= rmax_reso_sq){continue;} 
+                                dist = sqrt(dist_sq);
+                                w_gal2 = weight_resos[ind_gal2];
+                                z_gal2 = zbin_resos[ind_gal2];
+                                
+                                // Now get the bin index. We have multiple options
+                                // Basic way to go when havin a constant logspace. However, the call to log()
+                                // is pretty expensive (~30%) of runtime
+                                //rbin = (int) floor((0.5*log(dist_sq)-logrmin)/drbin); 
+                                // Do a basic binary search. Becomes pretty slow due to multiple comparisons
+                                //rbin = binary_search(binedges, nbinsr, dist); 
+                                // Search from the largest bin of the current reso backwards. Faster than
+                                // binary search for medium sized arrays, but still slow with many bins.
+                                //rbin = backsearch(binedges, rbinmin, rbinmax, dist);
+                                // Retrieve the bin index of the log using our linear helper array. This is
+                                // about twice as fast as calling log(). Instead of time complexity this method
+                                // adds space complexity for very narrow log-bins
+                                tmplogbin = (int) ((dist-rmin)*dbin_lin_inv);
+                                rbin = linarr_bins[tmplogbin]; 
+                                rbin += (dist > binedges[rbin + 1]) ? 1 : 0;
+                                //rbin += (dist < binedges[rbin]) ? -1 : 0;
+                                ind_rbin = elthread*nbinsz2r + z_gal1*nbinszr + z_gal2*nbinsr + rbin;
+                        
+                                tmpnpair[ind_rbin] += 1; 
+                                tmpwcount[ind_rbin] += w_gal1*w_gal2*dist; 
+                                tmpwnorm[ind_rbin] += w_gal1*w_gal2;
+                            }
+                        }
+                    }
+                }
+            }
+            // Print progress. We default to one dot representing one percent done.
+            if ((verbose>0) && (nregionsdone%progress_step==0)) {
+                #pragma omp critical
+                {
+                    printf("."); 
+                }
+            }
+        }
+        free(reso_rindedges);
+        free(binedges);
+        free(linarr_bins);
+        free(rshift_index_matcher);
+        free(rshift_pixs_galind_bounds);
+        free(rshift_pix_gals);
+    }
+    // Accumulate the bin distances and weights
+    //#pragma omp parallel for num_threads(nthreads)
+    for (int elbinr=0; elbinr<nbinsr; elbinr++){
+        for (int elbinz1=0; elbinz1<nbinsz; elbinz1++){
+            for (int elbinz2=0; elbinz2<nbinsz; elbinz2++){
+                int tmpind = elbinz1*nbinsz*nbinsr + elbinz2*nbinsr + elbinr;
+                for (int thisthread=0; thisthread<nthreads; thisthread++){
+                    int tshift = thisthread*nbinsz*nbinsz*nbinsr; 
+                    totcount[tmpind] += tmpwcount[tshift+tmpind];
+                    npair_cell[tmpind] += tmpnpair[tshift+tmpind];
+                    npair[tmpind] += tmpwnorm[tshift+tmpind];
+                }
+            }
+        }
+    }
+    // Get bin centers
+    for (int elbinz1=0; elbinz1<nbinsz; elbinz1++){
+        for (int elbinz2=0; elbinz2<nbinsz; elbinz2++){
+            for (int elbinr=0; elbinr<nbinsr; elbinr++){
+                int tmpind = elbinz1*nbinsz*nbinsr + elbinz2*nbinsr + elbinr;
+                if (npair[tmpind] != 0){
+                    bin_centers[tmpind] = totcount[tmpind]/npair[tmpind];
+                }
+            }
+        }
+    } 
+    free(totcount);
+    free(tmpwcount);
+    free(tmpnpair);
+    free(tmpwnorm);
+
+    free(filledregions);
+    free(regionsdone); 
+    if (verbose>0){printf("\n");} 
+    }
+
 void alloc_xipm_doubletree(
     int nresos, int nresos_grid, double *dpix1_resos,  double *dpix2_resos, double *reso_redges, 
     int resoshift_leafs, int minresoind_leaf, int maxresoind_leaf,
@@ -41,17 +287,26 @@ void alloc_xipm_doubletree(
     double *tmpwnorm = calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(double));
     double complex *tmpgg = calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(double complex));
     double complex *tmpggstar = calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(double complex));
-
+    
     // Build array of filled regions (i.e. coarsest resolution grids with at least a single inner galaxy)
     int *filledregions = calloc(nregions, sizeof(int)); 
     int nfilledregions = 0;
-    int _regionshift = 0;
-    for (int elreso=1;elreso<nresos;elreso++){_regionshift += ngal_resos[elreso-1];}
+    int _regionshift = 0;    
+    /*for (int elreso=1;elreso<nresos;elreso++){_regionshift += ngal_resos[elreso-1];}
     for (int elregion=0; elregion<nregions;elregion++){
-        if (isinner_resos[_regionshift + elregion] > 1e-5){
-            filledregions[nfilledregions] = elregion;
-            nfilledregions += 1; 
+        for (int elgal=pixs_galind_bounds[_regionshift+elregion]; elgal<pixs_galind_bounds[_regionshift+elregion+1]; elgal++){
+            int igal = _regionshift + pix_gals[_regionshift+elgal];
+            if (isinner_resos[igal] > 1e-5){
+                filledregions[nfilledregions] = elregion;
+                nfilledregions += 1; 
+                break;
+            }
         }
+    }*/
+    // TODO: Replace this with debugged upper bit. Here we just choose every region
+    for (int elregion=0; elregion<nregions;elregion++){
+        filledregions[nfilledregions] = elregion;
+        nfilledregions += 1; 
     }
 
     // Helper array that checks how many regions have been already computed

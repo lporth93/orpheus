@@ -133,6 +133,8 @@ class DirectEstimator:
         self.minresoind_leaf = minresoind_leaf
         self.maxresoind_leaf = maxresoind_leaf
         self.nthreads = np.int32(max(1,nthreads))
+
+        self.combinatorics = None # Here we will store a dict to match tomobin indices for arbitrary orders
         
         # Check types or arguments
         assert(isinstance(self.Rmin, float))
@@ -585,6 +587,12 @@ class Direct_MapnEqual(DirectEstimator):
         zind_flat: int
             Index of flattened Map^k(z1,...,zk) datavector in global output.
         """
+
+        if self.combinatorics is None:
+            self.combinatorics = {}
+            for order in range(1,self.order_max+1):
+                self.combinatorics[order] = MapCombinatorics(nbinsz,order_max=order)
+
         if nbinsz is None:
             nbinsz = self.nbinsz
         if nbinsz is None:
