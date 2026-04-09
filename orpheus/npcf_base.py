@@ -4,6 +4,7 @@ import numpy as np
 from numpy.ctypeslib import ndpointer
 from pathlib import Path
 
+from .catalog import Catalog
 
 __all__ = ["BinnedNPCF"]
         
@@ -11,8 +12,8 @@ __all__ = ["BinnedNPCF"]
 ## BASE CLASSES FOR NPCF AND THEIR MULTIPOLES ##
 ################################################        
 class BinnedNPCF:
-    r"""Class of an binned N-point correlation function of various arbitrary tracer catalogs. 
-    This class contains attributes and metods that can be used across any its children.
+    r"""Class of a binned N-point correlation function of various arbitrary tracer catalogs.
+    This class contains attributes and methods that can be used across any of its children.
     
     Attributes
     ----------
@@ -29,8 +30,8 @@ class BinnedNPCF:
     nbinsr: int, optional
         The number of radial bins for each vertex of the NPCF. If set to
         ``None`` this attribute is inferred from the ``binsize`` attribute.
-    binsize: int, optional
-        The logarithmic slize of the radial bins for each vertex of the NPCF. If set to
+    binsize: float, optional
+        The logarithmic size of the radial bins for each vertex of the NPCF. If set to
         ``None`` this attribute is inferred from the ``nbinsr`` attribute.
     nbinsphi: float, optional
         The number of angular bins for the NPCF in the real-space basis. 
@@ -41,11 +42,17 @@ class BinnedNPCF:
     method: str, optional
         The method to be employed for the estimator. Defaults to ``DoubleTree``.
     multicountcorr: bool, optional
-        Flag on whether to subtract of multiplets in which the same tracer appears more
+        Flag on whether to subtract multiplets in which the same tracer appears more
         than once. Defaults to ``True``.
     shuffle_pix: int, optional
         Choice of how to define centers of the cells in the spatial hash structure.
         Defaults to ``0``, i.e. position at pixel center of mass.
+    tree_alpha: float, optional
+        Parameter used for autosetting tree resolutions given a catalog. 
+    tree_mincellsize: float
+        Smallest allowed sidelength for cell in tree. Defaults to ``0.1``.
+    tree_maxcellsize: float
+        Largest allowed sidelength for cell in tree. Defaults to ``4``.
     tree_resos: list, optional
         The cell sizes of the hierarchical spatial hash structure
     tree_redges: list, optional
@@ -56,7 +63,7 @@ class BinnedNPCF:
     resoshift_leafs: int, optional
         Allows for a difference in how the hierarchical spatial hash is traversed for
         pixels at the base of the NPCF and pixels at leafs. I.e. positive values indicate
-        that leafs will be evaluated at a courser resolutions than the base. Defaults to ``0``.
+        that leafs will be evaluated at coarser resolutions than the base. Defaults to ``0``.
     minresoind_leaf: int, optional
         Sets the smallest resolution in the spatial hash hierarchy which can be used to access
         tracers at leaf positions. If set to ``None`` uses the smallest specified cell size. 
@@ -79,7 +86,7 @@ class BinnedNPCF:
         in the real-space basis.
     npcf: numpy.ndarray
         The natural components of the NPCF in the real space basis. The different axes
-        are specified as follows: ``(component, zcombi, rbin_1, ..., rbin_N-1, phiin_1, phibin_N-2)``.
+        are specified as follows: ``(component, zcombi, rbin_1, ..., rbin_N-1, phibin_1, phibin_N-2)``.
     npcf_norm: numpy.ndarray
         The normalization of the natural components of the NPCF in the real space basis. The different axes
         are specified as follows: ``(zcombi, rbin_1, ..., rbin_N-1, phiin_1, phibin_N-2)``.
@@ -89,13 +96,13 @@ class BinnedNPCF:
     npcf_multipoles_norm: numpy.ndarray
         The normalization of the natural components of the NPCF in the multipole basis. The different axes
         are specified as follows: ``(zcombi, multipole_1, ..., multipole_N-2, rbin_1, ..., rbin_N-1)``.
-    is_edge_corrected: bool, optional
-        Flag signifying on wheter the NPCF multipoles have beed edge-corrected. Defaults to ``False``.
+    is_edge_corrected: bool
+        Flag signifying on whether the NPCF multipoles have been edge-corrected. Defaults to ``False``.
     """
         
     def __init__(self, order, spins, n_cfs, min_sep, max_sep, nbinsr=None, binsize=None, nbinsphi=100, 
                  nmaxs=30, method="DoubleTree", multicountcorr=True, shuffle_pix=0,
-                 tree_resos=[0,0.25,0.5,1.,2.], tree_redges=None, rmin_pixsize=20, 
+                 tree_alpha=None, tree_mincellsize=0.1, tree_maxcellsize=4., tree_resos=[0,0.25,0.5,1.,2.], tree_redges=None, rmin_pixsize=20, 
                  resoshift_leafs=0, minresoind_leaf=None, maxresoind_leaf=None,  
                  methods_avail=["Discrete", "Tree", "BaseTree", "DoubleTree"], verbosity=0, nthreads=16):
         
@@ -109,6 +116,9 @@ class BinnedNPCF:
         self.multicountcorr = int(multicountcorr)
         self.shuffle_pix = shuffle_pix
         self.methods_avail = methods_avail
+        self.tree_alpha = tree_alpha
+        self.tree_mincellsize = tree_mincellsize
+        self.tree_maxcellsize = tree_maxcellsize
         self.tree_resos = np.asarray(tree_resos, dtype=np.float64)
         self.tree_nresos = int(len(self.tree_resos))
         self.tree_redges = tree_redges
@@ -195,7 +205,7 @@ class BinnedNPCF:
         # (This is i.e. not fulfilled for a default tree setup and a large value of `rmin`)
         _resomin = self.tree_resosatr[0]
         _resomax = self.tree_resosatr[-1]
-        self._updatetree(self.tree_resos[_resomin:_resomax+1])
+        self._updatetree(self.tree_resos[_resomin:_resomax+1], include_shifts=False)
             
         # Prepare leaf resolutions
         if np.abs(self.resoshift_leafs)>=self.tree_nresos:
@@ -690,6 +700,61 @@ class BinnedNPCF:
                 p_f64, p_f64, p_f64, p_f64, ct.c_int32, ct.c_int32, 
                 ct.c_int32,
                 np.ctypeslib.ndpointer(dtype=np.complex128), np.ctypeslib.ndpointer(dtype=np.complex128)] 
+            
+    def autoset_tree(self, cat, dpix_grid=2., nside_grid=2048):
+
+        assert(isinstance(cat, Catalog))
+
+        # Crude estimate of nbar: Pixelize sky on coarse grid and estimate area by counting nonempty pixels
+        if cat.geometry=="flat2d":
+            n1 = int(np.ceil(cat.len1 / dpix_grid)) + 1
+            n2 = int(np.ceil(cat.len2 / dpix_grid)) + 1
+            i1 = np.clip(((cat.pos1 - cat.min1) / dpix_grid).astype(np.int64), 0, n1 - 1)
+            i2 = np.clip(((cat.pos2 - cat.min2) / dpix_grid).astype(np.int64), 0, n2 - 1)
+            nfilled = len(np.unique(i2 * (n1 + 1) + i1))
+            pixarea_arcmin2 = dpix_grid**2
+        if cat.geometry=='spherical':
+            from healpy import ang2pix, nside2pixarea
+            from astropy.coordinates import SkyCoord
+            eq = SkyCoord(cat.pos1, cat.pos2, frame='galactic', unit='deg')
+            l, b = eq.galactic.l.value, eq.galactic.b.value
+            theta = np.radians(90. - b)
+            phi = np.radians(l)
+            hpx_inds = ang2pix(nside_grid, theta, phi)
+            nfilled = len(np.unique(hpx_inds))
+            pixarea_arcmin2 = nside2pixarea(nside_grid, degrees=True)*3600
+        area_arcmin2 = nfilled * pixarea_arcmin2
+        nbar = cat.ngal/area_arcmin2
+        nbar_z = nbar/cat.nbinsz
+
+        # Adjust alpha s.t. coarsest resolution reached.
+        if self.tree_alpha is None:
+            _tmpalpha=0.5*np.sqrt(cat.nbinsz)
+            _tmpreso = _tmpalpha/np.sqrt(nbar_z)
+            while _tmpreso<=self.tree_maxcellsize:
+                _tmpreso *= 2
+            _resc = 2*self.tree_maxcellsize/_tmpreso
+            self.tree_alpha = _tmpalpha * _resc
+            if (_tmpalpha>2.*self.tree_mincellsize) and (_resc > 1.5):
+                self.tree_alpha /= 2.
+            
+        # Build allowed resos for tree
+        basereso = self.tree_alpha/np.sqrt(nbar_z)
+        autotree_resos = [0.]
+        nextreso = basereso
+        while nextreso<=self.tree_mincellsize:
+            nextreso *= 2
+        while nextreso<=self.tree_maxcellsize:
+            autotree_resos.append(nextreso)
+            nextreso *= 2
+        autotree_resos = np.asarray(autotree_resos)
+        # Check whether we can get finer leaf resos without too much overhead
+        #self.resoshift_leafs = TBD
+        #self.maxresoind_leaf = TBD
+
+        # Update the tree
+        self._updatetree(autotree_resos, include_shifts=True)
+
                         
     ############################################################
     ## Functions that deal with different projections of NPCF ##
@@ -743,7 +808,7 @@ class BinnedNPCF:
                 thiscat = cats[els]
             assert(thiscat.spin == s)
             
-    def _updatetree(self, new_resos):
+    def _updatetree(self, new_resos, include_shifts=True):
         
         new_resos = np.asarray(new_resos, dtype=np.float64)
         new_nresos = int(len(new_resos))
@@ -764,3 +829,11 @@ class BinnedNPCF:
         self.tree_nresos = new_nresos
         self.tree_redges = new_redges
         self.tree_resosatr = new_resosatr
+
+        if include_shifts:
+            if self.resoshift_leafs<0:
+                self.resoshift_leafs = max(-(self.tree_nresos-1),self.resoshift_leafs)
+            else:
+                self.resoshift_leafs = min((self.tree_nresos-1),self.resoshift_leafs)
+            self.minresoind_leaf = min(self.minresoind_leaf, self.tree_nresos-1)
+            self.maxresoind_leaf = min(self.maxresoind_leaf, self.tree_nresos-1)

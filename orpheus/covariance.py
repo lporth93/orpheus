@@ -10,7 +10,7 @@ from .utils import flatlist, gen_thetacombis_fourthorder, gen_n2n3indices_Upsfou
 
 
 class GGCovarianceNoTomo:
-    """ Computes covariance of second-order shear correlation functions
+    """ Computes covariance of second-order shear correlation functions.
     """
     def __init__(self,   
                  bins_xipm,
@@ -97,7 +97,7 @@ class GGCovarianceNoTomo:
         raise NotImplementedError
 
     ## HELPERS ##
-    #  TODO (LUCAS): Link this to orpheus multiplet computatoin
+    #  TODO (LUCAS): Link this to orpheus multiplet computation
     def computeDiscrete(self, contribution):
         if contribution=='pairs':
             raise NotImplementedError

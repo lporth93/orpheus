@@ -1,7 +1,7 @@
 Two-point Correlation Functions
 ===============================
 
-There are currently two differenct classes for calculating the different possible two-point correlation functions:
+There are currently two different classes for calculating the possible two-point correlation functions:
 
 .. toctree::
 

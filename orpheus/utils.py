@@ -4,7 +4,7 @@ import os
 import site
 
 def convertunits(unit_in, unit_target):
-    '''unit can be '''
+    """Convert between angular units. Returns the multiplicative factor to convert from ``from_unit`` to ``to_unit``. Supported units: None (no conversion), 'rad', 'deg', 'arcmin'."""
     vals = {'rad': 180./np.pi, 
             'deg': 1.,
             'arcmin': 1./60.,

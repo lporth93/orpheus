@@ -88,7 +88,7 @@ def gen_cat_patchindices(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_ha
     Notes
     -----
     Choosing a small value of nside_hash will result in a larger extension of 
-    the patches then neccessary while choosing a large value increases the 
+    the patches than necessary while choosing a large value increases the 
     runtime. A good compromise is to choose nside_hash such that its resolution 
     is a few times smaller than the buffer region of the patches    
     """
@@ -206,7 +206,13 @@ def gen_cat_patchindices(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_ha
     if method == 'kmeans_treecorr':
         _patchcenters = cat.patch_centers
     elif method == 'kmeans_healpix' or method=='healpix':
-        _patchcenters = np.array([[np.mean(ra_deg[ patchinds==patchind]), np.mean(dec_deg[ patchinds==patchind])] for patchind in range(npatches)])
+        counts = np.bincount(patchinds, minlength=npatches).astype(float)
+        ra_sum  = np.bincount(patchinds, weights=ra_deg,  minlength=npatches)
+        dec_sum = np.bincount(patchinds, weights=dec_deg, minlength=npatches)
+        ra_mean  = np.divide(ra_sum,  counts, out=np.full(npatches, np.nan), where=counts > 0)
+        dec_mean = np.divide(dec_sum, counts, out=np.full(npatches, np.nan), where=counts > 0)
+        _patchcenters = np.column_stack((ra_mean, dec_mean))
+        #_patchcenters = np.array([[np.mean(ra_deg[ patchinds==patchind]), np.mean(dec_deg[ patchinds==patchind])] for patchind in range(npatches)])
     else:
         raise NotImplementedError
     
@@ -259,6 +265,27 @@ def gen_cat_patchindices(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_ha
     if verbose:
         t2=time()
         print("Took %.3f seconds"%(t2-t1))
+
+    # If method=="healpix" we might get empty patches. Here we filter those out
+    if method=='healpix':
+        print("Masking out empty patches")
+        t1=time()
+        sel_nonemptypatches = np.argwhere(cat_patchindices["info"]["patch_ngalsinner"]>0).flatten()
+        n_nonemptypatches = len(sel_nonemptypatches)
+        inds_nonemptypatches = {}
+        for elpatch in range(n_nonemptypatches):
+            inds_nonemptypatches[elpatch] = {}
+            inds_nonemptypatches[elpatch]['inner'] = cat_patchindices["patches"][sel_nonemptypatches[elpatch]]["inner"][:]
+            inds_nonemptypatches[elpatch]['outer'] = cat_patchindices["patches"][sel_nonemptypatches[elpatch]]["outer"][:]
+        cat_patchindices["info"]["patchcenters"] = _patchcenters[sel_nonemptypatches]
+        cat_patchindices["info"]["patchareas"] =  cat_patchindices["info"]["patchareas"][sel_nonemptypatches]
+        cat_patchindices["info"]["patch_ngalsinner"] =cat_patchindices["info"]["patch_ngalsinner"][sel_nonemptypatches]
+        cat_patchindices["info"]["patch_ngalsouter"] = cat_patchindices["info"]["patch_ngalsouter"][sel_nonemptypatches]
+        cat_patchindices["patches"] = inds_nonemptypatches
+        if verbose:
+            t2=time()
+            print("Took %.3f seconds"%(t2-t1))
+        
     
     return cat_patchindices
 
@@ -316,14 +343,14 @@ def cat2hpx(lon, lat, nside, radec=True, do_counts=False, return_idx=False, retu
     weights: None or ndarray
         Needs to be given if each point carries an individual weight
 
-    Return
-    ------
+    Returns
+    -------
     hpx_map : ndarray
-        HEALPix map of the catalogue number counts in Galactic coordinates
-        
+        HEALPix map of the catalogue number counts in Galactic coordinates.
+
     Notes
     -----
-    This functions is a generalised version of https://stackoverflow.com/a/50495134
+    This function is a generalised version of https://stackoverflow.com/a/50495134
     """
 
     npix = nside2npix(nside)

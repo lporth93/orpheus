@@ -10,7 +10,7 @@ import sys
 from .flat2dgrid import FlatPixelGrid_2D, FlatDataGrid_2D
 from .catalog import Catalog, ScalarTracerCatalog, SpinTracerCatalog
 
-__all__ = ["DirectEstimator", "Direct_MapnEqual", "Direct_NapnEqual", "MapCombinatorics"]
+__all__ = ["DirectEstimator", "Direct_MapnEqual", "Direct_NapnEqual", "MapCombinatorics", "Direct_Map3Unequal"]
 
 class DirectEstimator:
     r"""
@@ -81,7 +81,7 @@ class DirectEstimator:
     rmin_pixsize : int, optional
         The limiting radial distance relative to the cell of the spatial hash
         after which one switches to the next hash in the hierarchy. At the moment
-        does have no effect.Defaults to ``20``.
+        has no effect. Defaults to ``20``.
 
     resoshift_leafs : int, optional
         Allows for a difference in how the hierarchical spatial hash is traversed for
@@ -92,13 +92,13 @@ class DirectEstimator:
     minresoind_leaf : int, optional
         Sets the smallest resolution in the spatial hash hierarchy which can be used to access
         tracers at leaf positions. If set to ``None`` uses the smallest specified cell size. 
-        At the moment does have no effect. Defaults to ``None``.
+        At the moment has no effect. Defaults to ``None``.
 
 
     maxresoind_leaf : int, optional
         Sets the largest resolution in the spatial hash hierarchy which can be used to access
         tracers at leaf positions. If set to ``None`` uses the largest specified cell size. 
-        At the moment does have no effect. Defaults to ``None``.
+        At the moment has no effect. Defaults to ``None``.
 
     nthreads : int, optional
         The number of OpenMP threads used for the reduction procedure. Defaults to ``16``.
@@ -222,25 +222,25 @@ class DirectEstimator:
     def get_pixelization(self, cat, R_ap, accuracy, R_crop=None, mgrid=True):
         """ Computes pixel grid on inner region of survey field.
 
-        Arguments:
+        Parameters
         ----------
-        R_ap (float):
+        R_ap : float
             The radius of the aperture in pixel scale.
-        accuracy (float):
+        accuracy : float
             Accuracy parameter for the pixel grid.
             A value of 0.5 results in a grid in which the apertures
             are only touching each other - hence minimizing correlations.
 
-        Returns:
-        --------
-        grid_x (array of floats):
+        Returns
+        -------
+        grid_x : array of floats
             The grid cell centers for the x-coordinate.
-        grid_y (array of floats):
+        grid_y : array of floats
             The grid cell centers for the y-coordinate.
 
         Notes:
         ------
-        The grid covers the rectangel between the extremal x/y coordinates of
+        The grid covers the rectangle between the extremal x/y coordinates of
         the galaxy catalogue.
         """
         
@@ -285,7 +285,125 @@ class DirectEstimator:
         
     def __getmap(self, R, cat, dotomo, field, filter_form):
         """ This simply computes an aperture mass map together with weights and coverages """
+
+class Direct_Map3Unequal(DirectEstimator):
+
+    def __init__(self, Rmin, Rmax, field="polar", filter_form="C02", ap_weights="InvShot", **kwargs):
+
+        super().__init__(Rmin=Rmin, Rmax=Rmax, **kwargs)
+        self.order_max = 3
+        self.nbinsz = None
+        self.field = field
+        self.filter_form = filter_form
+        self.ap_weights = ap_weights
         
+        self.fields_avail = ["scalar", "polar"]
+        self.ap_weights_dict = {"Identity":0, "InvShot":1}
+        self.filters_dict = {"S98":0, "C02":1, "Sch04":2, "PolyExp":3}
+        self.ap_weights_avail = list(self.ap_weights_dict.keys())
+        self.filters_avail = list(self.filters_dict.keys())
+        assert(self.field in self.fields_avail)
+        assert(self.ap_weights in self.ap_weights_avail)
+        assert(self.filter_form in self.filters_avail)
+        
+        # We do not need DoubleTree for equal-aperture estimator
+        if self.method=="DoubleTree":
+            self.method="Tree"
+            
+        p_c128 = ndpointer(complex, flags="C_CONTIGUOUS")
+        p_f64 = ndpointer(np.float64, flags="C_CONTIGUOUS")
+        p_f32 = ndpointer(np.float32, flags="C_CONTIGUOUS")
+        p_i32 = ndpointer(np.int32, flags="C_CONTIGUOUS")
+        p_f64_nof = ndpointer(np.float64) 
+
+        # Compute third-order unequal-scale statistics using discrete estimator (E-Mode only!)
+        self.clib.Map3MultiEonlyDisc.restype = ct.c_void_p
+        self.clib.Map3MultiEonlyDisc.argtypes = [
+            p_f64, ct.c_int32, p_f64, p_f64, ct.c_int32,
+            ct.c_int32, ct.c_int32, ct.c_int32, ct.c_int32, ct.c_double, ct.c_double,
+            p_f64, p_f64, p_f64, p_f64, p_c128, p_i32, ct.c_int32, ct.c_int32, ct.c_int32,
+            p_f64, p_f64, ct.c_int32, ct.c_int32,
+            ct.c_double, ct.c_double, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
+            p_i32, p_i32, p_i32,
+            ct.c_int32, p_f64, p_f64]
+
+    def process_discrete(self, cat, dotomo=True, Emodeonly=True, connected=True, dpix_innergrid=2.):
+
+        if not dotomo:
+            nbinsz = 1
+            zbins = np.zeros(cat.ngal, dtype=np.int32)
+        else:
+            nbinsz = cat.nbinsz
+            zbins = cat.zbins.astype(np.int32)
+        self.nbinsz = nbinsz
+
+        nzcombis = 0
+        nrcombis = 0
+        for z1 in range(self.nbinsz):
+            for z2 in range(z1, self.nbinsz):
+                for z3 in range(z2, self.nbinsz):
+                    nzcombis += 1
+        for r1 in range(self.nbinsr):
+            for r2 in range(r1, self.nbinsr):
+                for r3 in range(r2, self.nbinsr):
+                    nrcombis += 1
+        nzrcombis = nzcombis*nrcombis
+
+        if (self.method in ["Discrete", "BaseTree"]) and Emodeonly:
+            func = self.clib.Map3MultiEonlyDisc
+        elif (self.method in ["Discrete", "BaseTree"]) and not Emodeonly:
+            raise NotImplementedError
+        else:
+            raise NotImplementedError
+
+        # Build a grid that only covers inner part of patch
+        # This will be used to preselelct aperture centers
+        args_innergrid = cat.togrid(fields=[cat.isinner], dpix=dpix_innergrid, method="NGP", normed=True, tomo=False)
+
+        ### Build args
+        len_out = self.nfrac_covs, nzrcombis
+        centers_1, centers_2 = self.get_pixelization(cat, self.radii[0], self.accuracies[0], R_crop=0., mgrid=True)
+        _f, _s1, _s2, _dpixi, _, _, = args_innergrid
+        pixs_c = (((centers_2-_s2)//_dpixi)*_f[0,1].shape[1] + (centers_1-_s1)//_dpixi).astype(int)
+        sel_inner = _f[0,1]>0.
+        sel_centers = sel_inner.flatten()[pixs_c]
+        # For regular grid, select aperture centers within the interior of the survey
+        if self.aperture_centers=="grid":
+            centers_1 = centers_1[sel_centers]
+            centers_2 = centers_2[sel_centers]
+            ncenters = len(centers_1)
+        cat.build_spatialhash(dpix=self.dpix_hash, extent=[None, None, None, None])
+        hashgrid = FlatPixelGrid_2D(cat.pix1_start, cat.pix2_start, 
+                                    cat.pix1_n, cat.pix2_n, cat.pix1_d, cat.pix2_d)
+        regridded_mask = cat.mask.regrid(hashgrid).data.flatten().astype(np.float64)
+
+        args_centers = (self.radii, self.nbinsr, centers_1, centers_2, ncenters, )  
+        args_ofw = (self.order_max, self.filters_dict[self.filter_form], self.ap_weights_dict[self.ap_weights], 
+                    np.int32(self.multicountcorr), np.float64(self.weight_outer), np.float64(self.weight_inpainted), )
+        args_cat = (cat.weight.astype(np.float64), cat.isinner.astype(np.float64),
+                    cat.pos1.astype(np.float64), cat.pos2.astype(np.float64), 
+                    cat.tracer_1.astype(np.float64)+1j*cat.tracer_2.astype(np.float64), 
+                    zbins, np.int32(nbinsz), np.int32(nzrcombis), np.int32(cat.ngal), )
+        args_mask = (regridded_mask, self.frac_covs, self.nfrac_covs, 1, )
+        args_hash = (np.float64(cat.pix1_start), np.float64(cat.pix2_start), 
+                     np.float64(cat.pix1_d), np.float64(cat.pix2_d), 
+                     np.int32(cat.pix1_n), np.int32(cat.pix2_n), 
+                     cat.index_matcher.astype(np.int32), cat.pixs_galind_bounds.astype(np.int32), 
+                     cat.pix_gals.astype(np.int32), )
+        args_out = (np.zeros(len_out).astype(np.float64), np.zeros(len_out).astype(np.float64))
+        args =  (*args_centers,
+                 *args_ofw,
+                 *args_cat,
+                 *args_mask,
+                 *args_hash,
+                 np.int32(self.nthreads), 
+                 *args_out)
+
+        func(*args)
+        result_Map3 = args[-2].reshape((self.nfrac_covs, nzrcombis))[:]
+        result_wMap3 = args[-1].reshape((self.nfrac_covs, nzrcombis))[:]
+                       
+        return result_Map3, result_wMap3  
         
                 
 class Direct_MapnEqual(DirectEstimator):
@@ -394,7 +512,7 @@ class Direct_MapnEqual(DirectEstimator):
             Default is True.
         Emodeonly : bool, optional
             Currently does not have an impact.
-            Default is False.
+            Default is True.
         connected : bool, optional
             Whether to output only the connected part of the aperture mass statistics.
             Does not have an impact at the moment.
@@ -573,12 +691,12 @@ class Direct_MapnEqual(DirectEstimator):
         
     def genzcombi(self, zs, nbinsz=None):
         """ Returns index of tomographic bin combination of Map^n output.
-        
-        Arguments:
+
+        Parameters
         ----------
-        zs: list of integers
+        zs : list of integers
             Target combination of tomographic redshifts ([z1, ..., zk]).
-        nbinsz: int, optional
+        nbinsz : int, optional
             The number of tomographic bins in the computation of Map^n. If not set,
             reverts to corresponding class attribute.
             
@@ -610,24 +728,24 @@ class Direct_MapnEqual(DirectEstimator):
         
     def getmap(self, indR, cat, dotomo=True):
         """ Computes various maps that are part of the basis of the Map^n estimator.
-        
-        Arguments:
+
+        Parameters
         ----------
-        indR: int
-            Index of aperture radius for which maps are computed
-        cat: orpheus.SpinTracerCatalog
-            The catalog instance to be processed
-        dotomo: bool, optional
-            Whether the tomographic information in `cat` should be 
-            used for the map construction
+        indR : int
+            Index of aperture radius for which maps are computed.
+        cat : orpheus.SpinTracerCatalog
+            The catalog instance to be processed.
+        dotomo : bool, optional
+            Whether the tomographic information in ``cat`` should be
+            used for the map construction.
             
-        Returns:
-        --------
-        counts: ndarray
-            Aperture number counts
-        
+        Returns
+        -------
+        counts : ndarray
+            Aperture number counts.
+
         """
-        
+
         nbinsz = cat.nbinsz
         if not dotomo:
             nbinsz = 1

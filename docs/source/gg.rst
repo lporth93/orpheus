@@ -12,7 +12,7 @@ Example
 
     cat = orpheus.SpinTracerCatalog(
         spin=2, pos1=x, pos2=y, tracer_1=g1, tracer_2=g2)
-    gg = orpheus.GGGCorrelation(
+    gg = orpheus.GGCorrelation(
         min_sep=1., max_sep=128., binsize=0.1, nthreads=nthreads)
     gg.process(cat)      # Compute 2pcf
 

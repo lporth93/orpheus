@@ -1,4 +1,4 @@
-NNNNCorrelation: Scalar-scalar-scalar-scalar correlations
+NNNNCorrelation: Scalar-Scalar-Scalar-Scalar Correlations
 ---------------------------------------------------------
 
 .. autoclass:: orpheus.NNNNCorrelation_NoTomo

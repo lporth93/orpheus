@@ -35,7 +35,7 @@ class FlatDataGrid_2D(FlatPixelGrid_2D):
     
     def __init__(self, data, start_1, start_2, dpix_1, dpix_2):
         """
-        Convention: O (unmasked) --> 1 (fully masked)
+        Convention: 0 (unmasked) --> 1 (fully masked)
         """
         super().__init__(start_1, start_2, data.shape[1], data.shape[0], dpix_1, dpix_2)
         self.data = data

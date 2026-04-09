@@ -53,6 +53,15 @@ void singleAp_MapnSingleEonlyDisc(
     int *index_matcher, int *pixs_galind_bounds, int *pix_gals, 
     double *counts, double *covs, double *Msn, double *Sn, double *Sn_w, double *S2n_w);
 
+void Map3MultiEonlyDisc(
+    double *radii, int nradii, double *centers_1, double *centers_2, int ncenters,
+    int max_order, int ind_filter, int weight_method, int do_subtractions, double weight_outer, double weight_inpainted, 
+    double *weight, double *insurvey, double *pos1, double *pos2, double complex *g, int *zbins, int nbinsz, int nzrcombis, int ngal, 
+    double *mask, double *fraccov_cuts, int nfrac_cuts, int fraccov_method,
+    double mask1_start, double mask2_start, double mask1_d, double mask2_d, int mask1_n, int mask2_n,
+    int *index_matcher, int *pixs_galind_bounds, int *pix_gals, 
+    int nthreads, double *Mapn, double *wtot_Mapn);
+
 void NapnSingleDisc(
     double R_ap, double *centers_1, double *centers_2, int ncenters,
     int max_order, int ind_filter, int do_subtractions, int Nbar_policy, double weight_outer, double weight_inpainted, 

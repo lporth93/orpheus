@@ -8,12 +8,13 @@ Example
 
 .. code-block:: python
 
+    import numpy as np
     import orpheus
 
     data = orpheus.ScalarTracerCatalog(
-        spin=2, pos1=xdat, pos2=ydat, tracer=np.ones_like(xdat))
+        pos1=xdat, pos2=ydat, tracer=np.ones_like(xdat))
     rand = orpheus.ScalarTracerCatalog(
-        spin=2, pos1=xrand, pos2=yrand, tracer=np.ones_like(xrand))
+        pos1=xrand, pos2=yrand, tracer=np.ones_like(xrand))
     nn = orpheus.NNCorrelation(
         n_cfs=4, min_sep=1., max_sep=128., binsize=0.1, nthreads=nthreads)
     nn.process(cat=data, cat_random=rand)  # Compute xi via Landy-Szalay estimator

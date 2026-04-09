@@ -18,7 +18,7 @@ class NNCorrelation(BinnedNPCF):
     Parameters
     ----------
     min_sep: float
-            The smallest distance of each vertex for which the NPCF is computed.
+        The smallest distance of each vertex for which the NPCF is computed.
     max_sep: float
         The largest distance of each vertex for which the NPCF is computed.
     shuffle_pix: int, optional
@@ -173,7 +173,7 @@ class NNCorrelation(BinnedNPCF):
             within a tomographic catalog. Defaults to `True`. In case ``xi`` is computed, this argument is internally set to `True`.
         adjust_tree: bool
             Overrides the original setup of the tree-approximations in the instance based on the nbar of the catalog.
-            Not implemented yet, therefore no effect. Has no effect yet. Defaults to `False`.
+            Not implemented yet; has no effect. Defaults to ``False``.
         save_patchres: bool or str
             If the catalog has been decomposed in patches, flag whether to save the NN measurements on the individual patches. 
             Note that the path needs to exist, otherwise a `ValueError` is raised. For a flat-sky catalog this parameter 
@@ -358,7 +358,7 @@ class GGCorrelation(BinnedNPCF):
     Parameters
     ----------
     min_sep: float
-            The smallest distance of each vertex for which the NPCF is computed.
+        The smallest distance of each vertex for which the NPCF is computed.
     max_sep: float
         The largest distance of each vertex for which the NPCF is computed.
 
@@ -377,7 +377,7 @@ class GGCorrelation(BinnedNPCF):
     -----
     Inherits all other parameters and attributes from :class:`BinnedNPCF`.
     Additional child-specific parameters can be passed via ``kwargs``. 
-    Either ``nbinsr`` or ``binsize`` has to be provided to fix the binning scheme .
+    Either ``nbinsr`` or ``binsize`` has to be provided to fix the binning scheme.
     """
 
     def __init__(self, min_sep, max_sep, **kwargs):
@@ -501,15 +501,15 @@ class GGCorrelation(BinnedNPCF):
             Whether to double-count pair counts. This will have no impact on :math:`\xi_\pm`, but can
             significantly reduce the amplitude of :math:`\xi_\times`. Defaults to `False`.
         rotsignflip: bool
-            If the shape catalog is has been decomposed in patches, choose whether the rotation angle should be flipped.
-            For simulated data this was always ok to set to 'False`. Defaults to `False`.
+            If the shape catalog has been decomposed in patches, choose whether the rotation angle should be flipped.
+            For simulated data this was always ok to set to ``False``. Defaults to ``False``.
         adjust_tree: bool
             Overrides the original setup of the tree-approximations in the instance based on the nbar of the shape catalog.
-            Not implemented yet, therefore no effect. Has no effect yet. Defaults to `False` 
+            Not implemented yet; has no effect. Defaults to ``False``.
         save_patchres: bool or str
-            If the shape catalog is has been decomposed in patches, flag whether to save the GG measurements on the individual patches. 
-            Note that the path needs to exist, otherwise a `ValueError` is raised. For a flat-sky catalog this parameter 
-            has no effect. Defaults to `False`
+            If the shape catalog has been decomposed in patches, flag whether to save the GG measurements on the individual patches.
+            Note that the path needs to exist, otherwise a ``ValueError`` is raised. For a flat-sky catalog this parameter
+            has no effect. Defaults to ``False``.
         save_filebase: str
             Base of the filenames in which the patches are saved. The full filename will be `<save_patchres>/<save_filebase>_patchxx.npz`.
             Only has an effect if the shape catalog consists of multiple patches and `save_patchres` is not `False`.

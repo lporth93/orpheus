@@ -1,7 +1,7 @@
 Three-point Correlation Functions
 =================================
 
-There are currently three differenct classes for calculating the different possible three-point correlation functions:
+There are currently three different classes for calculating the possible three-point correlation functions:
 
 .. toctree::
 

@@ -14,9 +14,9 @@ search for :math:`N`-tuplets of points which are then assigned to their correspo
 tree-based methods can make the search for the :math:`N`-tuplets more efficient, the fundamental
 scaling of the algorithm will remain dependent on the order of the correlator.
 
-In `orpheus` we make use of the multipole decomposion of the :math:`N\mathrm{PCF}` that has been developed
-by Chen & Szapudi (2005, ApJ, 635, 743), Slepian & Eisenstein (2015, MNRAS, 454, 4142), 
-and Philcox et al (2022, MNRAS, 509, 2457). In particular, we also include the expressions for the 
+In `orpheus` we make use of the multipole decomposition of the :math:`N\mathrm{PCF}` that has been developed
+by Chen & Szapudi (2005, ApJ, 635, 743), Slepian & Eisenstein (2015, MNRAS, 454, 4142),
+and Philcox et al. (2022, MNRAS, 509, 2457). In particular, we also include the expressions for the 
 correlations of non-spin-0 fields as introduced in Porth et al (2024, A&A, 689, 227) and extended in
 Porth et al (2025, arXiv:xxxx.xxxx). The multipole components of some hypothetic 
 *N* point correlator, :math:`\mathscr{C}`, are related to the real-space components as 
@@ -31,7 +31,7 @@ Porth et al (2025, arXiv:xxxx.xxxx). The multipole components of some hypothetic
 where the :math:`\Theta_k` denote the radial bins, :math:`\phi_{1,j}` is the polar angle
 between the vertices :math:`\vartheta_1` and :math:`\vartheta_j`, and the :math:`\mathcal{P}` 
 denotes a certain projection applied to the field of tracers; the latter is only relevant for 
-correlators containing non-spin-0 objects. One can invert this relation to obtain a expression
+correlators containing non-spin-0 objects. One can invert this relation to obtain an expression
 for the multipole components in terms of the field of tracers. If one chooses a suitable
 projection for the non-spin-0 fields this relation can be brought to the form
 
@@ -60,25 +60,37 @@ of two steps
 Looking at the two different steps we see that the estimator has a time complexity of 
 :math:`\mathcal{O}(N_{\mathrm{tracers}}^2)+\mathcal{O}(N_{\mathrm{tracers}} \, N_{\mathrm{bins}})`. While this scaling is
 much more beneficial than for brute-force estimators, it can nevertheless become computationally
-impractible. In the next subsection we show how ``orpheus`` further reduces this scaling.
+impractical. In the next subsection we show how ``orpheus`` further reduces this scaling.
 
 
 Hierarchical spatial hashing
 ----------------------------
 The core pair-finding algorithm in ``orpheus`` is built on spatial hashing. For our implementation we assume
-the data to be distributed on a two-dimensional plane which we divide into a grid of fixed-size cells. We use 
-a hash function to map the 2D-coordinates (x,y) to a cell index and then store references to the objects inside 
-the cell they occupy. By constructing a hierarchy of such grids-cells with fixed bounds and an increase the sidelength of each cell by 
-powers of two we can further build connections between the objects residing in the hash cells of the various
-resolutions. 
+the data to be distributed on a two-dimensional plane, which we divide into a grid of fixed-size cells. We use
+a hash function to map the 2D-coordinates (x,y) to a cell index and then store references to the objects inside
+the cell they occupy. By constructing a hierarchy of such grid cells with fixed bounds and increasing the sidelength of each cell by
+powers of two, we can further build connections between the objects residing in the hash cells of the various
+resolutions.
 
-<Insert Figure here>
+.. TODO: Insert figure here.
 
 In ``orpheus`` we parametrize the pixelsize by the variable :math:`r_{\mathrm{min},\Delta}` which is defined as the 
 ratio of the radius :math:`R` of a circle by the pixel sidelength :math:`\Delta`. In case of a hierarchy
 consisting of resolutions :math:`\Delta_d \in \{0,\Delta,2\Delta,\cdots,2^{n_\mathrm{reso}-1}\Delta\}` and a radial binning
 scheme we fix the resolution at each bin to be the largest resolution :math:`\Delta' \in \Delta_d` for which :math:`\Theta_\mathrm{low}/\Delta' \geq r_{\mathrm{min},\Delta}`.
 
+
+.. raw:: html
+
+   <iframe
+     src="_static/tree_widget.html"
+     width="100%"
+     height="900px"
+     frameborder="0"
+     style="border: none;"
+   ></iframe>
+
+   
 The Tree-Approximation
 ~~~~~~~~~~~~~~~~~~~~~~
 In the tree approximation we 

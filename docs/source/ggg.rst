@@ -1,4 +1,4 @@
-GGGCorrelation: Shear–Shear–Shear Correlations
+GGGCorrelation: Shear-Shear-Shear Correlations
 ----------------------------------------------
 
 The ``GGGCorrelation`` class computes the three‑point correlation of spin-2 fields.

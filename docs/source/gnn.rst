@@ -1,7 +1,7 @@
 GNNCorrelation: Lens-Lens-Shear Correlations
 ----------------------------------------------
 
-The ``GNNCorrelation`` class computes the correlation of two spin-2 and one scalar field.
+The ``GNNCorrelation`` class computes the correlation of one spin-2 and two scalar fields.
 
 Example
 ~~~~~~~

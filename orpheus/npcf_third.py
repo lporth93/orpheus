@@ -12,9 +12,9 @@ from .npcf_base import BinnedNPCF
 __all__ = ["GGGCorrelation", "GNNCorrelation", "NGGCorrelation"]
 
 class GGGCorrelation(BinnedNPCF):
-    r""" Class containing methods to measure and and obtain statistics that are built
+    r""" Class containing methods to measure and obtain statistics that are built
         from third-order shear correlation functions.
-        
+
         Attributes
         ----------
         n_cfs: int
@@ -23,12 +23,12 @@ class GGGCorrelation(BinnedNPCF):
             The smallest distance of each vertex for which the NPCF is computed.
         max_sep: float
             The largest distance of each vertex for which the NPCF is computed.
-        
+
         Notes
         -----
         Inherits all other parameters and attributes from :class:`BinnedNPCF`.
-        Additional child-specific parameters can be passed via ``kwargs``. 
-        Either ``nbinsr`` or ``binsize`` has to be provided to fix the binning scheme .
+        Additional child-specific parameters can be passed via ``kwargs``.
+        Either ``nbinsr`` or ``binsize`` has to be provided to fix the binning scheme.
         """
     
     def __init__(self, n_cfs, min_sep, max_sep, **kwargs):
@@ -151,20 +151,20 @@ class GGGCorrelation(BinnedNPCF):
         dotomo: bool
             Flag that decides whether the tomographic information in the shape catalog should be used. Defaults to `True`.
         rotsignflip: bool
-            If the shape catalog is has been decomposed in patches, choose whether the rotation angle should be flipped.
-            For simulated data this was always ok to set to 'False`. Has no effect yet. Defaults to `False`.
+            If the shape catalog has been decomposed in patches, choose whether the rotation angle should be flipped.
+            For simulated data this was always ok to set to ``False``. Defaults to ``False``.
         apply_edge_correction: bool
             Flag that decides how the NPCF in the real space basis is computed.
-            * If set to `True` the computation is done via edge-correcting the GGG-multipoles
-            * If set to `False` both GGG and NNN are transformed separately and the ratio is done in the real-space basis
-            Defaults to `False`.
+            * If set to ``True`` the computation is done via edge-correcting the GGG-multipoles
+            * If set to ``False`` both GGG and NNN are transformed separately and the ratio is done in the real-space basis
+            Defaults to ``False``.
         adjust_tree: bool
             Overrides the original setup of the tree-approximations in the instance based on the nbar of the shape catalog.
-            Not implemented yet, therefore no effect. Has no effect yet. Defaults to `False`
+            Not implemented yet; has no effect. Defaults to ``False``.
         save_patchres: bool or str
-            If the shape catalog is has been decomposed in patches, flag whether to save the GGG measurements on the individual patches. 
-            Note that the path needs to exist, otherwise a `ValueError` is raised. For a flat-sky catalog this parameter 
-            has no effect. Defaults to `False`
+            If the shape catalog has been decomposed in patches, flag whether to save the GGG measurements on the individual patches.
+            Note that the path needs to exist, otherwise a ``ValueError`` is raised. For a flat-sky catalog this parameter
+            has no effect. Defaults to ``False``.
         save_filebase: str
             Base of the filenames in which the patches are saved. The full filename will be `<save_patchres>/<save_filebase>_patchxx.npz`.
             Only has an effect if the shape catalog consists of multiple patches and `save_patchres` is not `False`.
@@ -671,9 +671,9 @@ class GGGCorrelation(BinnedNPCF):
     
     
 class GNNCorrelation(BinnedNPCF):
-    r""" Class containing methods to measure and and obtain statistics that are built
+    r""" Class containing methods to measure and obtain statistics that are built
     from third-order source-lens-lens (G3L) correlation functions.
-    
+
     Attributes
     ----------
     min_sep: float
@@ -681,15 +681,15 @@ class GNNCorrelation(BinnedNPCF):
     max_sep: float
         The largest distance of each vertex for which the NPCF is computed.
     zweighting: bool
-        Has no effect at the moment
-    zweighting_sigma: bool
-        Has not effect at the moment
+        Has no effect at the moment.
+    zweighting_sigma: float or None
+        Has no effect at the moment.
 
     Notes
     -----
     Inherits all other parameters and attributes from :class:`BinnedNPCF`.
-    Additional child-specific parameters can be passed via ``kwargs``. 
-    Either ``nbinsr`` or ``binsize`` has to be provided to fix the binning scheme .
+    Additional child-specific parameters can be passed via ``kwargs``.
+    Either ``nbinsr`` or ``binsize`` has to be provided to fix the binning scheme.
     """
 
     def __init__(self, min_sep, max_sep, zweighting=False, zweighting_sigma=None, **kwargs):
@@ -806,22 +806,22 @@ class GNNCorrelation(BinnedNPCF):
         dotomo_lens: bool
             Flag that decides whether the tomographic information in the lens catalog should be used. Defaults to `True`.
         rotsignflip: bool
-            If the shape catalog is has been decomposed in patches, choose whether the rotation angle should be flipped.
-            For simulated data this was always ok to set to 'False`. Defaults to `False`.
+            If the shape catalog has been decomposed in patches, choose whether the rotation angle should be flipped.
+            For simulated data this was always ok to set to ``False``. Defaults to ``False``.
         apply_edge_correction: bool
             Flag that decides how the NPCF in the real space basis is computed.
-            * If set to `True` the computation is done via edge-correcting the GNN-multipoles
-            * If set to `False` both GNN and NNN are transformed separately and the ratio is done in the real-space basis
-            Defaults to `False`.
+            * If set to ``True`` the computation is done via edge-correcting the GNN-multipoles
+            * If set to ``False`` both GNN and NNN are transformed separately and the ratio is done in the real-space basis
+            Defaults to ``False``.
         save_patchres: bool or str
-            If the shape catalog is has been decomposed in patches, flag whether to save the GG measurements on the individual patches. 
-            Note that the path needs to exist, otherwise a `ValueError` is raised. For a flat-sky catalog this parameter 
-            has no effect. Defaults to `False`
+            If the shape catalog has been decomposed in patches, flag whether to save the GNN measurements on the individual patches.
+            Note that the path needs to exist, otherwise a ``ValueError`` is raised. For a flat-sky catalog this parameter
+            has no effect. Defaults to ``False``.
         save_filebase: str
-            Base of the filenames in which the patches are saved. The full filename will be `<save_patchres>/<save_filebase>_patchxx.npz`.
-            Only has an effect if the shape catalog consists of multiple patches and `save_patchres` is not `False`.
+            Base of the filenames in which the patches are saved. The full filename will be ``<save_patchres>/<save_filebase>_patchxx.npz``.
+            Only has an effect if the shape catalog consists of multiple patches and ``save_patchres`` is not ``False``.
         keep_patchres: bool
-            If the catalog consists of multiple patches, returns all measurements on the patches. Defaults to `False`.
+            If the catalog consists of multiple patches, returns all measurements on the patches. Defaults to ``False``.
         """
         self._checkcats([cat_source, cat_lens, cat_lens], [2, 0, 0])
 
@@ -1192,9 +1192,9 @@ class GNNCorrelation(BinnedNPCF):
         return ANNM
     
 class NGGCorrelation(BinnedNPCF):
-    r""" Class containing methods to measure and and obtain statistics that are built
+    r""" Class containing methods to measure and obtain statistics that are built
     from third-order lens-shear-shear correlation functions.
-    
+
     Attributes
     ----------
     min_sep: float
@@ -1205,8 +1205,8 @@ class NGGCorrelation(BinnedNPCF):
     Notes
     -----
     Inherits all other parameters and attributes from :class:`BinnedNPCF`.
-    Additional child-specific parameters can be passed via ``kwargs``. 
-    Either ``nbinsr`` or ``binsize`` has to be provided to fix the binning scheme .
+    Additional child-specific parameters can be passed via ``kwargs``.
+    Either ``nbinsr`` or ``binsize`` has to be provided to fix the binning scheme.
 
     Note that the different components of the NGG correlator are ordered as
 
@@ -1215,7 +1215,7 @@ class NGGCorrelation(BinnedNPCF):
             \left[ \tilde{G}_-, \tilde{G}_+, \right] \ ,
 
     which is different to the usual conventions, but matches orpheus' conventions to
-    always start with a correlator in which not polar field is complex conjugated.
+    always start with a correlator in which no polar field is complex conjugated.
     """
     def __init__(self, min_sep, max_sep, **kwargs):
         
@@ -1312,22 +1312,22 @@ class NGGCorrelation(BinnedNPCF):
         dotomo_lens: bool
             Flag that decides whether the tomographic information in the lens catalog should be used. Defaults to `True`.
         rotsignflip: bool
-            If the shape catalog is has been decomposed in patches, choose whether the rotation angle should be flipped.
-            For simulated data this was always ok to set to 'False`. Defaults to `False`.
+            If the shape catalog has been decomposed in patches, choose whether the rotation angle should be flipped.
+            For simulated data this was always ok to set to ``False``. Defaults to ``False``.
         apply_edge_correction: bool
             Flag that decides how the NPCF in the real space basis is computed.
-            * If set to `True` the computation is done via edge-correcting the GNN-multipoles
-            * If set to `False` both GNN and NNN are transformed separately and the ratio is done in the real-space basis
-            Defaults to `False`.
+            * If set to ``True`` the computation is done via edge-correcting the NGG-multipoles
+            * If set to ``False`` both NGG and NNN are transformed separately and the ratio is done in the real-space basis
+            Defaults to ``False``.
         save_patchres: bool or str
-            If the shape catalog is has been decomposed in patches, flag whether to save the GG measurements on the individual patches. 
-            Note that the path needs to exist, otherwise a `ValueError` is raised. For a flat-sky catalog this parameter 
-            has no effect. Defaults to `False`
+            If the shape catalog has been decomposed in patches, flag whether to save the NGG measurements on the individual patches.
+            Note that the path needs to exist, otherwise a ``ValueError`` is raised. For a flat-sky catalog this parameter
+            has no effect. Defaults to ``False``.
         save_filebase: str
-            Base of the filenames in which the patches are saved. The full filename will be `<save_patchres>/<save_filebase>_patchxx.npz`.
-            Only has an effect if the shape catalog consists of multiple patches and `save_patchres` is not `False`.
+            Base of the filenames in which the patches are saved. The full filename will be ``<save_patchres>/<save_filebase>_patchxx.npz``.
+            Only has an effect if the shape catalog consists of multiple patches and ``save_patchres`` is not ``False``.
         keep_patchres: bool
-            If the catalog consists of multiple patches, returns all measurements on the patches. Defaults to `False`.
+            If the catalog consists of multiple patches, returns all measurements on the patches. Defaults to ``False``.
         """
 
         self._checkcats([cat_lens, cat_source, cat_source], [0, 2, 2])

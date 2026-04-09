@@ -11,9 +11,9 @@ from .npcf_second import GGCorrelation
 __all__ = ["NNNNCorrelation_NoTomo", "GGGGCorrelation_NoTomo"]
 
 class NNNNCorrelation_NoTomo(BinnedNPCF):
-    r""" Class containing methods to measure and and obtain statistics that are built
+    r""" Class containing methods to measure and obtain statistics that are built
     from nontomographic fourth-order scalar correlation functions.
-    
+
     Attributes
     ----------
     min_sep: float
@@ -27,9 +27,9 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
     Notes
     -----
     Inherits all other parameters and attributes from :class:`BinnedNPCF`.
-    Additional child-specific parameters can be passed via ``kwargs``. 
-    Either ``nbinsr`` or ``binsize`` has to be provided to fix the binning scheme .
-    
+    Additional child-specific parameters can be passed via ``kwargs``.
+    Either ``nbinsr`` or ``binsize`` has to be provided to fix the binning scheme.
+
     """
     
     def __init__(self, min_sep, max_sep, verbose=False, thetabatchsize_max=10000, method="Tree", **kwargs):
@@ -59,11 +59,11 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
         * Default lowmem to None and
         * - Set to true if any aperture statistics is in stats or we will run into mem error
         * - Set to false otherwise
-        * - Raise error if lowmen=False and we will have more that 2^31-1 elements at any stage of the computation
-        
+        * - Raise error if lowmem=False and we will have more than 2^31-1 elements at any stage of the computation
+
         custom_thetacombis: array of inds which theta combis will be selected
         """
-        
+
         ## Preparations ##
         # Build list of statistics to be calculated
         statistics_avail_4pcf = ["4pcf_real", "4pcf_multipole"]
@@ -285,7 +285,7 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
         return istatout
 
     def multipoles2npcf_singlethetcombi(self, elthet1, elthet2, elthet3):
-        r""" Converts a 4PCF in the multipole basis in the real space basis for a fixed combination of radial bins.
+        r""" Converts a 4PCF from the multipole basis to the real-space basis for a fixed combination of radial bins.
 
         Returns:
         --------
@@ -294,7 +294,7 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
         npcf_norm_out: np.ndarray
             4PCF weighted counts in the real-space basis for all angular combinations.
         """
-        
+
         _phis1 = self.phis[0].astype(np.float64)
         _phis2 = self.phis[1].astype(np.float64)
         _nphis1 = len(self.phis[0])
@@ -314,9 +314,9 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
 
 
 class GGGGCorrelation_NoTomo(BinnedNPCF):
-    r""" Class containing methods to measure and and obtain statistics that are built
+    r""" Class containing methods to measure and obtain statistics that are built
     from nontomographic fourth-order shear correlation functions.
-    
+
     Attributes
     ----------
     min_sep: float
@@ -330,9 +330,9 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
     Notes
     -----
     Inherits all other parameters and attributes from :class:`BinnedNPCF`.
-    Additional child-specific parameters can be passed via ``kwargs``. 
-    Either ``nbinsr`` or ``binsize`` has to be provided to fix the binning scheme .
-    
+    Additional child-specific parameters can be passed via ``kwargs``.
+    Either ``nbinsr`` or ``binsize`` has to be provided to fix the binning scheme.
+
     """
     
     def __init__(self, min_sep, max_sep, thetabatchsize_max=10000, method="Tree", **kwargs):
@@ -370,11 +370,11 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
         * Default lowmem to None and
         * - Set to true if any aperture statistics is in stats or we will run into mem error
         * - Set to false otherwise
-        * - Raise error if lowmen=False and we will have more that 2^31-1 elements at any stage of the computation
-        
+        * - Raise error if lowmem=False and we will have more than 2^31-1 elements at any stage of the computation
+
         custom_thetacombis: array of inds which theta combis will be selected
         """
-        
+
         ## Preparations ##
         # Build list of statistics to be calculated
         statistics_avail_4pcf = ["4pcf_real", "4pcf_multipole"]
@@ -690,14 +690,14 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
         
         
     def multipoles2npcf_singlethetcombi(self, elthet1, elthet2, elthet3, projection="X"):
-        r""" Converts a 4PCF in the multipole basis in the real space basis for a fixed combination of radial bins.
+        r""" Converts a 4PCF from the multipole basis to the real-space basis for a fixed combination of radial bins.
 
         Returns:
         --------
         npcf_out: np.ndarray
-            Natural 4PCF components in the real-space bassi for all angular combinations.
+            Natural 4PCF components in the real-space basis for all angular combinations.
         npcf_norm_out: np.ndarray
-            4PCF weighted counts in the real-space bassi for all angular combinations.
+            4PCF weighted counts in the real-space basis for all angular combinations.
         """
         assert((projection in self.proj_dict.keys()) and (projection in self.projections_avail))
         
@@ -721,7 +721,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
         return npcf_out.reshape((self.n_cfs, _nphis1,_nphis2)), npcf_norm_out.reshape((_nphis1,_nphis2))
                 
     def multipoles2npcf_gggg_singletheta_nconvergence(self, elthet1, elthet2, elthet3, projection="X"):
-        r""" Checks convergence of the conversion between mutltipole-space and real space for a combination of radial bins.
+        r""" Checks convergence of the conversion between multipole-space and real space for a combination of radial bins.
 
         Returns:
         --------
@@ -756,7 +756,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
         return npcf_out, npcf_norm_out
     
     def computeMap4(self, radii, nmax_trafo=None, basis='MapMx'):
-        r"""Computes the fourth-order aperture mass statistcs using the polynomial filter of Crittenden 2002."""
+        r"""Computes the fourth-order aperture mass statistics using the polynomial filter of Crittenden 2002."""
 
         assert(basis in ['MapMx','MM*','both'])
         

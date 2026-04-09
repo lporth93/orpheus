@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>body { margin: 0; }</style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    // Widget to play around with the different algorithms
+    // Note: This script was developed with the help of an LLM (opus 4.6) 
+
+const { useState, useMemo } = React;
+
+const TAU = 2 * Math.PI;
+ 
+function seededRandom(seed) {
+  let s = seed;
+  return () => { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; };
+}
+ 
+const C = {
+  bg: "#f5f0e8",
+  star: "#1a1a1a",
+  gal: "#777",
+  galLeaf: "#c0392b",
+  text: "#2a2a2a",
+  muted: "#8a8580",
+  accent: "#c0392b",
+  panel: "#eae5db",
+  border: "#d4cfc6",
+};
+ 
+const RESO_COLORS = ["#5a9e6f", "#3a7fbf", "#8b5fbf", "#bf7a3a", "#bf3a5a", "#3abfbf"];
+ 
+function Stick({ x, y, angle, len = 8, color = C.gal, sw = 2, op = 0.75 }) {
+  const dx = Math.cos(angle) * len, dy = Math.sin(angle) * len;
+  return <line x1={x - dx} y1={y - dy} x2={x + dx} y2={y + dy}
+    stroke={color} strokeWidth={sw} strokeLinecap="round" opacity={op} />;
+}
+ 
+function CartesianGrid({ cx, cy, pixView, span, color, opacity, dash, clipId }) {
+  if (pixView < 2) return null;
+  const lines = [];
+  const n = Math.ceil(span / pixView);
+  for (let i = -n; i <= n; i++) {
+    const off = i * pixView;
+    lines.push(<line key={`v${i}`} x1={cx + off} y1={cy - span} x2={cx + off} y2={cy + span}
+      stroke={color} strokeWidth={1} opacity={opacity} strokeDasharray={dash} />);
+    lines.push(<line key={`h${i}`} x1={cx - span} y1={cy + off} x2={cx + span} y2={cy + off}
+      stroke={color} strokeWidth={1} opacity={opacity} strokeDasharray={dash} />);
+  }
+  const inner = <g>{lines}</g>;
+  return clipId ? <g clipPath={`url(#${clipId})`}>{inner}</g> : inner;
+}
+ 
+function AnnulusClip({ id, cx, cy, rMin, rMax }) {
+  const ri = Math.max(0.1, rMin);
+  return (
+    <clipPath id={id}>
+      <path d={`
+        M ${cx + rMax},${cy} A ${rMax},${rMax} 0 1,0 ${cx - rMax},${cy}
+        A ${rMax},${rMax} 0 1,0 ${cx + rMax},${cy} Z
+        ${ri > 0.5 ? `M ${cx + ri},${cy} A ${ri},${ri} 0 1,1 ${cx - ri},${cy}
+        A ${ri},${ri} 0 1,1 ${cx + ri},${cy} Z` : ""}
+      `} fillRule="evenodd" />
+    </clipPath>
+  );
+}
+ 
+function Slider({ label, value, min, max, step, onChange, extra, disabled, display }) {
+  const fmt = display != null ? display
+    : typeof value === "number"
+      ? (Number.isInteger(value) && Number.isInteger(step) ? String(value) : value.toFixed(2))
+      : String(value);
+  return (
+    <div style={{ marginBottom: 7, opacity: disabled ? 0.35 : 1, pointerEvents: disabled ? "none" : "auto" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+        <span>{label}</span><span style={{ fontWeight: 600 }}>{fmt}</span>
+      </div>
+      <input type="range" min={min} max={max} step={step} value={value}
+        onChange={e => onChange(+e.target.value)}
+        style={{ width: "100%", accentColor: C.accent }} />
+      {extra && <div style={{ fontSize: 10, color: C.muted }}>{extra}</div>}
+    </div>
+  );
+}
+ 
+const RMAX_OPTIONS = [2, 4, 8, 16, 32, 64, 128, 256, 512];
+ 
+function Widget() {
+  const [method, setMethod] = useState("DoubleTree");
+  const [alpha, setAlpha] = useState(1.0);
+  const [nbar, setNbar] = useState(8.53);
+  const [nbinsz, setNbinsz] = useState(1);
+  const [resoShift, setResoShift] = useState(-1);
+  const [maxLeafIdx, setMaxLeafIdx] = useState(2);
+  const [rminPix, setRminPix] = useState(15);
+  const [minSep, setMinSep] = useState(0.5);
+  const [rmaxIdx, setRmaxIdx] = useState(8);
+  const [logScale, setLogScale] = useState(true);
+  const [showLabels, setShowLabels] = useState(true);
+  const [showStar, setShowStar] = useState(true);
+ 
+  const maxSep = RMAX_OPTIONS[rmaxIdx];
+  const VW = 580;
+  const cx = VW / 2, cy = VW / 2;
+  const rViewMax = 265, rViewMin = 12;
+  const rMaxPix = 4.0;
+  const nbar_z = nbar / nbinsz;
+ 
+  const scaleR = useMemo(() => {
+    if (logScale) {
+      const lnMin = Math.log(minSep), lnMax = Math.log(maxSep);
+      return r => rViewMin + ((Math.log(Math.max(r, minSep)) - lnMin) / (lnMax - lnMin)) * (rViewMax - rViewMin);
+    }
+    return r => rViewMin + ((Math.max(r, minSep) - minSep) / (maxSep - minSep)) * (rViewMax - rViewMin);
+  }, [logScale, minSep, maxSep]);
+ 
+  // Schematic pixel scaling (log) or true physical (linear)
+  const pixScale = useMemo(() => {
+    if (logScale) {
+      const dMin = alpha * Math.sqrt(1 / nbar_z);
+      return 12 / dMin; // finest grid ≈ 12 view px
+    }
+    return (rViewMax - rViewMin) / (maxSep - minSep);
+  }, [logScale, minSep, maxSep, alpha, nbar_z]);
+ 
+  const pxV = (pix) => Math.max(3, pix * pixScale);
+ 
+  const config = useMemo(() => {
+    const dMin = alpha * Math.sqrt(1 / nbar_z);
+    const grid = [];
+    let d = dMin;
+    while (d <= rMaxPix * 1.001) { grid.push(d); d *= 2; }
+    if (!grid.length) grid.push(Math.min(dMin, rMaxPix));
+ 
+    const treeResos = [0, ...grid];
+    const nresos = treeResos.length;
+ 
+    let edges = [minSep];
+    for (const g of grid) edges.push(g * rminPix);
+    edges.push(maxSep);
+    edges.sort((a, b) => a - b);
+    edges = edges.map(e => Math.max(minSep, Math.min(maxSep, e)));
+    edges[0] = minSep;
+    edges[edges.length - 1] = maxSep;
+ 
+    const levels = [];
+    for (let i = 0; i < nresos; i++) {
+      const rLo = edges[i], rHi = edges[i + 1];
+      const isDisc = i === 0;
+      const gIdx = i - 1;
+      const pix = isDisc ? 0 : grid[gIdx];
+      const rLoV = scaleR(rLo), rHiV = scaleR(rHi);
+      const pixV = isDisc ? 0 : pxV(pix);
+      const color = isDisc ? C.gal : RESO_COLORS[gIdx % RESO_COLORS.length];
+ 
+      // Leaf resolution
+      let lLo, lHi;
+      if (method === "Discrete") { lLo = lHi = 0; }
+      else if (method === "Tree") { lLo = lHi = i; }
+      else {
+        if (resoShift < 0) {
+          lLo = Math.max(0, i + resoShift);
+          lHi = Math.min(i, maxLeafIdx);
+          lLo = Math.min(lLo, lHi);
+        } else { lLo = lHi = Math.min(Math.max(0, i + resoShift), maxLeafIdx); }
+        lHi = Math.min(lHi, nresos - 1);
+        lLo = Math.min(lLo, lHi);
+      }
+ 
+      // Leaf pixel size (view): use finest leaf
+      let leafPix = pix;   // physical
+      let leafPixV = pixV;  // view
+      let leafIsDisc = false;
+      if (!isDisc) {
+        if (lLo > 0 && lLo !== i) {
+          leafPix = grid[lLo - 1];
+          leafPixV = pxV(leafPix);
+        } else if (lLo === 0) {
+          leafIsDisc = true;
+          leafPix = 0;
+          leafPixV = 0;
+        }
+      }
+ 
+      levels.push({ i, rLo, rHi, rLoV, rHiV, isDisc, pix, pixV, gIdx, color,
+                     lLo, lHi, leafPix, leafPixV, leafIsDisc });
+    }
+ 
+    return { treeResos, grid, levels, nresos, dMin };
+  }, [alpha, nbar_z, rminPix, minSep, maxSep, method, resoShift, maxLeafIdx, scaleR, pxV]);
+ 
+  const active = config.levels.filter(l => l.rHiV > l.rLoV + 1);
+  const gridLevels = active.filter(l => !l.isDisc); // non-discrete levels
+ 
+  const gals = useMemo(() => {
+    const rng = seededRandom(42);
+    const out = [];
+    for (let k = 0; k < 280; k++) {
+      const rV = Math.sqrt(rng()) * rViewMax;
+      if (rV < rViewMin) continue;
+      const th = rng() * TAU;
+      const ang = rng() * Math.PI;
+      out.push({ x: cx + rV * Math.cos(th), y: cy + rV * Math.sin(th), ang, rV });
+    }
+    return out;
+  }, [cx, cy]);
+ 
+  const galLevels = useMemo(() =>
+    gals.map(g => {
+      for (const l of active) if (g.rV >= l.rLoV && g.rV < l.rHiV) return l;
+      return active[active.length - 1];
+    }), [gals, active]);
+ 
+  const desc = method === "Discrete"
+    ? "All galaxies paired individually — no grid approximation."
+    : method === "Tree"
+      ? "Multi-resolution grid for leafs, all galaxies used as base."
+      : `Double Tree: Multi-resolution grid for both, leafs and base.`;
+ 
+  const dashFor = (pv) => pv < 14 ? "none" : "4,3";
+ 
+  return (
+    <div style={{
+      fontFamily: "'Crimson Pro', Georgia, serif", background: C.bg,
+      minHeight: "100vh", padding: 14,
+      display: "flex", flexDirection: "column", alignItems: "center",
+    }}>
+      <h1 style={{ fontSize: 21, fontWeight: 700, color: C.text, margin: "0 0 2px 0", letterSpacing: ".015em" }}>
+        Orpheus NPCF Correlator — Algorithm Comparison
+      </h1>
+      <p style={{ fontSize: 12.5, color: C.muted, margin: "0 0 10px 0", fontStyle: "italic", textAlign: "center", maxWidth: 620 }}>
+        {desc}
+      </p>
+ 
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", justifyContent: "center", alignItems: "flex-start" }}>
+        {/* ===== Controls ===== */}
+        <div style={{
+          background: C.panel, border: `1px solid ${C.border}`, borderRadius: 6,
+          padding: "12px 14px", width: 210, fontSize: 12, color: C.text,
+          maxHeight: VW, overflowY: "auto",
+        }}>
+          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, borderBottom: `1px solid ${C.border}`, paddingBottom: 5 }}>Method</div>
+          {["Discrete", "Tree", "DoubleTree"].map(m => (
+            <label key={m} style={{
+              display: "flex", alignItems: "center", gap: 5, marginBottom: 4, cursor: "pointer",
+              fontWeight: method === m ? 700 : 400, color: method === m ? C.accent : C.text, fontSize: 12.5,
+            }}>
+              <input type="radio" name="m" checked={method === m} onChange={() => setMethod(m)} style={{ accentColor: C.accent }} />
+              {m === "DoubleTree" ? "Double Tree" : m}
+            </label>
+          ))}
+ 
+          <div style={{ fontWeight: 700, fontSize: 13, marginTop: 12, marginBottom: 6, borderBottom: `1px solid ${C.border}`, paddingBottom: 5 }}>Survey</div>
+          <Slider label="n̄ [arcmin⁻²]" value={nbar} min={1} max={50} step={0.5} onChange={setNbar}
+            extra={`n̄_z=${nbar_z.toFixed(2)}  √(1/n̄_z)=${Math.sqrt(1 / nbar_z).toFixed(3)}′`} />
+          <Slider label="n_z (tomo bins)" value={nbinsz} min={1} max={6} step={1} onChange={setNbinsz} />
+ 
+          <div style={{ fontWeight: 700, fontSize: 13, marginTop: 12, marginBottom: 6, borderBottom: `1px solid ${C.border}`, paddingBottom: 5 }}>Radii</div>
+          <Slider label="min_sep [′]" value={minSep} min={0.1} max={5} step={0.1} onChange={setMinSep} />
+          <Slider label="max_sep [′]" value={rmaxIdx} min={0} max={RMAX_OPTIONS.length - 1} step={1}
+            onChange={setRmaxIdx} display={`${maxSep}`}
+            extra={`Powers of 2: ${RMAX_OPTIONS.join(", ")}`} />
+          <div style={{ display: "flex", gap: 10, marginBottom: 8, marginTop: 2 }}>
+            {["Log", "Linear"].map(s => (
+              <label key={s} style={{
+                display: "flex", alignItems: "center", gap: 4, cursor: "pointer", fontSize: 11.5,
+                fontWeight: (s === "Log") === logScale ? 700 : 400,
+                color: (s === "Log") === logScale ? C.accent : C.text,
+              }}>
+                <input type="radio" name="sc" checked={(s === "Log") === logScale}
+                  onChange={() => setLogScale(s === "Log")} style={{ accentColor: C.accent }} />
+                {s}
+              </label>
+            ))}
+          </div>
+ 
+          <div style={{ fontWeight: 700, fontSize: 13, marginTop: 12, marginBottom: 6, borderBottom: `1px solid ${C.border}`, paddingBottom: 5 }}>Tree Parameters</div>
+          <Slider label="α" value={alpha} min={0.2} max={5} step={0.05} onChange={setAlpha}
+            extra={`d_min=${config.dMin.toFixed(3)}′  (${config.grid.length} grid lvls)`}
+            disabled={method === "Discrete"} />
+          <Slider label="rmin_pixsize" value={rminPix} min={5} max={30} step={1} onChange={setRminPix}
+            disabled={method === "Discrete"} />
+          <Slider label="resoshift_leafs" value={resoShift}
+            min={-(config.nresos - 1)} max={0} step={1} onChange={setResoShift}
+            extra="More negative → finer leaf" disabled={method !== "DoubleTree"} />
+          <Slider label="maxresoind_leaf" value={maxLeafIdx}
+            min={0} max={config.nresos - 1} step={1} onChange={setMaxLeafIdx}
+            disabled={method !== "DoubleTree"} />
+ 
+          <div style={{ fontWeight: 700, fontSize: 13, marginTop: 12, marginBottom: 6, borderBottom: `1px solid ${C.border}`, paddingBottom: 5 }}>Display</div>
+          <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 12, marginBottom: 4 }}>
+            <input type="checkbox" checked={showStar} onChange={e => setShowStar(e.target.checked)} style={{ accentColor: C.accent }} />
+            Central star
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 12, marginBottom: 4 }}>
+            <input type="checkbox" checked={showLabels} onChange={e => setShowLabels(e.target.checked)} style={{ accentColor: C.accent }} />
+            Radial labels
+          </label>
+ 
+          <div style={{ fontWeight: 700, fontSize: 13, marginTop: 12, marginBottom: 6, borderBottom: `1px solid ${C.border}`, paddingBottom: 5 }}>Levels</div>
+          {active.map(l => {
+            const leafStr = l.isDisc ? "" :
+              method === "Discrete" ? "" :
+              l.leafIsDisc ? "(leaf = discrete)" :
+              l.lLo === l.i ? "(leaf = base)" :
+              `(leaf = d=${l.leafPix.toFixed(2)}′)`;
+            return (
+              <div key={l.i} style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 3, fontSize: 11 }}>
+                <div style={{
+                  width: 10, height: 10, borderRadius: 2, flexShrink: 0,
+                  border: `2px solid ${l.color}`, background: `${l.color}18`,
+                }} />
+                <div style={{ lineHeight: 1.25 }}>
+                  <span style={{ fontWeight: 600 }}>{l.isDisc ? "Discrete" : `d=${l.pix.toFixed(2)}′`}</span>
+                  <span style={{ color: C.muted }}> [{l.rLo.toFixed(1)}–{l.rHi.toFixed(0)}]′</span>
+                  {leafStr && <div style={{ fontSize: 9.5, color: C.accent }}>{leafStr}</div>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+ 
+        {/* ===== SVG ===== */}
+        <svg width={VW} height={VW} viewBox={`0 0 ${VW} ${VW}`}
+          style={{ background: C.bg, borderRadius: 6, border: `1px solid ${C.border}` }}>
+          <defs>
+            {active.map(l => (
+              <AnnulusClip key={`c${l.i}`} id={`ann${l.i}`} cx={cx} cy={cy}
+                rMin={l.rLoV} rMax={l.rHiV} />
+            ))}
+            <clipPath id="disc-clip"><circle cx={cx} cy={cy} r={rViewMax + 2} /></clipPath>
+          </defs>
+ 
+          {/* ==========================================================
+              LEAF GRIDS in each annulus.
+              - Discrete sections: NO grid drawn.
+              - Grid sections with discrete leaf: NO grid drawn.
+              - Grid sections with grid leaf: draw leaf pixel grid.
+              ========================================================== */}
+          {method !== "Discrete" && active.map(l => {
+            // Skip discrete level — no pixels there
+            if (l.isDisc) return null;
+            // Skip if leaf is discrete (pairs found individually)
+            if (l.leafIsDisc) return null;
+            // Draw the LEAF grid in this annulus
+            const pv = l.leafPixV;
+            if (pv < 2) return null;
+            return (
+              <CartesianGrid key={`lg${l.i}`} cx={cx} cy={cy}
+                pixView={pv} span={rViewMax + pv}
+                color={l.color} opacity={0.5}
+                dash={dashFor(pv)} clipId={`ann${l.i}`} />
+            );
+          })}
+ 
+          {/* Radial rings */}
+          {active.map(l => (
+            <g key={`r${l.i}`}>
+              {l.rHiV - l.rLoV > 3 && (
+                <path d={`
+                  M ${cx + l.rHiV},${cy} A ${l.rHiV},${l.rHiV} 0 1,0 ${cx - l.rHiV},${cy}
+                  A ${l.rHiV},${l.rHiV} 0 1,0 ${cx + l.rHiV},${cy} Z
+                  ${l.rLoV > 0.5 ? `M ${cx + l.rLoV},${cy} A ${l.rLoV},${l.rLoV} 0 1,1 ${cx - l.rLoV},${cy}
+                  A ${l.rLoV},${l.rLoV} 0 1,1 ${cx + l.rLoV},${cy} Z` : ""}
+                `} fillRule="evenodd" fill={l.color} opacity={0.04} />
+              )}
+              {l.rLoV > 1 && <circle cx={cx} cy={cy} r={l.rLoV} fill="none"
+                stroke={l.color} strokeWidth={1.8} opacity={0.7} />}
+              <circle cx={cx} cy={cy} r={l.rHiV} fill="none"
+                stroke={l.color} strokeWidth={2.2} opacity={0.7} />
+            </g>
+          ))}
+ 
+          {/* ==========================================================
+              BASE RESOLUTION PIXELS at center.
+              One square per grid level, centered on the star,
+              color-coded to match the annulus, sized to the BASE pixel.
+              Drawn largest (coarsest) first so smallest is on top.
+              ========================================================== */}
+          {method == "DoubleTree" && [...gridLevels].reverse().map(l => {
+            const s = l.pixV;
+            if (s < 2) return null;
+            return (
+              <rect key={`bp${l.i}`}
+                x={cx - s / 2} y={cy - s / 2} width={s} height={s}
+                fill="none" stroke={l.color} strokeWidth={1.8} opacity={0.75} rx={1} />
+            );
+          })}
+ 
+          {/* Galaxies */}
+          {gals.map((g, k) => {
+            const lv = galLevels[k];
+            if (!lv) return null;
+            const col = method === "Discrete" || lv.isDisc ? C.gal : lv.color;
+            return <Stick key={k} x={g.x} y={g.y} angle={g.ang}
+              len={lv.isDisc || method === "Discrete" ? 7.5 : 6.5}
+              color={col} sw={2.2} op={0.72} />;
+          })}
+ 
+          {/* Central star */}
+          {showStar && (
+            <g transform={`translate(${cx},${cy})`}>
+              <polygon points="0,-11 2.8,-3.5 11,-3.5 4.5,2 6.5,10.5 0,5.5 -6.5,10.5 -4.5,2 -11,-3.5 -2.8,-3.5"
+                fill={C.star} />
+            </g>
+          )}
+ 
+          {/* Labels */}
+          {showLabels && active.map(l => {
+            const rMid = (l.rLoV + l.rHiV) / 2;
+            if (rMid < 22 || l.rHiV - l.rLoV < 10) return null;
+            const ang = -0.4 + l.i * 0.42;
+            const lx = cx + rMid * Math.cos(ang);
+            const ly = cy + rMid * Math.sin(ang);
+ 
+            let txt;
+            if (l.isDisc) txt = "discrete";
+            else if (method === "Discrete") txt = "";
+            else if (method === "Tree") txt = `d=${l.pix.toFixed(2)}′`;
+            else {
+              if (l.leafIsDisc) txt = `base ${l.pix.toFixed(2)}′, leaf=disc`;
+              else if (l.lLo === l.i) txt = `d=${l.pix.toFixed(2)}′`;
+              else txt = `base ${l.pix.toFixed(2)}′ → leaf ${l.leafPix.toFixed(2)}′`;
+            }
+            if (!txt) return null;
+            const tw = txt.length * 4.8 + 8;
+            return (
+              <g key={`lb${l.i}`}>
+                <rect x={lx - 4} y={ly - 9} width={tw} height={15} rx={2} fill={C.bg} opacity={0.92} />
+                <text x={lx} y={ly + 3} fontSize={9.5} fontWeight={600}
+                  fontFamily="'Crimson Pro', Georgia, serif" fill={l.color}>{txt}</text>
+              </g>
+            );
+          })}
+ 
+          {/* Info tag */}
+          <rect x={6} y={6} width={215} height={34} rx={3} fill={C.bg} opacity={0.85} />
+          <text x={10} y={21} fontSize={15} fontWeight={700}
+            fontFamily="'Crimson Pro', Georgia, serif" fill={C.text}>
+            {method === "DoubleTree" ? "Double Tree" : method}
+          </text>
+          <text x={10} y={35} fontSize={10}
+            fontFamily="'Crimson Pro', Georgia, serif" fill={C.muted}>
+            {config.nresos} levels · d_min={config.dMin.toFixed(3)}′ · {logScale ? "log" : "linear"}
+          </text>
+ 
+          {/* Radius ticks */}
+          {[minSep, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+            .filter(r => r >= minSep && r <= maxSep)
+            .map(r => {
+              const rv = scaleR(r);
+              if (rv < rViewMin + 8 || rv > rViewMax - 2) return null;
+              return (
+                <g key={`t${r}`}>
+                  <line x1={cx + rv} y1={cy - 4} x2={cx + rv} y2={cy + 4}
+                    stroke={C.muted} strokeWidth={0.8} opacity={0.6} />
+                  <text x={cx + rv} y={cy + 13} fontSize={8} fill={C.muted}
+                    textAnchor="middle" fontFamily="'Crimson Pro', Georgia, serif">{r}′</text>
+                </g>
+              );
+            })}
+        </svg>
+      </div>
+ 
+      {/* Footer */}
+      <div style={{
+        marginTop: 10, padding: "8px 18px",
+        background: C.panel, border: `1px solid ${C.border}`, borderRadius: 5,
+        fontSize: 11.5, color: C.text, maxWidth: VW + 230, textAlign: "center", lineHeight: 1.5,
+      }}>
+        {method === "Discrete" ? (
+          <>All galaxy pairs computed individually. No pixel averaging.</>
+        ) : (
+          <>
+            Grids in each annulus show the <b>leaf</b> resolution (pixel size used for pair-finding in Gₙ allocation).
+            Colored squares at center show the <b>base</b> resolution (pixel size for Gₙ caching and NPCF allocation).
+            {" "}No grid is drawn in discrete regions (galaxies paired individually).
+          </>
+        )}
+        {logScale && method !== "Discrete" && (
+          <span style={{ color: C.muted }}> Pixel sizes are schematic in log view; relative proportions preserved.</span>
+        )}
+      </div>
+    </div>
+  );
+}
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<Widget />);
+  </script>
+</body>
+</html>

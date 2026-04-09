@@ -1,6 +1,6 @@
 Tutorial for computing third-order statistics
-===================================================
-   
+=============================================
+
 .. nbgallery::
 
    notebooks/GGG_tutorial_basic

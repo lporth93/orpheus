@@ -34,14 +34,14 @@ class Catalog:
     nbinsz: int
         The number of tomographic bins
     isinner: numpy.ndarray
-        A flag signaling wheter a tracer is within the interior part of the footprint
+        A flag signaling whether a tracer is within the interior part of the footprint
     units_pos1: string, defaults to ``None``
         The unit of the :math:`x`-positions, should be in [None, 'rad', 'deg', 'arcmin']. 
         For non-spherical catalogs we auto-set this to None. Spherical catalogs are internally transformed to units of degrees.
     units_pos2: string, defaults to ``None``
         The unit of the :math:`y`-positions, should be in [None, 'rad', 'deg', 'arcmin']. 
         For non-spherical catalogs we auto-set this to None. Spherical catalogs are internally transformed to units of degrees.
-    geometry: string, defualts to ``'flat2d'``
+    geometry: string, defaults to ``'flat2d'``
         Specifies the topology of the space the points are located in. Should be in ['flat2d', 'spherical'].
     min1: float
         The smallest :math:`x`-value appearing in the catalog
@@ -56,7 +56,7 @@ class Catalog:
     len2: float
         The extent of the catalog in :math:`y`-direction.
     hasspatialhash: bool
-        Flag on wheter a spatial hash structure has been allocated for the catalog
+        Flag on whether a spatial hash structure has been allocated for the catalog
     index_matcher: numpy.ndarray
         Indicates on whether there is a tracer in each of the pixels in the spatial hash.
     
@@ -233,8 +233,11 @@ class Catalog:
                                                   kmeanshp_randomstate=kmeanshp_randomstate,
                                                   healpix_nside=healpix_nside
                                                   )
+            
+            # When forcing the patches to be healpix pixels the number of non-empty pixels depends on the survey footprint and
+            # is computed within the gen_cat_patchindices function. Here we reconstruct this number from the output dict.
             if method=='healpix':
-                self.npatches = 12*healpix_nside*healpix_nside
+                self.npatches = len(self.patchinds["info"]["patchcenters"])
             else:
                 self.npatches = npatches
             
@@ -372,7 +375,7 @@ class Catalog:
             Forces the number of cells in each dimensions to be divisible by some number. 
             Defaults to ``1``.
         ret_inst: bool, optional
-            Decides on wheter to return the output as a list of arrays containing the reduced catalog or
+            Decides on whether to return the output as a list of arrays containing the reduced catalog or
             on returning a new ``Catalog`` instance. Defaults to ``False``.
         """
         
@@ -506,19 +509,19 @@ class Catalog:
         zbins: list
             Contains the tomographic redshift bins for each of the catalogs in the hierarchy.
         isinners: list
-            Contains the flag on wheter a tracer is within the interior part of the footprint
+            Contains the flag on whether a tracer is within the interior part of the footprint
             for each of the catalogs in the hierarchy.
         allfields: list
             Contains the tracer fields for each of the catalogs in the hierarchy.
         index_matchers: list
             Contains the ``index_matchers`` arrays for each of the catalogs in the hierarchy.
-            See the ```index_matcher`` attribute for more information.
+            See the ``index_matcher`` attribute for more information.
         pixs_galind_bounds: list
             Contains the ``pixs_galind_bounds`` arrays for each of the catalogs in the hierarchy.
-            See the ```pixs_galind_bounds`` attribute for more information.
+            See the ``pixs_galind_bounds`` attribute for more information.
         pix_gals: list
             Contains the ``pix_gals`` arrays for each of the catalogs in the hierarchy.
-            See the ```pix_gals`` attribute for more information.
+            See the ``pix_gals`` attribute for more information.
         dpixs1_true: list
             Contains final values of the pixel sidelength along the :math:`x`-direction for each
             of the catalogs in the hierarchy.
@@ -676,7 +679,7 @@ class Catalog:
         dpix: float
             The sidelength of a grid cell.  
         normed: bool, optional
-            Decide on whether to average or to sum the field over pixels. Defaults to ``True``.
+            Decide on whether to average or to sum the field over pixels. Defaults to ``False``.
         weighted: bool, optional
             Whether to apply the tracer weights of the catalog. Defaults to ``True``.
         extent: list, optional
@@ -690,15 +693,13 @@ class Catalog:
             Forces the number of cells in each dimensions to be divisible by some number. 
             Defaults to ``1``.
         ret_inst: bool, optional
-            Decides on wheter to return the output as a list of arrays containing the reduced catalog or
+            Decides on whether to return the output as a list of arrays containing the reduced catalog or
             on returning a new ``Catalog`` instance. Defaults to ``False``.
         asgrid: bool, optional
             Deprecated.
         nthreads: int, optional
             The number of openmp threads used for the reduction procedure. Defaults to ``1``.
-        ret_inst: bool, optional
-            Deprecated.
-            
+
         Returns
         -------
         projectedfields: list
@@ -879,13 +880,13 @@ class Catalog:
         Returns
         -------
         start1: float
-            The :math:``x``-position of the first column.
+            The :math:`x`-position of the first column.
         start2: float
-            The :math:``y``-position of the first row.
+            The :math:`y`-position of the first row.
         n1: int
-            The number of pixels in the :math:``x``-position. 
+            The number of pixels in the :math:`x`-position.
         n2: int
-            The number of pixels in the :math:``y``-position. 
+            The number of pixels in the :math:`y`-position.
         """
         
         # Define inner extent of the grid
@@ -985,7 +986,7 @@ class ScalarTracerCatalog(Catalog):
             Forces the number of cells in each dimensions to be divisible by some number. 
             Defaults to ``1``.
         ret_inst: bool, optional
-            Decides on wheter to return the output as a list of arrays containing the reduced catalog or
+            Decides on whether to return the output as a list of arrays containing the reduced catalog or
             on returning a new ``Catalog`` instance. Defaults to ``False``.
         """
         res = super()._reduce(
@@ -1031,7 +1032,7 @@ class ScalarTracerCatalog(Catalog):
         Returns
         -------
         res: tuple
-            Contains the output of the ```Catalog._multihash method```
+            Contains the output of the ``Catalog._multihash`` method
         """
         res = super()._multihash(
             dpixs=dpixs.astype(np.float64), 
@@ -1120,9 +1121,9 @@ class SpinTracerCatalog(Catalog):
             Defaults to ``1``.
         w2field: bool, optional
             Adds an additional field equivalent to the squared weight of the tracers to the reduced 
-            catalog. Defaaullts to ``True``.
+            catalog. Defaults to ``True``.
         ret_inst: bool, optional
-            Decides on wheter to return the output as a list of arrays containing the reduced catalog or
+            Decides on whether to return the output as a list of arrays containing the reduced catalog or
             on returning a new ``Catalog`` instance. Defaults to ``False``.
         """
         
@@ -1171,12 +1172,12 @@ class SpinTracerCatalog(Catalog):
             Defaults to ``1``.
         w2field: bool, optional
             Adds an additional field equivalent to the squared weight of the tracers to the reduced 
-            catalog. Defaaullts to ``True``.
+            catalog. Defaults to ``True``.
             
         Returns
         -------
         res: tuple
-            Contains the output of the ```Catalog._multihash method```
+            Contains the output of the ``Catalog._multihash`` method
         """
         if not w2field:
             fields=(self.tracer_1, self.tracer_2,) 
