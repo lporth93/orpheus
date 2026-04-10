@@ -10,436 +10,894 @@
 <body>
   <div id="root"></div>
   <script type="text/babel">
-    // Widget to play around with the different algorithms
-    // Note: This script was developed with the help of an LLM (opus 4.6) 
+/**
+ * =============================================================================
+ * Widget for the different approximations schemes in orpheus
+ * =============================================================================
+ *
+ * DISCLAIMER
+ * ----------
+ * This widget used the help of an LLM (opus/sonnet 4.6) during development.
+ *
+ * PARAMETERS
+ * -----------------------
+ *  n̄            – Mean galaxy density [arcmin⁻²].
+ *  n_z          – Number of tomographic redshift bins (divides n̄).
+ *  n̄_z = n̄/n_z  – Effective density per tomographic bin.
+ *  min_sep      – Minimum pair separation [arcmin]; inner edge of the diagram.
+ *  max_sep      – Maximum pair separation [arcmin]; outer edge of the diagram.
+ *  α            – Dimensionless prefactor controlling the finest grid scale:
+ *                   d_min = α / √n̄_z
+ *                 Larger α → coarser finest scale, faster but less accurate.
+ *  rmin_pixsize – Minimum number of pixels that span each annulus inner radius.
+ *                 Controls where the grid transitions to the next resolution.
+ *  maxcellsize  – Hard upper limit on the pixel size [arcmin] in the grid.
+ *                 The doubling sequence d_min, 2·d_min, 4·d_min, … is
+ *                 truncated as soon as a level would exceed this cap.
+ *                 Visualised as a red dashed square at the diagram centre.
+ *  resoshift_leafs  – Level by which the leaf pixel resolution is shifted with
+ *                     respect to the base pixel resolution. For example, if 
+ *                     d_base = d^i d_min -> d_leaf = d^(i+resoshift_leafs) d_min
+ *                     and d_leaf = discrete if d_leaf < d_min
+ *  maxresoind_leaf  - Largest allowed resolution index for the leaf pixels
+ * 
+ * GRID CONSTRUCTION (config useMemo)
+ * ------------------------------------
+ * Starting from d_min the pixel sizes double: d_min, 2·d_min, 4·d_min, …
+ * until d ≥ maxcellsize.  This produces grid[] — the sequence of physical
+ * pixel scales.  The annulus boundaries (edges[]) are then placed at the
+ * separations where each pixel level becomes efficient: r = d · rmin_pixsize.
+ * The innermost region [min_sep, edges[1]] always uses discrete pairing
+ * because its angular scale is smaller than a single pixel.
+ *
+ * VISUAL ENCODING
+ * ---------------
+ *  • Coloured annular rings    – radial extent of each resolution level.
+ *  • Cartesian grid in annulus – leaf pixel scale for that bin (dashed when
+ *                                the pixel is large relative to the annulus).
+ *  • Nested squares at centre  – base pixel scale per level (DoubleTree only).
+ *  • RED dashed square         – maxcellsize cap; the coarsest pixel allowed.
+ *  • Galaxy sticks             – colour encodes their assigned resolution level.
+ *  • Central star              – the fixed "primary" object around which
+ *                                correlations are measured.
+ *
+ * NOTE: In log-r view pixel sizes are rendered schematically (preserving
+ * relative proportions) because the logarithmic mapping compresses large
+ * separations.  In linear view the grid lines are drawn to scale.
+ *
+ **/
 
 const { useState, useMemo } = React;
 
 const TAU = 2 * Math.PI;
- 
+
+// ---------------------------------------------------------------------------
+// Seeded pseudo-random number generator (Park–Miller LCG).
+// Returns a closure that produces uniform floats in [0, 1).
+// Using a fixed seed guarantees the same galaxy positions on every render.
+// ---------------------------------------------------------------------------
 function seededRandom(seed) {
   let s = seed;
-  return () => { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; };
+  return () => {
+    s = (s * 16807) % 2147483647;
+    return (s - 1) / 2147483646;
+  };
 }
- 
+
+// ---------------------------------------------------------------------------
+// Colour palette — earth-tone / academic aesthetic.
+// ---------------------------------------------------------------------------
 const C = {
-  bg: "#f5f0e8",
-  star: "#1a1a1a",
-  gal: "#777",
-  galLeaf: "#c0392b",
-  text: "#2a2a2a",
-  muted: "#8a8580",
-  accent: "#c0392b",
-  panel: "#eae5db",
-  border: "#d4cfc6",
+  bg:       "#f5f0e8",   // canvas background
+  star:     "#1a1a1a",   // central star fill
+  gal:      "#777",      // galaxy stick (discrete mode)
+  galLeaf:  "#c0392b",   // (unused directly; kept for reference)
+  text:     "#2a2a2a",
+  muted:    "#8a8580",
+  accent:   "#c0392b",   // red accent (sliders, selected labels)
+  panel:    "#eae5db",   // control panel background
+  border:   "#d4cfc6",
+  maxcell:  "#c0392b",   // maxcellsize indicator (red dashed square)
 };
- 
+
+// Colour wheel for the multi-resolution levels (cycles if > 6 levels).
 const RESO_COLORS = ["#5a9e6f", "#3a7fbf", "#8b5fbf", "#bf7a3a", "#bf3a5a", "#3abfbf"];
- 
+
+// ---------------------------------------------------------------------------
+// Stick — renders a single galaxy as an oriented line segment.
+// Props: x, y   – screen position
+//        angle  – orientation (radians, randomised per galaxy)
+//        len    – half-length in SVG pixels
+//        color  – stroke colour
+//        sw     – stroke width
+//        op     – opacity
+// ---------------------------------------------------------------------------
 function Stick({ x, y, angle, len = 8, color = C.gal, sw = 2, op = 0.75 }) {
-  const dx = Math.cos(angle) * len, dy = Math.sin(angle) * len;
-  return <line x1={x - dx} y1={y - dy} x2={x + dx} y2={y + dy}
-    stroke={color} strokeWidth={sw} strokeLinecap="round" opacity={op} />;
+  const dx = Math.cos(angle) * len;
+  const dy = Math.sin(angle) * len;
+  return (
+    <line
+      x1={x - dx} y1={y - dy}
+      x2={x + dx} y2={y + dy}
+      stroke={color} strokeWidth={sw} strokeLinecap="round" opacity={op}
+    />
+  );
 }
- 
+
+// ---------------------------------------------------------------------------
+// CartesianGrid — draws a uniform square grid centred at (cx, cy).
+// pixView  – grid spacing in SVG pixels
+// span     – half-width/height of the region to fill
+// clipId   – id of an SVG <clipPath> to confine the grid to an annulus
+// dash     – strokeDasharray value ("none" for solid lines)
+// ---------------------------------------------------------------------------
 function CartesianGrid({ cx, cy, pixView, span, color, opacity, dash, clipId }) {
   if (pixView < 2) return null;
   const lines = [];
   const n = Math.ceil(span / pixView);
   for (let i = -n; i <= n; i++) {
     const off = i * pixView;
-    lines.push(<line key={`v${i}`} x1={cx + off} y1={cy - span} x2={cx + off} y2={cy + span}
-      stroke={color} strokeWidth={1} opacity={opacity} strokeDasharray={dash} />);
-    lines.push(<line key={`h${i}`} x1={cx - span} y1={cy + off} x2={cx + span} y2={cy + off}
-      stroke={color} strokeWidth={1} opacity={opacity} strokeDasharray={dash} />);
+    lines.push(
+      <line key={`v${i}`}
+        x1={cx + off} y1={cy - span} x2={cx + off} y2={cy + span}
+        stroke={color} strokeWidth={1} opacity={opacity} strokeDasharray={dash} />
+    );
+    lines.push(
+      <line key={`h${i}`}
+        x1={cx - span} y1={cy + off} x2={cx + span} y2={cy + off}
+        stroke={color} strokeWidth={1} opacity={opacity} strokeDasharray={dash} />
+    );
   }
   const inner = <g>{lines}</g>;
   return clipId ? <g clipPath={`url(#${clipId})`}>{inner}</g> : inner;
 }
- 
+
+// ---------------------------------------------------------------------------
+// AnnulusClip — SVG <clipPath> that masks content to a ring between rMin and
+// rMax.  Uses the even-odd fill rule so the inner hole is subtracted.
+// ---------------------------------------------------------------------------
 function AnnulusClip({ id, cx, cy, rMin, rMax }) {
   const ri = Math.max(0.1, rMin);
   return (
     <clipPath id={id}>
-      <path d={`
-        M ${cx + rMax},${cy} A ${rMax},${rMax} 0 1,0 ${cx - rMax},${cy}
-        A ${rMax},${rMax} 0 1,0 ${cx + rMax},${cy} Z
-        ${ri > 0.5 ? `M ${cx + ri},${cy} A ${ri},${ri} 0 1,1 ${cx - ri},${cy}
-        A ${ri},${ri} 0 1,1 ${cx + ri},${cy} Z` : ""}
-      `} fillRule="evenodd" />
+      <path
+        d={`
+          M ${cx + rMax},${cy} A ${rMax},${rMax} 0 1,0 ${cx - rMax},${cy}
+          A ${rMax},${rMax} 0 1,0 ${cx + rMax},${cy} Z
+          ${ri > 0.5
+            ? `M ${cx + ri},${cy} A ${ri},${ri} 0 1,1 ${cx - ri},${cy}
+               A ${ri},${ri} 0 1,1 ${cx + ri},${cy} Z`
+            : ""}
+        `}
+        fillRule="evenodd"
+      />
     </clipPath>
   );
 }
- 
+
+// ---------------------------------------------------------------------------
+// Slider — labelled range input with formatted value display.
+// Props:
+//   label    – text label shown on the left
+//   value    – current numeric value
+//   min/max/step – range parameters
+//   onChange – callback(newValue)
+//   extra    – optional small annotation below the slider
+//   disabled – greyed-out / non-interactive when true
+//   display  – override the auto-formatted value string
+// ---------------------------------------------------------------------------
 function Slider({ label, value, min, max, step, onChange, extra, disabled, display }) {
-  const fmt = display != null ? display
+  const fmt = display != null
+    ? display
     : typeof value === "number"
-      ? (Number.isInteger(value) && Number.isInteger(step) ? String(value) : value.toFixed(2))
+      ? (Number.isInteger(value) && Number.isInteger(step)
+          ? String(value)
+          : value.toFixed(2))
       : String(value);
+
   return (
-    <div style={{ marginBottom: 7, opacity: disabled ? 0.35 : 1, pointerEvents: disabled ? "none" : "auto" }}>
+    <div style={{
+      marginBottom: 7,
+      opacity: disabled ? 0.35 : 1,
+      pointerEvents: disabled ? "none" : "auto",
+    }}>
       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
-        <span>{label}</span><span style={{ fontWeight: 600 }}>{fmt}</span>
+        <span>{label}</span>
+        <span style={{ fontWeight: 600 }}>{fmt}</span>
       </div>
-      <input type="range" min={min} max={max} step={step} value={value}
+      <input
+        type="range" min={min} max={max} step={step} value={value}
         onChange={e => onChange(+e.target.value)}
-        style={{ width: "100%", accentColor: C.accent }} />
+        style={{ width: "100%", accentColor: C.accent }}
+      />
       {extra && <div style={{ fontSize: 10, color: C.muted }}>{extra}</div>}
     </div>
   );
 }
- 
+
+// Discrete options for max_sep displayed as integer arcmin values.
 const RMAX_OPTIONS = [2, 4, 8, 16, 32, 64, 128, 256, 512];
- 
+
+// ===========================================================================
+// Widget — main component.
+// ===========================================================================
 function Widget() {
-  const [method, setMethod] = useState("DoubleTree");
-  const [alpha, setAlpha] = useState(1.0);
-  const [nbar, setNbar] = useState(8.53);
-  const [nbinsz, setNbinsz] = useState(1);
-  const [resoShift, setResoShift] = useState(-1);
-  const [maxLeafIdx, setMaxLeafIdx] = useState(2);
-  const [rminPix, setRminPix] = useState(15);
-  const [minSep, setMinSep] = useState(0.5);
-  const [rmaxIdx, setRmaxIdx] = useState(8);
-  const [logScale, setLogScale] = useState(true);
+  // --- Algorithm selection ---------------------------------------------------
+  const [method, setMethod]         = useState("DoubleTree");
+
+  // --- Survey parameters ----------------------------------------------------
+  const [alpha, setAlpha]           = useState(0.55);   // resolution prefactor α
+  const [nbar, setNbar]             = useState(30.00);  // n̄ [arcmin⁻²]
+  const [nbinsz, setNbinsz]         = useState(6);     // number of tomo bins
+
+  // --- DoubleTree leaf controls ----------------------------------------------
+  const [resoShift, setResoShift]   = useState(-1);    // Δ(leaf level relative to base)
+  const [maxLeafIdx, setMaxLeafIdx] = useState(3);     // hard cap on leaf resolution index
+
+  // --- Grid geometry --------------------------------------------------------
+  const [rminPix, setRminPix]       = useState(5.);    // pixels per annulus inner radius
+  const [minSep, setMinSep]         = useState(0.5);   // min_sep [arcmin]
+  const [maxcellsize, setMaxcellsize] = useState(4.);  // max allowed pixel size [arcmin]
+  const [rmaxIdx, setRmaxIdx]       = useState(4);     // index into RMAX_OPTIONS
+
+  // --- Display toggles ------------------------------------------------------
+  const [logScale, setLogScale]     = useState(false);
   const [showLabels, setShowLabels] = useState(true);
-  const [showStar, setShowStar] = useState(true);
- 
-  const maxSep = RMAX_OPTIONS[rmaxIdx];
-  const VW = 580;
-  const cx = VW / 2, cy = VW / 2;
-  const rViewMax = 265, rViewMin = 12;
-  const rMaxPix = 4.0;
+  const [showStar, setShowStar]     = useState(false);
+
+  const maxSep  = RMAX_OPTIONS[rmaxIdx];   // physical max separation [arcmin]
+
+  // SVG canvas dimensions.
+  const VW  = 580;
+  const cx  = VW / 2;
+  const cy  = VW / 2;
+
+  // View-space radii: the innermost ring maps to rViewMin px, outermost to rViewMax px.
+  const rViewMax = 265;
+  const rViewMin = 12;
+
+  // Effective density per tomographic bin.
   const nbar_z = nbar / nbinsz;
- 
+
+  // -------------------------------------------------------------------------
+  // scaleR — maps a physical separation r [arcmin] to a view-space radius [px].
+  // In log mode: linear mapping of log(r); in linear mode: proportional to r.
+  // -------------------------------------------------------------------------
   const scaleR = useMemo(() => {
     if (logScale) {
-      const lnMin = Math.log(minSep), lnMax = Math.log(maxSep);
-      return r => rViewMin + ((Math.log(Math.max(r, minSep)) - lnMin) / (lnMax - lnMin)) * (rViewMax - rViewMin);
+      const lnMin = Math.log(minSep);
+      const lnMax = Math.log(maxSep);
+      return r => rViewMin + (
+        (Math.log(Math.max(r, minSep)) - lnMin) / (lnMax - lnMin)
+      ) * (rViewMax - rViewMin);
     }
-    return r => rViewMin + ((Math.max(r, minSep) - minSep) / (maxSep - minSep)) * (rViewMax - rViewMin);
+    return r => rViewMin + (
+      (Math.max(r, minSep) - minSep) / (maxSep - minSep)
+    ) * (rViewMax - rViewMin);
   }, [logScale, minSep, maxSep]);
- 
-  // Schematic pixel scaling (log) or true physical (linear)
+
+  // -------------------------------------------------------------------------
+  // pixScale — converts a physical pixel size [arcmin] to a view-space length.
+  // In log mode: schematic (finest grid ≈ 12 view px) so grids are legible.
+  // In linear mode: true physical scaling.
+  // -------------------------------------------------------------------------
   const pixScale = useMemo(() => {
     if (logScale) {
       const dMin = alpha * Math.sqrt(1 / nbar_z);
-      return 12 / dMin; // finest grid ≈ 12 view px
+      return 12 / dMin;
     }
     return (rViewMax - rViewMin) / (maxSep - minSep);
   }, [logScale, minSep, maxSep, alpha, nbar_z]);
- 
+
+  // Converts a physical pixel size to a clamped view-space length (min 3 px).
   const pxV = (pix) => Math.max(3, pix * pixScale);
- 
+
+  // -------------------------------------------------------------------------
+  // config — core derived geometry, recomputed when any relevant parameter
+  // changes.  Produces the sequence of resolution levels and their view-space
+  // properties.
+  // -------------------------------------------------------------------------
   const config = useMemo(() => {
+    // Finest physical pixel scale [arcmin].
     const dMin = alpha * Math.sqrt(1 / nbar_z);
+
+    // Build the doubling sequence: d_min, 2·d_min, 4·d_min, …
+    // STOP when d would exceed maxcellsize.  This is where the slider has
+    // its effect: a smaller maxcellsize truncates the sequence earlier,
+    // leaving fewer (and finer) grid levels; a larger value allows more
+    // coarsening steps.
     const grid = [];
     let d = dMin;
-    while (d <= rMaxPix * 1.001) { grid.push(d); d *= 2; }
-    if (!grid.length) grid.push(Math.min(dMin, rMaxPix));
- 
+    while (d <= maxcellsize * 1.001) {
+      grid.push(d);
+      d *= 2;
+    }
+    // Safety: always keep at least one entry even if dMin > maxcellsize.
+    if (!grid.length) grid.push(Math.min(dMin, maxcellsize));
+
+    // treeResos[0] = 0 represents the "discrete" innermost level;
+    // subsequent entries are the physical pixel scales.
     const treeResos = [0, ...grid];
     const nresos = treeResos.length;
- 
+
+    // Build annulus boundary array.
+    // edges[i] is the inner radius of level i.
+    // The boundary between level i (pixel d) and level i+1 is placed at
+    //   r = d · rmin_pixsize
+    // so that the inner radius of the next (coarser) level spans at least
+    // rmin_pixsize pixels.
     let edges = [minSep];
     for (const g of grid) edges.push(g * rminPix);
     edges.push(maxSep);
     edges.sort((a, b) => a - b);
+    // Clamp to [minSep, maxSep] and enforce strict endpoints.
     edges = edges.map(e => Math.max(minSep, Math.min(maxSep, e)));
     edges[0] = minSep;
     edges[edges.length - 1] = maxSep;
- 
+
+    // Build per-level metadata.
     const levels = [];
     for (let i = 0; i < nresos; i++) {
-      const rLo = edges[i], rHi = edges[i + 1];
-      const isDisc = i === 0;
-      const gIdx = i - 1;
-      const pix = isDisc ? 0 : grid[gIdx];
-      const rLoV = scaleR(rLo), rHiV = scaleR(rHi);
+      const rLo = edges[i];
+      const rHi = edges[i + 1];
+
+      // Level 0 is the "discrete" innermost region; it has no grid pixel.
+      const isDisc = (i === 0);
+      const gIdx   = i - 1;                          // index into grid[]
+      const pix    = isDisc ? 0 : grid[gIdx];        // physical pixel size [arcmin]
+
+      // View-space radii and pixel size.
+      const rLoV = scaleR(rLo);
+      const rHiV = scaleR(rHi);
       const pixV = isDisc ? 0 : pxV(pix);
+
       const color = isDisc ? C.gal : RESO_COLORS[gIdx % RESO_COLORS.length];
- 
-      // Leaf resolution
+
+      // ---- Leaf resolution for DoubleTree ----------------------------------
+      // In DoubleTree the leaf (pair-finding) can differ from the base (NPCF
+      // allocation).  resoShift shifts the leaf level index relative to the
+      // base; maxLeafIdx caps how far out (coarse) the leaf can go.
+      // Negative resoShift → finer leaf; 0 → leaf == base.
       let lLo, lHi;
-      if (method === "Discrete") { lLo = lHi = 0; }
-      else if (method === "Tree") { lLo = lHi = i; }
-      else {
+      if (method === "Discrete") {
+        lLo = lHi = 0;
+      } else if (method === "Tree") {
+        // Tree: leaf always equals base.
+        lLo = lHi = i;
+      } else {
+        // DoubleTree: apply shift and cap.
         if (resoShift < 0) {
           lLo = Math.max(0, i + resoShift);
           lHi = Math.min(i, maxLeafIdx);
           lLo = Math.min(lLo, lHi);
-        } else { lLo = lHi = Math.min(Math.max(0, i + resoShift), maxLeafIdx); }
+        } else {
+          lLo = lHi = Math.min(Math.max(0, i + resoShift), maxLeafIdx);
+        }
         lHi = Math.min(lHi, nresos - 1);
         lLo = Math.min(lLo, lHi);
       }
- 
-      // Leaf pixel size (view): use finest leaf
-      let leafPix = pix;   // physical
-      let leafPixV = pixV;  // view
+
+      // Determine the physical and view-space leaf pixel size.
+      let leafPix  = pix;
+      let leafPixV = pixV;
       let leafIsDisc = false;
       if (!isDisc) {
         if (lLo > 0 && lLo !== i) {
-          leafPix = grid[lLo - 1];
+          // Leaf is at a coarser level than the base.
+          leafPix  = grid[lLo - 1];
           leafPixV = pxV(leafPix);
         } else if (lLo === 0) {
+          // Leaf falls back to discrete pairing.
           leafIsDisc = true;
-          leafPix = 0;
-          leafPixV = 0;
+          leafPix    = 0;
+          leafPixV   = 0;
         }
       }
- 
-      levels.push({ i, rLo, rHi, rLoV, rHiV, isDisc, pix, pixV, gIdx, color,
-                     lLo, lHi, leafPix, leafPixV, leafIsDisc });
+
+      levels.push({
+        i, rLo, rHi, rLoV, rHiV,
+        isDisc, pix, pixV, gIdx, color,
+        lLo, lHi, leafPix, leafPixV, leafIsDisc,
+      });
     }
- 
+
     return { treeResos, grid, levels, nresos, dMin };
-  }, [alpha, nbar_z, rminPix, minSep, maxSep, method, resoShift, maxLeafIdx, scaleR, pxV]);
- 
+  }, [alpha, nbar_z, rminPix, minSep, maxSep, maxcellsize, method, resoShift, maxLeafIdx, scaleR, pxV]);
+
+  // Levels that are wide enough to be visible (at least 1 px of annulus width).
   const active = config.levels.filter(l => l.rHiV > l.rLoV + 1);
-  const gridLevels = active.filter(l => !l.isDisc); // non-discrete levels
- 
+
+  // Grid levels only (exclude the innermost discrete level).
+  const gridLevels = active.filter(l => !l.isDisc);
+
+  // -------------------------------------------------------------------------
+  // Galaxy positions — generated once with a fixed seed.
+  // Placed uniformly in area (√-uniform in r) within the view circle.
+  // Each galaxy has a random orientation angle for the stick rendering.
+  // -------------------------------------------------------------------------
   const gals = useMemo(() => {
     const rng = seededRandom(42);
     const out = [];
     for (let k = 0; k < 280; k++) {
-      const rV = Math.sqrt(rng()) * rViewMax;
+      const rV  = Math.sqrt(rng()) * rViewMax;
       if (rV < rViewMin) continue;
-      const th = rng() * TAU;
+      const th  = rng() * TAU;
       const ang = rng() * Math.PI;
       out.push({ x: cx + rV * Math.cos(th), y: cy + rV * Math.sin(th), ang, rV });
     }
     return out;
   }, [cx, cy]);
- 
+
+  // Assign each galaxy to its resolution level (for colour-coding).
   const galLevels = useMemo(() =>
     gals.map(g => {
       for (const l of active) if (g.rV >= l.rLoV && g.rV < l.rHiV) return l;
       return active[active.length - 1];
-    }), [gals, active]);
- 
-  const desc = method === "Discrete"
-    ? "All galaxies paired individually — no grid approximation."
-    : method === "Tree"
-      ? "Multi-resolution grid for leafs, all galaxies used as base."
-      : `Double Tree: Multi-resolution grid for both, leafs and base.`;
- 
+    }),
+  [gals, active]);
+
+  // Short description shown below the title.
+  const desc =
+    method === "Discrete"   ? "All galaxies paired individually — no grid approximation."
+    : method === "Tree"     ? "Multi-resolution grid for leafs, all galaxies used as base."
+    : `Double Tree: Multi-resolution grid for both leafs and base.`;
+
+  // Use dashed lines for large grid cells (improves legibility).
   const dashFor = (pv) => pv < 14 ? "none" : "4,3";
- 
+
+  // -------------------------------------------------------------------------
+  // View-space size of the maxcellsize indicator.
+  // We deliberately use a fixed linear scale (rViewMax / maxSep) rather than
+  // pxV(), because pxV() depends on pixScale which in log mode is tied to
+  // alpha via dMin.  maxcellsize is an independent physical cap that must not
+  // visually shift when alpha changes — only when maxcellsize or maxSep do.
+  // -------------------------------------------------------------------------
+const maxcellPixV = Math.max(3, maxcellsize * (rViewMax / maxSep));
+
+
+  // =========================================================================
+  // RENDER
+  // =========================================================================
   return (
     <div style={{
-      fontFamily: "'Crimson Pro', Georgia, serif", background: C.bg,
-      minHeight: "100vh", padding: 14,
-      display: "flex", flexDirection: "column", alignItems: "center",
+      fontFamily: "'Crimson Pro', Georgia, serif",
+      background:  C.bg,
+      minHeight:   "100vh",
+      padding:     14,
+      display:     "flex",
+      flexDirection: "column",
+      alignItems:  "center",
     }}>
-      <h1 style={{ fontSize: 21, fontWeight: 700, color: C.text, margin: "0 0 2px 0", letterSpacing: ".015em" }}>
+      {/* ---- Title -------------------------------------------------------- */}
+      <h1 style={{
+        fontSize: 21, fontWeight: 700, color: C.text,
+        margin: "0 0 2px 0", letterSpacing: ".015em",
+      }}>
         Orpheus NPCF Correlator — Algorithm Comparison
       </h1>
-      <p style={{ fontSize: 12.5, color: C.muted, margin: "0 0 10px 0", fontStyle: "italic", textAlign: "center", maxWidth: 620 }}>
+      <p style={{
+        fontSize: 12.5, color: C.muted, margin: "0 0 10px 0",
+        fontStyle: "italic", textAlign: "center", maxWidth: 620,
+      }}>
         {desc}
       </p>
- 
-      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", justifyContent: "center", alignItems: "flex-start" }}>
-        {/* ===== Controls ===== */}
+
+      <div style={{
+        display: "flex", gap: 14, flexWrap: "wrap",
+        justifyContent: "center", alignItems: "flex-start",
+      }}>
+
+        {/* ================================================================
+            CONTROL PANEL
+            ================================================================ */}
         <div style={{
-          background: C.panel, border: `1px solid ${C.border}`, borderRadius: 6,
-          padding: "12px 14px", width: 210, fontSize: 12, color: C.text,
+          background: C.panel, border: `1px solid ${C.border}`,
+          borderRadius: 6, padding: "12px 14px",
+          width: 210, fontSize: 12, color: C.text,
           maxHeight: VW, overflowY: "auto",
         }}>
-          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, borderBottom: `1px solid ${C.border}`, paddingBottom: 5 }}>Method</div>
+
+          {/* ---- Algorithm selection --------------------------------------- */}
+          <div style={{
+            fontWeight: 700, fontSize: 13, marginBottom: 8,
+            borderBottom: `1px solid ${C.border}`, paddingBottom: 5,
+          }}>Method</div>
           {["Discrete", "Tree", "DoubleTree"].map(m => (
             <label key={m} style={{
-              display: "flex", alignItems: "center", gap: 5, marginBottom: 4, cursor: "pointer",
-              fontWeight: method === m ? 700 : 400, color: method === m ? C.accent : C.text, fontSize: 12.5,
+              display: "flex", alignItems: "center", gap: 5,
+              marginBottom: 4, cursor: "pointer", fontSize: 12.5,
+              fontWeight: method === m ? 700 : 400,
+              color:      method === m ? C.accent : C.text,
             }}>
-              <input type="radio" name="m" checked={method === m} onChange={() => setMethod(m)} style={{ accentColor: C.accent }} />
+              <input
+                type="radio" name="m" checked={method === m}
+                onChange={() => setMethod(m)}
+                style={{ accentColor: C.accent }}
+              />
               {m === "DoubleTree" ? "Double Tree" : m}
             </label>
           ))}
- 
-          <div style={{ fontWeight: 700, fontSize: 13, marginTop: 12, marginBottom: 6, borderBottom: `1px solid ${C.border}`, paddingBottom: 5 }}>Survey</div>
-          <Slider label="n̄ [arcmin⁻²]" value={nbar} min={1} max={50} step={0.5} onChange={setNbar}
+
+          {/* ---- Survey parameters ---------------------------------------- */}
+          <div style={{
+            fontWeight: 700, fontSize: 13, marginTop: 12, marginBottom: 6,
+            borderBottom: `1px solid ${C.border}`, paddingBottom: 5,
+          }}>Survey</div>
+
+          <Slider label="n̄ [arcmin⁻²]" value={nbar} min={1} max={50} step={0.5}
+            onChange={setNbar}
             extra={`n̄_z=${nbar_z.toFixed(2)}  √(1/n̄_z)=${Math.sqrt(1 / nbar_z).toFixed(3)}′`} />
-          <Slider label="n_z (tomo bins)" value={nbinsz} min={1} max={6} step={1} onChange={setNbinsz} />
- 
-          <div style={{ fontWeight: 700, fontSize: 13, marginTop: 12, marginBottom: 6, borderBottom: `1px solid ${C.border}`, paddingBottom: 5 }}>Radii</div>
-          <Slider label="min_sep [′]" value={minSep} min={0.1} max={5} step={0.1} onChange={setMinSep} />
-          <Slider label="max_sep [′]" value={rmaxIdx} min={0} max={RMAX_OPTIONS.length - 1} step={1}
+          <Slider label="n_z (tomo bins)" value={nbinsz} min={1} max={6} step={1}
+            onChange={setNbinsz} />
+
+          {/* ---- Radial range --------------------------------------------- */}
+          <div style={{
+            fontWeight: 700, fontSize: 13, marginTop: 12, marginBottom: 6,
+            borderBottom: `1px solid ${C.border}`, paddingBottom: 5,
+          }}>Radii</div>
+
+          <Slider label="min_sep [′]" value={minSep} min={0.1} max={5} step={0.1}
+            onChange={setMinSep} />
+          <Slider label="max_sep [′]" value={rmaxIdx}
+            min={0} max={RMAX_OPTIONS.length - 1} step={1}
             onChange={setRmaxIdx} display={`${maxSep}`}
             extra={`Powers of 2: ${RMAX_OPTIONS.join(", ")}`} />
+
+          {/* Log / Linear toggle */}
           <div style={{ display: "flex", gap: 10, marginBottom: 8, marginTop: 2 }}>
             {["Log", "Linear"].map(s => (
               <label key={s} style={{
-                display: "flex", alignItems: "center", gap: 4, cursor: "pointer", fontSize: 11.5,
+                display: "flex", alignItems: "center", gap: 4,
+                cursor: "pointer", fontSize: 11.5,
                 fontWeight: (s === "Log") === logScale ? 700 : 400,
-                color: (s === "Log") === logScale ? C.accent : C.text,
+                color:      (s === "Log") === logScale ? C.accent : C.text,
               }}>
-                <input type="radio" name="sc" checked={(s === "Log") === logScale}
-                  onChange={() => setLogScale(s === "Log")} style={{ accentColor: C.accent }} />
+                <input type="radio" name="sc"
+                  checked={(s === "Log") === logScale}
+                  onChange={() => setLogScale(s === "Log")}
+                  style={{ accentColor: C.accent }} />
                 {s}
               </label>
             ))}
           </div>
- 
-          <div style={{ fontWeight: 700, fontSize: 13, marginTop: 12, marginBottom: 6, borderBottom: `1px solid ${C.border}`, paddingBottom: 5 }}>Tree Parameters</div>
-          <Slider label="α" value={alpha} min={0.2} max={5} step={0.05} onChange={setAlpha}
+
+          {/* ---- Tree parameters ------------------------------------------ */}
+          <div style={{
+            fontWeight: 700, fontSize: 13, marginTop: 12, marginBottom: 6,
+            borderBottom: `1px solid ${C.border}`, paddingBottom: 5,
+          }}>Tree Parameters</div>
+
+          {/*
+            α  — resolution prefactor.
+            d_min = α / √n̄_z.  Larger α → coarser finest scale.
+          */}
+          <Slider label="α" value={alpha} min={0.2} max={5} step={0.05}
+            onChange={setAlpha}
             extra={`d_min=${config.dMin.toFixed(3)}′  (${config.grid.length} grid lvls)`}
             disabled={method === "Discrete"} />
-          <Slider label="rmin_pixsize" value={rminPix} min={5} max={30} step={1} onChange={setRminPix}
+
+          {/*
+            rmin_pixsize — minimum number of pixel widths spanning the inner
+            radius of each annulus.  Larger values push annulus boundaries
+            outward, creating fewer but wider bins.
+          */}
+          <Slider label="rmin_pixsize" value={rminPix} min={5} max={30} step={1}
+            onChange={setRminPix}
             disabled={method === "Discrete"} />
+
+          {/*
+            maxcellsize — hard cap on the pixel size [arcmin].
+            The doubling sequence grid[] stops as soon as d would exceed this
+            value.  Effect:
+              • Fewer/more grid levels (visible in the "N levels" counter).
+              • The RED dashed square at the diagram centre shows its size.
+              • Shrinking it forces finer pixels everywhere → more accuracy,
+                more computation.
+              • Expanding it allows very coarse pixels at large separations.
+          */}
+          <Slider label="tree_maxcellsize [′]" value={maxcellsize}
+            min={0.25} max={16.} step={0.25}
+            onChange={setMaxcellsize}
+            extra="Red square = max pixel cap"
+            disabled={method === "Discrete"} />
+
+          {/*
+            resoshift_leafs — shifts the leaf resolution level relative to
+            the base level.  Negative → finer leaf (more accurate pair-finding,
+            slower); 0 → leaf equals base (same as Tree).
+          */}
           <Slider label="resoshift_leafs" value={resoShift}
-            min={-(config.nresos - 1)} max={0} step={1} onChange={setResoShift}
-            extra="More negative → finer leaf" disabled={method !== "DoubleTree"} />
-          <Slider label="maxresoind_leaf" value={maxLeafIdx}
-            min={0} max={config.nresos - 1} step={1} onChange={setMaxLeafIdx}
+            min={-(config.nresos - 1)} max={0} step={1}
+            onChange={setResoShift}
+            extra="More negative → finer leaf"
             disabled={method !== "DoubleTree"} />
- 
-          <div style={{ fontWeight: 700, fontSize: 13, marginTop: 12, marginBottom: 6, borderBottom: `1px solid ${C.border}`, paddingBottom: 5 }}>Display</div>
-          <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 12, marginBottom: 4 }}>
-            <input type="checkbox" checked={showStar} onChange={e => setShowStar(e.target.checked)} style={{ accentColor: C.accent }} />
+
+          {/*
+            maxresoind_leaf — hard upper bound on the leaf resolution index.
+            Prevents the leaf from becoming coarser than this level regardless
+            of resoshift.
+          */}
+          <Slider label="maxresoind_leaf" value={maxLeafIdx}
+            min={0} max={config.nresos - 1} step={1}
+            onChange={setMaxLeafIdx}
+            disabled={method !== "DoubleTree"} />
+
+          {/* ---- Display toggles ------------------------------------------ */}
+          <div style={{
+            fontWeight: 700, fontSize: 13, marginTop: 12, marginBottom: 6,
+            borderBottom: `1px solid ${C.border}`, paddingBottom: 5,
+          }}>Display</div>
+
+          <label style={{
+            display: "flex", alignItems: "center", gap: 5,
+            cursor: "pointer", fontSize: 12, marginBottom: 4,
+          }}>
+            <input type="checkbox" checked={showStar}
+              onChange={e => setShowStar(e.target.checked)}
+              style={{ accentColor: C.accent }} />
             Central star
           </label>
-          <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 12, marginBottom: 4 }}>
-            <input type="checkbox" checked={showLabels} onChange={e => setShowLabels(e.target.checked)} style={{ accentColor: C.accent }} />
+          <label style={{
+            display: "flex", alignItems: "center", gap: 5,
+            cursor: "pointer", fontSize: 12, marginBottom: 4,
+          }}>
+            <input type="checkbox" checked={showLabels}
+              onChange={e => setShowLabels(e.target.checked)}
+              style={{ accentColor: C.accent }} />
             Radial labels
           </label>
- 
-          <div style={{ fontWeight: 700, fontSize: 13, marginTop: 12, marginBottom: 6, borderBottom: `1px solid ${C.border}`, paddingBottom: 5 }}>Levels</div>
+
+          {/* ---- Level legend --------------------------------------------- */}
+          <div style={{
+            fontWeight: 700, fontSize: 13, marginTop: 12, marginBottom: 6,
+            borderBottom: `1px solid ${C.border}`, paddingBottom: 5,
+          }}>Levels</div>
           {active.map(l => {
-            const leafStr = l.isDisc ? "" :
+            const leafStr =
+              l.isDisc         ? "" :
               method === "Discrete" ? "" :
-              l.leafIsDisc ? "(leaf = discrete)" :
-              l.lLo === l.i ? "(leaf = base)" :
+              l.leafIsDisc     ? "(leaf = discrete)" :
+              l.lLo === l.i   ? "(leaf = base)" :
               `(leaf = d=${l.leafPix.toFixed(2)}′)`;
             return (
-              <div key={l.i} style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 3, fontSize: 11 }}>
+              <div key={l.i} style={{
+                display: "flex", alignItems: "center",
+                gap: 5, marginBottom: 3, fontSize: 11,
+              }}>
                 <div style={{
                   width: 10, height: 10, borderRadius: 2, flexShrink: 0,
                   border: `2px solid ${l.color}`, background: `${l.color}18`,
                 }} />
                 <div style={{ lineHeight: 1.25 }}>
-                  <span style={{ fontWeight: 600 }}>{l.isDisc ? "Discrete" : `d=${l.pix.toFixed(2)}′`}</span>
-                  <span style={{ color: C.muted }}> [{l.rLo.toFixed(1)}–{l.rHi.toFixed(0)}]′</span>
-                  {leafStr && <div style={{ fontSize: 9.5, color: C.accent }}>{leafStr}</div>}
+                  <span style={{ fontWeight: 600 }}>
+                    {l.isDisc ? "Discrete" : `d=${l.pix.toFixed(2)}′`}
+                  </span>
+                  <span style={{ color: C.muted }}>
+                    {" "}[{l.rLo.toFixed(1)}–{l.rHi.toFixed(0)}]′
+                  </span>
+                  {leafStr && (
+                    <div style={{ fontSize: 9.5, color: C.accent }}>{leafStr}</div>
+                  )}
                 </div>
               </div>
             );
           })}
+
+          {/* maxcellsize legend entry */}
+          {method !== "Discrete" && (
+            <div style={{
+              display: "flex", alignItems: "center",
+              gap: 5, marginTop: 6, fontSize: 11,
+            }}>
+              <div style={{
+                width: 10, height: 10, borderRadius: 2, flexShrink: 0,
+                border: `2px dashed ${C.maxcell}`,
+              }} />
+              <div style={{ color: C.maxcell, fontWeight: 600 }}>
+                maxcellsize={maxcellsize.toFixed(2)}′
+              </div>
+            </div>
+          )}
         </div>
- 
-        {/* ===== SVG ===== */}
+
+        {/* ================================================================
+            SVG DIAGRAM
+            ================================================================ */}
         <svg width={VW} height={VW} viewBox={`0 0 ${VW} ${VW}`}
           style={{ background: C.bg, borderRadius: 6, border: `1px solid ${C.border}` }}>
+
           <defs>
+            {/* Annulus clip-paths — one per active level */}
             {active.map(l => (
-              <AnnulusClip key={`c${l.i}`} id={`ann${l.i}`} cx={cx} cy={cy}
-                rMin={l.rLoV} rMax={l.rHiV} />
+              <AnnulusClip key={`c${l.i}`} id={`ann${l.i}`}
+                cx={cx} cy={cy} rMin={l.rLoV} rMax={l.rHiV} />
             ))}
-            <clipPath id="disc-clip"><circle cx={cx} cy={cy} r={rViewMax + 2} /></clipPath>
+            <clipPath id="disc-clip">
+              <circle cx={cx} cy={cy} r={rViewMax + 2} />
+            </clipPath>
           </defs>
- 
-          {/* ==========================================================
-              LEAF GRIDS in each annulus.
-              - Discrete sections: NO grid drawn.
-              - Grid sections with discrete leaf: NO grid drawn.
-              - Grid sections with grid leaf: draw leaf pixel grid.
-              ========================================================== */}
+
+          {/* ==============================================================
+              LEAF GRIDS
+              For each non-discrete level, draw the leaf Cartesian grid
+              clipped to its annulus.
+              – Discrete levels:            no grid (pairs are individual).
+              – Grid levels, discrete leaf: no grid (leaf also individual).
+              – Grid levels, grid leaf:     draw leaf pixel grid.
+              ============================================================== */}
           {method !== "Discrete" && active.map(l => {
-            // Skip discrete level — no pixels there
-            if (l.isDisc) return null;
-            // Skip if leaf is discrete (pairs found individually)
-            if (l.leafIsDisc) return null;
-            // Draw the LEAF grid in this annulus
+            if (l.isDisc)     return null;   // innermost discrete region
+            if (l.leafIsDisc) return null;   // leaf falls back to discrete
             const pv = l.leafPixV;
-            if (pv < 2) return null;
+            if (pv < 2)       return null;
             return (
-              <CartesianGrid key={`lg${l.i}`} cx={cx} cy={cy}
+              <CartesianGrid key={`lg${l.i}`}
+                cx={cx} cy={cy}
                 pixView={pv} span={rViewMax + pv}
                 color={l.color} opacity={0.5}
                 dash={dashFor(pv)} clipId={`ann${l.i}`} />
             );
           })}
- 
-          {/* Radial rings */}
+
+          {/* ==============================================================
+              ANNULAR RINGS
+              Shaded annuli + boundary circles for each resolution level.
+              ============================================================== */}
           {active.map(l => (
             <g key={`r${l.i}`}>
+              {/* Faint shaded fill */}
               {l.rHiV - l.rLoV > 3 && (
-                <path d={`
-                  M ${cx + l.rHiV},${cy} A ${l.rHiV},${l.rHiV} 0 1,0 ${cx - l.rHiV},${cy}
-                  A ${l.rHiV},${l.rHiV} 0 1,0 ${cx + l.rHiV},${cy} Z
-                  ${l.rLoV > 0.5 ? `M ${cx + l.rLoV},${cy} A ${l.rLoV},${l.rLoV} 0 1,1 ${cx - l.rLoV},${cy}
-                  A ${l.rLoV},${l.rLoV} 0 1,1 ${cx + l.rLoV},${cy} Z` : ""}
-                `} fillRule="evenodd" fill={l.color} opacity={0.04} />
+                <path
+                  d={`
+                    M ${cx + l.rHiV},${cy}
+                    A ${l.rHiV},${l.rHiV} 0 1,0 ${cx - l.rHiV},${cy}
+                    A ${l.rHiV},${l.rHiV} 0 1,0 ${cx + l.rHiV},${cy} Z
+                    ${l.rLoV > 0.5
+                      ? `M ${cx + l.rLoV},${cy}
+                         A ${l.rLoV},${l.rLoV} 0 1,1 ${cx - l.rLoV},${cy}
+                         A ${l.rLoV},${l.rLoV} 0 1,1 ${cx + l.rLoV},${cy} Z`
+                      : ""}
+                  `}
+                  fillRule="evenodd" fill={l.color} opacity={0.04}
+                />
               )}
-              {l.rLoV > 1 && <circle cx={cx} cy={cy} r={l.rLoV} fill="none"
-                stroke={l.color} strokeWidth={1.8} opacity={0.7} />}
-              <circle cx={cx} cy={cy} r={l.rHiV} fill="none"
-                stroke={l.color} strokeWidth={2.2} opacity={0.7} />
+              {/* Inner boundary ring */}
+              {l.rLoV > 1 && (
+                <circle cx={cx} cy={cy} r={l.rLoV}
+                  fill="none" stroke={l.color} strokeWidth={1.8} opacity={0.7} />
+              )}
+              {/* Outer boundary ring */}
+              <circle cx={cx} cy={cy} r={l.rHiV}
+                fill="none" stroke={l.color} strokeWidth={2.2} opacity={0.7} />
             </g>
           ))}
- 
-          {/* ==========================================================
-              BASE RESOLUTION PIXELS at center.
-              One square per grid level, centered on the star,
-              color-coded to match the annulus, sized to the BASE pixel.
-              Drawn largest (coarsest) first so smallest is on top.
-              ========================================================== */}
-          {method == "DoubleTree" && [...gridLevels].reverse().map(l => {
+
+          {/* ==============================================================
+              BASE RESOLUTION SQUARES (DoubleTree only)
+              Nested squares centred on the star, one per grid level,
+              sized to the BASE pixel scale.  Drawn coarsest-first so the
+              finest square is always visible on top.
+              ============================================================== */}
+          {method === "DoubleTree" && [...gridLevels].reverse().map(l => {
             const s = l.pixV;
             if (s < 2) return null;
             return (
               <rect key={`bp${l.i}`}
                 x={cx - s / 2} y={cy - s / 2} width={s} height={s}
-                fill="none" stroke={l.color} strokeWidth={1.8} opacity={0.75} rx={1} />
+                fill="none" stroke={l.color}
+                strokeWidth={1.8} opacity={0.75} rx={1} />
             );
           })}
- 
-          {/* Galaxies */}
+
+          {/* ==============================================================
+              MAXCELLSIZE INDICATOR
+              A red dashed square at the diagram centre showing the view-space
+              size corresponding to the maxcellsize cap.  Drawn above the base
+              resolution squares so it is always visible.
+              Only shown when a grid method is active and the indicator is
+              large enough to be meaningful (> 4 px half-side).
+              ============================================================== */}
+          {method !== "Discrete" && maxcellPixV > 4 && (() => {
+            const s = maxcellPixV;
+            return (
+              <g key="maxcell-indicator">
+                {/* Dashed red square */}
+                <rect
+                  x={cx - s / 2} y={cy - s / 2} width={s} height={s}
+                  fill={`${C.maxcell}08`}
+                  stroke={C.maxcell} strokeWidth={2}
+                  strokeDasharray="5,3" rx={2}
+                  opacity={0.85}
+                />
+                {/* Label — placed to the upper right of the square to avoid
+                    overlapping the central star */}
+                <rect
+                  x={cx + s / 2 + 3} y={cy - s / 2 - 1}
+                  width={78} height={14}
+                  rx={2} fill={C.bg} opacity={0.88}
+                />
+                <text
+                  x={cx + s / 2 + 6} y={cy - s / 2 + 9}
+                  fontSize={9} fontWeight={700}
+                  fontFamily="'Crimson Pro', Georgia, serif"
+                  fill={C.maxcell}
+                >
+                  maxcell={maxcellsize.toFixed(2)}′
+                </text>
+              </g>
+            );
+          })()}
+
+          {/* ==============================================================
+              GALAXIES
+              Stick glyphs coloured by their assigned resolution level.
+              ============================================================== */}
           {gals.map((g, k) => {
             const lv = galLevels[k];
             if (!lv) return null;
             const col = method === "Discrete" || lv.isDisc ? C.gal : lv.color;
-            return <Stick key={k} x={g.x} y={g.y} angle={g.ang}
-              len={lv.isDisc || method === "Discrete" ? 7.5 : 6.5}
-              color={col} sw={2.2} op={0.72} />;
+            return (
+              <Stick key={k} x={g.x} y={g.y} angle={g.ang}
+                len={lv.isDisc || method === "Discrete" ? 7.5 : 6.5}
+                color={col} sw={2.2} op={0.72} />
+            );
           })}
- 
-          {/* Central star */}
+
+          {/* ==============================================================
+              CENTRAL STAR (5-pointed polygon)
+              ============================================================== */}
           {showStar && (
             <g transform={`translate(${cx},${cy})`}>
-              <polygon points="0,-11 2.8,-3.5 11,-3.5 4.5,2 6.5,10.5 0,5.5 -6.5,10.5 -4.5,2 -11,-3.5 -2.8,-3.5"
-                fill={C.star} />
+              <polygon
+                points="0,-11 2.8,-3.5 11,-3.5 4.5,2 6.5,10.5 0,5.5 -6.5,10.5 -4.5,2 -11,-3.5 -2.8,-3.5"
+                fill={C.star}
+              />
             </g>
           )}
- 
-          {/* Labels */}
+
+          {/* ==============================================================
+              RADIAL LABELS
+              Annotation boxes placed at the midpoint of each annulus.
+              The angular position rotates slightly per level to reduce
+              overlap between adjacent labels.
+              ============================================================== */}
           {showLabels && active.map(l => {
             const rMid = (l.rLoV + l.rHiV) / 2;
             if (rMid < 22 || l.rHiV - l.rLoV < 10) return null;
+
             const ang = -0.4 + l.i * 0.42;
-            const lx = cx + rMid * Math.cos(ang);
-            const ly = cy + rMid * Math.sin(ang);
- 
+            const lx  = cx + rMid * Math.cos(ang);
+            const ly  = cy + rMid * Math.sin(ang);
+
             let txt;
-            if (l.isDisc) txt = "discrete";
+            if      (l.isDisc)              txt = "discrete";
             else if (method === "Discrete") txt = "";
-            else if (method === "Tree") txt = `d=${l.pix.toFixed(2)}′`;
+            else if (method === "Tree")     txt = `d=${l.pix.toFixed(2)}′`;
             else {
-              if (l.leafIsDisc) txt = `base ${l.pix.toFixed(2)}′, leaf=disc`;
+              if      (l.leafIsDisc)  txt = `base ${l.pix.toFixed(2)}′, leaf=disc`;
               else if (l.lLo === l.i) txt = `d=${l.pix.toFixed(2)}′`;
-              else txt = `base ${l.pix.toFixed(2)}′ → leaf ${l.leafPix.toFixed(2)}′`;
+              else                    txt = `base ${l.pix.toFixed(2)}′ → leaf ${l.leafPix.toFixed(2)}′`;
             }
             if (!txt) return null;
+
             const tw = txt.length * 4.8 + 8;
             return (
               <g key={`lb${l.i}`}>
-                <rect x={lx - 4} y={ly - 9} width={tw} height={15} rx={2} fill={C.bg} opacity={0.92} />
+                <rect x={lx - 4} y={ly - 9} width={tw} height={15}
+                  rx={2} fill={C.bg} opacity={0.92} />
                 <text x={lx} y={ly + 3} fontSize={9.5} fontWeight={600}
-                  fontFamily="'Crimson Pro', Georgia, serif" fill={l.color}>{txt}</text>
+                  fontFamily="'Crimson Pro', Georgia, serif"
+                  fill={l.color}>
+                  {txt}
+                </text>
               </g>
             );
           })}
- 
-          {/* Info tag */}
+
+          {/* ==============================================================
+              INFO TAG (top-left corner)
+              Shows method name, number of levels, d_min, and scale mode.
+              ============================================================== */}
           <rect x={6} y={6} width={215} height={34} rx={3} fill={C.bg} opacity={0.85} />
           <text x={10} y={21} fontSize={15} fontWeight={700}
             fontFamily="'Crimson Pro', Georgia, serif" fill={C.text}>
@@ -449,8 +907,12 @@ function Widget() {
             fontFamily="'Crimson Pro', Georgia, serif" fill={C.muted}>
             {config.nresos} levels · d_min={config.dMin.toFixed(3)}′ · {logScale ? "log" : "linear"}
           </text>
- 
-          {/* Radius ticks */}
+
+          {/* ==============================================================
+              RADIUS TICKS
+              Tick marks + labels along the horizontal centreline for key
+              physical separations.
+              ============================================================== */}
           {[minSep, 1, 2, 5, 10, 20, 50, 100, 200, 500]
             .filter(r => r >= minSep && r <= maxSep)
             .map(r => {
@@ -458,40 +920,55 @@ function Widget() {
               if (rv < rViewMin + 8 || rv > rViewMax - 2) return null;
               return (
                 <g key={`t${r}`}>
-                  <line x1={cx + rv} y1={cy - 4} x2={cx + rv} y2={cy + 4}
+                  <line
+                    x1={cx + rv} y1={cy - 4} x2={cx + rv} y2={cy + 4}
                     stroke={C.muted} strokeWidth={0.8} opacity={0.6} />
                   <text x={cx + rv} y={cy + 13} fontSize={8} fill={C.muted}
-                    textAnchor="middle" fontFamily="'Crimson Pro', Georgia, serif">{r}′</text>
+                    textAnchor="middle" fontFamily="'Crimson Pro', Georgia, serif">
+                    {r}′
+                  </text>
                 </g>
               );
             })}
         </svg>
       </div>
- 
-      {/* Footer */}
+
+      {/* ================================================================
+          FOOTER / LEGEND TEXT
+          ================================================================ */}
       <div style={{
         marginTop: 10, padding: "8px 18px",
-        background: C.panel, border: `1px solid ${C.border}`, borderRadius: 5,
-        fontSize: 11.5, color: C.text, maxWidth: VW + 230, textAlign: "center", lineHeight: 1.5,
+        background: C.panel, border: `1px solid ${C.border}`,
+        borderRadius: 5, fontSize: 11.5, color: C.text,
+        maxWidth: VW + 230, textAlign: "center", lineHeight: 1.5,
       }}>
         {method === "Discrete" ? (
           <>All galaxy pairs computed individually. No pixel averaging.</>
         ) : (
           <>
-            Grids in each annulus show the <b>leaf</b> resolution (pixel size used for pair-finding in Gₙ allocation).
-            Colored squares at center show the <b>base</b> resolution (pixel size for Gₙ caching and NPCF allocation).
-            {" "}No grid is drawn in discrete regions (galaxies paired individually).
+            Grids in each annulus show the <b>leaf</b> resolution (pixel size
+            used for pair-finding in Gₙ allocation). Coloured squares at centre
+            show the <b>base</b> resolution (pixel size for Gₙ caching and NPCF
+            allocation). No grid is drawn in discrete regions (galaxies paired
+            individually).{" "}
+            The <b style={{ color: C.maxcell }}>red dashed square</b> marks the
+            <b> maxcellsize</b> cap — the coarsest pixel the grid is allowed to
+            use. Increasing it adds coarser grid levels; decreasing it truncates
+            the doubling sequence and forces finer pixels at large separations.
           </>
         )}
         {logScale && method !== "Discrete" && (
-          <span style={{ color: C.muted }}> Pixel sizes are schematic in log view; relative proportions preserved.</span>
+          <span style={{ color: C.muted }}>
+            {" "}Pixel sizes are schematic in log view; relative proportions preserved.
+          </span>
         )}
       </div>
     </div>
   );
 }
-    const root = ReactDOM.createRoot(document.getElementById("root"));
-    root.render(<Widget />);
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<Widget />);
   </script>
 </body>
 </html>
