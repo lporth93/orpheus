@@ -618,3 +618,297 @@ class GGCorrelation(BinnedNPCF):
             result[3,:,elr] =  t2.imag  # MxMap (Difference from MapMx gives ~level of estimator uncertainty)
             
         return result
+    
+    def computecosebi(self, Nmax, dps=100, Tminus_nsample=4096, units='rad2'):
+        r"""Compute logarithmic COSEBIs from the shear 2PCFs using min_sep and
+        max_sep as bounds.
+
+        Parameters
+        ----------
+        Nmax : int
+            Largest log-COSEBI mode to compute (modes ``n = 1, ..., Nmax``).
+        dps : int, optional
+            Decimal precision used internally by ``mpmath`` for the root
+            finding. Defaults to ``100``.
+        Tminus_nsample : int, optional
+            Number of log-spaced sample points used for the inner
+            cumulative integral when evaluating :math:`T_{-n}(\theta)`.
+            Defaults to ``4096``.
+
+        Returns
+        -------
+        numpy.ndarray
+            Array of shape ``(4, nzcombis, Nmax)`` containing, in the first
+            axis, :math:`E_n`, :math:`E_n^\times`, :math:`B_n`, and :math:`B_n^\times`.
+        """
+
+        ### HELPER FUNCTIONS ###
+        # TODO MAYBE PUT IN A SEPARATE FILE
+        def _log_cosebi_weights(theta_min, theta_max, Nmax, dps=100):
+            r"""Compute roots and norms for log-COSEBI using SEK2010 formalism.
+
+            Parameters
+            ----------
+            theta_min, theta_max : float
+                Angular interval bounds for the COSEBI
+            Nmax : int
+                Largest COSEBI mode requested.
+            dps : int, optional
+                Decimal precision used by ``mpmath``. Defaults to ``100``.
+
+            Returns
+            -------
+            Nn : list of mpmath.mpf, length Nmax
+                Normalisation constants N_n such that t_n(z) = N_n * prod_i (z - r_{n,i}).
+            rn : list of lists of mpmath.mpf
+                Roots of each t_n polynomial (n+1 real roots per mode).
+            zmax : mpmath.mpf
+                ln(theta_max/theta_min).
+
+            Notes
+            -----
+            * Follows somewhat the cosmopipe implementation as given in the notbook introducing cosmo-numba:
+            https://github.com/aguinot/cosmo-numba/blob/main/notebooks/cosebis_comparison_with_cosmopipe.ipynb
+            * Only works for logarithmically-spaced thetas
+            """
+            try:
+                import mpmath
+                from mpmath import mp
+            except ImportError as exc:
+                raise ImportError(
+                    "mpmath is required for the log-COSEBI construction. "
+                    "Install it via `pip install mpmath`."
+                ) from exc
+
+            mp.dps = dps
+
+            ## Preparations ##
+            # Def of zmax (below Eq 29) and J function (Eq 32)
+            zmax = mp.log(mp.mpf(theta_max) / mp.mpf(theta_min))
+            J = lambda k, j, zm: (mp.gamma(j+1) - mp.gammainc(j+1, -k*zm)) / mp.power(-k, j+1)
+
+            ## Reconstruct coefficeint matrix c_{n,j} ##
+            coeff_j = mp.matrix(Nmax+1, Nmax+2)
+            # Below eq 29: Leading c_{n,n+1} = 1
+            for i in range(Nmax+1):
+                coeff_j[i, i+1] = mp.mpf(1)
+            # Determine c_{1,0} and c_{1,1} using moment constraints for n=1 (Eq 33)
+            mat_A = [[J(2, 0, zmax), J(2, 1, zmax)], [J(4, 0, zmax), J(4, 1, zmax)]]
+            vec_v = [-J(2, 2, zmax), -J(4, 2, zmax)]
+            sol = mp.lu_solve(mat_A, vec_v)
+            coeff_j[1, 0], coeff_j[1, 1] = sol[0], sol[1]
+            # Obtain all n>1 iteratively via (n-1) orthogonality equations Eq 34 + moment constraints Eq 33
+            for nn in range(2, Nmax+1):
+                mat_A = mp.matrix(nn+1, nn+1)
+                vec_v = mp.matrix(nn+1, 1)
+                # Build system of Eq 34
+                for m in range(1, nn):
+                    for j in range(nn+1):
+                        for i in range(m+2):
+                            mat_A[m-1, j] += J(1, i+j, zmax) * coeff_j[m, i]
+                    for i in range(m+2):
+                        vec_v[m -1] -= J(1, i+nn+1, zmax) * coeff_j[m, i]
+                # Add moment constraints Eq 33
+                for j in range(nn+1):
+                    mat_A[nn-1, j] = J(2, j, zmax)
+                    mat_A[nn,   j] = J(4, j, zmax)
+                vec_v[nn-1]   = -J(2, nn+1, zmax)
+                vec_v[nn]     = -J(4, nn+1, zmax)
+                sol = mp.lu_solve(mat_A, vec_v)
+                # Solve system and update coefficient matrix
+                for j in range(nn+1):
+                    coeff_j[nn, j] = sol[j]
+
+            # Discard n=0 row as not further needed
+            coeff_j = coeff_j[1:, :]
+
+            # Get Normalisation via Eq 35
+            Nn = []
+            for nn in range(1, Nmax+1):
+                s = mp.mpf(0)
+                for i in range(nn+2):
+                    for j in range(nn+2):
+                        s += coeff_j[nn-1, i] * coeff_j[nn-1, j] * J(1, i+j, zmax)
+                Nn.append(mp.sqrt(mp.fabs(mp.expm1(zmax)/s)))
+
+            # Get roots via mpmath.polyroots (note: highest-degree coefficient first)
+            # TODO: Just copied maxsteps and extraprec magic numbers from repo; make sure that those are reasonably general choices
+            rn = []
+            for nn in range(1, Nmax+1):
+                coefs = [coeff_j[nn-1, nn+1-k] for k in range(nn+2)]
+                roots = mpmath.polyroots(coefs, maxsteps=500, extraprec=100)
+                rn.append(roots)
+
+            return Nn, rn, zmax
+
+
+        def _Tplus_log(theta, theta_min, Nn, roots):
+            r"""Evaluate a log-COSEBI T_+ mode at angular scales ``theta``.
+
+            Uses the factorised form of Eq 36 in SEK2010.
+            """
+            z = np.log(np.asarray(theta, dtype=np.float64)/theta_min)
+            out = np.full_like(z, float(Nn), dtype=np.float64)
+            for r in roots:
+                out *= (z - float(r))
+            return out
+
+
+        def _Tminus_log(theta, theta_min, theta_max, Nn, roots, nsample=4096):
+            r"""Evaluate the log-COSEBI T_- mode at angular scales ``theta``.
+
+            Uses the SvWM2002 relation in log coordinates as (c.f. first line of 
+            Eq 37 in SEK2010). To speed up the computation we evaluate the two
+            ingegrals on a fine grid which we then spline and we only call these
+            splines when distributing over the output theta array.
+            """
+            # Preparations: Get z and T_+ on a fine grid
+            theta = np.atleast_1d(np.asarray(theta, dtype=np.float64))
+            zmax = np.log(theta_max/theta_min)
+            z_out = np.log(theta /theta_min)
+            y = np.linspace(0., zmax, int(nsample))
+            theta_y = theta_min * np.exp(y)
+            Tp_y = _Tplus_log(theta_y, theta_min, Nn, roots)
+
+            # Interpolate inner integrals on fine grid using cumulative trapezoidal integration
+            _cumtrapz = lambda f, x: np.concatenate([[0.], np.cumsum(0.5 * (f[1:] + f[:-1]) * (x[1:] - x[:-1]))])
+            cum2 = _cumtrapz(Tp_y * np.exp(2. * y), y)
+            cum4 = _cumtrapz(Tp_y * np.exp(4. * y), y)
+
+            # Distribute over output array
+            I2_out = np.interp(z_out, y, cum2)
+            I4_out = np.interp(z_out, y, cum4)
+            Tp_out = _Tplus_log(theta, theta_min, Nn, roots)
+
+            return Tp_out + 4.*np.exp(-2.*z_out)*I2_out - 12.*np.exp(-4.*z_out)*I4_out
+        
+        ### END OF HELPER FUNCTIONS ###
+
+        if self.xip is None or self.xim is None or self.bin_centers_mean is None:
+            raise RuntimeError(
+                "GGCorrelation has not been populated yet. Call `process` "
+                "before `computecosebi`."
+            )
+        if Nmax < 1:
+            raise ValueError("Nmax must be at least 1.")
+        
+        assert(units in ['rad2','arcmin2'])
+
+        
+
+        # Get roots and norms
+        theta = np.asarray(self.bin_centers_mean, dtype=np.float64)  # (nbinsr,)
+        theta_min = float(self.min_sep)
+        theta_max = float(self.max_sep)
+        Nn, rn, _ = _log_cosebi_weights(theta_min, theta_max, Nmax, dps=dps)
+        # Integration measure (including the 1/2 prefactor from COSEBI definition)
+        pref = 0.5 * self.binsize*theta**2 
+
+        # Allocate the result
+        result = np.zeros((4, self.nzcombis, Nmax), dtype=float)
+        for n in range(Nmax):
+            Tp = _Tplus_log(theta, theta_min, Nn[n], rn[n])
+            Tm = _Tminus_log(theta, theta_min, theta_max, Nn[n], rn[n], nsample=Tminus_nsample) 
+            t1 = np.sum(pref * (Tp*self.xip + Tm*self.xim), axis=1)
+            t2 = np.sum(pref * (Tp*self.xip - Tm*self.xim), axis=1)
+            result[0, :, n] = t1.real   # E_n
+            result[1, :, n] = t1.imag   # E_n^times
+            result[2, :, n] = t2.real   # B_n
+            result[3, :, n] = t2.imag   # B_n^times
+
+        # Optionally transform to different units
+        if units=='rad2':
+            rad2arcminsq = (2*np.pi/360./60.)**2
+            result *= rad2arcminsq
+
+        return result
+
+    def computepuremode(self):
+        r"""Compute the pure-mode shear correlation functions on a finite
+        interval using the formalism of Schneider, Asgari, Najafi et al. 
+        (2022, arXiv:2110.09774).
+
+        Returns
+        -------
+        xip_pure, numpy.ndarray
+            Array of shape ``(3, nzcombis, nbinsr)`` containing the real
+            parts of :math:`\xi_+^E`, :math:`\xi_+^B`, and :math:`\xi_+^amb` 
+            evaluated at ``self.bin_centers_mean``.
+        xim_pure, numpy.ndarray
+            Same as xip_pure, but for xim
+        """
+
+        if self.xip is None or self.xim is None or self.bin_centers_mean is None:
+            raise RuntimeError(
+                "GGCorrelation has not been populated yet. Call `process` "
+                "before `computepuremode`."
+            )
+
+        # Preparations: Build geometry-dependent constants from Schneider+2022 Eq 7
+        theta = np.asarray(self.bin_centers_mean, dtype=np.float64)
+        bar = 0.5 * (self.min_sep+self.max_sep)
+        Bg  = (self.max_sep-self.min_sep) / (self.max_sep+self.min_sep)
+
+        # Define all kernels from Schneider+2022 Eqs. 46, 47, 51, 54
+        def Hplus(vt, th):
+            return (1. / (8.*Bg**3)) * (
+                4.*Bg**2 + 3.*((vt/bar)**2-1.-Bg**2)*((th/bar)**2-1.-Bg**2))
+
+        def Hminus(vt, th):
+            return ((1.-Bg)**2/(8.*Bg**3)) * (
+                3.*(1.-Bg)**2 * ((1.+Bg)**4-(1.+4.*Bg+Bg**2)*(vt/bar)**2) * (th/bar)**(-2)
+                + 3.*(1.+Bg)**2*(vt/bar)**2 - (3.+6.*Bg+14.*Bg**2+6.*Bg**3+3.*Bg**4))
+    
+        def Kplus(vt, th):
+            return (bar/vt)**2 * Hminus(th, vt)
+        
+        # Use middle explicit form of eq 54
+        def Kminus(vt, th):
+            pref = (bar**4*(1.0-Bg**2)**2)/(Bg*vt**2*th**2)
+            b1 = 1.+Bg**2-(1.-Bg**2)**2*(bar/vt)**2
+            b2 = 1.+Bg**2-(1.-Bg**2)**2*(bar/th)**2
+            return pref * (0.5 + (3./(8.*Bg**2))*b1*b2)
+
+        # Evaluat using 2D arrays
+        ti = theta[:, None]  # outer --> vartheta
+        tj = theta[None, :]  # inner --> theta'
+
+        # Masks for partial integrals. Bin i contributes with half weight,
+        # bins strictly beyond/inside the evaluation point have full weight.
+        eye = np.eye(self.nbinsr)
+        mask_upper = np.triu(np.ones((self.nbinsr, self.nbinsr)), k=1) + 0.5 * eye  # j >= i
+        mask_lower = np.tril(np.ones((self.nbinsr, self.nbinsr)), k=-1) + 0.5 * eye  # j <= i
+        KI_plus = self.binsize * (4.-12.*ti**2/tj**2) * mask_upper
+        KI_minus = self.binsize * (tj**2/ti**2) * (4.-12.*tj**2/ti**2) * mask_lower
+
+        # Full-interval ambiguous-mode kernels (all bins contribute fully)
+        KS_plus  = self.binsize * (tj**2/bar**2) * Hplus(ti, tj)
+        KS_minus = self.binsize * Hminus(ti, tj)
+        KV_plus  = self.binsize * (tj**2/bar**2) * Kplus(ti, tj)
+        KV_minus = self.binsize * (tj**2/bar**2) * Kminus(ti, tj)
+
+        # xi @ K.T -> shape (nzcombis, nbinsr) indexed by i.
+        Iplus_z  = self.xim @ KI_plus.T
+        Iminus_z = self.xip @ KI_minus.T
+        Splus_z  = self.xip @ KS_plus.T
+        Sminus_z = self.xim @ KS_minus.T
+        Vplus_z  = self.xip @ KV_plus.T
+        Vminus_z = self.xim @ KV_minus.T
+
+        # SAN2022 Eqs. 42/43 and 55/56
+        xip_E = 0.5 * (self.xip + self.xim + Iplus_z  - Splus_z-Sminus_z)
+        xip_B = 0.5 * (self.xip - self.xim - Iplus_z  - Splus_z+Sminus_z)
+        xim_E = 0.5 * (self.xip + self.xim + Iminus_z - Vplus_z-Vminus_z)
+        xim_B = 0.5 * (self.xip - self.xim + Iminus_z - Vplus_z+Vminus_z)
+
+        # Allocate E/B/Ambiguous mode for xi+-
+        xip_pure = np.zeros((3, self.nzcombis, self.nbinsr), dtype=float)
+        xim_pure = np.zeros((3, self.nzcombis, self.nbinsr), dtype=float)
+        xip_pure[0] = xip_E.real
+        xip_pure[1] = xip_B.real
+        xip_pure[2] = Splus_z.real
+        xim_pure[0] = xim_E.real
+        xim_pure[1] = xim_B.real
+        xim_pure[2] = Vminus_z.real
+
+        return xip_pure, xim_pure

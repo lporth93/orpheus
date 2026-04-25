@@ -701,7 +701,7 @@ class BinnedNPCF:
                 ct.c_int32,
                 np.ctypeslib.ndpointer(dtype=np.complex128), np.ctypeslib.ndpointer(dtype=np.complex128)] 
             
-    def autoset_tree(self, cat, dpix_grid=2., nside_grid=2048):
+    def autoset_tree(self, cat, dpix_grid=2., nside_grid=2048, max_increase=0.1, set_resoshiftleafs=True, set_maxresoindleaf=True):
 
         assert(isinstance(cat, Catalog))
 
@@ -729,7 +729,7 @@ class BinnedNPCF:
 
         # Adjust alpha s.t. coarsest resolution reached.
         if self.tree_alpha is None:
-            _tmpalpha=0.5*np.sqrt(cat.nbinsz)
+            _tmpalpha=0.5
             _tmpreso = _tmpalpha/np.sqrt(nbar_z)
             while _tmpreso<=self.tree_maxcellsize:
                 _tmpreso *= 2
@@ -748,12 +748,68 @@ class BinnedNPCF:
             autotree_resos.append(nextreso)
             nextreso *= 2
         autotree_resos = np.asarray(autotree_resos)
-        # Check whether we can get finer leaf resos without too much overhead
-        #self.resoshift_leafs = TBD
-        #self.maxresoind_leaf = TBD
 
         # Update the tree
         self._updatetree(autotree_resos, include_shifts=True)
+
+        if self.verbosity>2:
+            print("Autosetting tree parameters to")
+            print("Tree resolutions:", self.tree_resos, "(alpha: %.4f)"%self.tree_alpha)
+
+        # Check whether we can get finer leaf resos without too much overhead
+        # We type out the time complexity of the innermost loops in the Gn/Gamman DoubleTree allocation and increase the 
+        # leaf resolution until it reaches at most 10% of the Gamman time complexity.
+        # TODO: Check how bad this approximation is. It's probably not perfect, but one should at least make
+        # sure to not add much more than 10% overhead...
+        if set_resoshiftleafs:
+            _areashells = np.pi*(self.tree_redges[1:]**2-self.tree_redges[:-1]**2)
+            _nupdateGn = lambda resos: 6*cat.nbinsz*(self.nmaxs[0]+5)*np.sum(_areashells*np.minimum(nbar_z*np.ones_like(resos),1./resos**2))
+            _nupdateUpsN = (self.n_cfs+1)*(2*self.nmaxs[0]+1)**(self.order-2)*self.nbinsr**(self.order-1)*cat.nbinsz**self.order
+            _nupdatebase = _nupdateGn(self.tree_resos) + _nupdateUpsN
+            leafresos = 1.*self.tree_resos
+            tmpresoshift = 0
+            for shifts in range(len(self.tree_resos)):
+                propresos = 1.*leafresos
+                propresos[1:] = propresos[:-1]
+                _relincrease = (_nupdateGn(propresos)+_nupdateUpsN)/_nupdatebase - 1.
+                #if self.verbosity>2:
+                #    print(tmpresoshift-1,_relincrease)
+                if _relincrease>max_increase:
+                    break
+                leafresos = propresos
+                tmpresoshift -= 1
+            self.resoshift_leafs = tmpresoshift
+            if self.verbosity>2:
+                _fincrease = (_nupdateGn(leafresos)+_nupdateUpsN)/_nupdatebase - 1.
+                if self.resoshift_leafs<0:
+                    print("Resoshift of leafs: %i (expected runtime increase of %.2f percent)"%(self.resoshift_leafs,100.*_fincrease))
+                else:
+                    print("No relative shifting of leaf resos wrt base resos")
+
+        # Check whether fixing the largest leaf resolution can be additionally done
+        if set_maxresoindleaf:
+            leafresos2 = 1.*leafresos
+            maxresoind = self.tree_nresos-1
+            for propmaxresoind in range(self.maxresoind_leaf+1)[::-1]:
+                propresos = np.minimum(leafresos2,leafresos[propmaxresoind]*np.ones_like(self.tree_resos))
+                _relincrease = (_nupdateGn(propresos)+_nupdateUpsN)/_nupdatebase - 1.
+                #if self.verbosity>2:
+                #    print(propmaxresoind,_relincrease)
+                if _relincrease>max_increase:
+                    break
+                leafresos2 = propresos
+                maxresoind = propmaxresoind
+            self.maxresoind_leaf = maxresoind
+            if self.verbosity>2:
+                _fincrease = (_nupdateGn(leafresos2)+_nupdateUpsN)/_nupdatebase - 1.
+                if self.maxresoind_leaf<(len(self.tree_resos)-1):
+                    print("Largest reso index of leafs: %i (expected runtime increase of %.2f percent)"%(self.maxresoind_leaf,100.*_fincrease))
+                else:
+                    print("Leafs cell size extends up to largest allowed base cellsize.")
+
+            
+                
+
 
                         
     ############################################################
