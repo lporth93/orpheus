@@ -267,7 +267,7 @@ def gen_cat_patchindices(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_ha
     # This will be used to quickly distribute the galaxies acreoss the workers
     # without them having to repeatadly read from the same array.
     if verbose:
-        print("Pre-splitting inner galaxy indices (one O(N log N) pass)")
+        print("Pre-splitting inner galaxy indices")
         t1 = time()
     sort_patch  = np.argsort(patchinds, kind='stable').astype(np.int64)
     _, _, patch_counts = np.unique(patchinds[sort_patch], return_index=True, return_counts=True)
@@ -409,7 +409,7 @@ def _process_patch(elpatch, shm_specs, galinds_inner_offsets,
         n_inner = len(galinds_inner)
 
         if n_inner == 0:
-            return elpatch, 0, np.empty(0, dtype=np.int64), 0.0
+            return elpatch, 0, np.empty(0, dtype=np.int64), 0.
 
         # Get healpix pixels covered by inner galaxies
         patch_hpx  = np.unique(
