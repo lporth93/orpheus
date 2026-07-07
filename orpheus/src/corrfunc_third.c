@@ -20,6 +20,135 @@
 #define M_PI      3.14159265358979323846
 #define INV_2PI   0.15915494309189534561
 
+// ---------------------------------------------------------------------------
+// Shared multi-resolution region setup (flat basetree/doubletree kernels).
+//
+// Every flat multi-reso kernel repeats the same cold per-region setup: the
+// radial-bin -> resolution edge map, cumulative offsets into the stacked
+// per-reso hash arrays, per-region galaxy counts + reduced-grid offsets, the
+// pixel -> reduced-pixel matcher, and the region cache-slot layout. The
+// helpers below hold the single copy of each block; the per-pair hot loops
+// stay in the kernels.
+// ---------------------------------------------------------------------------
+
+// Radial bin -> resolution edge indices. Depends only on the binning and band
+// edges; identical for flat and spherical (edges in the same unit as rmin/rmax).
+static void build_reso_rindedges(int nresos, const double *reso_redges,
+    double rmin, double rmax, int nbinsr, int *reso_rindedges){
+    double logrmin = log(rmin);
+    double drbin = (log(rmax)-logrmin)/(nbinsr);
+    int tmpreso = 0;
+    double thisredge = 0;
+    double tmpr = rmin;
+    for (int elr=0;elr<nbinsr;elr++){
+        tmpr *= exp(drbin);
+        thisredge = reso_redges[mymin(nresos,tmpreso+1)];
+        if (thisredge<tmpr){
+            reso_rindedges[mymin(nresos,tmpreso+1)] = elr;
+            if ((tmpr-thisredge)<(thisredge - (tmpr/exp(drbin)))){reso_rindedges[mymin(nresos,tmpreso+1)]+=1;}
+            tmpreso+=1;
+        }
+    }
+    reso_rindedges[nresos] = nbinsr;
+}
+
+// Cumulative per-reso offsets into the stacked multi-resolution hash arrays
+// (index_matcher / pixs_galind_bounds / pix_gals). Output arrays calloc'd by
+// the caller so entry 0 stays 0.
+static void build_rshift_offsets(int nresos, int npix_hash, const int *ngal_resos,
+    int *rshift_index_matcher, int *rshift_pixs_galind_bounds, int *rshift_pix_gals){
+    for (int elreso=1;elreso<nresos;elreso++){
+        rshift_index_matcher[elreso] = rshift_index_matcher[elreso-1] + npix_hash;
+        rshift_pixs_galind_bounds[elreso] = rshift_pixs_galind_bounds[elreso-1] + ngal_resos[elreso-1]+1;
+        rshift_pix_gals[elreso] = rshift_pix_gals[elreso-1] + ngal_resos[elreso-1];
+    }
+}
+
+// Per-region galaxy counts per (zbin, reso) of the hashed central catalog and
+// cumulative pixel offsets of the reduced grids; returns len_matcher. Output
+// arrays calloc'd by the caller.
+static int build_region_galinpix(int nresos, int nresos_grid, int hasdiscrete,
+    int elregion, const int *pixs_galind_bounds, const int *rshift_pixs_galind_bounds,
+    const int *pix_gals, const int *rshift_pix_gals, const int *zbin_resos,
+    int *matchers_resoshift, int *ngal_in_pix){
+    for (int elreso=0;elreso<nresos;elreso++){
+        int elreso_grid = elreso - hasdiscrete;
+        int lower = pixs_galind_bounds[rshift_pixs_galind_bounds[elreso]+elregion];
+        int upper = pixs_galind_bounds[rshift_pixs_galind_bounds[elreso]+elregion+1];
+        for (int ind_inpix=lower; ind_inpix<upper; ind_inpix++){
+            int ind_gal = rshift_pix_gals[elreso] + pix_gals[rshift_pix_gals[elreso]+ind_inpix];
+            ngal_in_pix[zbin_resos[ind_gal]*nresos+elreso] += 1;
+        }
+        if (elreso_grid>=0){
+            int npix_side = 1 << (nresos_grid-elreso_grid-1);
+            matchers_resoshift[elreso_grid+1] = matchers_resoshift[elreso_grid] + npix_side*npix_side;
+        }
+    }
+    return matchers_resoshift[nresos_grid];
+}
+
+// Dense per-zbin index of each hashed galaxy's reduced pixel at every grid
+// resolution, plus the region's hash-pixel origin (needed later to key a
+// central into pix2redpix). pix2redpix calloc'd by the caller.
+static void build_region_pix2redpix(int nresos_grid, int hasdiscrete, int elregion,
+    int nbinsz, const int *index_matcher_hash,
+    double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d,
+    const int *pixs_galind_bounds, const int *rshift_pixs_galind_bounds,
+    const int *pix_gals, const int *rshift_pix_gals, const int *zbin_resos,
+    const double *pos1_resos, const double *pos2_resos,
+    const double *dpix1_resos, const double *dpix2_resos,
+    const int *matchers_resoshift, int len_matcher,
+    double *hashpix_start1, double *hashpix_start2, int *pix2redpix){
+    int elregion_fullhash = index_matcher_hash[elregion];
+    double hstart1 = pix1_start + (elregion_fullhash%pix1_n)*pix1_d;
+    double hstart2 = pix2_start + (elregion_fullhash/pix1_n)*pix2_d;
+    for (int elreso=0;elreso<nresos_grid;elreso++){
+        int thisreso = elreso + hasdiscrete;
+        int lower = pixs_galind_bounds[rshift_pixs_galind_bounds[thisreso]+elregion];
+        int upper = pixs_galind_bounds[rshift_pixs_galind_bounds[thisreso]+elregion+1];
+        int npix_side = 1 << (nresos_grid-elreso-1);
+        int *tmpcounts = calloc(nbinsz, sizeof(int));
+        for (int ind_inpix=lower; ind_inpix<upper; ind_inpix++){
+            int ind_gal = rshift_pix_gals[thisreso] + pix_gals[rshift_pix_gals[thisreso]+ind_inpix];
+            int zbin_gal = zbin_resos[ind_gal];
+            int elhashpix_1 = (int) floor((pos1_resos[ind_gal] - hstart1)/dpix1_resos[elreso]);
+            int elhashpix_2 = (int) floor((pos2_resos[ind_gal] - hstart2)/dpix2_resos[elreso]);
+            int elhashpix = elhashpix_2*npix_side + elhashpix_1;
+            pix2redpix[zbin_gal*len_matcher+matchers_resoshift[elreso]+elhashpix] = tmpcounts[zbin_gal];
+            tmpcounts[zbin_gal] += 1;
+        }
+        free(tmpcounts);
+    }
+    *hashpix_start1 = hstart1;
+    *hashpix_start2 = hstart2;
+}
+
+// Region cache-slot layout (cumresoshift_z / thetashifts_z / zbinshifts and the
+// derived zbin2shift / nshift) from the central catalog's per-(zbin, reso)
+// counts. The discrete band (reso 0 when hasdiscrete) shares the reso-1 grid
+// slots, so its own count is skipped. nshift spans the partner catalog's zbins
+// (equal to the central's for single-catalog kernels). Shift arrays are
+// assumed zeroed on entry (calloc'd per region).
+static void setup_region_shifts(int nbinsz_central, int nbinsz_partner, int nresos,
+    int hasdiscrete, int nbinsr, const int *ngal_in_pix,
+    int *cumresoshift_z, int *thetashifts_z, int *zbinshifts,
+    int *zbin2shift, int *nshift){
+    for (int elz=0; elz<nbinsz_central; elz++){
+        for (int elreso=0; elreso<nresos; elreso++){
+            if (hasdiscrete==1 && elreso==0){
+                cumresoshift_z[elz*(nresos+1) + elreso+1] = ngal_in_pix[elz*nresos + elreso+1];
+            } else {
+                cumresoshift_z[elz*(nresos+1) + elreso+1] =
+                    cumresoshift_z[elz*(nresos+1) + elreso] + ngal_in_pix[elz*nresos + elreso];
+            }
+        }
+        thetashifts_z[elz] = cumresoshift_z[elz*(nresos+1) + nresos];
+        zbinshifts[elz+1] = zbinshifts[elz] + nbinsr*thetashifts_z[elz];
+    }
+    *zbin2shift = zbinshifts[nbinsz_central];
+    *nshift = nbinsz_partner*(*zbin2shift);
+}
+
 
 void alloc_Gammans_doubletree_nnn(const MultiresoCatalog *cat, const NavHash *nav,
                                   const TreeResoParams *tree, const BinningParams *bin,
@@ -101,28 +230,7 @@ void alloc_Gammans_doubletree_nnn(const MultiresoCatalog *cat, const NavHash *na
             int *reso_rindedges = calloc(nresos+1, sizeof(int));
             double logrmin = log(rmin);
             double drbin = (log(rmax)-logrmin)/(nbinsr);
-            int tmpreso = 0;
-            double thisredge = 0;
-            double tmpr = rmin;
-            for (int elr=0;elr<nbinsr;elr++){
-                tmpr *= exp(drbin);
-                thisredge = reso_redges[mymin(nresos,tmpreso+1)];
-                if (thisredge<tmpr){
-                    reso_rindedges[mymin(nresos,tmpreso+1)] = elr;
-                    if ((tmpr-thisredge)<(thisredge - (tmpr/exp(drbin)))){reso_rindedges[mymin(nresos,tmpreso+1)]+=1;}
-                    tmpreso+=1;
-                }
-            }
-            reso_rindedges[nresos] = nbinsr;
-            if (printregdbg){
-                printf("Bin edges:\n");
-                for (int elreso=0;elreso<nresos;elreso++){
-                    printf("  reso=%d: index_start=%d, rtarget_start=%.2f, rtrue_start=%.2f\n",
-                           elreso, reso_rindedges[elreso], reso_redges[elreso], rmin*exp(reso_rindedges[elreso]*drbin));
-                    printf("           index_end=%d, rtarget_end=%.2f, rtrue_end=%.2f\n",
-                           reso_rindedges[elreso+1], reso_redges[elreso+1], rmin*exp(reso_rindedges[elreso+1]*drbin));
-                }
-            }
+            build_reso_rindedges(nresos, reso_redges, rmin, rmax, nbinsr, reso_rindedges);
                         
             // Shift variables for 3pcf quantities
             int gamma_zshift = nbinsr*nbinsr;
@@ -134,109 +242,36 @@ void alloc_Gammans_doubletree_nnn(const MultiresoCatalog *cat, const NavHash *na
             int *rshift_index_matcher = calloc(nresos, sizeof(int));
             int *rshift_pixs_galind_bounds = calloc(nresos, sizeof(int));
             int *rshift_pix_gals = calloc(nresos, sizeof(int));
-            for (int elreso=1;elreso<nresos;elreso++){
-                rshift_index_matcher[elreso] = rshift_index_matcher[elreso-1] + npix_hash;
-                rshift_pixs_galind_bounds[elreso] = rshift_pixs_galind_bounds[elreso-1] + ngal_resos[elreso-1]+1;
-                rshift_pix_gals[elreso] = rshift_pix_gals[elreso-1] + ngal_resos[elreso-1];
-            }
+            build_rshift_offsets(nresos, npix_hash, ngal_resos,
+                rshift_index_matcher, rshift_pixs_galind_bounds, rshift_pix_gals);
             
             // Shift variables for the matching between the pixel grids
-            int lower, upper, lower1, upper1, lower2, upper2, ind_inpix, ind_gal, zbin_gal;
-            int npix_side, thisreso, elreso_grid, len_matcher;
+            int lower1, upper1, lower2, upper2;
             int *matchers_resoshift = calloc(nresos_grid+1, sizeof(int));
             int *ngal_in_pix = calloc(nresos*nbinsz, sizeof(int));
-            for (int elreso=0;elreso<nresos;elreso++){
-                elreso_grid = elreso - hasdiscrete;
-                lower = pixs_galind_bounds[rshift_pixs_galind_bounds[elreso]+elregion];
-                upper = pixs_galind_bounds[rshift_pixs_galind_bounds[elreso]+elregion+1];
-                for (ind_inpix=lower; ind_inpix<upper; ind_inpix++){
-                    ind_gal = rshift_pix_gals[elreso] + pix_gals[rshift_pix_gals[elreso]+ind_inpix];
-                    ngal_in_pix[zbin_resos[ind_gal]*nresos+elreso] += 1;
-                }
-                if (printregdbg){
-                    for (int elbinz=0; elbinz<nbinsz; elbinz++){
-                        printf("ngal_in_pix[elreso=%d][elz=%d] = %d \n",
-                               elreso,elbinz,ngal_in_pix[elbinz*nresos+elreso]);
-                    }
-                }
-                if (elreso_grid>=0){
-                    npix_side = 1 << (nresos_grid-elreso_grid-1);
-                    matchers_resoshift[elreso_grid+1] = matchers_resoshift[elreso_grid] + npix_side*npix_side; 
-                }
-                if (printregdbg){printf("matchers_resoshift[elreso=%d] = %d \n", elreso,matchers_resoshift[elreso_grid+1]);}
-            }
-            len_matcher = matchers_resoshift[nresos_grid];
-            
-            
+            int len_matcher = build_region_galinpix(nresos, nresos_grid, hasdiscrete,
+                elregion, pixs_galind_bounds, rshift_pixs_galind_bounds,
+                pix_gals, rshift_pix_gals, zbin_resos, matchers_resoshift, ngal_in_pix);
+
             // Build the matcher from pixels to reduced pixels in the region
-            int elregion_fullhash, elhashpix_1, elhashpix_2, elhashpix;
             double hashpix_start1, hashpix_start2;
-            double pos1_gal, pos2_gal;
-            elregion_fullhash = index_matcher_hash[elregion];
-            hashpix_start1 = pix1_start + (elregion_fullhash%pix1_n)*pix1_d;
-            hashpix_start2 = pix2_start + (elregion_fullhash/pix1_n)*pix2_d;
-            if (printregdbg){
-                printf("pix1_start=%.2f pix2_start=%.2f \n", pix1_start,pix2_start);
-                printf("hashpix_start1=%.2f hashpix_start2=%.2f \n", hashpix_start1,hashpix_start2);}
             int *pix2redpix = calloc(nbinsz*len_matcher, sizeof(int)); // For each z matches pixel in unreduced grid to index in reduced grid
-            for (int elreso=0;elreso<nresos_grid;elreso++){
-                thisreso = elreso + hasdiscrete;
-                lower = pixs_galind_bounds[rshift_pixs_galind_bounds[thisreso]+elregion];
-                upper = pixs_galind_bounds[rshift_pixs_galind_bounds[thisreso]+elregion+1];
-                npix_side = 1 << (nresos_grid-elreso-1);
-                int *tmpcounts = calloc(nbinsz, sizeof(int));
-                for (ind_inpix=lower; ind_inpix<upper; ind_inpix++){
-                    ind_gal = rshift_pix_gals[thisreso] + pix_gals[rshift_pix_gals[thisreso]+ind_inpix];
-                    zbin_gal = zbin_resos[ind_gal];
-                    pos1_gal = pos1_resos[ind_gal];
-                    pos2_gal = pos2_resos[ind_gal];
-                    elhashpix_1 = (int) floor((pos1_gal - hashpix_start1)/dpix1_resos[elreso]);
-                    elhashpix_2 = (int) floor((pos2_gal - hashpix_start2)/dpix2_resos[elreso]);
-                    elhashpix = elhashpix_2*npix_side + elhashpix_1;
-                    //pix2redpix[zbin_gal*len_matcher+matchers_resoshift[elreso]+elhashpix] = ind_inpix-lower;
-                    pix2redpix[zbin_gal*len_matcher+matchers_resoshift[elreso]+elhashpix] = tmpcounts[zbin_gal];
-                    tmpcounts[zbin_gal] += 1;
-                    if (printregdbg){
-                        printf("elreso=%d, lower=%d, thispix=%d, zgal=%d: pix2redpix[%d]=%d  \n",
-                               elreso,lower,ind_inpix,zbin_gal,zbin_gal*len_matcher+matchers_resoshift[elreso]+elhashpix,ind_inpix-lower);
-                    }
-                }
-                free(tmpcounts);
-            }
-            
-            // Resopix2resopix
-            // [resopix_reso0 --> [...id........., resopix_reso1, resopix_reso2, ..., resopix_reson],
-            //  resopix_reso1 --> [....0........., ...id........, resopix_reso2, ..., resopix_reson],
-            //. ...
-            //  resopix_reson --> [....0........., ....0........, ....0........, ..., resopix_reson]
-            // ] --> nreso*
-                        
+            build_region_pix2redpix(nresos_grid, hasdiscrete, elregion, nbinsz,
+                index_matcher_hash, pix1_start, pix1_d, pix1_n, pix2_start, pix2_d,
+                pixs_galind_bounds, rshift_pixs_galind_bounds, pix_gals, rshift_pix_gals,
+                zbin_resos, pos1_resos, pos2_resos, dpix1_resos, dpix2_resos,
+                matchers_resoshift, len_matcher, &hashpix_start1, &hashpix_start2, pix2redpix);
+
             // Setup all shift variables for the Gncache in the region
             // Gncache has structure
-            // n --> zbin2 --> zbin1 --> radius 
+            // n --> zbin2 --> zbin1 --> radius
             //   --> [ [0]*ngal_zbin1_reso1 | [0]*ngal_zbin1_reso1/2 | ... | [0]*ngal_zbin1_reson ]
-            int *cumresoshift_z = calloc(nbinsz*(nresos+1), sizeof(int)); // Cumulative shift index for resolution at z1
-            int *thetashifts_z = calloc(nbinsz, sizeof(int)); // Shift index for theta given z1
-            int *zbinshifts = calloc(nbinsz+1, sizeof(int)); // Cumulative shift index for z1
-            int zbin2shift, nshift; // Shifts for z2 index and n index
-            for (int elz=0; elz<nbinsz; elz++){
-                if (printregdbg){printf("z=%d/%d: \n", elz,nbinsz);}
-                for (int elreso=0; elreso<nresos; elreso++){
-                    if (printregdbg){printf("  reso=%d/%d: \n", elreso,nresos);}
-                    if (hasdiscrete==1 && elreso==0){
-                        cumresoshift_z[elz*(nresos+1) + elreso+1] = ngal_in_pix[elz*nresos + elreso+1];
-                    }
-                    else{
-                        cumresoshift_z[elz*(nresos+1) + elreso+1] = cumresoshift_z[elz*(nresos+1) + elreso] + ngal_in_pix[elz*nresos + elreso];
-                    }
-                    if (printregdbg){printf("  cumresoshift_z[z][reso+1]=%d: \n", cumresoshift_z[elz*(nresos+1) + elreso+1]);}
-                }
-                thetashifts_z[elz] = cumresoshift_z[elz*(nresos+1) + nresos];
-                zbinshifts[elz+1] = zbinshifts[elz] + nbinsr*thetashifts_z[elz];
-                if (printregdbg){printf("thetashifts_z[z]=%d: \nzbinshifts[z+1]=%d: \n", thetashifts_z[elz],  zbinshifts[elz+1]);}
-            }
-            zbin2shift = zbinshifts[nbinsz];
-            nshift = nbinsz*zbin2shift;
+            int *cumresoshift_z = calloc(nbinsz*(nresos+1), sizeof(int));
+            int *thetashifts_z = calloc(nbinsz, sizeof(int));
+            int *zbinshifts = calloc(nbinsz+1, sizeof(int));
+            int zbin2shift, nshift;
+            setup_region_shifts(nbinsz, nbinsz, nresos, hasdiscrete, nbinsr, ngal_in_pix,
+                cumresoshift_z, thetashifts_z, zbinshifts, &zbin2shift, &nshift);
             // Set all the cache indices that are updated in this region to zero
             if (printregdbg){printf("zbin2shift=%d: nshift=%d: \n", zbin2shift,  nshift);}
             for (int _i=0; _i<nnvals_Nn*nshift; _i++){ Nncache[_i] = 0; wNncache[_i] = 0;}
@@ -1024,11 +1059,8 @@ void alloc_Gammans_tree_ggg(const MultiresoCatalog *cat, const MultiresoCatalog 
             int *rshift_index_matcher = calloc(nresos, sizeof(int));
             int *rshift_pixs_galind_bounds = calloc(nresos, sizeof(int));
             int *rshift_pix_gals = calloc(nresos, sizeof(int));
-            for (int elreso=1;elreso<nresos;elreso++){
-                rshift_index_matcher[elreso] = rshift_index_matcher[elreso-1] + npix_hash;
-                rshift_pixs_galind_bounds[elreso] = rshift_pixs_galind_bounds[elreso-1] + ngal_resos[elreso-1]+1;
-                rshift_pix_gals[elreso] = rshift_pix_gals[elreso-1] + ngal_resos[elreso-1];
-            }
+            build_rshift_offsets(nresos, npix_hash, ngal_resos,
+                rshift_index_matcher, rshift_pixs_galind_bounds, rshift_pix_gals);
                 
             for (int ind_gal=0; ind_gal<ngal; ind_gal++){
                 // Check if galaxy falls in stripe used in this process
@@ -1387,47 +1419,11 @@ typedef struct {
     double complex *tmpGamma0s, *tmpGamma1s, *tmpGamma2s, *tmpGamma3s, *tmpGammans_norm;
 } GggCtx;
 
-// Radial bin -> resolution edge indices. Depends only on the binning and band
-// edges; identical for flat and spherical (edges in the same unit as rmin/rmax).
-static void ggg_build_reso_rindedges(int nresos, const double *reso_redges,
-    double rmin, double rmax, int nbinsr, int *reso_rindedges){
-    double logrmin = log(rmin);
-    double drbin = (log(rmax)-logrmin)/(nbinsr);
-    int tmpreso = 0;
-    double thisredge = 0;
-    double tmpr = rmin;
-    for (int elr=0;elr<nbinsr;elr++){
-        tmpr *= exp(drbin);
-        thisredge = reso_redges[mymin(nresos,tmpreso+1)];
-        if (thisredge<tmpr){
-            reso_rindedges[mymin(nresos,tmpreso+1)] = elr;
-            if ((tmpr-thisredge)<(thisredge - (tmpr/exp(drbin)))){reso_rindedges[mymin(nresos,tmpreso+1)]+=1;}
-            tmpreso+=1;
-        }
-    }
-    reso_rindedges[nresos] = nbinsr;
-}
-
-// Per-region cache-slot layout (cumresoshift_z / thetashifts_z / zbinshifts and
-// the derived zbin2shift / nshift) from ngal_in_pix. The discrete band (reso 0
-// when hasdiscrete) shares the reso-1 grid slots, so its own count is skipped.
-// Assumes the shift arrays are zeroed on entry (calloc'd per region).
+// Per-region cache-slot layout for the GGG caches (see setup_region_shifts).
 static void ggg_setup_shifts(GggCtx *c, int hasdiscrete){
-    int nbinsz=c->nbinsz, nresos=c->nresos, nbinsr=c->nbinsr;
-    for (int elz=0; elz<nbinsz; elz++){
-        for (int elreso=0; elreso<nresos; elreso++){
-            if (hasdiscrete==1 && elreso==0){
-                c->cumresoshift_z[elz*(nresos+1) + elreso+1] = c->ngal_in_pix[elz*nresos + elreso+1];
-            } else {
-                c->cumresoshift_z[elz*(nresos+1) + elreso+1] =
-                    c->cumresoshift_z[elz*(nresos+1) + elreso] + c->ngal_in_pix[elz*nresos + elreso];
-            }
-        }
-        c->thetashifts_z[elz] = c->cumresoshift_z[elz*(nresos+1) + nresos];
-        c->zbinshifts[elz+1] = c->zbinshifts[elz] + nbinsr*c->thetashifts_z[elz];
-    }
-    c->zbin2shift = c->zbinshifts[nbinsz];
-    c->nshift = nbinsz*c->zbin2shift;
+    setup_region_shifts(c->nbinsz, c->nbinsz, c->nresos, hasdiscrete, c->nbinsr,
+        c->ngal_in_pix, c->cumresoshift_z, c->thetashifts_z, c->zbinshifts,
+        &c->zbin2shift, &c->nshift);
 }
 
 static void ggg_zero_caches(GggCtx *c){
@@ -1759,65 +1755,30 @@ static void _ggg_flat(const MultiresoCatalog *cat, const NavHash *nav,
             double logrmin = log(rmin);
             double drbin = (log(rmax)-logrmin)/(nbinsr);
             int *reso_rindedges = calloc(nresos+1, sizeof(int));
-            ggg_build_reso_rindedges(nresos, reso_redges, rmin, rmax, nbinsr, reso_rindedges);
+            build_reso_rindedges(nresos, reso_redges, rmin, rmax, nbinsr, reso_rindedges);
             ctx.reso_rindedges = reso_rindedges;
 
             int npix_hash = pix1_n*pix2_n;
             int *rshift_index_matcher = calloc(nresos, sizeof(int));
             int *rshift_pixs_galind_bounds = calloc(nresos, sizeof(int));
             int *rshift_pix_gals = calloc(nresos, sizeof(int));
-            for (int elreso=1;elreso<nresos;elreso++){
-                rshift_index_matcher[elreso] = rshift_index_matcher[elreso-1] + npix_hash;
-                rshift_pixs_galind_bounds[elreso] = rshift_pixs_galind_bounds[elreso-1] + ngal_resos[elreso-1]+1;
-                rshift_pix_gals[elreso] = rshift_pix_gals[elreso-1] + ngal_resos[elreso-1];
-            }
+            build_rshift_offsets(nresos, npix_hash, ngal_resos,
+                rshift_index_matcher, rshift_pixs_galind_bounds, rshift_pix_gals);
 
-            int lower, upper, ind_inpix, ind_gal, zbin_gal;
-            int npix_side, thisreso, elreso_grid, len_matcher;
             int *matchers_resoshift = calloc(nresos_grid+1, sizeof(int));
             int *ngal_in_pix = calloc(nresos*nbinsz, sizeof(int));
-            for (int elreso=0;elreso<nresos;elreso++){
-                elreso_grid = elreso - hasdiscrete;
-                lower = pixs_galind_bounds[rshift_pixs_galind_bounds[elreso]+elregion];
-                upper = pixs_galind_bounds[rshift_pixs_galind_bounds[elreso]+elregion+1];
-                for (ind_inpix=lower; ind_inpix<upper; ind_inpix++){
-                    ind_gal = rshift_pix_gals[elreso] + pix_gals[rshift_pix_gals[elreso]+ind_inpix];
-                    ngal_in_pix[zbin_resos[ind_gal]*nresos+elreso] += 1;
-                }
-                if (elreso_grid>=0){
-                    npix_side = 1 << (nresos_grid-elreso_grid-1);
-                    matchers_resoshift[elreso_grid+1] = matchers_resoshift[elreso_grid] + npix_side*npix_side;
-                }
-            }
-            len_matcher = matchers_resoshift[nresos_grid];
+            int len_matcher = build_region_galinpix(nresos, nresos_grid, hasdiscrete,
+                elregion, pixs_galind_bounds, rshift_pixs_galind_bounds,
+                pix_gals, rshift_pix_gals, zbin_resos, matchers_resoshift, ngal_in_pix);
             ctx.ngal_in_pix = ngal_in_pix;
 
-            int elregion_fullhash, elhashpix_1, elhashpix_2, elhashpix;
             double hashpix_start1, hashpix_start2;
-            double pos1_gal, pos2_gal;
-            elregion_fullhash = index_matcher_hash[elregion];
-            hashpix_start1 = pix1_start + (elregion_fullhash%pix1_n)*pix1_d;
-            hashpix_start2 = pix2_start + (elregion_fullhash/pix1_n)*pix2_d;
             int *pix2redpix = calloc(nbinsz*len_matcher, sizeof(int));
-            for (int elreso=0;elreso<nresos_grid;elreso++){
-                thisreso = elreso + hasdiscrete;
-                lower = pixs_galind_bounds[rshift_pixs_galind_bounds[thisreso]+elregion];
-                upper = pixs_galind_bounds[rshift_pixs_galind_bounds[thisreso]+elregion+1];
-                npix_side = 1 << (nresos_grid-elreso-1);
-                int *tmpcounts = calloc(nbinsz, sizeof(int));
-                for (ind_inpix=lower; ind_inpix<upper; ind_inpix++){
-                    ind_gal = rshift_pix_gals[thisreso] + pix_gals[rshift_pix_gals[thisreso]+ind_inpix];
-                    zbin_gal = zbin_resos[ind_gal];
-                    pos1_gal = pos1_resos[ind_gal];
-                    pos2_gal = pos2_resos[ind_gal];
-                    elhashpix_1 = (int) floor((pos1_gal - hashpix_start1)/dpix1_resos[elreso]);
-                    elhashpix_2 = (int) floor((pos2_gal - hashpix_start2)/dpix2_resos[elreso]);
-                    elhashpix = elhashpix_2*npix_side + elhashpix_1;
-                    pix2redpix[zbin_gal*len_matcher+matchers_resoshift[elreso]+elhashpix] = tmpcounts[zbin_gal];
-                    tmpcounts[zbin_gal] += 1;
-                }
-                free(tmpcounts);
-            }
+            build_region_pix2redpix(nresos_grid, hasdiscrete, elregion, nbinsz,
+                index_matcher_hash, pix1_start, pix1_d, pix1_n, pix2_start, pix2_d,
+                pixs_galind_bounds, rshift_pixs_galind_bounds, pix_gals, rshift_pix_gals,
+                zbin_resos, pos1_resos, pos2_resos, dpix1_resos, dpix2_resos,
+                matchers_resoshift, len_matcher, &hashpix_start1, &hashpix_start2, pix2redpix);
 
             int *cumresoshift_z = calloc(nbinsz*(nresos+1), sizeof(int));
             int *thetashifts_z = calloc(nbinsz, sizeof(int));
@@ -2070,7 +2031,7 @@ static void _ggg_spherical(const MultiresoCatalog *cat, const NavHash *nav,
         double complex *Gncache=NULL, *wGncache=NULL, *cwGncache=NULL, *Nncache=NULL, *wNncache=NULL;
 
         int *reso_rindedges = calloc(nresos+1, sizeof(int));
-        ggg_build_reso_rindedges(nresos, reso_redges, rmin, rmax, nbinsr, reso_rindedges);
+        build_reso_rindedges(nresos, reso_redges, rmin, rmax, nbinsr, reso_rindedges);
 
         int *ngal_in_pix = calloc(nresos*nbinsz, sizeof(int));
         int *cumresoshift_z = calloc(nbinsz*(nresos+1), sizeof(int));
@@ -2418,28 +2379,7 @@ void alloc_Gammans_basetree_ggg(const MultiresoCatalog *cat, const NavHash *nav,
             int *reso_rindedges = calloc(nresos+1, sizeof(int));
             double logrmin = log(rmin);
             double drbin = (log(rmax)-logrmin)/(nbinsr);
-            int tmpreso = 0;
-            double thisredge = 0;
-            double tmpr = rmin;
-            for (int elr=0;elr<nbinsr;elr++){
-                tmpr *= exp(drbin);
-                thisredge = reso_redges[mymin(nresos,tmpreso+1)];
-                if (thisredge<tmpr){
-                    reso_rindedges[mymin(nresos,tmpreso+1)] = elr;
-                    if ((tmpr-thisredge)<(thisredge - (tmpr/exp(drbin)))){reso_rindedges[mymin(nresos,tmpreso+1)]+=1;}
-                    tmpreso+=1;
-                }
-            }
-            reso_rindedges[nresos] = nbinsr;
-            if (printregdbg){
-                printf("Bin edges:\n");
-                for (int elreso=0;elreso<nresos;elreso++){
-                    printf("  reso=%d: index_start=%d, rtarget_start=%.2f, rtrue_start=%.2f\n",
-                           elreso, reso_rindedges[elreso], reso_redges[elreso], rmin*exp(reso_rindedges[elreso]*drbin));
-                    printf("           index_end=%d, rtarget_end=%.2f, rtrue_end=%.2f\n",
-                           reso_rindedges[elreso+1], reso_redges[elreso+1], rmin*exp(reso_rindedges[elreso+1]*drbin));
-                }
-            }
+            build_reso_rindedges(nresos, reso_redges, rmin, rmax, nbinsr, reso_rindedges);
                         
             // Shift variables for 3pcf quantities
             int gamma_zshift = nbinsr*nbinsr;
@@ -2451,111 +2391,36 @@ void alloc_Gammans_basetree_ggg(const MultiresoCatalog *cat, const NavHash *nav,
             int *rshift_index_matcher = calloc(nresos, sizeof(int));
             int *rshift_pixs_galind_bounds = calloc(nresos, sizeof(int));
             int *rshift_pix_gals = calloc(nresos, sizeof(int));
-            for (int elreso=1;elreso<nresos;elreso++){
-                rshift_index_matcher[elreso] = rshift_index_matcher[elreso-1] + npix_hash;
-                rshift_pixs_galind_bounds[elreso] = rshift_pixs_galind_bounds[elreso-1] + ngal_resos[elreso-1]+1;
-                rshift_pix_gals[elreso] = rshift_pix_gals[elreso-1] + ngal_resos[elreso-1];
-            }
+            build_rshift_offsets(nresos, npix_hash, ngal_resos,
+                rshift_index_matcher, rshift_pixs_galind_bounds, rshift_pix_gals);
             
             // Shift variables for the matching between the pixel grids
-            int lower, upper, lower1, upper1, lower2, upper2, ind_inpix, ind_gal, zbin_gal;
-            int npix_side, thisreso, elreso_grid, len_matcher;
+            int lower1, upper1, lower2, upper2;
             int *matchers_resoshift = calloc(nresos_grid+1, sizeof(int));
             int *ngal_in_pix = calloc(nresos*nbinsz, sizeof(int));
-            for (int elreso=0;elreso<nresos;elreso++){
-                elreso_grid = elreso - hasdiscrete;
-                lower = pixs_galind_bounds[rshift_pixs_galind_bounds[elreso]+elregion];
-                upper = pixs_galind_bounds[rshift_pixs_galind_bounds[elreso]+elregion+1];
-                for (ind_inpix=lower; ind_inpix<upper; ind_inpix++){
-                    ind_gal = rshift_pix_gals[elreso] + pix_gals[rshift_pix_gals[elreso]+ind_inpix];
-                    ngal_in_pix[zbin_resos[ind_gal]*nresos+elreso] += 1;
-                }
-                if (printregdbg){
-                    for (int elbinz=0; elbinz<nbinsz; elbinz++){
-                        printf("ngal_in_pix[elreso=%d][elz=%d] = %d \n",
-                               elreso,elbinz,ngal_in_pix[elbinz*nresos+elreso]);
-                    }
-                }
-                if (elreso_grid>=0){
-                    npix_side = 1 << (nresos_grid-elreso_grid-1);
-                    matchers_resoshift[elreso_grid+1] = matchers_resoshift[elreso_grid] + npix_side*npix_side; 
-                }
-                if (elregion==region_debug){printf("matchers_resoshift[elreso=%d] = %d \n", elreso,matchers_resoshift[elreso_grid+1]);}
-            }
-            len_matcher = matchers_resoshift[nresos_grid];
-            
-            
+            int len_matcher = build_region_galinpix(nresos, nresos_grid, hasdiscrete,
+                elregion, pixs_galind_bounds, rshift_pixs_galind_bounds,
+                pix_gals, rshift_pix_gals, zbin_resos, matchers_resoshift, ngal_in_pix);
+
             // Build the matcher from pixels to reduced pixels in the region
-            int elregion_fullhash, elhashpix_1, elhashpix_2, elhashpix;
             double hashpix_start1, hashpix_start2;
-            double pos1_gal, pos2_gal;
-            elregion_fullhash = index_matcher_hash[elregion];
-            hashpix_start1 = pix1_start + (elregion_fullhash%pix1_n)*pix1_d;
-            hashpix_start2 = pix2_start + (elregion_fullhash/pix1_n)*pix2_d;
-            if (printregdbg){
-                printf("pix1_start=%.2f pix2_start=%.2f \n", pix1_start,pix2_start);
-                printf("hashpix_start1=%.2f hashpix_start2=%.2f \n", hashpix_start1,hashpix_start2);}
             int *pix2redpix = calloc(nbinsz*len_matcher, sizeof(int)); // For each z matches pixel in unreduced grid to index in reduced grid
-            for (int elreso=0;elreso<nresos_grid;elreso++){
-                thisreso = elreso + hasdiscrete;
-                lower = pixs_galind_bounds[rshift_pixs_galind_bounds[thisreso]+elregion];
-                upper = pixs_galind_bounds[rshift_pixs_galind_bounds[thisreso]+elregion+1];
-                npix_side = 1 << (nresos_grid-elreso-1);
-                int *tmpcounts = calloc(nbinsz, sizeof(int));
-                for (ind_inpix=lower; ind_inpix<upper; ind_inpix++){
-                    ind_gal = rshift_pix_gals[thisreso] + pix_gals[rshift_pix_gals[thisreso]+ind_inpix];
-                    zbin_gal = zbin_resos[ind_gal];
-                    pos1_gal = pos1_resos[ind_gal];
-                    pos2_gal = pos2_resos[ind_gal];
-                    elhashpix_1 = (int) floor((pos1_gal - hashpix_start1)/dpix1_resos[elreso]);
-                    elhashpix_2 = (int) floor((pos2_gal - hashpix_start2)/dpix2_resos[elreso]);
-                    elhashpix = elhashpix_2*npix_side + elhashpix_1;
-                    //pix2redpix[zbin_gal*len_matcher+matchers_resoshift[elreso]+elhashpix] = ind_inpix-lower;
-                    pix2redpix[zbin_gal*len_matcher+matchers_resoshift[elreso]+elhashpix] = tmpcounts[zbin_gal];
-                    tmpcounts[zbin_gal] += 1;
-                    if (printregdbg){
-                        printf("elreso=%d, lower=%d, thispix=%d, zgal=%d: pix2redpix[%d]=%d  \n",
-                               elreso,lower,ind_inpix,zbin_gal,zbin_gal*len_matcher+matchers_resoshift[elreso]+elhashpix,ind_inpix-lower);
-                    }
-                }
-                free(tmpcounts);
-            }
-            
-            // Resopix2resopix
-            // [resopix_reso0 --> [...id........., resopix_reso1, resopix_reso2, ..., resopix_reson],
-            //  resopix_reso1 --> [....0........., ...id........, resopix_reso2, ..., resopix_reson],
-            //. ...
-            //  resopix_reson --> [....0........., ....0........, ....0........, ..., resopix_reson]
-            // ] --> nreso*
-            
-            
-            
+            build_region_pix2redpix(nresos_grid, hasdiscrete, elregion, nbinsz,
+                index_matcher_hash, pix1_start, pix1_d, pix1_n, pix2_start, pix2_d,
+                pixs_galind_bounds, rshift_pixs_galind_bounds, pix_gals, rshift_pix_gals,
+                zbin_resos, pos1_resos, pos2_resos, dpix1_resos, dpix2_resos,
+                matchers_resoshift, len_matcher, &hashpix_start1, &hashpix_start2, pix2redpix);
+
             // Setup all shift variables for the Gncache in the region
             // Gncache has structure
-            // n --> zbin2 --> zbin1 --> radius 
+            // n --> zbin2 --> zbin1 --> radius
             //   --> [ [0]*ngal_zbin1_reso1 | [0]*ngal_zbin1_reso1/2 | ... | [0]*ngal_zbin1_reson ]
-            int *cumresoshift_z = calloc(nbinsz*(nresos+1), sizeof(int)); // Cumulative shift index for resolution at z1
-            int *thetashifts_z = calloc(nbinsz, sizeof(int)); // Shift index for theta given z1
-            int *zbinshifts = calloc(nbinsz+1, sizeof(int)); // Cumulative shift index for z1
-            int zbin2shift, nshift; // Shifts for z2 index and n index
-            for (int elz=0; elz<nbinsz; elz++){
-                if (printregdbg){printf("z=%d/%d: \n", elz,nbinsz);}
-                for (int elreso=0; elreso<nresos; elreso++){
-                    if (printregdbg){printf("  reso=%d/%d: \n", elreso,nresos);}
-                    if (hasdiscrete==1 && elreso==0){
-                        cumresoshift_z[elz*(nresos+1) + elreso+1] = ngal_in_pix[elz*nresos + elreso+1];
-                    }
-                    else{
-                        cumresoshift_z[elz*(nresos+1) + elreso+1] = cumresoshift_z[elz*(nresos+1) + elreso] + ngal_in_pix[elz*nresos + elreso];
-                    }
-                    if (printregdbg){printf("  cumresoshift_z[z][reso+1]=%d: \n", cumresoshift_z[elz*(nresos+1) + elreso+1]);}
-                }
-                thetashifts_z[elz] = cumresoshift_z[elz*(nresos+1) + nresos];
-                zbinshifts[elz+1] = zbinshifts[elz] + nbinsr*thetashifts_z[elz];
-                if (printregdbg){printf("thetashifts_z[z]=%d: \nzbinshifts[z+1]=%d: \n", thetashifts_z[elz],  zbinshifts[elz+1]);}
-            }
-            zbin2shift = zbinshifts[nbinsz];
-            nshift = nbinsz*zbin2shift;
+            int *cumresoshift_z = calloc(nbinsz*(nresos+1), sizeof(int));
+            int *thetashifts_z = calloc(nbinsz, sizeof(int));
+            int *zbinshifts = calloc(nbinsz+1, sizeof(int));
+            int zbin2shift, nshift;
+            setup_region_shifts(nbinsz, nbinsz, nresos, hasdiscrete, nbinsr, ngal_in_pix,
+                cumresoshift_z, thetashifts_z, zbinshifts, &zbin2shift, &nshift);
             // Set all the cache indeces that are updated in this region to zero
             if (printregdbg){printf("zbin2shift=%d: nshift=%d: \n", zbin2shift,  nshift);}
             for (int _i=0; _i<nnvals_Gn*nshift; _i++){Gncache[_i] = 0; wGncache[_i] = 0; cwGncache[_i] = 0;}
@@ -4198,158 +4063,38 @@ void alloc_Gammans_doubletree_GNN(const MultiresoCatalog *cat_source, const NavH
         int size_max_nshift = 0;
         int size_max_nshift_theo = (int) ((1+hasdiscrete+0.34)*nbinsz_lens*nbinsz_source*nbinsr*pow(4,nresos_grid-1));
         for (int elregion=0; elregion<nregions; elregion++){
-            int region_debug=nregions/2;
             // Check if this thread is responsible for the region
             int nthread_target = mymin(elregion/nregions_per_thread, nthreads-1);
-            bool printregdbg = (verbose>0) && (elregion==region_debug);
-            bool printregdbg2 = (verbose>1) && (elregion==region_debug);
             if (nthread_target!=elthread){continue;}
-            //if (elregion==region_debug){printf("Region %d is in thread %d\n",elregion,elthread);}
-            
-            // Check which sets of radii are evaluated for each resolution
-            int *reso_rindedges = calloc(nresos+1, sizeof(int));
-            int tmpreso = 0;
-            double thisredge = 0;
-            double tmpr = rmin;
-            for (int elr=0;elr<nbinsr;elr++){
-                tmpr *= exp(drbin);
-                thisredge = reso_redges[mymin(nresos,tmpreso+1)];
-                if (thisredge<tmpr){
-                    reso_rindedges[mymin(nresos,tmpreso+1)] = elr;
-                    if ((tmpr-thisredge)<(thisredge - (tmpr/exp(drbin)))){reso_rindedges[mymin(nresos,tmpreso+1)]+=1;}
-                    tmpreso+=1;
-                }
-            }
-            reso_rindedges[nresos] = nbinsr;
-            if (printregdbg2){
-                printf("Bin edges:\n");
-                for (int elreso=0;elreso<nresos;elreso++){
-                    printf("  reso=%d: index_start=%d, rtarget_start=%.2f, rtrue_start=%.2f\n",
-                           elreso, reso_rindedges[elreso], reso_redges[elreso], rmin*exp(reso_rindedges[elreso]*drbin));
-                    printf("           index_end=%d, rtarget_end=%.2f, rtrue_end=%.2f\n",
-                           reso_rindedges[elreso+1], reso_redges[elreso+1], rmin*exp(reso_rindedges[elreso+1]*drbin));
-                }
-            }
-            
-            // Shift variables for spatial hash of sources and lenses
+
+            // Probe the region's cache-slot count from the source (central)
+            // catalog; only the source hash + shift layout is needed here.
             int npix_hash = pix1_n*pix2_n;
             int *rshift_index_matcher_source = calloc(nresos, sizeof(int));
             int *rshift_pixs_galind_bounds_source = calloc(nresos, sizeof(int));
             int *rshift_pix_gals_source = calloc(nresos, sizeof(int));
-            for (int elreso=1;elreso<nresos;elreso++){
-                rshift_index_matcher_source[elreso] = rshift_index_matcher_source[elreso-1] + npix_hash;
-                rshift_pixs_galind_bounds_source[elreso] = rshift_pixs_galind_bounds_source[elreso-1] + ngal_source_resos[elreso-1]+1;
-                rshift_pix_gals_source[elreso] = rshift_pix_gals_source[elreso-1] + ngal_source_resos[elreso-1];
-            }
-            int *rshift_index_matcher_lens = calloc(nresos, sizeof(int));
-            int *rshift_pixs_galind_bounds_lens = calloc(nresos, sizeof(int));
-            int *rshift_pix_gals_lens = calloc(nresos, sizeof(int));
-            for (int elreso=1;elreso<nresos;elreso++){
-                rshift_index_matcher_lens[elreso] = rshift_index_matcher_lens[elreso-1] + npix_hash;
-                rshift_pixs_galind_bounds_lens[elreso] = rshift_pixs_galind_bounds_lens[elreso-1] + ngal_lens_resos[elreso-1]+1;
-                rshift_pix_gals_lens[elreso] = rshift_pix_gals_lens[elreso-1] + ngal_lens_resos[elreso-1];
-            }
-            
-            // Shift variables for the matching between the pixel grids (only needed for sources!)
-            int lower, upper, ind_inpix, ind_gal, zbin_gal;
-            int npix_side, thisreso, elreso_grid, len_matcher;
+            build_rshift_offsets(nresos, npix_hash, ngal_source_resos,
+                rshift_index_matcher_source, rshift_pixs_galind_bounds_source, rshift_pix_gals_source);
+
             int *matchers_resoshift = calloc(nresos_grid+1, sizeof(int));
             int *ngal_in_pix = calloc(nresos*nbinsz_source, sizeof(int));
-            for (int elreso=0;elreso<nresos;elreso++){
-                elreso_grid = elreso - hasdiscrete;
-                lower = pixs_galind_bounds_source[rshift_pixs_galind_bounds_source[elreso]+elregion];
-                upper = pixs_galind_bounds_source[rshift_pixs_galind_bounds_source[elreso]+elregion+1];
-                for (ind_inpix=lower; ind_inpix<upper; ind_inpix++){
-                    ind_gal = rshift_pix_gals_source[elreso] + pix_gals_source[rshift_pix_gals_source[elreso]+ind_inpix];
-                    ngal_in_pix[zbin_source_resos[ind_gal]*nresos+elreso] += 1;
-                }
-                if (printregdbg2){
-                    for (int elbinz=0; elbinz<nbinsz_source; elbinz++){
-                        printf("ngal_in_pix[elreso=%d][elz=%d] = %d \n",
-                               elreso,elbinz,ngal_in_pix[elbinz*nresos+elreso]);
-                    }
-                }
-                if (elreso_grid>=0){
-                    npix_side = 1 << (nresos_grid-elreso_grid-1);
-                    matchers_resoshift[elreso_grid+1] = matchers_resoshift[elreso_grid] + npix_side*npix_side; 
-                }
-                if (printregdbg2){printf("matchers_resoshift[elreso=%d] = %d \n", elreso,matchers_resoshift[elreso_grid+1]);}
-            }
-            len_matcher = matchers_resoshift[nresos_grid];
-            
-            // Build the matcher from pixels to reduced pixels in the region (only needed for sources!)
-            int elregion_fullhash, elhashpix_1, elhashpix_2, elhashpix;
-            double hashpix_start1, hashpix_start2;
-            double pos1_gal, pos2_gal;
-            elregion_fullhash = index_matcher_hash[elregion];
-            hashpix_start1 = pix1_start + (elregion_fullhash%pix1_n)*pix1_d;
-            hashpix_start2 = pix2_start + (elregion_fullhash/pix1_n)*pix2_d;
-            if (printregdbg2){
-                printf("elregion=%d, elregion_fullhash=%d, pix1_start=%.2f pix2_start=%.2f \n", elregion,elregion_fullhash,pix1_start,pix2_start);
-                printf("hashpix_start1=%.2f hashpix_start2=%.2f \n", hashpix_start1,hashpix_start2);}
-            int *pix2redpix = calloc(nbinsz_source*len_matcher, sizeof(int)); // For each z matches pixel in unreduced grid to index in reduced grid
-            if (printregdbg2){printf("pix2redpix has length = %d \n",nbinsz_source*len_matcher);}
-            for (int elreso=0;elreso<nresos_grid;elreso++){
-                thisreso = elreso + hasdiscrete;
-                lower = pixs_galind_bounds_source[rshift_pixs_galind_bounds_source[thisreso]+elregion];
-                upper = pixs_galind_bounds_source[rshift_pixs_galind_bounds_source[thisreso]+elregion+1];
-                npix_side = 1 << (nresos_grid-elreso-1);
-                int *tmpcounts = calloc(nbinsz_source, sizeof(int));
-                for (ind_inpix=lower; ind_inpix<upper; ind_inpix++){
-                    ind_gal = rshift_pix_gals_source[thisreso] + pix_gals_source[rshift_pix_gals_source[thisreso]+ind_inpix];
-                    zbin_gal = zbin_source_resos[ind_gal];
-                    pos1_gal = pos1_source_resos[ind_gal];
-                    pos2_gal = pos2_source_resos[ind_gal];
-                    elhashpix_1 = (int) floor((pos1_gal - hashpix_start1)/dpix1_resos[elreso]);
-                    elhashpix_2 = (int) floor((pos2_gal - hashpix_start2)/dpix2_resos[elreso]);
-                    elhashpix = elhashpix_2*npix_side + elhashpix_1;
-                    pix2redpix[zbin_gal*len_matcher+matchers_resoshift[elreso]+elhashpix] = tmpcounts[zbin_gal];
-                    tmpcounts[zbin_gal] += 1;
-                    if (printregdbg2){
-                        printf("elreso=%d, lower=%d, thispix=%d, elhashpix=%d %d %d, zgal=%d: pix2redpix[%d=%d+%d+%d*%d+%d]=%d  \n", 
-                               elreso, lower,ind_inpix,elhashpix_1,elhashpix_2,elhashpix, zbin_gal,
-                               zbin_gal*len_matcher+matchers_resoshift[elreso]+elhashpix,
-                               zbin_gal*len_matcher,matchers_resoshift[elreso],elhashpix_2,npix_side,elhashpix_1,
-                               ind_inpix-lower);
-                    }
-                }
-                free(tmpcounts);
-            }
-            
-            // Setup all shift variables for the Gncache in the region
-            // Gncache has structure
-            // n --> zbin_lens --> zbin_source --> radius 
-            //   --> [ [0]*ngal_zbin1_reso1 | [0]*ngal_zbin1_reso1/2 | ... | [0]*ngal_zbin1_reson ]
-            int *cumresoshift_z = calloc(nbinsz_source*(nresos+1), sizeof(int)); // Cumulative shift index for resolution at z1
-            int *thetashifts_z = calloc(nbinsz_source, sizeof(int)); // Shift index for theta given z1
-            int *zbinshifts = calloc(nbinsz_source+1, sizeof(int)); // Cumulative shift index for z1
-            int zbin2shift, nshift; // Shifts for z2 index and n index
-            for (int elz=0; elz<nbinsz_source; elz++){
-                for (int elreso=0; elreso<nresos; elreso++){
-                    if (hasdiscrete==1 && elreso==0){
-                        cumresoshift_z[elz*(nresos+1) + elreso+1] = ngal_in_pix[elz*nresos + elreso+1];
-                    }
-                    else{
-                        cumresoshift_z[elz*(nresos+1) + elreso+1] = cumresoshift_z[elz*(nresos+1) + elreso] + ngal_in_pix[elz*nresos + elreso];
-                    }
-                }
-                thetashifts_z[elz] = cumresoshift_z[elz*(nresos+1) + nresos];
-                zbinshifts[elz+1] = zbinshifts[elz] + nbinsr*thetashifts_z[elz];
-                if (printregdbg2){printf("thetashifts_z[z]=%d: \nzbinshifts[z+1]=%d: \n", thetashifts_z[elz],  zbinshifts[elz+1]);}
-            }
-            zbin2shift = zbinshifts[nbinsz_source];
-            nshift = nbinsz_lens*zbin2shift;
+            build_region_galinpix(nresos, nresos_grid, hasdiscrete, elregion,
+                pixs_galind_bounds_source, rshift_pixs_galind_bounds_source,
+                pix_gals_source, rshift_pix_gals_source, zbin_source_resos,
+                matchers_resoshift, ngal_in_pix);
+
+            int *cumresoshift_z = calloc(nbinsz_source*(nresos+1), sizeof(int));
+            int *thetashifts_z = calloc(nbinsz_source, sizeof(int));
+            int *zbinshifts = calloc(nbinsz_source+1, sizeof(int));
+            int zbin2shift, nshift;
+            setup_region_shifts(nbinsz_source, nbinsz_lens, nresos, hasdiscrete, nbinsr,
+                ngal_in_pix, cumresoshift_z, thetashifts_z, zbinshifts, &zbin2shift, &nshift);
             size_max_nshift = mymax(nshift, size_max_nshift);
-            free(reso_rindedges);
             free(rshift_index_matcher_source);
             free(rshift_pixs_galind_bounds_source);
             free(rshift_pix_gals_source);
-            free(rshift_index_matcher_lens);
-            free(rshift_pixs_galind_bounds_lens);
-            free(rshift_pix_gals_lens);
             free(matchers_resoshift);
             free(ngal_in_pix);
-            free(pix2redpix);
             free(cumresoshift_z);
             free(thetashifts_z);
             free(zbinshifts);
@@ -4380,127 +4125,49 @@ void alloc_Gammans_doubletree_GNN(const MultiresoCatalog *cat_source, const NavH
             // Check which sets of radii are evaluated for each resolution
             int *reso_rindedges = calloc(nresos+1, sizeof(int));
             double logrmin = log(rmin);
-            int tmpreso = 0;
-            double thisredge = 0;
-            double tmpr = rmin;
-            for (int elr=0;elr<nbinsr;elr++){
-                tmpr *= exp(drbin);
-                thisredge = reso_redges[mymin(nresos,tmpreso+1)];
-                if (thisredge<tmpr){
-                    reso_rindedges[mymin(nresos,tmpreso+1)] = elr;
-                    if ((tmpr-thisredge)<(thisredge - (tmpr/exp(drbin)))){reso_rindedges[mymin(nresos,tmpreso+1)]+=1;}
-                    tmpreso+=1;
-                }
-            }
-            reso_rindedges[nresos] = nbinsr;
-            
+            build_reso_rindedges(nresos, reso_redges, rmin, rmax, nbinsr, reso_rindedges);
+
             // Shift variables for spatial hash of sources and lenses
             int npix_hash = pix1_n*pix2_n;
             int *rshift_index_matcher_source = calloc(nresos, sizeof(int));
             int *rshift_pixs_galind_bounds_source = calloc(nresos, sizeof(int));
             int *rshift_pix_gals_source = calloc(nresos, sizeof(int));
-            for (int elreso=1;elreso<nresos;elreso++){
-                rshift_index_matcher_source[elreso] = rshift_index_matcher_source[elreso-1] + npix_hash;
-                rshift_pixs_galind_bounds_source[elreso] = rshift_pixs_galind_bounds_source[elreso-1] + ngal_source_resos[elreso-1]+1;
-                rshift_pix_gals_source[elreso] = rshift_pix_gals_source[elreso-1] + ngal_source_resos[elreso-1];
-            }
+            build_rshift_offsets(nresos, npix_hash, ngal_source_resos,
+                rshift_index_matcher_source, rshift_pixs_galind_bounds_source, rshift_pix_gals_source);
             int *rshift_index_matcher_lens = calloc(nresos, sizeof(int));
             int *rshift_pixs_galind_bounds_lens = calloc(nresos, sizeof(int));
             int *rshift_pix_gals_lens = calloc(nresos, sizeof(int));
-            for (int elreso=1;elreso<nresos;elreso++){
-                rshift_index_matcher_lens[elreso] = rshift_index_matcher_lens[elreso-1] + npix_hash;
-                rshift_pixs_galind_bounds_lens[elreso] = rshift_pixs_galind_bounds_lens[elreso-1] + ngal_lens_resos[elreso-1]+1;
-                rshift_pix_gals_lens[elreso] = rshift_pix_gals_lens[elreso-1] + ngal_lens_resos[elreso-1];
-            }
-            
-            // Shift variables for the matching between the pixel grids (only needed for sources!)
-            int lower, upper, lower1, upper1, lower2, upper2, ind_inpix, ind_gal, zbin_gal;
-            int npix_side, thisreso, elreso_grid, len_matcher;
+            build_rshift_offsets(nresos, npix_hash, ngal_lens_resos,
+                rshift_index_matcher_lens, rshift_pixs_galind_bounds_lens, rshift_pix_gals_lens);
+
+            // Region layout of the source (central) catalog: per-(zbin, reso)
+            // counts, reduced-grid offsets, pixel -> reduced-pixel matcher.
+            int lower1, upper1, lower2, upper2;
             int *matchers_resoshift = calloc(nresos_grid+1, sizeof(int));
             int *ngal_in_pix = calloc(nresos*nbinsz_source, sizeof(int));
-            for (int elreso=0;elreso<nresos;elreso++){
-                elreso_grid = elreso - hasdiscrete;
-                lower = pixs_galind_bounds_source[rshift_pixs_galind_bounds_source[elreso]+elregion];
-                upper = pixs_galind_bounds_source[rshift_pixs_galind_bounds_source[elreso]+elregion+1];
-                for (ind_inpix=lower; ind_inpix<upper; ind_inpix++){
-                    ind_gal = rshift_pix_gals_source[elreso] + pix_gals_source[rshift_pix_gals_source[elreso]+ind_inpix];
-                    ngal_in_pix[zbin_source_resos[ind_gal]*nresos+elreso] += 1;
-                }
-                if (printregdbg2){
-                    for (int elbinz=0; elbinz<nbinsz_source; elbinz++){
-                        printf("ngal_in_pix[elreso=%d][elz=%d] = %d \n",
-                               elreso,elbinz,ngal_in_pix[elbinz*nresos+elreso]);
-                    }
-                }
-                if (elreso_grid>=0){
-                    npix_side = 1 << (nresos_grid-elreso_grid-1);
-                    matchers_resoshift[elreso_grid+1] = matchers_resoshift[elreso_grid] + npix_side*npix_side; 
-                }
-                if (printregdbg2){printf("matchers_resoshift[elreso=%d] = %d \n", elreso,matchers_resoshift[elreso_grid+1]);}
-            }
-            len_matcher = matchers_resoshift[nresos_grid];
-            
-            // Build the matcher from pixels to reduced pixels in the region (only needed for sources!)
-            int elregion_fullhash, elhashpix_1, elhashpix_2, elhashpix;
+            int len_matcher = build_region_galinpix(nresos, nresos_grid, hasdiscrete,
+                elregion, pixs_galind_bounds_source, rshift_pixs_galind_bounds_source,
+                pix_gals_source, rshift_pix_gals_source, zbin_source_resos,
+                matchers_resoshift, ngal_in_pix);
             double hashpix_start1, hashpix_start2;
-            double pos1_gal, pos2_gal;
-            elregion_fullhash = index_matcher_hash[elregion];
-            hashpix_start1 = pix1_start + (elregion_fullhash%pix1_n)*pix1_d;
-            hashpix_start2 = pix2_start + (elregion_fullhash/pix1_n)*pix2_d;
-            if (printregdbg2){
-                printf("elregion=%d, elregion_fullhash=%d, pix1_start=%.2f pix2_start=%.2f \n", elregion,elregion_fullhash,pix1_start,pix2_start);
-                printf("hashpix_start1=%.2f hashpix_start2=%.2f \n", hashpix_start1,hashpix_start2);}
-            int *pix2redpix = calloc(nbinsz_source*len_matcher, sizeof(int)); // For each z matches pixel in unreduced grid to index in reduced grid
-            
-            for (int elreso=0;elreso<nresos_grid;elreso++){
-                thisreso = elreso + hasdiscrete;
-                lower = pixs_galind_bounds_source[rshift_pixs_galind_bounds_source[thisreso]+elregion];
-                upper = pixs_galind_bounds_source[rshift_pixs_galind_bounds_source[thisreso]+elregion+1];
-                npix_side = 1 << (nresos_grid-elreso-1);
-                int *tmpcounts = calloc(nbinsz_source, sizeof(int));
-                for (ind_inpix=lower; ind_inpix<upper; ind_inpix++){
-                    ind_gal = rshift_pix_gals_source[thisreso] + pix_gals_source[rshift_pix_gals_source[thisreso]+ind_inpix];
-                    zbin_gal = zbin_source_resos[ind_gal];
-                    pos1_gal = pos1_source_resos[ind_gal];
-                    pos2_gal = pos2_source_resos[ind_gal];
-                    elhashpix_1 = (int) floor((pos1_gal - hashpix_start1)/dpix1_resos[elreso]);
-                    elhashpix_2 = (int) floor((pos2_gal - hashpix_start2)/dpix2_resos[elreso]);
-                    elhashpix = elhashpix_2*npix_side + elhashpix_1;
-                    pix2redpix[zbin_gal*len_matcher+matchers_resoshift[elreso]+elhashpix] = tmpcounts[zbin_gal];
-                    tmpcounts[zbin_gal] += 1;
-                    if (printregdbg){
-                        printf("elreso=%d, lower=%d, thispix=%d, elhashpix=%d %d %d, zgal=%d: pix2redpix[%d]=%d  \n",
-                               elreso,lower,ind_inpix,elhashpix_1,elhashpix_2,elhashpix,zbin_gal,zbin_gal*len_matcher+matchers_resoshift[elreso]+elhashpix,ind_inpix-lower);
-                    }
-                }
-                free(tmpcounts);
-            }
-            
+            int *pix2redpix = calloc(nbinsz_source*len_matcher, sizeof(int));
+            build_region_pix2redpix(nresos_grid, hasdiscrete, elregion, nbinsz_source,
+                index_matcher_hash, pix1_start, pix1_d, pix1_n, pix2_start, pix2_d,
+                pixs_galind_bounds_source, rshift_pixs_galind_bounds_source,
+                pix_gals_source, rshift_pix_gals_source, zbin_source_resos,
+                pos1_source_resos, pos2_source_resos, dpix1_resos, dpix2_resos,
+                matchers_resoshift, len_matcher, &hashpix_start1, &hashpix_start2, pix2redpix);
+
             // Setup all shift variables for the Gncache in the region
             // Gncache has structure
-            // n --> zbin_lens --> zbin_source --> radius 
+            // n --> zbin_lens --> zbin_source --> radius
             //   --> [ [0]*ngal_zbin1_reso1 | [0]*ngal_zbin1_reso1/2 | ... | [0]*ngal_zbin1_reson ]
-            int *cumresoshift_z = calloc(nbinsz_source*(nresos+1), sizeof(int)); // Cumulative shift index for resolution at z1
-            int *thetashifts_z = calloc(nbinsz_source, sizeof(int)); // Shift index for theta given z1
-            int *zbinshifts = calloc(nbinsz_source+1, sizeof(int)); // Cumulative shift index for z1
-            int zbin2shift, nshift; // Shifts for z2 index and n index
-            for (int elz=0; elz<nbinsz_source; elz++){
-                if (printregdbg2){printf("z=%d/%d: \n", elz,nbinsz_source);}
-                for (int elreso=0; elreso<nresos; elreso++){
-                    if (hasdiscrete==1 && elreso==0){
-                        cumresoshift_z[elz*(nresos+1) + elreso+1] = ngal_in_pix[elz*nresos + elreso+1];
-                    }
-                    else{
-                        cumresoshift_z[elz*(nresos+1) + elreso+1] = cumresoshift_z[elz*(nresos+1) + elreso] + ngal_in_pix[elz*nresos + elreso];
-                    }
-                    if (printregdbg2){printf("  cumresoshift_z[z][reso+1]=%d: \n", cumresoshift_z[elz*(nresos+1) + elreso+1]);}
-                }
-                thetashifts_z[elz] = cumresoshift_z[elz*(nresos+1) + nresos];
-                zbinshifts[elz+1] = zbinshifts[elz] + nbinsr*thetashifts_z[elz];
-                if ((printregdbg2)){printf("thetashifts_z[z]=%d: \nzbinshifts[z+1]=%d: \n", thetashifts_z[elz],  zbinshifts[elz+1]);}
-            }
-            zbin2shift = zbinshifts[nbinsz_source];
-            nshift = nbinsz_lens*zbin2shift;
+            int *cumresoshift_z = calloc(nbinsz_source*(nresos+1), sizeof(int));
+            int *thetashifts_z = calloc(nbinsz_source, sizeof(int));
+            int *zbinshifts = calloc(nbinsz_source+1, sizeof(int));
+            int zbin2shift, nshift;
+            setup_region_shifts(nbinsz_source, nbinsz_lens, nresos, hasdiscrete, nbinsr,
+                ngal_in_pix, cumresoshift_z, thetashifts_z, zbinshifts, &zbin2shift, &nshift);
             // Set all the cache indices that are updated in this region to zero
             //if ((elregion==region_debug)){printf("zbin2shift=%d: nshift=%d: size_max_nshift=%d \n", zbin2shift, nshift, size_max_nshift);}
             for (int _i=0; _i<nnvals_Gn*nshift; _i++){Gncache[_i] = 0; wGncache[_i] = 0; cwGncache[_i] = 0;}
@@ -5253,11 +4920,8 @@ void alloc_Gammans_tree_NGG(const MultiresoCatalog *cat_source, const NavHash *n
         int *rshift_index_matcher = calloc(nresos, sizeof(int));
         int *rshift_pixs_galind_bounds = calloc(nresos, sizeof(int));
         int *rshift_pix_gals = calloc(nresos, sizeof(int));
-        for (int elreso=1;elreso<nresos;elreso++){
-            rshift_index_matcher[elreso] = rshift_index_matcher[elreso-1] + npix_hash;
-            rshift_pixs_galind_bounds[elreso] = rshift_pixs_galind_bounds[elreso-1] + ngal_source_resos[elreso-1]+1;
-            rshift_pix_gals[elreso] = rshift_pix_gals[elreso-1] + ngal_source_resos[elreso-1];
-        }
+        build_rshift_offsets(nresos, npix_hash, ngal_source_resos,
+            rshift_index_matcher, rshift_pixs_galind_bounds, rshift_pix_gals);
         
         
         for (int elregion=0; elregion<nregions; elregion++){
@@ -5625,135 +5289,49 @@ void alloc_Gammans_doubletree_NGG(const MultiresoCatalog *cat_source, const NavH
             // Check which sets of radii are evaluated for each resolution
             int *reso_rindedges = calloc(nresos+1, sizeof(int));
             double logrmin = log(rmin);
-            int tmpreso = 0;
-            double thisredge = 0;
-            double tmpr = rmin;
-            for (int elr=0;elr<nbinsr;elr++){
-                tmpr *= exp(drbin);
-                thisredge = reso_redges[mymin(nresos,tmpreso+1)];
-                if (thisredge<tmpr){
-                    reso_rindedges[mymin(nresos,tmpreso+1)] = elr;
-                    if ((tmpr-thisredge)<(thisredge - (tmpr/exp(drbin)))){reso_rindedges[mymin(nresos,tmpreso+1)]+=1;}
-                    tmpreso+=1;
-                }
-            }
-            reso_rindedges[nresos] = nbinsr;
-            if (printregdbg2){
-                printf("Bin edges:\n");
-                for (int elreso=0;elreso<nresos;elreso++){
-                    printf("  reso=%d: index_start=%d, rtarget_start=%.2f, rtrue_start=%.2f\n",
-                           elreso, reso_rindedges[elreso], reso_redges[elreso], rmin*exp(reso_rindedges[elreso]*drbin));
-                    printf("           index_end=%d, rtarget_end=%.2f, rtrue_end=%.2f\n",
-                           reso_rindedges[elreso+1], reso_redges[elreso+1], rmin*exp(reso_rindedges[elreso+1]*drbin));
-                }
-            }
-            
+            build_reso_rindedges(nresos, reso_redges, rmin, rmax, nbinsr, reso_rindedges);
+
             // Shift variables for spatial hash of sources and lenses
             int npix_hash = pix1_n*pix2_n;
             int *rshift_index_matcher_source = calloc(nresos, sizeof(int));
             int *rshift_pixs_galind_bounds_source = calloc(nresos, sizeof(int));
             int *rshift_pix_gals_source = calloc(nresos, sizeof(int));
-            for (int elreso=1;elreso<nresos;elreso++){
-                rshift_index_matcher_source[elreso] = rshift_index_matcher_source[elreso-1] + npix_hash;
-                rshift_pixs_galind_bounds_source[elreso] = rshift_pixs_galind_bounds_source[elreso-1] + ngal_source_resos[elreso-1]+1;
-                rshift_pix_gals_source[elreso] = rshift_pix_gals_source[elreso-1] + ngal_source_resos[elreso-1];
-            }
+            build_rshift_offsets(nresos, npix_hash, ngal_source_resos,
+                rshift_index_matcher_source, rshift_pixs_galind_bounds_source, rshift_pix_gals_source);
             int *rshift_index_matcher_lens = calloc(nresos, sizeof(int));
             int *rshift_pixs_galind_bounds_lens = calloc(nresos, sizeof(int));
             int *rshift_pix_gals_lens = calloc(nresos, sizeof(int));
-            for (int elreso=1;elreso<nresos;elreso++){
-                rshift_index_matcher_lens[elreso] = rshift_index_matcher_lens[elreso-1] + npix_hash;
-                rshift_pixs_galind_bounds_lens[elreso] = rshift_pixs_galind_bounds_lens[elreso-1] + ngal_lens_resos[elreso-1]+1;
-                rshift_pix_gals_lens[elreso] = rshift_pix_gals_lens[elreso-1] + ngal_lens_resos[elreso-1];
-            }
-            
-            // Shift variables for the matching between the pixel grids (only needed for lenses!)
-            int lower, upper, lower1, upper1, lower2, upper2, ind_inpix, ind_gal, zbin_gal;
-            int npix_side, thisreso, elreso_grid, len_matcher;
+            build_rshift_offsets(nresos, npix_hash, ngal_lens_resos,
+                rshift_index_matcher_lens, rshift_pixs_galind_bounds_lens, rshift_pix_gals_lens);
+
+            // Region layout of the lens (central) catalog: per-(zbin, reso)
+            // counts, reduced-grid offsets, pixel -> reduced-pixel matcher.
+            int lower1, upper1, lower2, upper2;
             int *matchers_resoshift = calloc(nresos_grid+1, sizeof(int));
             int *ngal_in_pix = calloc(nresos*nbinsz_lens, sizeof(int));
-            for (int elreso=0;elreso<nresos;elreso++){
-                elreso_grid = elreso - hasdiscrete;
-                lower = pixs_galind_bounds_lens[rshift_pixs_galind_bounds_lens[elreso]+elregion];
-                upper = pixs_galind_bounds_lens[rshift_pixs_galind_bounds_lens[elreso]+elregion+1];
-                for (ind_inpix=lower; ind_inpix<upper; ind_inpix++){
-                    ind_gal = rshift_pix_gals_lens[elreso] + pix_gals_lens[rshift_pix_gals_lens[elreso]+ind_inpix];
-                    ngal_in_pix[zbin_lens_resos[ind_gal]*nresos+elreso] += 1;
-                }
-                if (printregdbg2){
-                    for (int elbinz=0; elbinz<nbinsz_lens; elbinz++){
-                        printf("ngal_in_pix[elreso=%d][elz=%d] = %d \n",
-                               elreso,elbinz,ngal_in_pix[elbinz*nresos+elreso]);
-                    }
-                }
-                if (elreso_grid>=0){
-                    npix_side = 1 << (nresos_grid-elreso_grid-1);
-                    matchers_resoshift[elreso_grid+1] = matchers_resoshift[elreso_grid] + npix_side*npix_side; 
-                }
-                if (printregdbg2){printf("matchers_resoshift[elreso=%d] = %d \n", elreso,matchers_resoshift[elreso_grid+1]);}
-            }
-            len_matcher = matchers_resoshift[nresos_grid];
-            
-            // Build the matcher from pixels to reduced pixels in the region (only needed for lenses!)
-            int elregion_fullhash, elhashpix_1, elhashpix_2, elhashpix;
+            int len_matcher = build_region_galinpix(nresos, nresos_grid, hasdiscrete,
+                elregion, pixs_galind_bounds_lens, rshift_pixs_galind_bounds_lens,
+                pix_gals_lens, rshift_pix_gals_lens, zbin_lens_resos,
+                matchers_resoshift, ngal_in_pix);
             double hashpix_start1, hashpix_start2;
-            double pos1_gal, pos2_gal;
-            elregion_fullhash = index_matcher_hash[elregion];
-            hashpix_start1 = pix1_start + (elregion_fullhash%pix1_n)*pix1_d;
-            hashpix_start2 = pix2_start + (elregion_fullhash/pix1_n)*pix2_d;
-            if (printregdbg2){
-                printf("elregion=%d, elregion_fullhash=%d, pix1_start=%.2f pix2_start=%.2f \n", elregion,elregion_fullhash,pix1_start,pix2_start);
-                printf("hashpix_start1=%.2f hashpix_start2=%.2f \n", hashpix_start1,hashpix_start2);
-            }
-            int *pix2redpix = calloc(nbinsz_lens*len_matcher, sizeof(int)); // For each z matches pixel in unreduced grid to index in reduced grid
-            
-            for (int elreso=0;elreso<nresos_grid;elreso++){
-                thisreso = elreso + hasdiscrete;
-                lower = pixs_galind_bounds_lens[rshift_pixs_galind_bounds_lens[thisreso]+elregion];
-                upper = pixs_galind_bounds_lens[rshift_pixs_galind_bounds_lens[thisreso]+elregion+1];
-                npix_side = 1 << (nresos_grid-elreso-1);
-                int *tmpcounts = calloc(nbinsz_lens, sizeof(int));
-                for (ind_inpix=lower; ind_inpix<upper; ind_inpix++){
-                    ind_gal = rshift_pix_gals_lens[thisreso] + pix_gals_lens[rshift_pix_gals_lens[thisreso]+ind_inpix];
-                    zbin_gal = zbin_lens_resos[ind_gal];
-                    pos1_gal = pos1_lens_resos[ind_gal];
-                    pos2_gal = pos2_lens_resos[ind_gal];
-                    elhashpix_1 = (int) floor((pos1_gal - hashpix_start1)/dpix1_resos[elreso]);
-                    elhashpix_2 = (int) floor((pos2_gal - hashpix_start2)/dpix2_resos[elreso]);
-                    elhashpix = elhashpix_2*npix_side + elhashpix_1;
-                    pix2redpix[zbin_gal*len_matcher+matchers_resoshift[elreso]+elhashpix] = tmpcounts[zbin_gal];
-                    tmpcounts[zbin_gal] += 1;
-                    if (printregdbg2){
-                        printf("elreso=%d, lower=%d, thispix=%d, elhashpix=%d %d %d, zgal=%d: pix2redpix[%d]=%d  \n",
-                               elreso,lower,ind_inpix,elhashpix_1,elhashpix_2,elhashpix,zbin_gal,zbin_gal*len_matcher+matchers_resoshift[elreso]+elhashpix,ind_inpix-lower);
-                    }
-                }
-                free(tmpcounts);
-            }
-            
+            int *pix2redpix = calloc(nbinsz_lens*len_matcher, sizeof(int));
+            build_region_pix2redpix(nresos_grid, hasdiscrete, elregion, nbinsz_lens,
+                index_matcher_hash, pix1_start, pix1_d, pix1_n, pix2_start, pix2_d,
+                pixs_galind_bounds_lens, rshift_pixs_galind_bounds_lens,
+                pix_gals_lens, rshift_pix_gals_lens, zbin_lens_resos,
+                pos1_lens_resos, pos2_lens_resos, dpix1_resos, dpix2_resos,
+                matchers_resoshift, len_matcher, &hashpix_start1, &hashpix_start2, pix2redpix);
+
             // Setup all shift variables for the Gncache in the region
             // Gncache has structure
-            // n --> zbin_source --> zbin_lens --> radius 
+            // n --> zbin_source --> zbin_lens --> radius
             //   --> [ [0]*ngal_zbin1_reso1 | [0]*ngal_zbin1_reso1/2 | ... | [0]*ngal_zbin1_reson ]
-            int *cumresoshift_z = calloc(nbinsz_lens*(nresos+1), sizeof(int)); // Cumulative shift index for resolution at z1
-            int *thetashifts_z = calloc(nbinsz_lens, sizeof(int)); // Shift index for theta given z1
-            int *zbinshifts = calloc(nbinsz_lens+1, sizeof(int)); // Cumulative shift index for z1
-            int zbin2shift, nshift_cache; // Shifts for z2 index and n index
-            for (int elz=0; elz<nbinsz_lens; elz++){
-                for (int elreso=0; elreso<nresos; elreso++){
-                    if (hasdiscrete==1 && elreso==0){
-                        cumresoshift_z[elz*(nresos+1) + elreso+1] = ngal_in_pix[elz*nresos + elreso+1];
-                    }
-                    else{
-                        cumresoshift_z[elz*(nresos+1) + elreso+1] = cumresoshift_z[elz*(nresos+1) + elreso] + ngal_in_pix[elz*nresos + elreso];
-                    }
-                }
-                thetashifts_z[elz] = cumresoshift_z[elz*(nresos+1) + nresos];
-                zbinshifts[elz+1] = zbinshifts[elz] + nbinsr*thetashifts_z[elz];
-                if (printregdbg2){printf("thetashifts_z[z]=%d: \nzbinshifts[z+1]=%d: \n", thetashifts_z[elz],  zbinshifts[elz+1]);}
-            }            
-            zbin2shift = zbinshifts[nbinsz_lens];
-            nshift_cache = nbinsz_source*zbin2shift;
+            int *cumresoshift_z = calloc(nbinsz_lens*(nresos+1), sizeof(int));
+            int *thetashifts_z = calloc(nbinsz_lens, sizeof(int));
+            int *zbinshifts = calloc(nbinsz_lens+1, sizeof(int));
+            int zbin2shift, nshift_cache;
+            setup_region_shifts(nbinsz_lens, nbinsz_source, nresos, hasdiscrete, nbinsr,
+                ngal_in_pix, cumresoshift_z, thetashifts_z, zbinshifts, &zbin2shift, &nshift_cache);
             // Set all the cache indices that are updated in this region to zero
             if (printregdbg2){printf("zbin2shift=%d: nshift_cache=%d: size_max_nshift=%d \n", zbin2shift, nshift_cache, size_max_nshift);}
             for (int _i=0; _i<nnvals_Gn*nshift_cache; _i++){Gncache[_i] = 0; wGncache[_i] = 0; cwGncache[_i] = 0;}
