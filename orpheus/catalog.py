@@ -5,7 +5,7 @@ import numpy as np
 from numpy.ctypeslib import ndpointer
 from pathlib import Path
 import glob
-from .utils import get_site_packages_dir, search_file_in_site_package, convertunits
+from .utils import get_site_packages_dir, search_file_in_site_package, convertunits, _randomhealpixshift
 from .flat2dgrid import FlatPixelGrid_2D, FlatDataGrid_2D
 from .patchutils import gen_cat_patchindices, frompatchindices_preparerot
 import sys
@@ -42,7 +42,7 @@ class Catalog:
         The unit of the :math:`y`-positions, should be in [None, 'rad', 'deg', 'arcmin']. 
         For non-spherical catalogs we auto-set this to None. Spherical catalogs are internally transformed to units of degrees.
     geometry: string, defaults to ``'flat2d'``
-        Specifies the topology of the space the points are located in. Should be in ['flat2d', 'spherical'].
+        Specifies the topology of the space the points are located in. Should be in ['flat2d', 'spherical', '3dbox'].
     min1: float
         The smallest :math:`x`-value appearing in the catalog
     max1: float
@@ -66,12 +66,15 @@ class Catalog:
         The ``zbins`` parameter can also be used for other characteristics of the tracers (i.e. color cuts).            
     """
     
-    def __init__(self, pos1, pos2, weight=None, zbins=None, isinner=None, 
+    def __init__(self, pos1, pos2, pos3=None, weight=None, zbins=None, isinner=None,
                  units_pos1=None, units_pos2=None, geometry='flat2d',
-                 mask=None, zbins_mean=None, zbins_std=None):        
-        
+                 mask=None, zbins_mean=None, zbins_std=None):
+
         self.pos1 = pos1.astype(np.float64)
         self.pos2 = pos2.astype(np.float64)
+        # Line-of-sight coordinate, only used for the '3dbox' geometry where it
+        # carries the z-coordinate. Stays None for 'flat2d'/'spherical'.
+        self.pos3 = None if pos3 is None else pos3.astype(np.float64)
         self.weight = weight
         self.zbins = zbins
         self.ngal = len(self.pos1)
@@ -93,10 +96,15 @@ class Catalog:
         self.units_pos1 = units_pos1
         self.units_pos2 = units_pos2
         self.geometry = geometry
-        assert(self.geometry in ['flat2d','spherical'])
-        if self.geometry == 'flat2d':
+        assert(self.geometry in ['flat2d','spherical','3dbox'])
+        if self.geometry in ['flat2d','3dbox']:
             self.units_pos1 = None
             self.units_pos2 = None
+        if self.geometry == '3dbox':
+            # In a box (pos1,pos2) are the transverse (sky-plane) Cartesian
+            # coordinates and pos3 is the line-of-sight coordinate.
+            assert(self.pos3 is not None)
+            assert(len(self.pos3)==self.ngal)
         if self.geometry == 'spherical':
             assert(self.units_pos1 in ['rad', 'deg', 'arcmin'])
             assert(self.units_pos2 in ['rad', 'deg', 'arcmin'])
@@ -146,6 +154,10 @@ class Catalog:
         self.max2 = np.max(self.pos2)
         self.len1 = self.max1-self.min1
         self.len2 = self.max2-self.min2
+        if self.pos3 is not None:
+            self.min3 = np.min(self.pos3)
+            self.max3 = np.max(self.pos3)
+            self.len3 = self.max3-self.min3
         
         self.spatialhash = None # Check whether needed not in docs
         self.hasspatialhash = False
@@ -208,9 +220,17 @@ class Catalog:
         
         self.clib.reducecat.restype = ct.c_void_p
         self.clib.reducecat.argtypes = [
-            p_f64, p_f64, p_f64, p_f64, p_f64, ct.c_int32, ct.c_int32, ct.c_int32, 
+            p_f64, p_f64, p_f64, p_f64, p_f64, ct.c_int32, ct.c_int32, ct.c_int32,
             ct.c_double, ct.c_double, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, ct.c_int32,
             p_f64_nof, p_f64_nof, p_f64_nof, p_f64_nof, p_f64_nof,ct.c_int32]
+
+        # Tomographic + OpenMP reduction: the zbin loop lives in C (see reducecat_tomo).
+        self.clib.reducecat_tomo.restype = ct.c_void_p
+        self.clib.reducecat_tomo.argtypes = [
+            p_f64, p_f64, p_f64, p_f64, p_f64, p_i32,
+            ct.c_int32, ct.c_int32, ct.c_int32, ct.c_int32,
+            ct.c_double, ct.c_double, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, ct.c_int32, ct.c_int32,
+            p_f64_nof, p_f64_nof, p_f64_nof, p_f64_nof, p_i32, p_f64_nof]
 
     def topatches(self, npatches=None, area_patch_deg2_target=None, patchextend_deg=2.,other_cats=None,
                   nside_hash=128,  verbose=False, method='kmeans_healpix',
@@ -346,7 +366,7 @@ class Catalog:
     # Reduces catalog to smaller catalog where positions & quantities are
     # averaged over regular grid
     def _reduce(self, fields, dpix, dpix2=None, relative_to_hash=None, normed=True, shuffle=0,
-               extent=[None,None,None,None], forcedivide=1, 
+               extent=[None,None,None,None], forcedivide=1, nthreads=1,
                ret_inst=False):
         r"""Paints a catalog onto a grid with equal-area cells
         
@@ -412,42 +432,27 @@ class Catalog:
                 ncompfields.append(2)
         scalarquants = np.asarray(scalarquants)
         
-        # Compute reduction (individually for each zbin)
+        # Compute reduction for all zbins in a single parallelised C call. The output 
+        # arrays have extent of the upper bound ngal; all excess values will never be
+        # allocated and finally filtered out by the sel_nonzero filter.
         assert(shuffle in [True, False, 0, 1, 2, 3, 4])
         isinner_red = np.zeros(self.ngal, dtype=np.float64)
         w_red = np.zeros(self.ngal, dtype=np.float64)
         pos1_red = np.zeros(self.ngal, dtype=np.float64)
         pos2_red = np.zeros(self.ngal, dtype=np.float64)
         zbins_red = np.zeros(self.ngal, dtype=np.int32)
-        scalarquants_red = np.zeros((nfields, self.ngal), dtype=np.float64)
-        ind_start = 0
-        for elz in range(nbinsz):
-            sel_z = zbinarr==elz
-            ngal_z = np.sum(sel_z)
-            ngal_red_z = 0
-            red_shape = (len(fields), ngal_z)
-            isinner_red_z = np.zeros(ngal_z, dtype=np.float64)
-            w_red_z = np.zeros(ngal_z, dtype=np.float64)
-            pos1_red_z = np.zeros(ngal_z, dtype=np.float64)
-            pos2_red_z = np.zeros(ngal_z, dtype=np.float64)
-            scalarquants_red_z = np.zeros(nfields*ngal_z, dtype=np.float64)
-            self.clib.reducecat(self.isinner[sel_z].astype(np.float64), 
-                                self.weight[sel_z].astype(np.float64), 
-                                self.pos1[sel_z].astype(np.float64), 
-                                self.pos2[sel_z].astype(np.float64),
-                                scalarquants[:,sel_z].flatten().astype(np.float64),
-                                ngal_z, nfields, np.int32(normed),
-                                dpix, dpix2, start1, start2, n1, n2, np.int32(shuffle),
-                                isinner_red_z, w_red_z, pos1_red_z, pos2_red_z, scalarquants_red_z, ngal_red_z)
-            isinner_red[ind_start:ind_start+ngal_z] = isinner_red_z
-            w_red[ind_start:ind_start+ngal_z] = w_red_z
-            pos1_red[ind_start:ind_start+ngal_z] = pos1_red_z
-            pos2_red[ind_start:ind_start+ngal_z] = pos2_red_z
-            zbins_red[ind_start:ind_start+ngal_z] = elz*np.ones(ngal_z, dtype=np.int32)
-            scalarquants_red[:,ind_start:ind_start+ngal_z] = scalarquants_red_z.reshape((nfields, ngal_z))
-            ind_start += ngal_z
-            
-        # Accumulate reduced atalog
+        scalarquants_red = np.zeros(nfields*self.ngal, dtype=np.float64)
+        self.clib.reducecat_tomo(self.isinner.astype(np.float64),
+                                 self.weight.astype(np.float64),
+                                 self.pos1.astype(np.float64),
+                                 self.pos2.astype(np.float64),
+                                 scalarquants.flatten().astype(np.float64), zbinarr,
+                                 self.ngal, nfields, nbinsz, np.int32(normed),
+                                 dpix, dpix2, start1, start2, n1, n2, np.int32(shuffle), np.int32(nthreads),
+                                 isinner_red, w_red, pos1_red, pos2_red, zbins_red, scalarquants_red)
+        scalarquants_red = scalarquants_red.reshape((nfields, self.ngal))
+
+        # Accumulate reduced catalog
         sel_nonzero = w_red>0
         isinner_red = isinner_red[sel_nonzero]
         w_red = w_red[sel_nonzero]
@@ -472,7 +477,7 @@ class Catalog:
         return w_red, pos1_red, pos2_red, zbins_red, isinner_red, fields_red
     
     def _multihash(self, dpixs, fields, dpix_hash=None, normed=True, shuffle=0,
-                  extent=[None,None,None,None], forcedivide=1):
+                  extent=[None,None,None,None], forcedivide=1, nthreads=1):
         r"""Builds spatialhash for a base catalog and its reductions.
         
         Parameters
@@ -564,14 +569,15 @@ class Catalog:
             dpixs2_true[elreso]=fac_pix2*dpixs[elreso]
             #print(dpixs[elreso], dpixs1_true[elreso], dpixs2_true[elreso], len(self.pos1))
             nextcat, fields_red = self._reduce(fields=fields,
-                                               dpix=dpixs1_true[elreso], 
+                                               dpix=dpixs1_true[elreso],
                                                dpix2=dpixs2_true[elreso],
                                                relative_to_hash=np.int32(2**(len(dpixs)-elreso-1)),
                                                #relative_to_hash=None,
-                                               normed=normed, 
+                                               normed=normed,
                                                shuffle=shuffle,
-                                               extent=extent, 
-                                               forcedivide=forcedivide, 
+                                               extent=extent,
+                                               forcedivide=forcedivide,
+                                               nthreads=nthreads,
                                                ret_inst=True)
             nextcat.build_spatialhash(dpix=dpix_hash, extent=extent)
             ngals.append(nextcat.ngal)
@@ -584,8 +590,31 @@ class Catalog:
             index_matchers.append(nextcat.index_matcher)
             pixs_galind_bounds.append(nextcat.pixs_galind_bounds)
             pix_gals.append(nextcat.pix_gals)
+
+        multihash_dict = dict(
+            geometry='flat2d',
+            ngal=np.int32(ngals[0]),
+            nresos=np.int32(len(ngals)-1),
+            ngal_resos=np.asarray(ngals, dtype=np.int32),
+            # per-level lists (lossless; index 0 is the full-resolution base)
+            pos1s=pos1s, pos2s=pos2s, weights=weights, zbins=zbins, isinners=isinners,
+            allfields=allfields, index_matchers=index_matchers,
+            pixs_galind_bounds=pixs_galind_bounds, pix_gals=pix_gals,
+            dpixs1_true=dpixs1_true, dpixs2_true=dpixs2_true,
+            # concatenated over levels (the args the flat C estimators consume)
+            isinner_resos=np.concatenate(isinners).astype(np.float64),
+            weight_resos=np.concatenate(weights).astype(np.float64),
+            pos1_resos=np.concatenate(pos1s).astype(np.float64),
+            pos2_resos=np.concatenate(pos2s).astype(np.float64),
+            zbin_resos=np.concatenate(zbins).astype(np.int32),
+            index_matcher_resos=np.concatenate(index_matchers).astype(np.int32),
+            pixs_galind_bounds_resos=np.concatenate(pixs_galind_bounds).astype(np.int32),
+            pix_gals_resos=np.concatenate(pix_gals).astype(np.int32))
+        
+        #return ngals, pos1s, pos2s, weights, zbins, isinners, allfields, index_matchers, pixs_galind_bounds, pix_gals, dpixs1_true, dpixs2_true
+        return multihash_dict
+
             
-        return ngals, pos1s, pos2s, weights, zbins, isinners, allfields, index_matchers, pixs_galind_bounds, pix_gals, dpixs1_true, dpixs2_true
     
     def _jointextent(self, others, extend=0):
         r"""Draws largest possible rectangle over set of catalogs.
@@ -857,7 +886,441 @@ class Catalog:
         self.pixs_galind_bounds = result[start_pixs_galind_bounds:start_pixs_gals]
         self.pix_gals = result[start_pixs_gals:start_ngalinpix]
         self.hasspatialhash = True
-        
+
+
+    def multihash_slabs(self, dpix, dpix_z, fields=None,
+                        extent=[None, None, None, None], extent_z=[None, None]):
+        r"""Build a suite of 2D spatial hashes over line-of-sight slabs ('3dbox').
+
+        The transverse plane (``pos1``, ``pos2``) is hashed with a single shared
+        grid of cell size ``dpix``, so a query's transverse search-box pixel
+        indices are the same in every slab. Galaxies are partitioned along
+        ``pos3`` into slabs of width ``dpix_z`` and one ordinary 2D hash (via
+        :meth:`build_spatialhash`'s C routine) is built per slab. Galaxies are
+        reordered so each slab occupies a contiguous block; ``pix_gals`` stores
+        the reordered (global) galaxy index directly.
+
+        Parameters
+        ----------
+        dpix: float
+            Transverse hash cell size. Pick ``~max_sep`` for a small search box.
+        dpix_z: float
+            Slab width along the line of sight. Pick ``~Pi`` so a query touches
+            only a few slabs.
+        fields: tuple of numpy.ndarray, optional
+            Per-galaxy fields (e.g. ``(e1, e2)``) reordered alongside the
+            positions and returned under ``'fields'``.
+        extent, extent_z: list
+            Optional transverse ``[xmin,xmax,ymin,ymax]`` and line-of-sight
+            ``[zmin,zmax]`` overrides; ``None`` entries default to the catalog span.
+
+        Returns
+        -------
+        dict
+            Bundle consumed by the C slab kernels (``ng_slab`` in
+            corrfunc_second.c, ``alloc_Gammans_slab_GNN`` in corrfunc_third.c).
+        """
+        assert self.geometry == '3dbox'
+        assert self.pos3 is not None
+
+        # Shared transverse grid (identical for every slab).
+        thismin1 = self.min1 if extent[0] is None else extent[0]
+        thismax1 = self.max1 if extent[1] is None else extent[1]
+        thismin2 = self.min2 if extent[2] is None else extent[2]
+        thismax2 = self.max2 if extent[3] is None else extent[3]
+        pix1_start = thismin1 - dpix
+        pix2_start = thismin2 - dpix
+        stop1 = thismax1 + dpix
+        stop2 = thismax2 + dpix
+        pix1_n = int(np.ceil((stop1 - pix1_start)/dpix))
+        pix2_n = int(np.ceil((stop2 - pix2_start)/dpix))
+        npix = pix1_n * pix2_n
+        pix1_d = (stop1 - pix1_start)/pix1_n
+        pix2_d = (stop2 - pix2_start)/pix2_n
+
+        # Slab assignment (one buffer slab on each side).
+        zmin = self.min3 if extent_z[0] is None else extent_z[0]
+        zmax = self.max3 if extent_z[1] is None else extent_z[1]
+        z0 = zmin - dpix_z
+        nslabs = int(np.ceil((zmax + dpix_z - z0)/dpix_z))
+        slab_id = np.floor((self.pos3 - z0)/dpix_z).astype(np.int32)
+        np.clip(slab_id, 0, nslabs-1, out=slab_id)
+
+        # Reorder so each slab is a contiguous block.
+        order = np.argsort(slab_id, kind='stable')
+        counts = np.bincount(slab_id[order], minlength=nslabs)
+        slab_offsets = np.zeros(nslabs+1, dtype=np.int32)
+        slab_offsets[1:] = np.cumsum(counts)
+
+        pos1 = np.ascontiguousarray(self.pos1[order], dtype=np.float64)
+        pos2 = np.ascontiguousarray(self.pos2[order], dtype=np.float64)
+        pos3 = np.ascontiguousarray(self.pos3[order], dtype=np.float64)
+        weight = np.ascontiguousarray(self.weight[order], dtype=np.float64)
+        zbins = np.ascontiguousarray(self.zbins[order], dtype=np.int32)
+        fields_red = None
+        if fields is not None:
+            fields_red = [np.ascontiguousarray(np.asarray(f)[order], dtype=np.float64) for f in fields]
+
+        # One 2D hash per slab over the shared grid.
+        index_matcher = np.full(nslabs*npix, -1, dtype=np.int32)
+        rshift_bounds = np.zeros(nslabs, dtype=np.int32)
+        pix_gals = np.zeros(self.ngal, dtype=np.int32)
+        bounds_list = []
+        cum_bounds = 0
+        for s in range(nslabs):
+            lo, hi = int(slab_offsets[s]), int(slab_offsets[s+1])
+            ngal_s = hi - lo
+            rshift_bounds[s] = cum_bounds
+            if ngal_s == 0:
+                bounds_list.append(np.zeros(1, dtype=np.int32))
+                cum_bounds += 1
+                continue
+            p1s = np.ascontiguousarray(pos1[lo:hi])
+            p2s = np.ascontiguousarray(pos2[lo:hi])
+            result = np.zeros(2*npix + 3*ngal_s + 1, dtype=np.int32)
+            self.clib.build_spatialhash(p1s, p2s, np.int32(ngal_s),
+                                        pix1_d, pix2_d, pix1_start, pix2_start,
+                                        pix1_n, pix2_n, result)
+            index_matcher[s*npix:(s+1)*npix] = result[ngal_s:ngal_s+npix]
+            bounds_list.append(result[ngal_s+npix:ngal_s+npix+ngal_s+1].copy())
+            # Store global reordered galaxy index (block starts at lo).
+            pix_gals[lo:hi] = result[ngal_s+npix+ngal_s+1:ngal_s+npix+2*ngal_s+1] + lo
+            cum_bounds += ngal_s + 1
+        pixs_galind_bounds = np.concatenate(bounds_list).astype(np.int32)
+
+        bundle = dict(geometry='3dbox', ngal=int(self.ngal), nslabs=int(nslabs),
+                      z0=float(z0), dpix_z=float(dpix_z), npix=int(npix),
+                      pix1_start=float(pix1_start), pix1_d=float(pix1_d), pix1_n=int(pix1_n),
+                      pix2_start=float(pix2_start), pix2_d=float(pix2_d), pix2_n=int(pix2_n),
+                      pos1=pos1, pos2=pos2, pos3=pos3, weight=weight, zbins=zbins,
+                      slab_offsets=slab_offsets, index_matcher=index_matcher,
+                      pixs_galind_bounds=pixs_galind_bounds, rshift_bounds=rshift_bounds,
+                      pix_gals=pix_gals)
+        if fields_red is not None:
+            bundle['fields'] = fields_red
+        return bundle
+
+
+    def multihash_spherical(self, reso_redges, nsides, nside_hash, shuffle=0,
+                            fields=None, w2field=False, verbose=False):
+        r"""Curved-sky analog of :meth:`multihash` using the nested scheme of healpix.
+
+        We have the following analogies
+        * ``tree_resos`` becomes ``nsides``
+        *  in C, the flat pixel box enumeration becomes a ``query_disc``
+
+        Parameters
+        ----------
+
+        reso_redges : array, shape (nresos+1,)
+            Radial band edges (degrees, the catalog's separation unit). Band r
+            covers separations [reso_redges[r], reso_redges[r+1]); its reduced galaxies are
+            searched in the resolution-r reduced catalogue.
+        nsides : array of int, shape (nresos,)
+            HEALPix nside for each band's reduced catalogue. ``nsides[r] == 0`` marks
+            a *discrete* band: the reduced galaxies are the catalogue's own galaxies (no
+            aggregation), grouped for navigation at ``nside_hash``. ``nsides[r] >
+            0`` aggregates galaxies in each occupied nested pixel into one
+            super-galaxy (weight = sum, position = normalised mean unit vector,
+            the spherical centroid).
+        nside_hash : int
+            Navigation pixelisation for discrete bands (and the central grouping
+            there). Must be fine enough that a pixel is small vs. the band radius.
+        verbose : bool
+
+        shuffle : int, default 0
+            How to place the position of each per-pixel super-galaxy (only
+            affects aggregated bands, ``nsides[r] > 0`` -- discrete bands keep
+            the real galaxy positions regardless of this option):
+
+            * 0 -- weighted centroid of the galaxies in the pixel (original
+            behaviour).
+            * 1 -- a uniformly random position drawn from within the pixel
+            (via `_randomhealpixshift`).
+            * 2 -- the pixel center.
+            * 3 -- the position of one galaxy chosen uniformly at random from
+            the galaxies occupying that pixel.
+
+            In all cases the super-galaxy weight (sum) and isinner flag (any)
+            are unchanged -- only the position assignment differs.
+        fields : tuple of array, optional
+            Spin-2 tracer components ``(e1, e2)`` (optionally ``(e1, e2, w**2)``).
+            When given, each super-galaxy also carries an aggregated shear:
+            the constituents' shears are **parallel-transported** to the
+            super-galaxy position (spin-2 phase ``e^{2i*Delta}``, methods note
+            section 1.3) before the weighted mean, so a spin-2 field is combined
+            in a single tangent frame rather than by naively averaging components
+            defined at different points. Emitted as ``red_e1``/``red_e2`` (and
+            ``red_weightsq`` when ``w2field``). Discrete bands keep the real
+            per-galaxy shear (transport is the identity there).
+        w2field : bool, default False
+            Also aggregate ``sum(w**2)`` per super-galaxy into ``red_weightsq``
+            (needed by higher-order shear estimators; ignored by GG).
+        verbose : bool
+
+        Returns
+        -------
+        bundle : dict
+            Flat numpy arrays (concatenated over bands, with per-band ``rshift_*``
+            offsets). Per band: the reduced catalogue
+            (``red_{vx,vy,vz,ra,sindec,cosdec,w,isinner,zbin}``) and a *bucket
+            hash* mapping each occupied nested pixel (``nside_nav[r]``) to its reductions.
+            Reductions are stored in cell order, so a cell's reductions range are the contiguous range
+            ``[cell_redbounds[c], cell_redbounds[c+1])`` (CSR bounds offset by
+            ``rshift_cellbounds``) into the reduced arrays offset by ``rshift_red``;
+            ``cell_pix`` (sorted nested ids, int64) keys the cells. The full-resolution
+            central catalogue (``cen_{vx,vy,vz,ra,sindec,cosdec,w,isinner}``) is
+            always included. 
+        """
+        from healpy import ang2pix, pix2ang, pix2vec, query_disc, nside2resol
+
+        if self.geometry != 'spherical':
+            raise ValueError("multihash_spherical requires a spherical catalog "
+                            "(geometry='spherical').")
+        if shuffle not in (0, 1, 2, 3):
+            raise ValueError(f"shuffle must be 0, 1, 2, or 3, got {shuffle}")
+
+        reso_redges = np.asarray(reso_redges, dtype=np.float64)
+        nsides = np.asarray(nsides, dtype=np.int64)
+        nresos = len(nsides)
+        assert len(reso_redges) == nresos + 1
+
+        # Some helpers
+        deg2rad = np.pi / 180.
+        ra = self.pos1 * deg2rad
+        dec = self.pos2 * deg2rad
+        theta = 0.5 * np.pi - dec
+        phi = ra % (2. * np.pi)
+        cosdec = np.cos(dec)
+        sindec = np.sin(dec)
+        gvx = cosdec * np.cos(ra)
+        gvy = cosdec * np.sin(ra)
+        gvz = sindec
+        w = self.weight.astype(np.float64)
+        isinner = self.isinner.astype(np.float64)
+        ngal = self.ngal
+        zbins = self.zbins.astype(np.int64)
+        nz = int(zbins.max()) + 1 if ngal else 1
+
+        # Add rng (with deterministic seed) in case random choices are made
+        rng = np.random.default_rng(seed=self.ngal) if shuffle in (1, 3) else None
+
+        # Optional spin-2 field to aggregate (with parallel transport, below).
+        do_shear = fields is not None
+        if do_shear:
+            e1_full = np.ascontiguousarray(fields[0], dtype=np.float64)
+            e2_full = np.ascontiguousarray(fields[1], dtype=np.float64)
+
+        # Init lists that hold multihash
+        red_vx, red_vy, red_vz = [], [], []
+        red_ra, red_sindec, red_cosdec = [], [], []
+        red_w, red_isinner, red_zbin = [], [], []
+        red_e1, red_e2, red_weightsq = [], [], []
+        ngal_resos = np.zeros(nresos, dtype=np.int64)
+        ncells_resos = np.zeros(nresos, dtype=np.int64)
+        nside_nav = np.zeros(nresos, dtype=np.int64)
+        cell_pix_list, cell_redbounds_list = [], []
+        for r in range(nresos):
+            ns_red = int(nsides[r])
+            ns_nav = nside_hash if ns_red==0 else ns_red
+            nside_nav[r] = ns_nav
+
+            if ns_red == 0:
+                # Discrete band: Reduced galaxies are the galaxies themselves -- shuffle
+                # option is not applicable here.
+                rvx, rvy, rvz = gvx, gvy, gvz
+                rra, rsdec, rcdec = ra, sindec, cosdec
+                rw, ris, rz = w, isinner, zbins
+                red_navpix = ang2pix(ns_nav, theta, phi, nest=True)
+                if do_shear:
+                    # No aggregation -> no transport (Delta = 0); keep real shears.
+                    re1, re2 = e1_full, e2_full
+                    if w2field:
+                        rwsq = w * w
+            else:
+                gpix = ang2pix(ns_red, theta, phi, nest=True)
+                key = gpix * nz + zbins
+                occ_key, inv = np.unique(key, return_inverse=True)
+                nocc = len(occ_key)
+                sw = np.bincount(inv, weights=w, minlength=nocc)
+                sis = np.bincount(inv, weights=isinner, minlength=nocc)
+                pix_for_group = occ_key // nz   # nested pixel id (nside ns_red) per group
+
+                if shuffle == 0:
+                    sx = np.bincount(inv, weights=w * gvx, minlength=nocc)
+                    sy = np.bincount(inv, weights=w * gvy, minlength=nocc)
+                    sz = np.bincount(inv, weights=w * gvz, minlength=nocc)
+                    norm = np.sqrt(sx * sx + sy * sy + sz * sz)
+                    norm[norm == 0] = 1.
+                    rvx, rvy, rvz = sx / norm, sy / norm, sz / norm
+                    rsdec = rvz
+                    rcdec = np.sqrt(np.maximum(0., 1. - rvz * rvz))
+                    rra = np.arctan2(rvy, rvx) % (2. * np.pi)
+
+                elif shuffle == 1:
+                    theta_s, phi_s = _randomhealpixshift(ns_red, pix_for_group, rng)
+                    dec_s = 0.5 * np.pi - theta_s
+                    rra = phi_s
+                    rcdec = np.cos(dec_s)
+                    rsdec = np.sin(dec_s)
+                    rvx = rcdec * np.cos(rra)
+                    rvy = rcdec * np.sin(rra)
+                    rvz = rsdec
+
+                elif shuffle == 2:
+                    theta_c, phi_c = pix2ang(ns_red, pix_for_group, nest=True)
+                    dec_c = 0.5 * np.pi - theta_c
+                    rra = phi_c
+                    rcdec = np.cos(dec_c)
+                    rsdec = np.sin(dec_c)
+                    rvx = rcdec * np.cos(rra)
+                    rvy = rcdec * np.sin(rra)
+                    rvz = rsdec
+
+                else:  # shuffle == 3
+                    rand_key = rng.random(len(inv))
+                    order = np.lexsort((rand_key, inv))       # sort by group, random tiebreak
+                    sorted_inv = inv[order]
+                    first_idx = np.searchsorted(sorted_inv, np.arange(nocc))
+                    chosen = order[first_idx]                 # one random galaxy index per group
+                    rvx, rvy, rvz = gvx[chosen], gvy[chosen], gvz[chosen]
+                    rra, rsdec, rcdec = ra[chosen], sindec[chosen], cosdec[chosen]
+
+                rw = sw
+                ris = (sis > 0).astype(np.float64)
+                red_navpix = pix_for_group
+                rz = (occ_key % nz).astype(np.int64)
+
+                if do_shear:
+                    # Parallel-transport each galaxy's shear to its super-galaxy
+                    # position C = (rra, rsdec, rcdec)[group] along their connecting
+                    # geodesic, phase e^{2i*Delta} with Delta=(phi_{C->j}+pi)-phi_{j->C}
+                    # (methods note 1.3), then take the weighted mean. Bearings use
+                    # the same east-north convention as the C sphere_bearing kernel.
+                    tra = rra[inv]; tsd = rsdec[inv]; tcd = rcdec[inv]
+                    dlam = ra - tra
+                    phi_cj = np.arctan2(tcd*sindec - tsd*cosdec*np.cos(dlam),
+                                        cosdec*np.sin(dlam))
+                    dlam_r = tra - ra
+                    phi_jc = np.arctan2(cosdec*tsd - sindec*tcd*np.cos(dlam_r),
+                                        tcd*np.sin(dlam_r))
+                    gshear = w * (e1_full + 1j*e2_full) * np.exp(2j*((phi_cj+np.pi) - phi_jc))
+                    sw_safe = np.where(sw == 0., 1., sw)
+                    re1 = np.bincount(inv, weights=gshear.real, minlength=nocc) / sw_safe
+                    re2 = np.bincount(inv, weights=gshear.imag, minlength=nocc) / sw_safe
+                    if w2field:
+                        rwsq = np.bincount(inv, weights=w*w, minlength=nocc)
+
+            red_navpix = np.asarray(red_navpix)
+            order = np.argsort(red_navpix, kind='stable')
+            cell_pix, cell_counts = np.unique(red_navpix[order], return_counts=True)
+            ncells = len(cell_pix)
+            cell_redbounds = np.zeros(ncells + 1, dtype=np.int64)
+            np.cumsum(cell_counts, out=cell_redbounds[1:])
+            rvx, rvy, rvz = rvx[order], rvy[order], rvz[order]
+            rra, rsdec, rcdec = rra[order], rsdec[order], rcdec[order]
+            rw, ris, rz = rw[order], ris[order], rz[order]
+
+            n_red = len(rvx)
+            ngal_resos[r] = n_red
+            ncells_resos[r] = ncells
+            red_vx.append(rvx); red_vy.append(rvy); red_vz.append(rvz)
+            red_ra.append(rra); red_sindec.append(rsdec); red_cosdec.append(rcdec)
+            red_w.append(rw); red_isinner.append(ris); red_zbin.append(rz)
+            if do_shear:
+                red_e1.append(re1[order]); red_e2.append(re2[order])
+                if w2field:
+                    red_weightsq.append(rwsq[order])
+            cell_pix_list.append(cell_pix.astype(np.int64))
+            cell_redbounds_list.append(cell_redbounds)
+
+            if verbose:
+                print(f"  band {r}: nside_red={ns_red} nside_nav={ns_nav} "
+                    f"nreds={n_red} ncells={ncells} shuffle={shuffle}")
+
+        # --- concatenate with per-band rshift offsets (unchanged) ---
+        def _cat(arrs, dtype):
+            return (np.concatenate(arrs).astype(dtype) if arrs
+                    else np.empty(0, dtype=dtype))
+        rshift_red = np.zeros(nresos + 1, dtype=np.int64)
+        np.cumsum(ngal_resos, out=rshift_red[1:])
+        rshift_cellpix = np.zeros(nresos + 1, dtype=np.int64)
+        np.cumsum(ncells_resos, out=rshift_cellpix[1:])
+        rshift_cellbounds = np.zeros(nresos + 1, dtype=np.int64)
+        np.cumsum(ncells_resos + 1, out=rshift_cellbounds[1:])
+
+        bundle = dict(
+            geometry='spherical',
+            nresos=np.int32(nresos),
+            ngal=np.int32(ngal),
+            ngal_resos=ngal_resos.astype(np.int32),
+            ncells_resos=ncells_resos.astype(np.int32),
+            nside_nav=nside_nav.astype(np.int64),
+            reso_redges=(reso_redges * deg2rad).astype(np.float64),
+            red_vx=_cat(red_vx, np.float64), red_vy=_cat(red_vy, np.float64),
+            red_vz=_cat(red_vz, np.float64), red_ra=_cat(red_ra, np.float64),
+            red_sindec=_cat(red_sindec, np.float64), red_cosdec=_cat(red_cosdec, np.float64),
+            red_w=_cat(red_w, np.float64), red_isinner=_cat(red_isinner, np.float64),
+            red_zbin=_cat(red_zbin, np.int32),
+            rshift_red=rshift_red.astype(np.int32),
+            cell_pix=_cat(cell_pix_list, np.int64),
+            cell_redbounds=_cat(cell_redbounds_list, np.int32),
+            rshift_cellpix=rshift_cellpix.astype(np.int32),
+            rshift_cellbounds=rshift_cellbounds.astype(np.int32),
+            cen_vx=gvx, cen_vy=gvy, cen_vz=gvz,
+            cen_ra=ra, cen_sindec=sindec, cen_cosdec=cosdec,
+            cen_w=w, cen_isinner=isinner,
+        )
+        if do_shear:
+            bundle['red_e1'] = _cat(red_e1, np.float64)
+            bundle['red_e2'] = _cat(red_e2, np.float64)
+            if w2field:
+                bundle['red_weightsq'] = _cat(red_weightsq, np.float64)
+
+        return bundle
+
+    def multihash_bundle(self, dpixs=None, dpix_hash=None, normed=True, shuffle=0,
+                         extent=[None,None,None,None], forcedivide=1, nthreads=1,
+                         reso_redges=None, nsides=None, nside_hash=None, verbose=False,
+                         **kwargs):
+        r"""Geometry-aware entry point for the multi-resolution reduction hierarchy.
+
+        Dispatches on :attr:`geometry` and returns a single *bundle* dict, so the
+        NPCF estimators consume one uniform structure independent of the metric.
+
+        Shared keys (both geometries): ``geometry``, ``ngal`` (full-resolution
+        base/central count), ``nresos`` (number of reduced levels resp. radial
+        bands, not counting the base), ``ngal_resos``. The remaining keys are
+        geometry-specific:
+
+        * ``flat2d``: concatenated reduced arrays ``{isinner,weight,pos1,pos2,zbin,
+          index_matcher,pixs_galind_bounds,pix_gals}_resos``, the per-level lists
+          (``pos1s``, ``weights``, ``allfields``, ...) and ``dpixs{1,2}_true``.
+          Here ``ngal_resos`` lists every level *including* the base (length
+          ``nresos+1``), mirroring the concatenated ``*_resos`` layout the flat C
+          estimators expect.
+        * ``spherical``: the nested-HEALPix reduced/navigation arrays (``red_*``,
+          ``cen_*``, ``rshift_*``); here
+          ``ngal_resos`` is the per-band reduced galaxies count (length ``nresos``).
+
+        The flat parameters (``dpixs``, ``dpix_hash``, ``normed``, ``shuffle``,
+        ``extent``, ``forcedivide``, ``nthreads``) drive ``flat2d``; the spherical
+        parameters (``reso_redges``, ``nsides``, ``nside_hash``) drive
+        ``spherical``. ``kwargs`` forwards metric-specific extras to the flat
+        :meth:`multihash` (e.g. ``w2field`` for spin tracers).
+        """
+        if self.geometry == 'flat2d':
+            func = self.multihash
+            geom_args = dict(dpixs=dpixs, dpix_hash=dpix_hash, normed=normed, shuffle=shuffle, 
+                             extent=extent, forcedivide=forcedivide,
+                             nthreads=nthreads)
+        elif self.geometry == 'spherical':
+            func = self.multihash_spherical
+            geom_args = dict(reso_redges=reso_redges, nsides=nsides, nside_hash=nside_hash,
+                             shuffle=shuffle, verbose=verbose)
+        else:
+            raise ValueError("Unknown geometry %r" % self.geometry)
+        return func(**geom_args, **kwargs)
 
     def _gengridprops(self, dpix, dpix2=None, forcedivide=1, extent=[None,None,None,None]):
         r"""Gives some basic properties of grids created from the discrete tracers.
@@ -935,6 +1398,12 @@ class Catalog:
             
         return start1, start2, n1, n2
     
+    def multihash(self, *args, **kwargs):
+        raise NotImplementedError(
+            "multihash is defined on tracer catalogs (like ScalarTracerCatalog or " \
+            "SpinTracerCatalog), not the base Catalog class.")
+
+    
 class ScalarTracerCatalog(Catalog):
     r"""Class constructor.
         
@@ -1007,8 +1476,8 @@ class ScalarTracerCatalog(Catalog):
         return res
     
     def multihash(self, dpixs, dpix_hash=None, normed=True, shuffle=0,
-                  extent=[None,None,None,None], forcedivide=1):
-        r"""Builds spatialhash for a base catalog and its reductions. 
+                  extent=[None,None,None,None], forcedivide=1, nthreads=1):
+        r"""Builds spatialhash for a base catalog and its reductions.
         
         Parameters
         ----------
@@ -1035,13 +1504,14 @@ class ScalarTracerCatalog(Catalog):
             Contains the output of the ``Catalog._multihash`` method
         """
         res = super()._multihash(
-            dpixs=dpixs.astype(np.float64), 
-            fields=[self.tracer], 
+            dpixs=dpixs.astype(np.float64),
+            fields=[self.tracer],
             dpix_hash=dpix_hash,
-            normed=normed, 
+            normed=normed,
             shuffle=shuffle,
             extent=extent,
-            forcedivide=forcedivide)
+            forcedivide=forcedivide,
+            nthreads=nthreads)
         return res
     
     
@@ -1149,8 +1619,8 @@ class SpinTracerCatalog(Catalog):
         return res
     
     def multihash(self, dpixs, dpix_hash=None, normed=True, shuffle=0, w2field=True,
-                  extent=[None,None,None,None], forcedivide=1):
-        r"""Builds spatialhash for a base catalog and its reductions. 
+                  extent=[None,None,None,None], forcedivide=1, nthreads=1):
+        r"""Builds spatialhash for a base catalog and its reductions.
         
         Parameters
         ----------
@@ -1184,13 +1654,14 @@ class SpinTracerCatalog(Catalog):
         else:
             fields=(self.tracer_1, self.tracer_2, self.weight**2,) 
         res = super()._multihash(
-            dpixs=dpixs, 
-            fields=fields, 
+            dpixs=dpixs,
+            fields=fields,
             dpix_hash=dpix_hash,
-            normed=normed, 
+            normed=normed,
             shuffle=shuffle,
             extent=extent,
-            forcedivide=forcedivide)
+            forcedivide=forcedivide,
+            nthreads=nthreads)
         return res
     
     

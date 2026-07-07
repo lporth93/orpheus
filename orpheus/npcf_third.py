@@ -1,4 +1,5 @@
-import numpy as np 
+import numpy as np
+import ctypes as ct
 from functools import reduce
 from numba import jit, prange
 from numba import config as nb_config
@@ -8,6 +9,13 @@ from pathlib import Path
 from scipy.interpolate import interp1d
 
 from .npcf_base import BinnedNPCF
+from .catalog import ScalarTracerCatalog
+from .utils import convertunits
+from .multires_structs import (build_catalog_struct, build_navhash_struct,
+                               build_flat_catalog_struct, build_flat_navhash_struct,
+                               build_slab_catalog_struct, build_slab_navhash_struct,
+                               build_tree_params_struct, build_binning_struct,
+                               build_npcf_output)
 
 __all__ = ["GGGCorrelation", "GNNCorrelation", "NGGCorrelation"]
 
@@ -31,9 +39,14 @@ class GGGCorrelation(BinnedNPCF):
         Either ``nbinsr`` or ``binsize`` has to be provided to fix the binning scheme.
         """
     
-    def __init__(self, n_cfs, min_sep, max_sep, **kwargs):
-        
+    def __init__(self, n_cfs, min_sep, max_sep, process_spherical=False, **kwargs):
+
         super().__init__(order=3, spins=np.array([2,2,2], dtype=np.int32), n_cfs=n_cfs, min_sep=min_sep, max_sep=max_sep, **kwargs)
+        # Native curved-sky GGG (geodesic distance + nested-HEALPix query_disc +
+        # spin-2 geodesic projection) requires process_spherical + method="DoubleTree";
+        # otherwise a spherical catalog must first be decomposed into patches.
+        # See Catalog.multihash_spherical / alloc_ggg_doubletree (metric=SPHERICAL).
+        self.process_spherical = bool(process_spherical)
         self.nmax = self.nmaxs[0]
         self.phi = self.phis[0]
         self.projection = None
@@ -139,7 +152,8 @@ class GGGCorrelation(BinnedNPCF):
             return centers_patches, npcf_multipoles_patches, npcf_multipoles_norm_patches
         
         
-    def process(self, cat, dotomo=True, rotsignflip=False, apply_edge_correction=False, adjust_tree=False, 
+    def process(self, cat, cat_random=None, Pi=None, dpix=None, dpix_z=None,
+                dotomo=True, rotsignflip=False, apply_edge_correction=False, adjust_tree=False,
                 save_patchres=False, save_filebase="", keep_patchres=False):
         r"""
         Compute a shear 3PCF provided a shape catalog
@@ -148,6 +162,13 @@ class GGGCorrelation(BinnedNPCF):
         ----------
         cat: orpheus.SpinTracerCatalog
             The shape catalog which is processed
+        cat_random: orpheus.ScalarTracerCatalog, optional
+            Galaxy random catalog for the RRR normalization. Required for the
+            '3dbox' projected III estimator (Vedder Eq. 17); ignored otherwise.
+        Pi: float, optional
+            Line-of-sight projection length ('3dbox' only; required there).
+        dpix, dpix_z: float, optional
+            Transverse hash cell size and line-of-sight slab width ('3dbox' only).
         dotomo: bool
             Flag that decides whether the tomographic information in the shape catalog should be used. Defaults to `True`.
         rotsignflip: bool
@@ -172,13 +193,32 @@ class GGGCorrelation(BinnedNPCF):
             If the catalog consists of multiple patches, returns all measurements on the patches. Defaults to `False`.
         """
 
-        # Make sure that in case the catalog is spherical, it has been decomposed into patches
-        if cat.geometry == 'spherical' and cat.patchinds is None:
-            raise ValueError('Error: Spherical catalog needs to be first decomposed into patches using the Catalog._topatches method.')
+        # '3dbox' geometry: the projected III correlator (Vedder Eq. 17, S.S.S / RRR)
+        # via the discrete slab-hashed estimator. The shape catalog supplies all three
+        # polar vertices; a single galaxy random normalizes via RRR. Dispatches to
+        # alloc_Gammans_slab_GGG and returns the usual Gamma_n / Norm multipole pair.
+        if cat.geometry == '3dbox':
+            assert cat_random is not None, "'3dbox' III requires a random catalog (cat_random)."
+            assert Pi is not None, "'3dbox' III requires a projection length Pi."
+            assert cat_random.geometry == '3dbox', "'3dbox' III requires all catalogs in '3dbox'."
+            return self.__process_3dbox(cat, cat_random, float(Pi), dpix=dpix, dpix_z=dpix_z,
+                                        dotomo=dotomo)
+
+        # Native curved-sky GGG (geodesic distance + nested-HEALPix query_disc +
+        # spin-2 geodesic projection) requires process_spherical and method="DoubleTree";
+        # otherwise a spherical catalog must first be decomposed into patches. The
+        # struct-based alloc_ggg_doubletree dispatches on cat->metric, so both
+        # geometries share the DoubleTree call block below.
+        native_spherical = self.process_spherical and cat.geometry == 'spherical'
+        if cat.geometry == 'spherical' and not native_spherical and cat.patchinds is None:
+            raise ValueError('Error: Spherical catalog needs to be first decomposed into patches '
+                             'using the Catalog._topatches method, or process_spherical=True must be set.')
+        if native_spherical and self.method != "DoubleTree":
+            raise ValueError("Native curved-sky GGG (process_spherical=True) only supports method='DoubleTree'.")
 
         # Catalog consist of multiple patches
-        if cat.patchinds is not None:
-            return self.__process_patches(cat, dotomo=dotomo, rotsignflip=rotsignflip, 
+        if cat.patchinds is not None and not native_spherical:
+            return self.__process_patches(cat, dotomo=dotomo, rotsignflip=rotsignflip,
                                           apply_edge_correction=apply_edge_correction, adjust_tree=adjust_tree,
                                           save_patchres=save_patchres, save_filebase=save_filebase, keep_patchres=keep_patchres)
 
@@ -196,123 +236,224 @@ class GGGCorrelation(BinnedNPCF):
                 self.nzcombis = self.nbinsz*self.nbinsz*self.nbinsz
             if adjust_tree:
                 nbar = cat.ngal/(cat.len1*cat.len2)
-                
+
             sc = (4,self.nmax+1,self.nzcombis,self.nbinsr,self.nbinsr)
             sn = (self.nmax+1,self.nzcombis,self.nbinsr,self.nbinsr)
             szr = (self.nbinsz, self.nbinsr)
-            bin_centers = np.zeros(self.nbinsz*self.nbinsr).astype(np.float64)
-            threepcfs_n = np.zeros(4*(self.nmax+1)*self.nzcombis*self.nbinsr*self.nbinsr).astype(np.complex128)
-            threepcfsnorm_n = np.zeros((self.nmax+1)*self.nzcombis*self.nbinsr*self.nbinsr).astype(np.complex128)
-            args_basecat = (cat.isinner.astype(np.float64), cat.weight, cat.pos1, cat.pos2, cat.tracer_1, cat.tracer_2, 
-                            cat.zbins.astype(np.int32), np.int32(self.nbinsz), np.int32(cat.ngal), )
-            args_basesetup = (np.int32(0), np.int32(self.nmax), np.float64(self.min_sep), 
-                            np.float64(self.max_sep), np.array([-1.]).astype(np.float64), 
-                            np.int32(self.nbinsr), np.int32(self.multicountcorr), )
-            if self.method=="Discrete":
-                if not cat.hasspatialhash:
-                    cat.build_spatialhash(dpix=max(1.,self.max_sep//10.))
-                args_pixgrid = (np.float64(cat.pix1_start), np.float64(cat.pix1_d), np.int32(cat.pix1_n), 
-                                np.float64(cat.pix2_start), np.float64(cat.pix2_d), np.int32(cat.pix2_n), )
-                args = (*args_basecat,
-                        *args_basesetup,
-                        cat.index_matcher,
-                        cat.pixs_galind_bounds, 
-                        cat.pix_gals,
-                        *args_pixgrid,
-                        np.int32(self.nthreads),
-                        np.int32(self._verbose_c),
-                        bin_centers,
-                        threepcfs_n,
-                        threepcfsnorm_n)
-                func = self.clib.alloc_Gammans_discrete_ggg
-            elif self.method in ["Tree", "BaseTree", "DoubleTree"]:
-                if self._verbose_debug:
-                    print("Doing multihash")
+
+            if self.method == "DoubleTree":
+                # Struct-based DoubleTree; alloc_ggg_doubletree dispatches on
+                # cat->metric to the flat / curved-sky kernel (cf. GGCorrelation).
+                nbinsz = self.nbinsz
+                if native_spherical:
+                    from healpy import nside2resol
+                    sep2rad = convertunits(self.sep_units, 'rad')
+                    sep2deg = convertunits(self.sep_units, 'deg')
+                    def _nside_for(target_rad):
+                        ns = 1
+                        while nside2resol(ns) > target_rad and ns < 2**29:
+                            ns *= 2
+                        return ns
+                    nsides = [0 if self.tree_resos[r]==0. else _nside_for(self.tree_resos[r]*sep2rad)
+                              for r in range(self.tree_nresos)]
+                    nside_hash = _nside_for(max(self.min_sep, 0.5*self.tree_redges[1])*sep2rad)
+                    mh = cat.multihash_bundle(reso_redges=self.tree_redges*sep2deg, nsides=nsides,
+                                              nside_hash=nside_hash, shuffle=self.shuffle_pix,
+                                              fields=(cat.tracer_1, cat.tracer_2), w2field=True,
+                                              verbose=self._verbose_python)
+                    extra = {'e1_resos': mh['red_e1'], 'e2_resos': mh['red_e2'],
+                             'weightsq_resos': mh['red_weightsq']}
+                else:
+                    cutfirst = np.int32(self.tree_resos[0]==0.)
+                    mh = cat.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1],
+                                              shuffle=self.shuffle_pix, w2field=True, normed=True, nthreads=self.nthreads)
+                    allfields = mh['allfields']
+                    weight_resos = mh['weight_resos']
+                    e1_resos = np.concatenate([allfields[i][0] for i in range(len(allfields))]).astype(np.float64)
+                    e2_resos = np.concatenate([allfields[i][1] for i in range(len(allfields))]).astype(np.float64)
+                    _weightsq_resos = np.concatenate([allfields[i][2] for i in range(len(allfields))]).astype(np.float64)
+                    weightsq_resos = _weightsq_resos*weight_resos # reduce renorms all fields --> `unrenorm'
+                    extra = {'e1_resos': e1_resos, 'e2_resos': e2_resos, 'weightsq_resos': weightsq_resos}
+
+                cat_s, keep_cat = build_catalog_struct(mh, nbinsz, extra=extra)
+                cat_s.nresos = int(self.tree_nresos)
+                nav_s, keep_nav = build_navhash_struct(mh, cat_obj=cat)
+                tree_s, keep_tree = build_tree_params_struct(self, mh)
                 cutfirst = np.int32(self.tree_resos[0]==0.)
-                mhash = cat.multihash(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1], 
-                                    shuffle=self.shuffle_pix, w2field=True, normed=True)
-                ngal_resos, pos1s, pos2s, weights, zbins, isinners, allfields, index_matchers, pixs_galind_bounds, pix_gals, dpixs1_true, dpixs2_true = mhash
-                weight_resos = np.concatenate(weights).astype(np.float64)
-                pos1_resos = np.concatenate(pos1s).astype(np.float64)
-                pos2_resos = np.concatenate(pos2s).astype(np.float64)
-                zbin_resos = np.concatenate(zbins).astype(np.int32)
-                isinner_resos = np.concatenate(isinners).astype(np.float64)
-                e1_resos = np.concatenate([allfields[i][0] for i in range(len(allfields))]).astype(np.float64)
-                e2_resos = np.concatenate([allfields[i][1] for i in range(len(allfields))]).astype(np.float64)
-                _weightsq_resos = np.concatenate([allfields[i][2] for i in range(len(allfields))]).astype(np.float64)
-                weightsq_resos = _weightsq_resos*weight_resos # As in reduce we renorm all the fields --> need to `unrenorm'
-                index_matcher = np.concatenate(index_matchers).astype(np.int32)
-                pixs_galind_bounds = np.concatenate(pixs_galind_bounds).astype(np.int32)
-                pix_gals = np.concatenate(pix_gals).astype(np.int32)
-                args_pixgrid = (np.float64(cat.pix1_start), np.float64(cat.pix1_d), np.int32(cat.pix1_n), 
-                                np.float64(cat.pix2_start), np.float64(cat.pix2_d), np.int32(cat.pix2_n), )
-                args_resos = (weight_resos, pos1_resos, pos2_resos, e1_resos, e2_resos, zbin_resos, weightsq_resos,
-                            index_matcher, pixs_galind_bounds, pix_gals, )
-                args_output = (bin_centers, threepcfs_n, threepcfsnorm_n, )
-                if self._verbose_debug:
-                    print("Doing %s"%self.method)
-                if self.method=="Tree":
-                    args = (*args_basecat,
-                            np.int32(self.tree_nresos),
-                            self.tree_redges,
-                            np.array(ngal_resos, dtype=np.int32),
-                            *args_resos,
-                            *args_pixgrid,
-                            *args_basesetup,
-                            np.int32(self.nthreads),
-                            np.int32(self._verbose_c),
-                            *args_output)
-                    func = self.clib.alloc_Gammans_tree_ggg
-                if self.method in ["BaseTree", "DoubleTree"]:
-                    args_resos = (isinner_resos, ) + args_resos
-                    index_matcher_flat = np.argwhere(cat.index_matcher>-1).flatten()
-                    nregions = len(index_matcher_flat)
-                    # Select regions with at least one inner galaxy (TODO: Optimize)
-                    filledregions = []
-                    for elregion in range(nregions):
-                        _ = cat.pix_gals[cat.pixs_galind_bounds[elregion]:cat.pixs_galind_bounds[elregion+1]]
-                        if np.sum(cat.isinner[_])>0:filledregions.append(elregion)
-                    filledregions = np.asarray(filledregions, dtype=np.int32)
-                    nfilledregions = np.int32(len(filledregions))
-                    args_regions = (index_matcher_flat.astype(np.int32), np.int32(nregions), filledregions, nfilledregions, )
-                    args_basesetup_dtree = (np.int32(self.nmax), np.float64(self.min_sep), np.float64(self.max_sep), 
-                                            np.int32(self.nbinsr), np.int32(self.multicountcorr), )
-                    args_treeresos = (np.int32(self.tree_nresos), np.int32(self.tree_nresos-cutfirst),
-                                    dpixs1_true.astype(np.float64), dpixs2_true.astype(np.float64), self.tree_redges, )
-                    if self.method=="BaseTree":
-                        func = self.clib.alloc_Gammans_basetree_ggg
-                    if self.method=="DoubleTree":
-                        args_leafs = (np.int32(self.resoshift_leafs), np.int32(self.minresoind_leaf), 
-                                    np.int32(self.maxresoind_leaf), )
-                        args_treeresos = args_treeresos + args_leafs
-                        func = self.clib.alloc_Gammans_doubletree_ggg
-                    args = (*args_treeresos,
-                            np.array(ngal_resos, dtype=np.int32),
-                            np.int32(self.nbinsz),
-                            *args_resos,
-                            *args_pixgrid,
-                            *args_regions,
-                            *args_basesetup_dtree,
-                            np.int32(self.nthreads),
-                            np.int32(self._verbose_c),
-                            *args_output)
-            func(*args)
-            
+                tree_s.nresos_grid = int(self.tree_nresos - cutfirst)
+                maxleaf = max(0, self.tree_nresos-1)
+                tree_s.minresoind_leaf = min(int(self.minresoind_leaf), maxleaf)
+                tree_s.maxresoind_leaf = min(int(self.maxresoind_leaf), maxleaf)
+                scale = convertunits(self.sep_units, 'rad') if native_spherical else None
+                bin_s = build_binning_struct(self, scale=scale, nmax=int(self.nmax),
+                                             dccorr=int(self.multicountcorr))
+                out_s, bin_centers, threepcfs_n, _, threepcfsnorm_n, _, _ = build_npcf_output(
+                    'ggg', self.nbinsr, nmax=self.nmax, nbinsz=nbinsz)
+
+                # Keep numpy arrays referenced only through struct fields alive.
+                _alive = keep_cat + keep_nav + keep_tree   # noqa: F841
+
+                self.clib.alloc_ggg_doubletree(
+                    ct.byref(cat_s), ct.byref(nav_s), ct.byref(tree_s), ct.byref(bin_s),
+                    int(self.nthreads), int(self._verbose_c)+int(self._verbose_debug),
+                    ct.byref(out_s))
+
+                # bin_centers carries a length unit; multipoles are dimensionless.
+                if native_spherical:
+                    bin_centers = bin_centers / convertunits(self.sep_units, 'rad')
+
+            else:
+                # Flat-sky Discrete / Tree / BaseTree via the shared struct interface
+                # (hoist-to-locals shim in corrfunc_third.c). rbins=[-1.] is the
+                # log-spacing sentinel; nmin=0 (only the diagonal Gamma_0..nmax used).
+                out_s, bin_centers, threepcfs_n, _, threepcfsnorm_n, _, _ = build_npcf_output(
+                    'ggg', self.nbinsr, nmax=self.nmax, nbinsz=self.nbinsz)
+                bin_s = build_binning_struct(self, nmax=int(self.nmax), nmin=0,
+                                             dccorr=int(self.multicountcorr),
+                                             rbins=np.array([-1.]))
+                if self.method=="Discrete":
+                    if not cat.hasspatialhash:
+                        cat.build_spatialhash(dpix=max(1.,self.max_sep//10.))
+                    cat_s, keep_cat = build_flat_catalog_struct(
+                        cat.pos1, cat.pos2, cat.weight, cat.zbins, self.nbinsz,
+                        cat.isinner, e1=cat.tracer_1, e2=cat.tracer_2)
+                    nav_s, keep_nav = build_flat_navhash_struct(cat)
+                    _alive = keep_cat + keep_nav   # noqa: F841
+                    self.clib.alloc_Gammans_discrete_ggg(
+                        ct.byref(cat_s), ct.byref(nav_s), ct.byref(bin_s),
+                        int(self.nthreads), int(self._verbose_c), ct.byref(out_s))
+                elif self.method in ["Tree", "BaseTree"]:
+                    cutfirst = np.int32(self.tree_resos[0]==0.)
+                    mh = cat.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1],
+                                              shuffle=self.shuffle_pix, w2field=True, normed=True, nthreads=self.nthreads)
+                    weight_resos = mh['weight_resos']
+                    allfields = mh['allfields']
+                    e1_resos = np.concatenate([allfields[i][0] for i in range(len(allfields))]).astype(np.float64)
+                    e2_resos = np.concatenate([allfields[i][1] for i in range(len(allfields))]).astype(np.float64)
+                    _weightsq_resos = np.concatenate([allfields[i][2] for i in range(len(allfields))]).astype(np.float64)
+                    weightsq_resos = _weightsq_resos*weight_resos # reduce renorms all fields --> `unrenorm'
+                    extra = {'e1_resos': e1_resos, 'e2_resos': e2_resos, 'weightsq_resos': weightsq_resos}
+                    catf_s, keep_catf = build_catalog_struct(mh, self.nbinsz, extra=extra)
+                    catf_s.nresos = int(self.tree_nresos)
+                    nav_s, keep_nav = build_navhash_struct(mh, cat_obj=cat)
+                    tree_s, keep_tree = build_tree_params_struct(self, mh)
+                    tree_s.nresos_grid = int(self.tree_nresos - cutfirst)
+                    if self.method=="Tree":
+                        cat_s, keep_cat = build_flat_catalog_struct(
+                            cat.pos1, cat.pos2, cat.weight, cat.zbins, self.nbinsz,
+                            cat.isinner, e1=cat.tracer_1, e2=cat.tracer_2)
+                        _alive = keep_cat + keep_catf + keep_nav + keep_tree   # noqa: F841
+                        self.clib.alloc_Gammans_tree_ggg(
+                            ct.byref(cat_s), ct.byref(catf_s), ct.byref(nav_s), ct.byref(tree_s),
+                            ct.byref(bin_s), int(self.nthreads), int(self._verbose_c), ct.byref(out_s))
+                    else:   # BaseTree: single multireso catalog (base = reso 0)
+                        _alive = keep_catf + keep_nav + keep_tree   # noqa: F841
+                        self.clib.alloc_Gammans_basetree_ggg(
+                            ct.byref(catf_s), ct.byref(nav_s), ct.byref(tree_s),
+                            ct.byref(bin_s), int(self.nthreads), int(self._verbose_c), ct.byref(out_s))
+
             self.bin_centers = bin_centers.reshape(szr)
             self.bin_centers_mean = np.mean(self.bin_centers, axis=0)
             self.npcf_multipoles = threepcfs_n.reshape(sc)
             self.npcf_multipoles_norm = threepcfsnorm_n.reshape(sn)
             self.projection = "X"
-                    
+
             if apply_edge_correction:
                 self.edge_correction()
 
             if not dotomo:
-                cat.zbins = old_zbins    
+                cat.zbins = old_zbins
 
-        
+    def __process_3dbox(self, cat_source, cat_random, Pi, dpix=None, dpix_z=None, dotomo=True):
+        r"""Projected III (Vedder et al. 2026 Eq. 17) via the discrete slab-hashed GGG estimator.
+
+        All three vertices are polar (shape) galaxies (``cat_source``, spin-2): the
+        shape catalog is looped (numerator central) and slab-hashed (the two G-legs).
+        The kernel emits the four raw natural :math:`SSS` multipole components and the
+        shared random :math:`RRR` count (a single galaxy random ``cat_random`` at all
+        three vertices); this method applies :math:`f = W_S/W_R` per shape tomo-bin and
+        forms the estimator :math:`SSS / f^3 RRR`, keeping vertices within
+        :math:`|\Delta z| < \Pi` of the central. Output is the usual Gamma_n / Norm
+        multipole pair, so ``multipoles2npcf`` follows unchanged.
+        """
+        self._Pi = float(Pi)
+        if dpix is None: dpix = self.max_sep
+        if dpix_z is None: dpix_z = Pi
+
+        # Tomography: collapse zbins to a single bin if requested.
+        old_zbins = None
+        if not dotomo:
+            self.nbinsz = 1
+            old_zbins = (cat_source.zbins.copy(), cat_random.zbins.copy())
+            cat_source.zbins = np.zeros(cat_source.ngal, dtype=np.int32)
+            cat_random.zbins = np.zeros(cat_random.ngal, dtype=np.int32)
+        else:
+            self.nbinsz = max(cat_source.nbinsz, cat_random.nbinsz)
+        nz = self.nbinsz
+        self.nzcombis = nz*nz*nz
+
+        # Shared transverse + line-of-sight extent so every central lies inside the
+        # polar-leg / random slab hash grids.
+        cats = [cat_source, cat_random]
+        ext = [min(c.min1 for c in cats), max(c.max1 for c in cats),
+               min(c.min2 for c in cats), max(c.max2 for c in cats)]
+        ext_z = [min(c.min3 for c in cats), max(c.max3 for c in cats)]
+
+        Sd = cat_source.multihash_slabs(dpix, dpix_z, fields=(cat_source.tracer_1, cat_source.tracer_2),
+                                        extent=ext, extent_z=ext_z)
+        Rr = cat_random.multihash_slabs(dpix, dpix_z, extent=ext, extent_z=ext_z)
+
+        # Shape-weight rescaling f = W_S / W_R per shape tomo-bin.
+        WS = np.array([cat_source.weight[cat_source.zbins == z].sum() for z in range(nz)])
+        WR = np.array([cat_random.weight[cat_random.zbins == z].sum() for z in range(nz)])
+        f = np.divide(WS, WR, out=np.ones_like(WS), where=WR > 0).astype(np.float64)
+
+        # Output: the four raw natural SSS multipole components (npcf) + the shared
+        # random RRR count (norm_mp). The polar central is looped and slab-hashed on
+        # one shared grid (nav_polar); the random is looped as the RRR central and
+        # slab-hashed (nav_R) for the count legs. f = W_S/W_R is applied in Python.
+        scomp = (4, self.nmax+1, self.nzcombis, self.nbinsr, self.nbinsr)
+        sn = (self.nmax+1, self.nzcombis, self.nbinsr, self.nbinsr)
+        szr = (nz, nz, self.nbinsr)
+        _mplen = (self.nmax+1)*self.nzcombis*self.nbinsr*self.nbinsr
+        out_s, bin_centers, Comp_n, _, RRR_n, _, _ = build_npcf_output(
+            'gnn', self.nbinsr, nmax=self.nmax, bc_len=nz*nz*self.nbinsr,
+            npcf_len=4*_mplen, norm_mp_len=_mplen, ncomp=self.n_cfs)
+        bin_s = build_binning_struct(self, nmax=self.nmax, dccorr=self.multicountcorr, Pi=self._Pi)
+
+        cat_c, kc1 = build_slab_catalog_struct(Sd, nz, e1e2=Sd['fields'])
+        nav_c, kn1 = build_slab_navhash_struct(Sd)
+        cat_R, kc2 = build_slab_catalog_struct(Rr, nz)
+        nav_R, kn2 = build_slab_navhash_struct(Rr)
+        _alive = kc1 + kn1 + kc2 + kn2
+
+        self.clib.alloc_Gammans_slab_GGG(
+            ct.byref(cat_c), ct.byref(nav_c), ct.byref(cat_R), ct.byref(nav_R),
+            ct.byref(bin_s), int(self.nthreads), int(self._verbose_c), ct.byref(out_s))
+
+        # Raw f-free components (private): the four natural SSS multipoles + the shared
+        # random RRR count.
+        self._SSS = np.nan_to_num(Comp_n.reshape(scomp))
+        self._RRR = np.nan_to_num(RRR_n.reshape(sn))
+
+        # The III numerator is the raw SSS (no numerator f); the RRR denominator is
+        # rescaled by f = W_S/W_R at each of the three vertices (f[zc] f[z2] f[z3]).
+        zc_i, z2_i, z3_i = np.unravel_index(np.arange(self.nzcombis), (nz, nz, nz))
+        fc = f[zc_i]; f2 = f[z2_i]; f3 = f[z3_i]
+        self.npcf_multipoles = self._SSS
+        self.npcf_multipoles_norm = (fc*f2*f3).reshape(1, self.nzcombis, 1, 1)*self._RRR
+
+        self.bin_centers = bin_centers.reshape(szr)
+        self.bin_centers_mean = np.mean(self.bin_centers, axis=(0, 1))
+        self.projection = "X"
+        self.is_edge_corrected = False
+
+        if not dotomo:
+            cat_source.zbins, cat_random.zbins = old_zbins
+        return
+
     def edge_correction(self, ret_matrices=False):
-        
+
         def gen_M_matrix(thet1,thet2,threepcf_n_norm):
             nvals, ntheta, _ = threepcf_n_norm.shape
             nmax = (nvals-1)//2
@@ -790,7 +931,8 @@ class GNNCorrelation(BinnedNPCF):
     # * In general, think about what could be a consistent way get a good compromise between speed vs S/N. One extreme would 
     #   be just to use some broad bins and and the std within them (so 'thinner' bins have more weight). Other extreme would 
     #   be many small zbins with proper cross-weighting and maximum distance --> Becomes less efficient for more bins.
-    def process(self, cat_source, cat_lens, dotomo_source=True, dotomo_lens=True, rotsignflip=False, apply_edge_correction=False,
+    def process(self, cat_source, cat_lens=None, cat_random=None, Pi=None, dpix=None, dpix_z=None,
+                dotomo_source=True, dotomo_lens=True, rotsignflip=False, apply_edge_correction=False,
                 save_patchres=False, save_filebase="", keep_patchres=False):
         r"""
         Compute a shear-lens-lens correlation provided a source and a lens catalog.
@@ -801,6 +943,13 @@ class GNNCorrelation(BinnedNPCF):
             The source catalog which is processed
         cat_lens: orpheus.ScalarTracerCatalog
             The lens catalog which is processed
+        cat_random: orpheus.ScalarTracerCatalog, optional
+            Random catalog for the lens/position tracer. Required for the '3dbox'
+            projected ggI estimator (Vedder Eq. 17); ignored otherwise.
+        Pi: float, optional
+            Line-of-sight projection length ('3dbox' only; required there).
+        dpix, dpix_z: float, optional
+            Transverse hash cell size and line-of-sight slab width ('3dbox' only).
         dotomo_source: bool
             Flag that decides whether the tomographic information in the source catalog should be used. Defaults to `True`.
         dotomo_lens: bool
@@ -823,6 +972,24 @@ class GNNCorrelation(BinnedNPCF):
         keep_patchres: bool
             If the catalog consists of multiple patches, returns all measurements on the patches. Defaults to ``False``.
         """
+        # '3dbox' geometry: the projected ggI correlator (Vedder Eq. 17,
+        # S.D~.D~ / RRR) via the discrete slab-hashed estimator. When no separate
+        # position catalog is passed the positions are taken from the shape catalog
+        # (the auto-correlation case). Dispatches to alloc_Gammans_slab_GNN.
+        if cat_source.geometry == '3dbox':
+            assert cat_random is not None, "'3dbox' ggI requires a random catalog (cat_random)."
+            assert Pi is not None, "'3dbox' ggI requires a projection length Pi."
+            if cat_lens is None:
+                cat_lens = ScalarTracerCatalog(
+                    cat_source.pos1, cat_source.pos2, np.ones(cat_source.ngal),
+                    pos3=cat_source.pos3, weight=cat_source.weight,
+                    zbins=cat_source.zbins.copy(), geometry='3dbox')
+            for c in (cat_lens, cat_random):
+                assert c.geometry == '3dbox', "'3dbox' ggI requires all catalogs in '3dbox'."
+            return self.__process_3dbox(cat_source, cat_lens, cat_random, float(Pi),
+                                        dpix=dpix, dpix_z=dpix_z,
+                                        dotomo_source=dotomo_source, dotomo_lens=dotomo_lens)
+
         self._checkcats([cat_source, cat_lens, cat_lens], [2, 0, 0])
 
          # Catch typical errors, i.e. incompatible catalogs or missin patch decompositions
@@ -872,108 +1039,55 @@ class GNNCorrelation(BinnedNPCF):
             sc = (self.n_cfs, self.nmax+1, _z3combis, self.nbinsr, self.nbinsr)
             sn = (self.nmax+1, _z3combis, self.nbinsr,self.nbinsr)
             szr = (self.nbinsz_source, self.nbinsz_lens, self.nbinsr)
-            bin_centers = np.zeros(reduce(operator.mul, szr)).astype(np.float64)
-            Upsilon_n = np.zeros(reduce(operator.mul, sc)).astype(np.complex128)
-            Norm_n = np.zeros(reduce(operator.mul, sn)).astype(np.complex128)
-            args_sourcecat = (cat_source.isinner.astype(np.float64), cat_source.weight.astype(np.float64), 
-                            cat_source.pos1.astype(np.float64), cat_source.pos2.astype(np.float64), 
-                            cat_source.tracer_1.astype(np.float64), cat_source.tracer_2.astype(np.float64), 
-                            cat_source.zbins.astype(np.int32), np.int32(self.nbinsz_source), np.int32(cat_source.ngal), )
-            args_lenscat = (cat_lens.weight.astype(np.float64), cat_lens.pos1.astype(np.float64), 
-                            cat_lens.pos2.astype(np.float64), cat_lens.zbins.astype(np.int32), 
-                            np.int32(self.nbinsz_lens), np.int32(cat_lens.ngal), )
-            args_basesetup = (np.int32(self.nmax), np.float64(self.min_sep), np.float64(self.max_sep),
-                            np.int32(self.nbinsr), np.int32(self.multicountcorr), )
+            # Struct interface (hoist-to-locals shim in corrfunc_third.c). Shape
+            # (source) central + two scalar lens legs; source nav carries nregions.
+            out_s, bin_centers, Upsilon_n, _, Norm_n, _, _ = build_npcf_output(
+                'gnn', self.nbinsr, bc_len=reduce(operator.mul, szr),
+                npcf_len=reduce(operator.mul, sc), norm_mp_len=reduce(operator.mul, sn),
+                ncomp=self.n_cfs)
+            bin_s = build_binning_struct(self, nmax=int(self.nmax),
+                                         dccorr=int(self.multicountcorr))
+            jointextent = list(cat_source._jointextent([cat_lens], extend=self.tree_resos[-1]))
             if self.method=="Discrete":
                 hash_dpix = max(1.,self.max_sep//10.)
-                jointextent = list(cat_source._jointextent([cat_lens], extend=self.tree_resos[-1]))
                 cat_source.build_spatialhash(dpix=hash_dpix, extent=jointextent)
                 cat_lens.build_spatialhash(dpix=hash_dpix, extent=jointextent)
-                nregions = np.int32(len(np.argwhere(cat_source.index_matcher>-1).flatten()))
-                args_hash = (cat_source.index_matcher, cat_source.pixs_galind_bounds, cat_source.pix_gals,
-                            cat_lens.index_matcher, cat_lens.pixs_galind_bounds, cat_lens.pix_gals, nregions, )
-                args_pixgrid = (np.float64(cat_lens.pix1_start), np.float64(cat_lens.pix1_d), np.int32(cat_lens.pix1_n), 
-                                np.float64(cat_lens.pix2_start), np.float64(cat_lens.pix2_d), np.int32(cat_lens.pix2_n), )
-                args = (*args_sourcecat,
-                        *args_lenscat,
-                        *args_basesetup,
-                        *args_hash,
-                        *args_pixgrid,
-                        np.int32(self.nthreads),
-                        np.int32(self._verbose_c),
-                        bin_centers,
-                        Upsilon_n,
-                        Norm_n, )
-                func = self.clib.alloc_Gammans_discrete_GNN
+                cats_s, keep_cs = build_flat_catalog_struct(
+                    cat_source.pos1, cat_source.pos2, cat_source.weight, cat_source.zbins,
+                    self.nbinsz_source, cat_source.isinner,
+                    e1=cat_source.tracer_1, e2=cat_source.tracer_2)
+                navs_s, keep_ns = build_flat_navhash_struct(cat_source)
+                catl_s, keep_cl = build_flat_catalog_struct(
+                    cat_lens.pos1, cat_lens.pos2, cat_lens.weight, cat_lens.zbins,
+                    self.nbinsz_lens, cat_lens.isinner)
+                navl_s, keep_nl = build_flat_navhash_struct(cat_lens)
+                _alive = keep_cs + keep_ns + keep_cl + keep_nl   # noqa: F841
+                self.clib.alloc_Gammans_discrete_GNN(
+                    ct.byref(cats_s), ct.byref(navs_s), ct.byref(catl_s), ct.byref(navl_s),
+                    ct.byref(bin_s), int(self.nthreads), int(self._verbose_c), ct.byref(out_s))
             if self.method == "DoubleTree":
                 cutfirst = np.int32(self.tree_resos[0]==0.)
-                jointextent = list(cat_source._jointextent([cat_lens], extend=self.tree_resos[-1]))
-                # Build multihashes for sources and lenses
-                mhash_source = cat_source.multihash(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1], 
-                                                    shuffle=self.shuffle_pix, normed=True, extent=jointextent)
-                sngal_resos, spos1s, spos2s, sweights, szbins, sisinners, sallfields, sindex_matchers, \
-                spixs_galind_bounds, spix_gals, sdpixs1_true, sdpixs2_true = mhash_source
-                ngal_resos_source = np.array(sngal_resos, dtype=np.int32)
-                weight_resos_source = np.concatenate(sweights).astype(np.float64)
-                pos1_resos_source = np.concatenate(spos1s).astype(np.float64)
-                pos2_resos_source = np.concatenate(spos2s).astype(np.float64)
-                zbin_resos_source = np.concatenate(szbins).astype(np.int32)
-                isinner_resos_source = np.concatenate(sisinners).astype(np.float64)
+                mhs = cat_source.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1],
+                                                  shuffle=self.shuffle_pix, normed=True, extent=jointextent, nthreads=self.nthreads)
+                sallfields = mhs['allfields']
                 e1_resos_source = np.concatenate([sallfields[i][0] for i in range(len(sallfields))]).astype(np.float64)
                 e2_resos_source = np.concatenate([sallfields[i][1] for i in range(len(sallfields))]).astype(np.float64)
-                index_matcher_source = np.concatenate(sindex_matchers).astype(np.int32)
-                pixs_galind_bounds_source = np.concatenate(spixs_galind_bounds).astype(np.int32)
-                pix_gals_source = np.concatenate(spix_gals).astype(np.int32)
-                mhash_lens = cat_lens.multihash(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1], 
-                                                    shuffle=self.shuffle_pix, normed=True, extent=jointextent)
-                lngal_resos, lpos1s, lpos2s, lweights, lzbins, lisinners, lallfields, lindex_matchers, \
-                lpixs_galind_bounds, lpix_gals, ldpixs1_true, ldpixs2_true = mhash_lens
-                ngal_resos_lens = np.array(lngal_resos, dtype=np.int32)
-                weight_resos_lens = np.concatenate(lweights).astype(np.float64)
-                pos1_resos_lens = np.concatenate(lpos1s).astype(np.float64)
-                pos2_resos_lens = np.concatenate(lpos2s).astype(np.float64)
-                zbin_resos_lens = np.concatenate(lzbins).astype(np.int32)
-                isinner_resos_lens = np.concatenate(lisinners).astype(np.float64)
-                index_matcher_lens = np.concatenate(lindex_matchers).astype(np.int32)
-                pixs_galind_bounds_lens = np.concatenate(lpixs_galind_bounds).astype(np.int32)
-                pix_gals_lens = np.asarray(np.concatenate(lpix_gals)).astype(np.int32)
-                index_matcher_flat = np.argwhere(cat_source.index_matcher>-1).flatten().astype(np.int32)
-                nregions = np.int32(len(index_matcher_flat))
-                # Collect args
-                args_resoinfo = (np.int32(self.tree_nresos), np.int32(self.tree_nresos-cutfirst),
-                                sdpixs1_true.astype(np.float64), sdpixs2_true.astype(np.float64), self.tree_redges, )
-                args_leafs = (np.int32(self.resoshift_leafs), np.int32(self.minresoind_leaf), 
-                            np.int32(self.maxresoind_leaf), )
-                args_resos = (isinner_resos_source, weight_resos_source, pos1_resos_source, pos2_resos_source,
-                            e1_resos_source, e2_resos_source, zbin_resos_source, ngal_resos_source, 
-                            np.int32(self.nbinsz_source), isinner_resos_lens, weight_resos_lens, pos1_resos_lens, 
-                            pos2_resos_lens, zbin_resos_lens, ngal_resos_lens, np.int32(self.nbinsz_lens), )
-                args_mhash = (index_matcher_source, pixs_galind_bounds_source, pix_gals_source,
-                            index_matcher_lens, pixs_galind_bounds_lens, pix_gals_lens, index_matcher_flat, nregions, )
-                args_pixgrid = (np.float64(cat_lens.pix1_start), np.float64(cat_lens.pix1_d), np.int32(cat_lens.pix1_n), 
-                                np.float64(cat_lens.pix2_start), np.float64(cat_lens.pix2_d), np.int32(cat_lens.pix2_n), )
-                args = (*args_resoinfo,
-                        *args_leafs,
-                        *args_resos,
-                        *args_basesetup,
-                        *args_mhash,
-                        *args_pixgrid,
-                        np.int32(self.nthreads),
-                        np.int32(self._verbose_c),
-                        bin_centers,
-                        Upsilon_n,
-                        Norm_n, )
-                func = self.clib.alloc_Gammans_doubletree_GNN
-            if self._verbose_debug:
-                for elarg, arg in enumerate(args):
-                    toprint = (elarg, type(arg),)
-                    if isinstance(arg, np.ndarray):
-                        toprint += (type(arg[0]), arg.shape)
-                    toprint += (func.argtypes[elarg], )
-                    print(toprint)
-                    print(arg)
-            
-            func(*args)
+                cats_s, keep_cs = build_catalog_struct(
+                    mhs, self.nbinsz_source, extra={'e1_resos': e1_resos_source, 'e2_resos': e2_resos_source})
+                cats_s.nresos = int(self.tree_nresos)
+                navs_s, keep_ns = build_navhash_struct(mhs, cat_obj=cat_source)
+                mhl = cat_lens.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1],
+                                                shuffle=self.shuffle_pix, normed=True, extent=jointextent, nthreads=self.nthreads)
+                catl_s, keep_cl = build_catalog_struct(mhl, self.nbinsz_lens)
+                catl_s.nresos = int(self.tree_nresos)
+                navl_s, keep_nl = build_navhash_struct(mhl, cat_obj=cat_lens)
+                tree_s, keep_tree = build_tree_params_struct(self, mhs)
+                tree_s.nresos_grid = int(self.tree_nresos - cutfirst)
+                _alive = keep_cs + keep_ns + keep_cl + keep_nl + keep_tree   # noqa: F841
+                self.clib.alloc_Gammans_doubletree_GNN(
+                    ct.byref(cats_s), ct.byref(navs_s), ct.byref(catl_s), ct.byref(navl_s),
+                    ct.byref(tree_s), ct.byref(bin_s), int(self.nthreads), int(self._verbose_c),
+                    ct.byref(out_s))
             
             self.bin_centers = bin_centers.reshape(szr)
             self.bin_centers_mean = np.mean(self.bin_centers, axis=(0,1))
@@ -986,10 +1100,120 @@ class GNNCorrelation(BinnedNPCF):
                 self.edge_correction()
 
             if not dotomo_source:
-                cat_source.zbins = old_zbins_source  
+                cat_source.zbins = old_zbins_source
             if not dotomo_lens:
-                cat_lens.zbins = old_zbins_lens 
-            
+                cat_lens.zbins = old_zbins_lens
+
+    def __process_3dbox(self, cat_source, cat_lens, cat_random, Pi, dpix=None, dpix_z=None,
+                        dotomo_source=True, dotomo_lens=True):
+        r"""Projected ggI (Vedder et al. 2026 Eq. 17) via the discrete slab-hashed estimator.
+
+        The shape catalog (``cat_source``, spin-2) sits at the central vertex; the
+        two legs are galaxy positions with :math:`\tilde D = D - fR` (``cat_lens``
+        supplies :math:`D`, ``cat_random`` supplies :math:`R`, :math:`f = W_D/W_R`
+        per position tomographic bin), kept within :math:`|\Delta z| < \Pi` of the
+        central. The :math:`RRR` normalization uses the random legs. Output is the
+        usual Upsilon / Norm multipole pair, so ``multipoles2npcf`` / ``computeNNM``
+        follow unchanged.
+        """
+        self._Pi = float(Pi)
+        if dpix is None: dpix = self.max_sep
+        if dpix_z is None: dpix_z = Pi
+
+        # Tomography: collapse zbins to a single bin if requested.
+        old_zbins_source = old_zbins_lens = None
+        if not dotomo_source:
+            self.nbinsz_source = 1
+            old_zbins_source = cat_source.zbins.copy()
+            cat_source.zbins = np.zeros(cat_source.ngal, dtype=np.int32)
+        else:
+            self.nbinsz_source = cat_source.nbinsz
+        if not dotomo_lens:
+            self.nbinsz_lens = 1
+            old_zbins_lens = (cat_lens.zbins.copy(), cat_random.zbins.copy())
+            cat_lens.zbins = np.zeros(cat_lens.ngal, dtype=np.int32)
+            cat_random.zbins = np.zeros(cat_random.ngal, dtype=np.int32)
+        else:
+            self.nbinsz_lens = max(cat_lens.nbinsz, cat_random.nbinsz)
+        nzs, nzd = self.nbinsz_source, self.nbinsz_lens
+
+        # Shared transverse + line-of-sight extent so every shape central lies
+        # inside the (lens / random) slab hash grids.
+        ext = [min(cat_source.min1, cat_lens.min1, cat_random.min1),
+               max(cat_source.max1, cat_lens.max1, cat_random.max1),
+               min(cat_source.min2, cat_lens.min2, cat_random.min2),
+               max(cat_source.max2, cat_lens.max2, cat_random.max2)]
+        ext_z = [min(cat_source.min3, cat_lens.min3, cat_random.min3),
+                 max(cat_source.max3, cat_lens.max3, cat_random.max3)]
+
+        D = cat_lens.multihash_slabs(dpix, dpix_z, extent=ext, extent_z=ext_z)
+        R = cat_random.multihash_slabs(dpix, dpix_z, extent=ext, extent_z=ext_z)
+        assert D['npix'] == R['npix'] and D['nslabs'] == R['nslabs'], \
+            "D and R slab hashes must share the grid (same dpix/extent)."
+
+        # Density-weight rescaling f = W_D / W_R per position tomo-bin.
+        WD = np.array([cat_lens.weight[cat_lens.zbins == z].sum() for z in range(nzd)])
+        WR = np.array([cat_random.weight[cat_random.zbins == z].sum() for z in range(nzd)])
+        f = np.divide(WD, WR, out=np.ones_like(WD), where=WR > 0).astype(np.float64)
+
+        # The RRR central is a random position tomographically aligned with the
+        # shape central, so the source/lens tomographies must match (positions=shapes).
+        assert nzs == nzd, "'3dbox' ggI requires matching source/lens tomographic bins."
+
+        # Output: the four raw f-free numerator sub-correlators S.(D/R).(D/R) stacked
+        # on a leading axis (npcf) + the shared random RRR count (norm_mp). The polar
+        # central is looped directly (built from raw arrays, no nav); the D and R
+        # scalar legs are slab-hashed. f = W_D/W_R is applied in Python (below).
+        _z3combis = nzs*nzd*nzd
+        scomp = (4, self.nmax+1, _z3combis, self.nbinsr, self.nbinsr)
+        sn = (self.nmax+1, _z3combis, self.nbinsr, self.nbinsr)
+        szr = (nzs, nzd, self.nbinsr)
+        _mplen = (self.nmax+1)*_z3combis*self.nbinsr*self.nbinsr
+        out_s, bin_centers, Comp_n, _, RRR_n, _, _ = build_npcf_output(
+            'gnn', self.nbinsr, nmax=self.nmax, bc_len=nzs*nzd*self.nbinsr,
+            npcf_len=4*_mplen, norm_mp_len=_mplen, ncomp=self.n_cfs)
+
+        cat_c, keep_c = build_slab_catalog_struct(
+            {'pos1': cat_source.pos1, 'pos2': cat_source.pos2, 'pos3': cat_source.pos3,
+             'weight': cat_source.weight, 'zbins': cat_source.zbins}, nzs,
+            e1e2=(cat_source.tracer_1, cat_source.tracer_2))
+        cat_D, keep_D = build_slab_catalog_struct(D, nzd)
+        nav_D, keep_nD = build_slab_navhash_struct(D)
+        cat_R, keep_R = build_slab_catalog_struct(R, nzd)
+        nav_R, keep_nR = build_slab_navhash_struct(R)
+        bin_s = build_binning_struct(self, nmax=self.nmax, dccorr=self.multicountcorr, Pi=self._Pi)
+        _alive = keep_c + keep_D + keep_nD + keep_R + keep_nR
+
+        self.clib.alloc_Gammans_slab_GNN(
+            ct.byref(cat_c), ct.byref(cat_D), ct.byref(nav_D), ct.byref(cat_R), ct.byref(nav_R),
+            ct.byref(bin_s), ct.c_int32(self.nthreads), ct.c_int32(self._verbose_c),
+            ct.byref(out_s))
+
+        # Raw f-free sub-correlators (private, for further analysis).
+        self._SDD, self._SDR, self._SRD, self._SRR = np.nan_to_num(Comp_n.reshape(scomp))
+        self._RRR = np.nan_to_num(RRR_n.reshape(sn))
+
+        # Recombine with f = W_D/W_R (per position tomo-bin): the ggI numerator
+        # S.D~.D~ = SDD - f[z3].SDR - f[z2].SRD + f[z2] f[z3].SRR, and the denominator
+        # RRR rescaled by f at each of the three vertices (f[zc] f[z2] f[z3]).
+        zc_i, z2_i, z3_i = np.unravel_index(np.arange(_z3combis), (nzs, nzd, nzd))
+        fc = f[zc_i].reshape(1, _z3combis, 1, 1)
+        f2 = f[z2_i].reshape(1, _z3combis, 1, 1)
+        f3 = f[z3_i].reshape(1, _z3combis, 1, 1)
+        self.npcf_multipoles = (self._SDD - f3*self._SDR - f2*self._SRD + f2*f3*self._SRR)[None]
+        self.npcf_multipoles_norm = fc*f2*f3*self._RRR
+
+        self.bin_centers = bin_centers.reshape(szr)
+        self.bin_centers_mean = np.mean(self.bin_centers, axis=(0, 1))
+        self.projection = "X"
+        self.is_edge_corrected = False
+
+        if not dotomo_source:
+            cat_source.zbins = old_zbins_source
+        if not dotomo_lens:
+            cat_lens.zbins, cat_random.zbins = old_zbins_lens
+        return
+
     def edge_correction(self, ret_matrices=False):
         assert(not self.is_edge_corrected)
         def gen_M_matrix(thet1,thet2,threepcf_n_norm):
@@ -1296,7 +1520,116 @@ class NGGCorrelation(BinnedNPCF):
         if keep_patchres:
             return centers_patches, npcf_multipoles_patches, npcf_multipoles_norm_patches
 
-    def process(self, cat_source, cat_lens, dotomo_source=True, dotomo_lens=True, rotsignflip=False, apply_edge_correction=False,
+    def __process_3dbox(self, cat_source, cat_lens, cat_random, Pi,
+                        dpix=None, dpix_z=None, dotomo_source=True, dotomo_lens=True):
+        r"""Projected gII (Vedder et al. 2026 Eq. 17) via the discrete slab-hashed NGG estimator.
+
+        The scalar (density) catalog ``cat_lens`` sits at the central vertex; the two
+        polar (source) legs use ``cat_source`` for the signal :math:`G`-multipoles.
+        Rather than form :math:`\tilde D = D - fR` in C, the kernel emits the two raw
+        f-free numerator sub-correlators ``DSS`` (data-lens central) / ``RSS``
+        (random-lens central) and the shared random ``RRR`` count (the single random
+        ``cat_random`` at all three vertices); this method applies :math:`f = W_D/W_R`
+        per lens tomo-bin and combines :math:`\tilde D SS = DSS - f RSS` over
+        :math:`f^3 RRR`. All within :math:`|\Delta z| < \Pi` of the central.
+        """
+        self._Pi = float(Pi)
+        if dpix is None: dpix = self.max_sep
+        if dpix_z is None: dpix_z = Pi
+
+        # Tomography: collapse zbins to a single bin if requested.
+        old_zbins_source = old_zbins_lens = None
+        if not dotomo_source:
+            self.nbinsz_source = 1
+            old_zbins_source = cat_source.zbins.copy()
+            cat_source.zbins = np.zeros(cat_source.ngal, dtype=np.int32)
+        else:
+            self.nbinsz_source = cat_source.nbinsz
+        if not dotomo_lens:
+            self.nbinsz_lens = 1
+            old_zbins_lens = (cat_lens.zbins.copy(), cat_random.zbins.copy())
+            cat_lens.zbins = np.zeros(cat_lens.ngal, dtype=np.int32)
+            cat_random.zbins = np.zeros(cat_random.ngal, dtype=np.int32)
+        else:
+            self.nbinsz_lens = max(cat_lens.nbinsz, cat_random.nbinsz)
+        nzs, nzl = self.nbinsz_source, self.nbinsz_lens
+        # The RRR legs are the lens random, tomographically aligned with the shape
+        # legs, so the source/lens tomographies must match (positions=shapes).
+        assert nzs == nzl, "'3dbox' gII requires matching source/lens tomographic bins."
+
+        # Shared transverse + line-of-sight extent so every central lies inside the
+        # polar-leg / random slab hash grids.
+        cats = [cat_source, cat_lens, cat_random]
+        ext = [min(c.min1 for c in cats), max(c.max1 for c in cats),
+               min(c.min2 for c in cats), max(c.max2 for c in cats)]
+        ext_z = [min(c.min3 for c in cats), max(c.max3 for c in cats)]
+
+        Sd = cat_source.multihash_slabs(dpix, dpix_z, fields=(cat_source.tracer_1, cat_source.tracer_2),
+                                        extent=ext, extent_z=ext_z)
+        Rl = cat_random.multihash_slabs(dpix, dpix_z, extent=ext, extent_z=ext_z)
+
+        # Density-weight rescaling f = W_D / W_R per lens tomo-bin.
+        WD = np.array([cat_lens.weight[cat_lens.zbins == z].sum() for z in range(nzl)])
+        WR = np.array([cat_random.weight[cat_random.zbins == z].sum() for z in range(nzl)])
+        f = np.divide(WD, WR, out=np.ones_like(WD), where=WR > 0).astype(np.float64)
+
+        # Output: the two raw f-free sub-correlators DSS / RSS (each 2 natural comps)
+        # stacked on a leading axis (npcf) + the shared random RRR count (norm_mp).
+        _z3combis = nzl*nzs*nzs
+        nmp = 2*self.nmax+1
+        scomp = (2, self.n_cfs, nmp, _z3combis, self.nbinsr, self.nbinsr)
+        sn = (nmp, _z3combis, self.nbinsr, self.nbinsr)
+        szr = (nzl, nzs, self.nbinsr)
+        _mplen = nmp*_z3combis*self.nbinsr*self.nbinsr
+        out_s, bin_centers, Comp_n, _, RRR_n, _, _ = build_npcf_output(
+            'ngg', self.nbinsr, bc_len=reduce(operator.mul, szr),
+            npcf_len=2*self.n_cfs*_mplen, norm_mp_len=_mplen, ncomp=self.n_cfs)
+        bin_s = build_binning_struct(self, nmax=int(self.nmax), dccorr=int(self.multicountcorr), Pi=self._Pi)
+
+        # cat_lens (D central) is looped directly (raw arrays, no nav); the shape
+        # legs are slab-hashed (e1/e2); the single random is looped as the R central
+        # AND hashed (nav_lensR) for the RRR count legs, so its catalog struct is
+        # built from the same hash bundle Rl.
+        def _rawcat(c):
+            return {'pos1': c.pos1, 'pos2': c.pos2, 'pos3': c.pos3, 'weight': c.weight, 'zbins': c.zbins}
+        catlD, kc1 = build_slab_catalog_struct(_rawcat(cat_lens), nzl)
+        catlR, kc2 = build_slab_catalog_struct(Rl, nzl)
+        navlR, kn2 = build_slab_navhash_struct(Rl)
+        catsD, kc3 = build_slab_catalog_struct(Sd, nzs, e1e2=Sd['fields'])
+        navsD, kn3 = build_slab_navhash_struct(Sd)
+        _alive = kc1 + kc2 + kn2 + kc3 + kn3
+
+        self.clib.alloc_Gammans_slab_NGG(
+            ct.byref(catlD), ct.byref(catlR), ct.byref(catsD), ct.byref(navsD),
+            ct.byref(navlR), ct.byref(bin_s),
+            int(self.nthreads), int(self._verbose_c), ct.byref(out_s))
+
+        # Raw f-free sub-correlators (private, for further analysis).
+        _DSS, _RSS = np.nan_to_num(Comp_n.reshape(scomp))
+        self._DSS, self._RSS = _DSS, _RSS
+        self._RRR = np.nan_to_num(RRR_n.reshape(sn))
+
+        # Recombine with f = W_D/W_R: D~.S.S = DSS - f[zc].RSS (f on the density
+        # central); RRR rescaled by f at each of the three vertices.
+        zc_i, z2_i, z3_i = np.unravel_index(np.arange(_z3combis), (nzl, nzs, nzs))
+        fc = f[zc_i]; f2 = f[z2_i]; f3 = f[z3_i]
+        self.npcf_multipoles = _DSS - fc.reshape(1, 1, _z3combis, 1, 1)*_RSS
+        self.npcf_multipoles_norm = (fc*f2*f3).reshape(1, _z3combis, 1, 1)*self._RRR
+
+        self.bin_centers = bin_centers.reshape(szr)
+        self.bin_centers_mean = np.mean(self.bin_centers, axis=(0, 1))
+        self.projection = "X"
+        self.is_edge_corrected = False
+
+        if not dotomo_source:
+            cat_source.zbins = old_zbins_source
+        if not dotomo_lens:
+            cat_lens.zbins, cat_random.zbins = old_zbins_lens
+        return
+
+    def process(self, cat_source, cat_lens=None, cat_random=None,
+                Pi=None, dpix=None, dpix_z=None, dotomo_source=True, dotomo_lens=True,
+                rotsignflip=False, apply_edge_correction=False,
                 save_patchres=False, save_filebase="", keep_patchres=False):
         r"""
         Compute a lens-shear-shear correlation provided a source and a lens catalog.
@@ -1330,6 +1663,25 @@ class NGGCorrelation(BinnedNPCF):
             If the catalog consists of multiple patches, returns all measurements on the patches. Defaults to ``False``.
         """
 
+        # '3dbox' geometry: projected gII (Vedder Eq. 17, D~.S.S / RRR) via the
+        # discrete slab-hashed NGG estimator with a single (lens/density) random.
+        # When no separate position catalog is passed the positions are taken from
+        # the shape catalog (the auto-correlation case). Dispatches to
+        # alloc_Gammans_slab_NGG and returns the usual Upsilon / Norm multipole pair.
+        if cat_source.geometry == '3dbox':
+            assert cat_random is not None, "'3dbox' gII requires a random catalog (cat_random)."
+            assert Pi is not None, "'3dbox' gII requires a projection length Pi."
+            if cat_lens is None:
+                cat_lens = ScalarTracerCatalog(
+                    cat_source.pos1, cat_source.pos2, np.ones(cat_source.ngal),
+                    pos3=cat_source.pos3, weight=cat_source.weight,
+                    zbins=cat_source.zbins.copy(), geometry='3dbox')
+            assert cat_lens.geometry == '3dbox' and cat_random.geometry == '3dbox', \
+                "'3dbox' gII requires all catalogs in '3dbox'."
+            return self.__process_3dbox(cat_source, cat_lens, cat_random, float(Pi),
+                                        dpix=dpix, dpix_z=dpix_z,
+                                        dotomo_source=dotomo_source, dotomo_lens=dotomo_lens)
+
         self._checkcats([cat_lens, cat_source, cat_source], [0, 2, 2])
 
          # Catch typical errors, i.e. incompatible catalogs or missin patch decompositions
@@ -1343,8 +1695,8 @@ class NGGCorrelation(BinnedNPCF):
 
         # Catalog consist of multiple patches
         if (cat_source.patchinds is not None) and (cat_lens.patchinds is not None):
-            return self.__process_patches(cat_source, cat_lens, dotomo_source=dotomo_source, dotomo_lens=dotomo_lens, 
-                                          rotsignflip=rotsignflip, apply_edge_correction=apply_edge_correction, 
+            return self.__process_patches(cat_source, cat_lens, dotomo_source=dotomo_source, dotomo_lens=dotomo_lens,
+                                          rotsignflip=rotsignflip, apply_edge_correction=apply_edge_correction,
                                           save_patchres=save_patchres, save_filebase=save_filebase, keep_patchres=keep_patchres)
 
         # Catalog does not consist of patches
@@ -1367,134 +1719,70 @@ class NGGCorrelation(BinnedNPCF):
             sc = (self.n_cfs, 2*self.nmax+1, _z3combis, self.nbinsr, self.nbinsr)
             sn = (2*self.nmax+1, _z3combis, self.nbinsr,self.nbinsr)
             szr = (self.nbinsz_lens, self.nbinsz_source, self.nbinsr)
-            bin_centers = np.zeros(reduce(operator.mul, szr)).astype(np.float64)
-            Upsilon_n = np.zeros(reduce(operator.mul, sc)).astype(np.complex128)
-            Norm_n = np.zeros(reduce(operator.mul, sn)).astype(np.complex128)
-            args_sourcecat = (cat_source.weight.astype(np.float64), 
-                            cat_source.pos1.astype(np.float64), cat_source.pos2.astype(np.float64), 
-                            cat_source.tracer_1.astype(np.float64), cat_source.tracer_2.astype(np.float64), 
-                            cat_source.zbins.astype(np.int32), np.int32(self.nbinsz_source), np.int32(cat_source.ngal), )
-            args_lenscat = (cat_lens.isinner.astype(np.float64), cat_lens.weight.astype(np.float64), cat_lens.pos1.astype(np.float64), 
-                            cat_lens.pos2.astype(np.float64), cat_lens.zbins.astype(np.int32), 
-                            np.int32(self.nbinsz_lens), np.int32(cat_lens.ngal), )
-            args_basesetup = (np.int32(self.nmax), np.float64(self.min_sep), np.float64(self.max_sep),
-                            np.int32(self.nbinsr), np.int32(self.multicountcorr), )
+            # Struct interface (hoist-to-locals shim in corrfunc_third.c). Scalar-
+            # position central lens + two shear (source) legs; the lens (central)
+            # nav carries the occupied-region list. NGG has n_cfs=2 natural
+            # components and 2*nmax+1 multipoles.
+            out_s, bin_centers, Upsilon_n, _, Norm_n, _, _ = build_npcf_output(
+                'ngg', self.nbinsr, bc_len=reduce(operator.mul, szr),
+                npcf_len=reduce(operator.mul, sc), norm_mp_len=reduce(operator.mul, sn),
+                ncomp=self.n_cfs)
+            bin_s = build_binning_struct(self, nmax=int(self.nmax),
+                                         dccorr=int(self.multicountcorr))
+            jointextent = list(cat_source._jointextent([cat_lens], extend=self.tree_resos[-1]))
             if self.method=="Discrete":
                 hash_dpix = max(1.,self.max_sep//10.)
-                jointextent = list(cat_source._jointextent([cat_lens], extend=self.tree_resos[-1]))
                 cat_source.build_spatialhash(dpix=hash_dpix, extent=jointextent)
                 cat_lens.build_spatialhash(dpix=hash_dpix, extent=jointextent)
-                nregions = np.int32(len(np.argwhere(cat_lens.index_matcher>-1).flatten()))
-                args_hash = (cat_source.index_matcher, cat_source.pixs_galind_bounds, cat_source.pix_gals,
-                            cat_lens.index_matcher, cat_lens.pixs_galind_bounds, cat_lens.pix_gals, nregions, )
-                args_pixgrid = (np.float64(cat_lens.pix1_start), np.float64(cat_lens.pix1_d), np.int32(cat_lens.pix1_n), 
-                                np.float64(cat_lens.pix2_start), np.float64(cat_lens.pix2_d), np.int32(cat_lens.pix2_n), )
-                args = (*args_sourcecat,
-                        *args_lenscat,
-                        *args_basesetup,
-                        *args_hash,
-                        *args_pixgrid,
-                        np.int32(self.nthreads),
-                        np.int32(self._verbose_c),
-                        bin_centers,
-                        Upsilon_n,
-                        Norm_n, )
-                func = self.clib.alloc_Gammans_discrete_NGG
+                cats_s, keep_cs = build_flat_catalog_struct(
+                    cat_source.pos1, cat_source.pos2, cat_source.weight, cat_source.zbins,
+                    self.nbinsz_source, cat_source.isinner,
+                    e1=cat_source.tracer_1, e2=cat_source.tracer_2)
+                navs_s, keep_ns = build_flat_navhash_struct(cat_source)
+                catl_s, keep_cl = build_flat_catalog_struct(
+                    cat_lens.pos1, cat_lens.pos2, cat_lens.weight, cat_lens.zbins,
+                    self.nbinsz_lens, cat_lens.isinner)
+                navl_s, keep_nl = build_flat_navhash_struct(cat_lens)
+                _alive = keep_cs + keep_ns + keep_cl + keep_nl   # noqa: F841
+                self.clib.alloc_Gammans_discrete_NGG(
+                    ct.byref(cats_s), ct.byref(navs_s), ct.byref(catl_s), ct.byref(navl_s),
+                    ct.byref(bin_s), int(self.nthreads), int(self._verbose_c), ct.byref(out_s))
             if self.method=="Tree" or self.method == "DoubleTree":
                 cutfirst = np.int32(self.tree_resos[0]==0.)
-                jointextent = list(cat_source._jointextent([cat_lens], extend=self.tree_resos[-1]))
-                # Build multihashes for sources and lenses
-                mhash_source = cat_source.multihash(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1], 
-                                                    shuffle=self.shuffle_pix, normed=True, extent=jointextent)
-                sngal_resos, spos1s, spos2s, sweights, szbins, sisinners, sallfields, sindex_matchers, \
-                spixs_galind_bounds, spix_gals, sdpixs1_true, sdpixs2_true = mhash_source
-                ngal_resos_source = np.array(sngal_resos, dtype=np.int32)
-                weight_resos_source = np.concatenate(sweights).astype(np.float64)
-                pos1_resos_source = np.concatenate(spos1s).astype(np.float64)
-                pos2_resos_source = np.concatenate(spos2s).astype(np.float64)
-                zbin_resos_source = np.concatenate(szbins).astype(np.int32)
-                isinner_resos_source = np.concatenate(sisinners).astype(np.float64)
+                mhs = cat_source.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1],
+                                                  shuffle=self.shuffle_pix, normed=True, extent=jointextent, nthreads=self.nthreads)
+                sallfields = mhs['allfields']
                 e1_resos_source = np.concatenate([sallfields[i][0] for i in range(len(sallfields))]).astype(np.float64)
                 e2_resos_source = np.concatenate([sallfields[i][1] for i in range(len(sallfields))]).astype(np.float64)
-                index_matcher_source = np.concatenate(sindex_matchers).astype(np.int32)
-                pixs_galind_bounds_source = np.concatenate(spixs_galind_bounds).astype(np.int32)
-                pix_gals_source = np.concatenate(spix_gals).astype(np.int32)
-                mhash_lens = cat_lens.multihash(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1], 
-                                                shuffle=self.shuffle_pix, normed=True, extent=jointextent)
-                lngal_resos, lpos1s, lpos2s, lweights, lzbins, lisinners, lallfields, lindex_matchers, \
-                lpixs_galind_bounds, lpix_gals, ldpixs1_true, ldpixs2_true = mhash_lens
-                ngal_resos_lens = np.array(lngal_resos, dtype=np.int32)
-                weight_resos_lens = np.concatenate(lweights).astype(np.float64)
-                pos1_resos_lens = np.concatenate(lpos1s).astype(np.float64)
-                pos2_resos_lens = np.concatenate(lpos2s).astype(np.float64)
-                zbin_resos_lens = np.concatenate(lzbins).astype(np.int32)
-                isinner_resos_lens = np.concatenate(lisinners).astype(np.float64)
-                index_matcher_lens = np.concatenate(lindex_matchers).astype(np.int32)
-                pixs_galind_bounds_lens = np.concatenate(lpixs_galind_bounds).astype(np.int32)
-                pix_gals_lens = np.asarray(np.concatenate(lpix_gals)).astype(np.int32)
-                index_matcher_flat = np.argwhere(cat_lens.index_matcher>-1).flatten().astype(np.int32)
-                nregions = np.int32(len(index_matcher_flat))
+                cats_s, keep_cs = build_catalog_struct(
+                    mhs, self.nbinsz_source, extra={'e1_resos': e1_resos_source, 'e2_resos': e2_resos_source})
+                cats_s.nresos = int(self.tree_nresos)
+                navs_s, keep_ns = build_navhash_struct(mhs, cat_obj=cat_source)
+                mhl = cat_lens.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1],
+                                                shuffle=self.shuffle_pix, normed=True, extent=jointextent, nthreads=self.nthreads)
+                navl_s, keep_nl = build_navhash_struct(mhl, cat_obj=cat_lens)
             if self.method=="Tree":
-                # Collect args
-                args_resoinfo = (np.int32(self.tree_nresos), self.tree_redges,)
-                args_resos_sourcecat = (weight_resos_source, pos1_resos_source, pos2_resos_source,
-                                        e1_resos_source, e2_resos_source, zbin_resos_source, 
-                                        np.int32(self.nbinsz_source), ngal_resos_source, )
-                args_mhash = (index_matcher_source, pixs_galind_bounds_source, pix_gals_source,
-                            index_matcher_lens, pixs_galind_bounds_lens, pix_gals_lens, nregions, )
-                args_pixgrid = (np.float64(cat_lens.pix1_start), np.float64(cat_lens.pix1_d), np.int32(cat_lens.pix1_n), 
-                                np.float64(cat_lens.pix2_start), np.float64(cat_lens.pix2_d), np.int32(cat_lens.pix2_n), )
-                args = (*args_resoinfo,
-                        *args_resos_sourcecat,
-                        *args_lenscat,
-                        *args_mhash,
-                        *args_pixgrid,
-                        *args_basesetup,
-                        np.int32(self.nthreads),
-                        np.int32(self._verbose_c),
-                        bin_centers,
-                        Upsilon_n,
-                        Norm_n, )
-                func = self.clib.alloc_Gammans_tree_NGG            
+                # Tree: reduced source field + base lens central (its multireso hash
+                # in navl_s carries the lens nregions).
+                catl_s, keep_cl = build_flat_catalog_struct(
+                    cat_lens.pos1, cat_lens.pos2, cat_lens.weight, cat_lens.zbins,
+                    self.nbinsz_lens, cat_lens.isinner)
+                tree_s, keep_tree = build_tree_params_struct(self, mhs)
+                _alive = keep_cs + keep_ns + keep_cl + keep_nl + keep_tree   # noqa: F841
+                self.clib.alloc_Gammans_tree_NGG(
+                    ct.byref(cats_s), ct.byref(navs_s), ct.byref(catl_s), ct.byref(navl_s),
+                    ct.byref(tree_s), ct.byref(bin_s), int(self.nthreads), int(self._verbose_c),
+                    ct.byref(out_s))
             if self.method == "DoubleTree":
-                # Collect args
-                args_resoinfo = (np.int32(self.tree_nresos), np.int32(self.tree_nresos-cutfirst),
-                                sdpixs1_true.astype(np.float64), sdpixs2_true.astype(np.float64), self.tree_redges, )
-                args_leafs = (np.int32(self.resoshift_leafs), np.int32(self.minresoind_leaf), 
-                            np.int32(self.maxresoind_leaf), )
-                args_resos = (isinner_resos_source, weight_resos_source, pos1_resos_source, pos2_resos_source,
-                            e1_resos_source, e2_resos_source, zbin_resos_source, ngal_resos_source, 
-                            np.int32(self.nbinsz_source), isinner_resos_lens, weight_resos_lens, pos1_resos_lens, 
-                            pos2_resos_lens, zbin_resos_lens, ngal_resos_lens, np.int32(self.nbinsz_lens), )
-                args_mhash = (index_matcher_source, pixs_galind_bounds_source, pix_gals_source,
-                            index_matcher_lens, pixs_galind_bounds_lens, pix_gals_lens, index_matcher_flat, nregions, )
-                args_pixgrid = (np.float64(cat_lens.pix1_start), np.float64(cat_lens.pix1_d), np.int32(cat_lens.pix1_n), 
-                                np.float64(cat_lens.pix2_start), np.float64(cat_lens.pix2_d), np.int32(cat_lens.pix2_n), )
-                args = (*args_resoinfo,
-                        *args_leafs,
-                        *args_resos,
-                        *args_basesetup,
-                        *args_mhash,
-                        *args_pixgrid,
-                        np.int32(self.nthreads),
-                        np.int32(self._verbose_c),
-                        bin_centers,
-                        Upsilon_n,
-                        Norm_n, )
-                func = self.clib.alloc_Gammans_doubletree_NGG
-            if self._verbose_debug:
-                for elarg, arg in enumerate(args):
-                    toprint = (elarg, type(arg),)
-                    if isinstance(arg, np.ndarray):
-                        toprint += (type(arg[0]), arg.shape)
-                    try:
-                        toprint += (func.argtypes[elarg], )
-                        print(toprint)
-                        print(arg)
-                    except:
-                        print("We did have a problem for arg %i"%elarg)
-            
-            func(*args)
+                catl_s, keep_cl = build_catalog_struct(mhl, self.nbinsz_lens)
+                catl_s.nresos = int(self.tree_nresos)
+                tree_s, keep_tree = build_tree_params_struct(self, mhs)
+                tree_s.nresos_grid = int(self.tree_nresos - cutfirst)
+                _alive = keep_cs + keep_ns + keep_cl + keep_nl + keep_tree   # noqa: F841
+                self.clib.alloc_Gammans_doubletree_NGG(
+                    ct.byref(cats_s), ct.byref(navs_s), ct.byref(catl_s), ct.byref(navl_s),
+                    ct.byref(tree_s), ct.byref(bin_s), int(self.nthreads), int(self._verbose_c),
+                    ct.byref(out_s))
             
             # Components of npcf are ordered as (Ups_-, Ups_+)
             self.bin_centers = bin_centers.reshape(szr)

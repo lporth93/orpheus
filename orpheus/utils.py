@@ -1,4 +1,6 @@
 import numpy as np
+from healpy import pix2ang, ang2pix, nside2resol
+
 from itertools import combinations_with_replacement, product
 import os
 import site
@@ -29,6 +31,38 @@ def search_file_in_site_package(directory, package):
             if file.startswith(package):
                 return os.path.join(root, file)
     return None
+
+def _randomhealpixshift(nside, pixel_idx, rng, oversampling=3):
+    """Applies a random shift within a healpix pixel assuming NEST
+    ordering scheme. 
+    """
+
+    ngal = len(pixel_idx)
+    if ngal == 0:
+        return np.empty(0, dtype=np.float64), np.empty(0, dtype=np.float64)
+
+    theta_c, phi_c = pix2ang(nside, pixel_idx, nest=True)
+    pix_scale = nside2resol(nside)
+    dtheta = rng.uniform(-pix_scale, pix_scale, size=(oversampling, ngal))
+    dphi = rng.uniform(-pix_scale, pix_scale, size=(oversampling, ngal))
+    theta_s = np.clip(theta_c + dtheta, 0, np.pi)
+    phi_s = (phi_c + dphi / np.sin(np.clip(theta_c, 1e-5, np.pi - 1e-5))) % (2. * np.pi)
+
+    candidate_pix = ang2pix(nside, theta_s, phi_s, nest=True)
+    accepted = candidate_pix == pixel_idx[np.newaxis, :]
+    first_ok = np.argmax(accepted, axis=0)
+
+    theta_out = theta_s[first_ok, np.arange(ngal)]
+    phi_out = phi_s[first_ok, np.arange(ngal)]
+
+    any_ok = accepted.any(axis=0)
+    if not any_ok.all():
+        missing = np.where(~any_ok)[0]
+        theta_out[missing], phi_out[missing] = _randomhealpixshift(
+            nside, pixel_idx[missing], rng, oversampling=oversampling)
+
+    return theta_out, phi_out
+
 
 def gen_thetacombis_fourthorder(nbinsr, nthreads, batchsize, batchsize_max, ordered=True, custom=None, verbose=False):
         

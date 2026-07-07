@@ -37,6 +37,18 @@ def try_compile(code, compiler, cflags=None, lflags=None, include_dirs=None, lib
             if os.path.exists(fname):
                 os.remove(fname)
 
+# Compile/link flags for healpix_cxx (used by the one C++ TU, healpix_utils.cpp,
+# which exposes query_disc to the C estimators). Prefer pkg-config; fall back to
+# the conventional system layout.
+def healpix_cxx_flags():
+    try:
+        cflags = subprocess.check_output(["pkg-config", "--cflags", "healpix_cxx"]).decode().split()
+        libs = subprocess.check_output(["pkg-config", "--libs", "healpix_cxx"]).decode().split()
+        return cflags, libs
+    except Exception:
+        return ["-I/usr/include/healpix_cxx"], ["-lhealpix_cxx"]
+
+
 # Find first available compiler
 def detect_compiler(preferred=("gcc-15", "gcc-14", "gcc-13", "gcc-12", "gcc-11", "gcc", "icc")):
     for cc in preferred:
@@ -170,6 +182,24 @@ class BuildExtWithDetect(build_ext):
                 ext.extra_compile_args = ["-O3", "-ffast-math", "-std=c99", "-fPIC"]
                 ext.extra_link_args = ["-shared", "-lm"]
 
+        # C++ TU (healpix_utils.cpp): the global flags above are tuned for C
+        # (notably -std=c99, invalid for C++). Patch the compiler so .cpp sources
+        # build as C++ with the healpix_cxx include path, and link the C++ runtime
+        # + healpix_cxx into the shared library. C sources are untouched.
+        cxx_cflags, cxx_libs = healpix_cxx_flags()
+        orig_compile = self.compiler._compile
+
+        def _compile_per_lang(obj, src, ext, cc_args, extra_postargs, pp_opts):
+            if os.path.splitext(src)[1] in (".cpp", ".cc", ".cxx"):
+                postargs = [a for a in extra_postargs if a != "-std=c99"]
+                postargs = postargs + ["-std=c++14"] + cxx_cflags
+                return orig_compile(obj, src, ext, cc_args, postargs, pp_opts)
+            return orig_compile(obj, src, ext, cc_args, extra_postargs, pp_opts)
+
+        self.compiler._compile = _compile_per_lang
+        for ext in self.extensions:
+            ext.extra_link_args = list(ext.extra_link_args or []) + cxx_libs + ["-lstdc++"]
+
         super().build_extensions()
 
 
@@ -180,6 +210,7 @@ ext_modules = [
         sources=[
             "orpheus/src/utils.c",
             "orpheus/src/assign.c",
+            "orpheus/src/healpix_utils.cpp",
             "orpheus/src/spatialhash.c",
             "orpheus/src/combinatorics.c",
             "orpheus/src/directestimator.c",
@@ -187,9 +218,10 @@ ext_modules = [
             "orpheus/src/corrfunc_third.c",
             "orpheus/src/corrfunc_third_derived.c",
             "orpheus/src/corrfunc_fourth.c",
-            "orpheus/src/corrfunc_fourth_derived.c",],
+            "orpheus/src/corrfunc_fourth_derived.c",
+            "orpheus/src/cov_postq.c",],
         include_dirs=["orpheus/src"],
-    )
+    ),
 ]
 
 # read long description from README

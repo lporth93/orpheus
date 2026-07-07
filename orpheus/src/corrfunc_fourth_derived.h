@@ -9,7 +9,10 @@
 void getMultipolesFromSymm(double complex *Upsn_in, double complex *Nn_in,
                             int nmax, int eltrafo, int *nindices, int len_nindices,
                             double complex *Upsn_out, double complex *Nn_out);
-
+void multipoles2npcf_nnnn(double complex *N_n, int n1max, int n2max,
+                          double *theta_centers, int nbinsstheta,
+                          double *phis12, double *phis13, int nbinsphi12, int nbinsphi13,
+                          double complex *npcf, int nthreads);
 void multipoles2npcf_gggg_singletheta(double complex *Upsilon_n, double complex *N_n, int n1max, int n2max,
                                       double theta1, double theta2, double theta3,
                                       double *phis12, double *phis13, int nbinsphi12, int nbinsphi13,

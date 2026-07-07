@@ -1,11 +1,18 @@
 import numpy as np
-from pathlib import Path 
+import ctypes as ct
+from pathlib import Path
 import copy
 
 from .catalog import Catalog, ScalarTracerCatalog, SpinTracerCatalog
 from .npcf_base import BinnedNPCF
+from .utils import convertunits
+from .multires_structs import (build_catalog_struct, build_navhash_struct,
+                               build_tree_params_struct, build_binning_struct,
+                               build_npcf_output,
+                               MultiresoCatalog, NavHash, TreeResoParams,
+                               BinningParams, NPCFOutput)
 
-__all__ = ["NNCorrelation", "GGCorrelation"]
+__all__ = ["NNCorrelation", "GGCorrelation", "NGCorrelation"]
 
 
 ###############################   
@@ -59,8 +66,12 @@ class NNCorrelation(BinnedNPCF):
 
     """
 
-    def __init__(self, min_sep, max_sep, shuffle_pix=1, **kwargs):
+    def __init__(self, min_sep, max_sep, shuffle_pix=1, process_spherical=False, **kwargs):
         super().__init__(order=2, spins=np.array([0,0], dtype=np.int32), n_cfs=1, min_sep=min_sep, max_sep=max_sep, shuffle_pix=shuffle_pix, **kwargs)
+        # Native curved-sky pair counts (geodesic distance + nested-HEALPix
+        # query_disc navigation) instead of patch decomposition. See
+        # Catalog.multihash_spherical / alloc_nn_doubletree (metric=SPHERICAL).
+        self.process_spherical = bool(process_spherical)
         self.projection = None
         self.projections_avail = [None]
         self.nbinsz = None
@@ -96,7 +107,7 @@ class NNCorrelation(BinnedNPCF):
                  npair=self.npair,
                  npair_cell=self.npair_cell)
 
-    def __process_patches(self, cat, dotomo=True,  do_dc=True, adjust_tree=False,
+    def __process_patches(self, cat, dotomo=True,  do_dc=False, adjust_tree=False,
                           save_patchres=False, save_filebase="", keep_patchres=False):
 
         if save_patchres:
@@ -152,7 +163,7 @@ class NNCorrelation(BinnedNPCF):
         if keep_patchres:
             return centers_patches, npair_patches, npair_cell_patches
     
-    def process(self, cat, cat_random=None, dotomo=True, do_dc=True, adjust_tree=False,
+    def process(self, cat, cat_random=None, dotomo=True, do_dc=False, adjust_tree=False,
                 save_patchres=False, save_filebase="", keep_patchres=False):
         r"""
         Compute NN pair counts for a catalog, and optionally the clustering 2PCF ``xi``.
@@ -185,89 +196,107 @@ class NNCorrelation(BinnedNPCF):
             If the catalog consists of multiple patches, returns all measurements on the patches. Defaults to `False`.
         """
 
-        # If random catalog present, use the __compute_xi method
+        # If random catalog present, compute xi via the Landy-Szalay estimator.
         if cat_random is not None:
             assert(isinstance(cat_random, ScalarTracerCatalog))
+            if not do_dc: print("Warning: for 2pt-clustering double-counting is enforced. do_dc set to True")
             self.__compute_xi(cat, cat_random, dotomo=dotomo, adjust_tree=adjust_tree,
                    save_patchres=save_patchres, keep_patchres=keep_patchres, estimator="LS")
             return
 
-        # Make sure that in case the catalog is spherical, it has been decomposed into patches
-        if cat.geometry == 'spherical' and cat.patchinds is None:
-            raise ValueError('Error: Spherical catalog needs to be first decomposed into patches using the Catalog._topatches method.')
-
-        # Catalog consist of multiple patches
-        if cat.patchinds is not None:
+        # Native curved-sky pair counts (geodesic distance + nested-HEALPix
+        # query_disc) require process_spherical; otherwise a spherical catalog
+        # must first be decomposed into patches. Flat (or patched) catalogs take
+        # the pixel-box path. The struct-based alloc_nn_doubletree dispatches on
+        # cat->metric, so both geometries share the call block below.
+        native_spherical = self.process_spherical and cat.geometry == 'spherical'
+        if cat.geometry == 'spherical' and not native_spherical and cat.patchinds is None:
+            raise ValueError('Error: Spherical catalog needs to be first decomposed into patches '
+                             'using the Catalog._topatches method, or process_spherical=True must be set.')
+        if cat.patchinds is not None and not native_spherical:
             return self.__process_patches(cat, dotomo=dotomo, do_dc=do_dc, adjust_tree=adjust_tree,
-                                          save_patchres=save_patchres, save_filebase=save_filebase, keep_patchres=keep_patchres)   
-        # Catalog does not consist of patches
+                                          save_patchres=save_patchres, save_filebase=save_filebase,
+                                          keep_patchres=keep_patchres)
+
+        # Tomography setup (shared by flat and native-spherical)
+        self._checkcats(cat, self.spins)
+        if not dotomo:
+            self.nbinsz = 1
+            old_zbins = cat.zbins[:]
+            cat.zbins = np.zeros(cat.ngal, dtype=np.int32)
+            self.nzcombis = 1
         else:
-            # Prechecks
-            self._checkcats(cat, self.spins)
-            if not dotomo:
-                self.nbinsz = 1
-                old_zbins = cat.zbins[:]
-                cat.zbins = np.zeros(cat.ngal, dtype=np.int32)
-                self.nzcombis = 1
-            else:
-                self.nbinsz = cat.nbinsz
-                zbins = cat.zbins
-                self.nzcombis = self.nbinsz*self.nbinsz
+            self.nbinsz = cat.nbinsz
+            self.nzcombis = self.nbinsz*self.nbinsz
+        nbinsz = self.nbinsz
+        sz2r = (nbinsz*nbinsz, self.nbinsr)
 
-            z2r = self.nbinsz*self.nbinsz*self.nbinsr
-            sz2r = (self.nbinsz*self.nbinsz, self.nbinsr)
-            bin_centers = np.zeros(z2r).astype(np.float64)
-            npair = np.zeros(z2r).astype(np.float64)
-            npair_cell = np.zeros(z2r).astype(np.int64)
-                        
+        # Build the multihash bundle
+        if native_spherical:
+            from healpy import nside2resol
+            sep2rad = convertunits(self.sep_units, 'rad')
+            sep2deg = convertunits(self.sep_units, 'deg')
+            # HEALPix nside per band: smallest nside whose pixel is <= the band cell;
+            # tree_resos[r]==0 marks a discrete band.
+            def _nside_for(target_rad):
+                ns = 1
+                while nside2resol(ns) > target_rad and ns < 2**29:
+                    ns *= 2
+                return ns
+            nsides = [0 if self.tree_resos[r]==0. else _nside_for(self.tree_resos[r]*sep2rad)
+                      for r in range(self.tree_nresos)]
+            nside_hash = _nside_for(max(self.min_sep, 0.5*self.tree_redges[1])*sep2rad)
+            # multihash_spherical reads reso_redges in degrees (-> radians internally),
+            # so hand it tree_redges converted from sep_units to degrees.
+            mh = cat.multihash_bundle(reso_redges=self.tree_redges*sep2deg, nsides=nsides,
+                                      shuffle=self.shuffle_pix, nside_hash=nside_hash, verbose=self._verbose_python)
+        else:
             cutfirst = np.int32(self.tree_resos[0]==0.)
-            mhash = cat.multihash(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1], 
-                                  shuffle=self.shuffle_pix, normed=False)
-            ngal_resos, pos1s, pos2s, weights, zbins, isinners, allfields, index_matchers, pixs_galind_bounds, pix_gals, dpixs1_true, dpixs2_true = mhash
-            weight_resos = np.concatenate(weights).astype(np.float64)
-            pos1_resos = np.concatenate(pos1s).astype(np.float64)
-            pos2_resos = np.concatenate(pos2s).astype(np.float64)
-            zbin_resos = np.concatenate(zbins).astype(np.int32)
-            isinner_resos = np.concatenate(isinners).astype(np.float64)
-            index_matcher = np.concatenate(index_matchers).astype(np.int32)
-            pixs_galind_bounds = np.concatenate(pixs_galind_bounds).astype(np.int32)
-            pix_gals = np.concatenate(pix_gals).astype(np.int32)
-            index_matcher_flat = np.argwhere(cat.index_matcher>-1).flatten()
-            nregions = len(index_matcher_flat)
-            
-            args_treeresos = (np.int32(self.tree_nresos), np.int32(self.tree_nresos-cutfirst),
-                            dpixs1_true.astype(np.float64), dpixs2_true.astype(np.float64), self.tree_redges, 
-                            np.int32(self.resoshift_leafs), np.int32(self.minresoind_leaf), 
-                            np.int32(self.maxresoind_leaf), np.array(ngal_resos, dtype=np.int32), )
-            args_resos = (isinner_resos, weight_resos, pos1_resos, pos2_resos, zbin_resos,
-                        index_matcher, pixs_galind_bounds, pix_gals, )
-            args_hash = (np.float64(cat.pix1_start), np.float64(cat.pix1_d), np.int32(cat.pix1_n), 
-                        np.float64(cat.pix2_start), np.float64(cat.pix2_d), np.int32(cat.pix2_n), 
-                        np.int32(nregions), index_matcher_flat.astype(np.int32),)
-            args_binning = (np.float64(self.min_sep), np.float64(self.max_sep), np.int32(self.nbinsr), np.int32(do_dc), )
-            args_output = (bin_centers, npair, npair_cell, )
-            func = self.clib.alloc_nn_doubletree
-            args = (*args_treeresos,
-                    np.int32(self.nbinsz),
-                    *args_resos,
-                    *args_hash,
-                    *args_binning,
-                    np.int32(self.nthreads),
-                    np.int32(self._verbose_c)+np.int32(self._verbose_debug),
-                    *args_output)
+            mh = cat.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1],
+                                      shuffle=self.shuffle_pix, normed=False, nthreads=self.nthreads)
 
-            func(*args)
-            
-            self.bin_centers = bin_centers.reshape(sz2r)
-            self.bin_centers_mean = np.mean(self.bin_centers, axis=0)
-            self.npair = npair.reshape(sz2r)
-            self.npair_cell = npair_cell.reshape(sz2r)
-            self.projection = None
-            
-            if not dotomo:
-                cat.zbins = old_zbins
+        # Build the four input structs + output arrays
+        cat_s, keep_cat = build_catalog_struct(mh, nbinsz)
+        # The flat bundle reports nresos = #levels-1; the C rshift/loop convention
+        # counts every tree level, so use tree_nresos (matches the legacy call).
+        cat_s.nresos = int(self.tree_nresos)
+        nav_s, keep_nav = build_navhash_struct(mh, cat_obj=cat)
+        tree_s, keep_tree = build_tree_params_struct(self, mh)
+        maxleaf = max(0, self.tree_nresos-1)
+        tree_s.minresoind_leaf = min(int(self.minresoind_leaf), maxleaf)
+        tree_s.maxresoind_leaf = min(int(self.maxresoind_leaf), maxleaf)
+        scale = convertunits(self.sep_units, 'rad') if native_spherical else None
+        bin_s = build_binning_struct(self, do_dc=do_dc, scale=scale)
+        # NN: the weighted pair count lives in the NPCFOutput 'norm' slot; the
+        # integer cell count in 'npair_cell' (npcf/norm_mp/npair unused).
+        out_s, bin_centers, _, npair, _, _, npair_cell = build_npcf_output(
+            'nn', self.nbinsr, nbinsz=nbinsz)
 
-            return
+        # Keep every numpy array referenced only through a struct field alive across
+        # the C call (ctypes structs are invisible to Python's garbage collector).
+        _alive = keep_cat + keep_nav + keep_tree   # noqa: F841
+
+        self.clib.alloc_nn_doubletree(
+            ct.byref(cat_s), ct.byref(nav_s), ct.byref(tree_s), ct.byref(bin_s),
+            int(self.nthreads),
+            int(self._verbose_c)+int(self._verbose_debug),
+            ct.byref(out_s))
+
+        # Unpack results
+        if native_spherical:
+            bin_centers /= convertunits(self.sep_units, 'rad')   # radians -> sep_units
+
+        self.bin_centers = bin_centers.reshape(sz2r)
+        self.bin_centers_mean = np.mean(self.bin_centers, axis=0)
+        self.npair = npair.reshape(sz2r)
+        self.npair_cell = npair_cell.reshape(sz2r)
+        self.projection = None
+        if not do_dc:self.npair*=2
+
+        if not dotomo:
+            cat.zbins = old_zbins
+
+        return
 
     def __compute_xi(self, cat_data, cat_rand, dotomo=True, adjust_tree=False,
                    save_patchres=False, keep_patchres=False, estimator="LS"):
@@ -291,9 +320,9 @@ class NNCorrelation(BinnedNPCF):
             units_pos2= cat_data.units_pos1,
             zbins=zbins)
         
-        # In case of a spherical geometry, decompose the joint catalog in patches of the same target geometry as
-        # the geometry that was specified in the data catalog
-        if cat_data.geometry=="spherical":
+        # In case of a spherical geometry but no spherical projection, decompose the joint catalog 
+        # in patches of roughly equal size 
+        if cat_data.geometry=="spherical" and not self.process_spherical:
             joint_cat.topatches(npatches=cat_data.npatches, 
                                 patchextend_deg=cat_data.patchinds['info']['patchextend_deg'],
                                 nside_hash=cat_data.patchinds['info']['nside_hash'],
@@ -380,8 +409,12 @@ class GGCorrelation(BinnedNPCF):
     Either ``nbinsr`` or ``binsize`` has to be provided to fix the binning scheme.
     """
 
-    def __init__(self, min_sep, max_sep, **kwargs):
+    def __init__(self, min_sep, max_sep, process_spherical=False, **kwargs):
         super().__init__(order=2, spins=np.array([2,2], dtype=np.int32), n_cfs=2, min_sep=min_sep, max_sep=max_sep, **kwargs)
+        # Native curved-sky shear 2PCF (geodesic distance + nested-HEALPix
+        # query_disc + spin-2 geodesic projection) instead of patch decomposition.
+        # See Catalog.multihash_spherical / alloc_gg_doubletree (metric=SPHERICAL).
+        self.process_spherical = bool(process_spherical)
         self.projection = None
         self.projections_avail = [None]
         self.nbinsz = None
@@ -517,86 +550,103 @@ class GGCorrelation(BinnedNPCF):
             If the catalog consists of multiple patches, returns all measurements on the patches. Defaults to `False`.
         """
 
-        # Make sure that in case the catalog is spherical, it has been decomposed into patches
-        if cat.geometry == 'spherical' and cat.patchinds is None:
-            raise ValueError('Error: Spherical catalog needs to be first decomposed into patches using the Catalog._topatches method.')
-
-        # Catalog consist of multiple patches
-        if cat.patchinds is not None:
+        # Native curved-sky shear 2PCF (geodesic distance + nested-HEALPix
+        # query_disc + spin-2 geodesic projection) requires process_spherical;
+        # otherwise a spherical catalog must first be decomposed into patches.
+        # Flat (or patched) catalogs take the pixel-box path. The struct-based
+        # alloc_gg_doubletree dispatches on cat->metric, so both geometries share
+        # the call block below.
+        native_spherical = self.process_spherical and cat.geometry == 'spherical'
+        if cat.geometry == 'spherical' and not native_spherical and cat.patchinds is None:
+            raise ValueError('Error: Spherical catalog needs to be first decomposed into patches '
+                             'using the Catalog._topatches method, or process_spherical=True must be set.')
+        if cat.patchinds is not None and not native_spherical:
             return self.__process_patches(cat, dotomo=dotomo, do_dc=do_dc, rotsignflip=rotsignflip, adjust_tree=adjust_tree,
-                                          save_patchres=save_patchres, save_filebase=save_filebase, keep_patchres=keep_patchres)   
-        # Catalog does not consist of patches
+                                          save_patchres=save_patchres, save_filebase=save_filebase, keep_patchres=keep_patchres)
+
+        # Tomography setup (shared by flat and native-spherical)
+        self._checkcats(cat, self.spins)
+        if not dotomo:
+            self.nbinsz = 1
+            old_zbins = cat.zbins[:]
+            cat.zbins = np.zeros(cat.ngal, dtype=np.int32)
+            self.nzcombis = 1
         else:
-            # Prechecks
-            self._checkcats(cat, self.spins)
-            if not dotomo:
-                self.nbinsz = 1
-                old_zbins = cat.zbins[:]
-                cat.zbins = np.zeros(cat.ngal, dtype=np.int32)
-                self.nzcombis = 1
-            else:
-                self.nbinsz = cat.nbinsz
-                zbins = cat.zbins
-                self.nzcombis = self.nbinsz*self.nbinsz
+            self.nbinsz = cat.nbinsz
+            self.nzcombis = self.nbinsz*self.nbinsz
+        nbinsz = self.nbinsz
+        sz2r = (nbinsz*nbinsz, self.nbinsr)
 
-            z2r = self.nbinsz*self.nbinsz*self.nbinsr
-            sz2r = (self.nbinsz*self.nbinsz, self.nbinsr)
-            bin_centers = np.zeros(z2r).astype(np.float64)
-            xip = np.zeros(z2r).astype(np.complex128)
-            xim = np.zeros(z2r).astype(np.complex128)
-            norm = np.zeros(z2r).astype(np.float64)
-            npair = np.zeros(z2r).astype(np.int64)
-                        
+        # Build the multihash bundle (geometry-specific) and the concatenated
+        # reduced shear the C catalog struct reads via its e1/e2 fields.
+        if native_spherical:
+            from healpy import nside2resol
+            sep2rad = convertunits(self.sep_units, 'rad')
+            sep2deg = convertunits(self.sep_units, 'deg')
+            def _nside_for(target_rad):
+                ns = 1
+                while nside2resol(ns) > target_rad and ns < 2**29:
+                    ns *= 2
+                return ns
+            nsides = [0 if self.tree_resos[r]==0. else _nside_for(self.tree_resos[r]*sep2rad)
+                      for r in range(self.tree_nresos)]
+            nside_hash = _nside_for(max(self.min_sep, 0.5*self.tree_redges[1])*sep2rad)
+            mh = cat.multihash_bundle(reso_redges=self.tree_redges*sep2deg, nsides=nsides,
+                                      nside_hash=nside_hash, shuffle=self.shuffle_pix,
+                                      fields=(cat.tracer_1, cat.tracer_2),
+                                      verbose=self._verbose_python)
+            extra = {'e1_resos': mh['red_e1'], 'e2_resos': mh['red_e2']}
+        else:
             cutfirst = np.int32(self.tree_resos[0]==0.)
-            mhash = cat.multihash(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1], 
-                                shuffle=self.shuffle_pix, w2field=True, normed=True)
-            ngal_resos, pos1s, pos2s, weights, zbins, isinners, allfields, index_matchers, pixs_galind_bounds, pix_gals, dpixs1_true, dpixs2_true = mhash
-            weight_resos = np.concatenate(weights).astype(np.float64)
-            pos1_resos = np.concatenate(pos1s).astype(np.float64)
-            pos2_resos = np.concatenate(pos2s).astype(np.float64)
-            zbin_resos = np.concatenate(zbins).astype(np.int32)
-            isinner_resos = np.concatenate(isinners).astype(np.float64)
-            e1_resos = np.concatenate([allfields[i][0] for i in range(len(allfields))]).astype(np.float64)
-            e2_resos = np.concatenate([allfields[i][1] for i in range(len(allfields))]).astype(np.float64)
-            index_matcher = np.concatenate(index_matchers).astype(np.int32)
-            pixs_galind_bounds = np.concatenate(pixs_galind_bounds).astype(np.int32)
-            pix_gals = np.concatenate(pix_gals).astype(np.int32)
-            index_matcher_flat = np.argwhere(cat.index_matcher>-1).flatten()
-            nregions = len(index_matcher_flat)    
-            
-            args_treeresos = (np.int32(self.tree_nresos), np.int32(self.tree_nresos-cutfirst),
-                            dpixs1_true.astype(np.float64), dpixs2_true.astype(np.float64), self.tree_redges, 
-                            np.int32(self.resoshift_leafs), np.int32(self.minresoind_leaf), 
-                            np.int32(self.maxresoind_leaf), np.array(ngal_resos, dtype=np.int32), )
-            args_resos = (isinner_resos, weight_resos, pos1_resos, pos2_resos, e1_resos, e2_resos, zbin_resos,
-                        index_matcher, pixs_galind_bounds, pix_gals, )
-            args_hash = (np.float64(cat.pix1_start), np.float64(cat.pix1_d), np.int32(cat.pix1_n), 
-                        np.float64(cat.pix2_start), np.float64(cat.pix2_d), np.int32(cat.pix2_n), 
-                        np.int32(nregions), index_matcher_flat.astype(np.int32),)
-            args_binning = (np.float64(self.min_sep), np.float64(self.max_sep), np.int32(self.nbinsr), np.int32(do_dc))
-            args_output = (bin_centers, xip, xim, norm, npair, )
-            func = self.clib.alloc_xipm_doubletree
-            args = (*args_treeresos,
-                    np.int32(self.nbinsz),
-                    *args_resos,
-                    *args_hash,
-                    *args_binning,
-                    np.int32(self.nthreads),
-                    np.int32(self._verbose_c)+np.int32(self._verbose_debug),
-                    *args_output)
+            mh = cat.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1],
+                                      shuffle=self.shuffle_pix, w2field=True, normed=True, nthreads=self.nthreads)
+            allfields = mh['allfields']
+            extra = {'e1_resos': np.concatenate([allfields[i][0] for i in range(len(allfields))]).astype(np.float64),
+                     'e2_resos': np.concatenate([allfields[i][1] for i in range(len(allfields))]).astype(np.float64)}
 
-            func(*args)
-            
-            self.bin_centers = bin_centers.reshape(sz2r)
-            self.bin_centers_mean = np.mean(self.bin_centers, axis=0)
-            self.npair = npair.reshape(sz2r)
-            self.norm = norm.reshape(sz2r)
-            self.xip = xip.reshape(sz2r)
-            self.xim = xim.reshape(sz2r)
-            self.projection = "xipm"
-            
-            if not dotomo:
-                cat.zbins = old_zbins
+        # Build the four input structs + output arrays
+        cat_s, keep_cat = build_catalog_struct(mh, nbinsz, extra=extra)
+        cat_s.nresos = int(self.tree_nresos)
+        nav_s, keep_nav = build_navhash_struct(mh, cat_obj=cat)
+        tree_s, keep_tree = build_tree_params_struct(self, mh)
+        maxleaf = max(0, self.tree_nresos-1)
+        tree_s.minresoind_leaf = min(int(self.minresoind_leaf), maxleaf)
+        tree_s.maxresoind_leaf = min(int(self.maxresoind_leaf), maxleaf)
+        scale = convertunits(self.sep_units, 'rad') if native_spherical else None
+        bin_s = build_binning_struct(self, do_dc=do_dc, scale=scale)
+        # GG: the two natural components are stacked in the NPCFOutput 'npcf'
+        # slot ([xip, xim]); split into views over the same C-written memory.
+        out_s, bin_centers, _npcf, norm, _, npair, _ = build_npcf_output(
+            'gg', self.nbinsr, nbinsz=nbinsz)
+        _z2r = nbinsz*nbinsz*self.nbinsr
+        xip, xim = _npcf[:_z2r], _npcf[_z2r:]
+
+        # Keep every numpy array referenced only through a struct field alive
+        # across the C call (ctypes structs are invisible to the GC).
+        _alive = keep_cat + keep_nav + keep_tree   # noqa: F841
+
+        self.clib.alloc_gg_doubletree(
+            ct.byref(cat_s), ct.byref(nav_s), ct.byref(tree_s), ct.byref(bin_s),
+            int(self.nthreads),
+            int(self._verbose_c)+int(self._verbose_debug),
+            ct.byref(out_s))
+
+        # xip/xim are dimensionless; only bin_centers carries a length unit.
+        if native_spherical:
+            bin_centers /= convertunits(self.sep_units, 'rad')   # radians -> sep_units
+
+        self.bin_centers = bin_centers.reshape(sz2r)
+        self.bin_centers_mean = np.mean(self.bin_centers, axis=0)
+        self.npair = npair.reshape(sz2r)
+        self.norm = norm.reshape(sz2r)
+        self.xip = xip.reshape(sz2r)
+        self.xim = xim.reshape(sz2r)
+        self.projection = "xipm"
+        if not do_dc:self.norm*=2; self.npair*=2
+
+        if not dotomo:
+            cat.zbins = old_zbins
+        return
             
         
     def computeMap2(self, radii, tofile=False):
@@ -864,7 +914,7 @@ class GGCorrelation(BinnedNPCF):
         
         # Use middle explicit form of eq 54
         def Kminus(vt, th):
-            pref = (bar**4*(1.0-Bg**2)**2)/(Bg*vt**2*th**2)
+            pref = (bar**4*(1.-Bg**2)**2)/(Bg*vt**2*th**2)
             b1 = 1.+Bg**2-(1.-Bg**2)**2*(bar/vt)**2
             b2 = 1.+Bg**2-(1.-Bg**2)**2*(bar/th)**2
             return pref * (0.5 + (3./(8.*Bg**2))*b1*b2)
@@ -887,7 +937,7 @@ class GGCorrelation(BinnedNPCF):
         KV_plus  = self.binsize * (tj**2/bar**2) * Kplus(ti, tj)
         KV_minus = self.binsize * (tj**2/bar**2) * Kminus(ti, tj)
 
-        # xi @ K.T -> shape (nzcombis, nbinsr) indexed by i.
+        # xi@K.T -> shape (nzcombis, nbinsr)
         Iplus_z  = self.xim @ KI_plus.T
         Iminus_z = self.xip @ KI_minus.T
         Splus_z  = self.xip @ KS_plus.T
@@ -912,3 +962,401 @@ class GGCorrelation(BinnedNPCF):
         xim_pure[2] = Vminus_z.real
 
         return xip_pure, xim_pure
+
+
+class NGCorrelation(BinnedNPCF):
+    r""" Compute second-order cross-correlation functions of a spin-2 and a spin-0 field.
+
+     Parameters
+    ----------
+    min_sep: float
+        The smallest distance of each vertex for which the NPCF is computed.
+    max_sep: float
+        The largest distance of each vertex for which the NPCF is computed.
+    **kwargs
+        Passed to :class:`~orpheus.npcf_base.BinnedNPCF`.
+
+    Attributes
+    ----------
+    xi: numpy.ndarray
+        The position-shape correlation function.
+    norm: numpy.ndarray
+        The number of weighted pairs.
+    npair: numpy.ndarray
+        The number of unweighted pairs.
+
+
+    Notes
+    -----
+    - In case of a three-dimensional box we define the projection direction along the z-axis
+      and we allocate some additional private attributes ``_DS``, ``_RS` and ``_RR``.
+    """
+
+    def __init__(self, min_sep, max_sep, **kwargs):
+        kwargs.setdefault('method', 'Discrete')
+        super().__init__(order=2, spins=np.array([0, 2], dtype=np.int32), n_cfs=1,
+                         min_sep=min_sep, max_sep=max_sep, **kwargs)
+        self.projection = None
+        self.projections_avail = [None]
+        self.nbinsz_shape = None
+        self.nbinsz_pos = None
+        self._DS = None
+        self._RS = None
+        self._RR = None
+        self.xi = None
+        self.norm = None
+        self.npair = None
+        self._initprojections(self)
+
+        # Bind the discrete slab kernel (see ng_slab in src/corrfunc_second.c).
+        p_f64 = np.ctypeslib.ndpointer(np.float64, flags="C_CONTIGUOUS")
+        p_i32 = np.ctypeslib.ndpointer(np.int32, flags="C_CONTIGUOUS")
+        p_i64 = np.ctypeslib.ndpointer(np.int64, flags="C_CONTIGUOUS")
+        self.clib.ng_slab.restype = ct.c_void_p
+        self.clib.ng_slab.argtypes = [
+            p_f64, p_f64, p_f64, p_f64, p_i32, ct.c_int32, ct.c_int32,
+            p_f64, p_f64, p_f64, p_f64, p_i32, p_f64, p_f64, ct.c_int32,
+            ct.c_int32, ct.c_double, ct.c_double,
+            ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32,
+            p_i32, p_i32, p_i32, p_i32, p_i32,
+            ct.c_double, ct.c_double, ct.c_int32, ct.c_double,
+            ct.c_int32, ct.c_int32, ct.c_int32,
+            p_f64, p_f64, p_f64, p_f64, p_i64]
+
+        # Bind the flat2d doubletree kernel (see src/corrfunc_second.c): lens
+        # (scalar, central) x source (spin-2, field), two struct sets.
+        self.clib.alloc_ng_doubletree.restype = ct.c_void_p
+        self.clib.alloc_ng_doubletree.argtypes = [
+            ct.POINTER(MultiresoCatalog), ct.POINTER(NavHash),
+            ct.POINTER(MultiresoCatalog), ct.POINTER(NavHash),
+            ct.POINTER(TreeResoParams), ct.POINTER(BinningParams),
+            ct.c_int32, ct.c_int32, ct.POINTER(NPCFOutput)]
+
+    def __call_ng_slab(self, q_cat_arrays, h_bundle, has_shapes, self_pairs, nbinsz_q):
+        """Run one ng_slab pass. Returns (xs, wnorm, rsum, npairs) reshaped to
+        (nbinsz_q, nbinsz_h, nbinsr) with xs complex."""
+        q_pos1, q_pos2, q_pos3, q_w, q_zbin = q_cat_arrays
+        q_ngal = len(q_pos1)
+        nbinsz_h = self.nbinsz_shape if has_shapes else self.nbinsz_pos
+        if has_shapes:
+            h_e1, h_e2 = h_bundle['fields']
+        else:
+            h_e1 = h_e2 = np.zeros(1, dtype=np.float64)
+        nout = nbinsz_q * nbinsz_h * self.nbinsr
+        xs_re = np.zeros(nout, dtype=np.float64)
+        xs_im = np.zeros(nout, dtype=np.float64)
+        wnorm = np.zeros(nout, dtype=np.float64)
+        rsum = np.zeros(nout, dtype=np.float64)
+        npairs = np.zeros(nout, dtype=np.int64)
+        npix = h_bundle['npix']  # noqa: F841  (npix recomputed in C from pix1_n*pix2_n)
+        self.clib.ng_slab(
+            q_pos1, q_pos2, q_pos3, q_w, q_zbin, ct.c_int32(q_ngal), ct.c_int32(nbinsz_q),
+            h_bundle['pos1'], h_bundle['pos2'], h_bundle['pos3'], h_bundle['weight'],
+            h_bundle['zbins'], h_e1, h_e2, ct.c_int32(nbinsz_h),
+            ct.c_int32(h_bundle['nslabs']), ct.c_double(h_bundle['z0']), ct.c_double(h_bundle['dpix_z']),
+            ct.c_double(h_bundle['pix1_start']), ct.c_double(h_bundle['pix1_d']), ct.c_int32(h_bundle['pix1_n']),
+            ct.c_double(h_bundle['pix2_start']), ct.c_double(h_bundle['pix2_d']), ct.c_int32(h_bundle['pix2_n']),
+            h_bundle['slab_offsets'], h_bundle['index_matcher'], h_bundle['pixs_galind_bounds'],
+            h_bundle['rshift_bounds'], h_bundle['pix_gals'],
+            ct.c_double(self.min_sep), ct.c_double(self.max_sep), ct.c_int32(self.nbinsr), ct.c_double(self._Pi),
+            ct.c_int32(int(self_pairs)), ct.c_int32(int(has_shapes)), ct.c_int32(int(self.nthreads)),
+            xs_re, xs_im, wnorm, rsum, npairs)
+        shape = (nbinsz_q, nbinsz_h, self.nbinsr)
+        xs = (xs_re + 1j*xs_im).reshape(shape)
+        return xs, wnorm.reshape(shape), rsum.reshape(shape), npairs.reshape(shape)
+
+    def process(self, cat_shape, cat_data, cat_random=None, Pi=None, dpix=None, dpix_z=None,
+                dotomo=True, periodic=False, rotsignflip=False,
+                save_patchres=False, save_filebase="", keep_patchres=False):
+        r"""Compute the position-shape correlator, dispatching on geometry.
+
+        - ``'3dbox'``: the discrete slab estimator (projected NI / ``w_{g+}``);
+          requires ``Pi``, a density catalog ``cat_data`` and ``cat_random``.
+        - ``'flat2d'``: the multi-resolution doubletree galaxy-galaxy-lensing
+          tangential shear ``<gamma_t>`` (no projection); ``cat_data`` is the lens
+          catalog, ``cat_random`` and ``Pi`` are ignored.
+        - ``'spherical'``: both catalogs must be decomposed into matching patches
+          (``Catalog._topatches``); each patch is projected to a flat tangent
+          plane and processed with the ``'flat2d'`` doubletree, then combined.
+
+        Parameters
+        ----------
+        cat_shape: orpheus.SpinTracerCatalog
+            The shape (source) catalog; spin-2.
+        cat_data: orpheus.ScalarTracerCatalog
+            The density ('3dbox') / lens ('flat2d'/'spherical') tracer positions.
+        cat_random: orpheus.ScalarTracerCatalog, optional
+            The random catalog (required for '3dbox').
+        Pi: float, optional
+            Line-of-sight projection length (required for '3dbox').
+        dpix, dpix_z: float, optional
+            Transverse hash cell size and slab width ('3dbox' only).
+        dotomo: bool
+            Use tomographic bins. Defaults to ``True``.
+        periodic: bool
+            Placeholder for periodic boundaries ('3dbox'); not yet implemented.
+        rotsignflip: bool
+            Flip the source-shape rotation sign when projecting patches (spherical).
+        save_patchres, save_filebase, keep_patchres:
+            Per-patch save/return options (spherical/patched catalogs only).
+        """
+        assert isinstance(cat_shape, SpinTracerCatalog)
+        assert isinstance(cat_data, ScalarTracerCatalog)
+        if cat_shape.geometry == '3dbox':
+            assert isinstance(cat_random, ScalarTracerCatalog), "'3dbox' NG requires a random catalog."
+            assert Pi is not None, "'3dbox' NG requires a projection length Pi."
+            return self.__process_3dbox(cat_shape, cat_data, cat_random, float(Pi),
+                                        dpix=dpix, dpix_z=dpix_z, dotomo=dotomo, periodic=periodic)
+
+        # flat2d / spherical galaxy-galaxy-lensing doubletree. A spherical catalog
+        # must first be decomposed into patches; patched catalogs (any geometry)
+        # take the per-patch flat path.
+        if cat_shape.geometry == 'spherical' and cat_shape.patchinds is None:
+            raise ValueError("Spherical NGCorrelation requires patch decomposition "
+                             "(Catalog._topatches), or pass 'flat2d' catalogs.")
+        if cat_shape.patchinds is not None:
+            assert cat_data.patchinds is not None, \
+                "Both source and lens catalogs must be patch-decomposed with matching patches."
+            assert cat_shape.npatches == cat_data.npatches, \
+                "Source and lens patch decompositions must match (equal npatches)."
+            return self.__process_patches(cat_shape, cat_data, dotomo=dotomo, rotsignflip=rotsignflip,
+                                          save_patchres=save_patchres, save_filebase=save_filebase,
+                                          keep_patchres=keep_patchres)
+        if cat_shape.geometry == 'flat2d':
+            return self.__process_flat2d(cat_shape, cat_data, dotomo=dotomo)
+        raise NotImplementedError(
+            "NGCorrelation supports '3dbox' (discrete) and flat2d/spherical (doubletree).")
+
+    def __process_3dbox(self, cat_shape, cat_data, cat_random, Pi, dpix=None, dpix_z=None,
+                        dotomo=True, periodic=False):
+        for c in (cat_data, cat_random):
+            assert c.geometry == '3dbox', "NGCorrelation '3dbox' requires all catalogs in '3dbox'."
+        if periodic:
+            raise NotImplementedError("Periodic boundaries not implemented; use a random catalog.")
+
+        self._Pi = float(Pi)
+        if dpix is None: dpix = self.max_sep
+        if dpix_z is None: dpix_z = Pi
+
+        # Tomography: temporarily collapse zbins to a single bin if requested.
+        old_zbins = None
+        if not dotomo:
+            old_zbins = (cat_shape.zbins.copy(), cat_data.zbins.copy(), cat_random.zbins.copy())
+            cat_shape.zbins = np.zeros(cat_shape.ngal, dtype=np.int32)
+            cat_data.zbins = np.zeros(cat_data.ngal, dtype=np.int32)
+            cat_random.zbins = np.zeros(cat_random.ngal, dtype=np.int32)
+            self.nbinsz_shape = 1
+            self.nbinsz_pos = 1
+        else:
+            self.nbinsz_shape = cat_shape.nbinsz
+            self.nbinsz_pos = max(cat_data.nbinsz, cat_random.nbinsz)
+        nzd, nzs = self.nbinsz_pos, self.nbinsz_shape
+
+        # Shared transverse + line-of-sight extent so every query point lies
+        # inside the (shape / random) hash grid.
+        ext = [min(cat_shape.min1, cat_data.min1, cat_random.min1),
+               max(cat_shape.max1, cat_data.max1, cat_random.max1),
+               min(cat_shape.min2, cat_data.min2, cat_random.min2),
+               max(cat_shape.max2, cat_data.max2, cat_random.max2)]
+        ext_z = [min(cat_shape.min3, cat_data.min3, cat_random.min3),
+                 max(cat_shape.max3, cat_data.max3, cat_random.max3)]
+
+        s_bundle = cat_shape.multihash_slabs(dpix, dpix_z,
+                                             fields=(cat_shape.tracer_1, cat_shape.tracer_2),
+                                             extent=ext, extent_z=ext_z)
+        r_bundle = cat_random.multihash_slabs(dpix, dpix_z, extent=ext, extent_z=ext_z)
+
+        def _arrs(cat):
+            return (np.ascontiguousarray(cat.pos1), np.ascontiguousarray(cat.pos2),
+                    np.ascontiguousarray(cat.pos3), np.ascontiguousarray(cat.weight),
+                    np.ascontiguousarray(cat.zbins, dtype=np.int32))
+        r_query = (r_bundle['pos1'], r_bundle['pos2'], r_bundle['pos3'],
+                   r_bundle['weight'], r_bundle['zbins'])
+
+        # DS: query=D, hashed=S (shapes). RS: query=R, hashed=S. RR: R auto-pairs.
+        DS, wDS, rsumDS, npDS = self.__call_ng_slab(_arrs(cat_data), s_bundle, True, False, nzd)
+        RS, wRS, rsumRS, npRS = self.__call_ng_slab(_arrs(cat_random), s_bundle, True, False, nzd)
+        _, wRR, _, npRR = self.__call_ng_slab(r_query, r_bundle, False, True, nzd)
+
+        # Density-weight totals per tomographic bin (for the D-R rescaling).
+        WD = np.array([cat_data.weight[cat_data.zbins == z].sum() for z in range(nzd)])
+        WR = np.array([cat_random.weight[cat_random.zbins == z].sum() for z in range(nzd)])
+        f = np.divide(WD, WR, out=np.ones_like(WD), where=WR > 0)
+
+        # Vedder estimator D~S / RR with the implicit sample-size rescaling.
+        # The random-shape pair weight (scaled to the data density) stands in for
+        # the rescaled random pair count RR of the density tracer. The overall
+        # sign follows the tangential (radial-positive) convention; both the sign
+        # and this normalization are validated against TreeCorr.
+        DtS = DS - f[:, None, None]*RS
+        RRnorm = f[:, None, None]*wRS
+        xi = -np.divide(DtS, RRnorm, out=np.zeros_like(DtS), where=RRnorm > 0)
+        bc = np.divide(rsumDS, wDS, out=np.zeros_like(rsumDS), where=wDS > 0)
+
+        # Flatten the tomographic pair index into a single leading axis, matching
+        # GG/NN, the flat2d NG path, and the 3pt correlators. DS/RS run over
+        # (nz_pos, nz_shape); RR auto-pairs the density tracer, so (nz_pos, nz_pos).
+        z2r = (nzd*nzs, self.nbinsr)
+        zzr = (nzd*nzd, self.nbinsr)
+        self.xi = xi.reshape(z2r)
+        self.bin_centers = bc.reshape(z2r)
+        self.bin_centers_mean = np.mean(self.bin_centers, axis=0)
+        self._DS, self._RS, self._RR = DS.reshape(z2r), RS.reshape(z2r), wRR.reshape(zzr)
+        self._wDS, self._wRS = wDS.reshape(z2r), wRS.reshape(z2r)
+        self._npairs_DS, self._npairs_RS = npDS.reshape(z2r), npRS.reshape(z2r)
+        self._npairs_RR = npRR.reshape(zzr)
+
+        if not dotomo:
+            cat_shape.zbins, cat_data.zbins, cat_random.zbins = old_zbins
+        return
+
+    def __process_flat2d(self, cat_source, cat_lens, dotomo=True):
+        r"""Flat-sky galaxy-galaxy-lensing tangential shear via the doubletree.
+
+        Mirrors :meth:`GGCorrelation.process` (flat path) but for a scalar
+        lens x spin-2 source cross: builds a source multihash (with reduced
+        shear) and a lens multihash on a shared joint extent, then calls
+        ``alloc_ng_doubletree`` (lens = central, source = field).
+        """
+        # Tomography setup.
+        old_zbins = None
+        if not dotomo:
+            old_zbins = (cat_source.zbins.copy(), cat_lens.zbins.copy())
+            cat_source.zbins = np.zeros(cat_source.ngal, dtype=np.int32)
+            cat_lens.zbins = np.zeros(cat_lens.ngal, dtype=np.int32)
+            self.nbinsz_shape = 1
+            self.nbinsz_pos = 1
+        else:
+            self.nbinsz_shape = cat_source.nbinsz
+            self.nbinsz_pos = cat_lens.nbinsz
+        nzl, nzs = self.nbinsz_pos, self.nbinsz_shape
+
+        # Shared (joint) extent so both hashes live on the same flat grid.
+        cutfirst = np.int32(self.tree_resos[0] == 0.)
+        jointextent = list(cat_source._jointextent([cat_lens], extend=self.tree_resos[-1]))
+
+        # Source multihash (reduced shear via w2field) and lens multihash (scalar).
+        mh_source = cat_source.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1],
+                                                shuffle=self.shuffle_pix, w2field=True, normed=True,
+                                                extent=jointextent, nthreads=self.nthreads)
+        allfields = mh_source['allfields']
+        extra_s = {'e1_resos': np.concatenate([allfields[i][0] for i in range(len(allfields))]).astype(np.float64),
+                   'e2_resos': np.concatenate([allfields[i][1] for i in range(len(allfields))]).astype(np.float64)}
+        mh_lens = cat_lens.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1],
+                                            shuffle=self.shuffle_pix, normed=False,
+                                            extent=jointextent, nthreads=self.nthreads)
+
+        # Build the two struct sets (source carries e1/e2; lens is scalar).
+        cats_s, keep_cs = build_catalog_struct(mh_source, nzs, extra=extra_s)
+        cats_s.nresos = int(self.tree_nresos)
+        navs_s, keep_ns = build_navhash_struct(mh_source, cat_obj=cat_source)
+        catl_s, keep_cl = build_catalog_struct(mh_lens, nzl)
+        catl_s.nresos = int(self.tree_nresos)
+        navl_s, keep_nl = build_navhash_struct(mh_lens, cat_obj=cat_lens)
+        tree_s, keep_tree = build_tree_params_struct(self, mh_source)
+        maxleaf = max(0, self.tree_nresos-1)
+        tree_s.minresoind_leaf = min(int(self.minresoind_leaf), maxleaf)
+        tree_s.maxresoind_leaf = min(int(self.maxresoind_leaf), maxleaf)
+        bin_s = build_binning_struct(self, do_dc=1)
+        out_s, bin_centers, xi, norm, _, npair, _ = build_npcf_output(
+            'ng', self.nbinsr, nbinsz_lens=nzl, nbinsz_source=nzs)
+
+        # Keep numpy arrays referenced only through struct fields alive across the call.
+        _alive = keep_cs + keep_ns + keep_cl + keep_nl + keep_tree   # noqa: F841
+
+        self.clib.alloc_ng_doubletree(
+            ct.byref(catl_s), ct.byref(navl_s), ct.byref(cats_s), ct.byref(navs_s),
+            ct.byref(tree_s), ct.byref(bin_s),
+            int(self.nthreads), int(self._verbose_c)+int(self._verbose_debug),
+            ct.byref(out_s))
+
+        szr = (nzl*nzs, self.nbinsr)
+        self.bin_centers = bin_centers.reshape(szr)
+        self.bin_centers_mean = np.mean(self.bin_centers, axis=0)
+        self.xi = xi.reshape(szr)
+        self.norm = norm.reshape(szr)
+        self.npair = npair.reshape(szr)
+        self.projection = None
+
+        if not dotomo:
+            cat_source.zbins, cat_lens.zbins = old_zbins
+        return
+
+    def __process_patches(self, cat_source, cat_lens, dotomo=True, rotsignflip=False,
+                          save_patchres=False, save_filebase="", keep_patchres=False):
+        r"""Spherical galaxy-galaxy lensing: process each patch on its flat tangent
+        plane and combine (norm-weighted), mirroring GG/NGG. Source shapes are
+        rotated via ``rotsignflip``; lens positions carry no spin. Pairs straddling
+        patch boundaries are dropped (the standard patch approximation)."""
+        if save_patchres and not Path(save_patchres).is_dir():
+            raise ValueError('Path to directory does not exist.')
+
+        for elp in range(cat_source.npatches):
+            if self._verbose_python:
+                print('Doing patch %i/%i'%(elp+1, cat_source.npatches))
+            pscat = cat_source.frompatchind(elp, rotsignflip=rotsignflip)
+            plcat = cat_lens.frompatchind(elp)
+            pcorr = NGCorrelation(
+                min_sep=self.min_sep, max_sep=self.max_sep, nbinsr=self.nbinsr,
+                method=self.method, shuffle_pix=self.shuffle_pix, tree_resos=self.tree_resos,
+                rmin_pixsize=self.rmin_pixsize, resoshift_leafs=self.resoshift_leafs,
+                minresoind_leaf=self.minresoind_leaf, maxresoind_leaf=self.maxresoind_leaf,
+                nthreads=self.nthreads, verbosity=self.verbosity)
+            pcorr.process(pscat, plcat, dotomo=dotomo)
+
+            if elp == 0:
+                self.nbinsz_shape = pcorr.nbinsz_shape
+                self.nbinsz_pos = pcorr.nbinsz_pos
+                self.bin_centers = np.zeros_like(pcorr.bin_centers)
+                self.xi = np.zeros_like(pcorr.xi)
+                self.norm = np.zeros_like(pcorr.norm)
+                self.npair = np.zeros_like(pcorr.npair)
+                if keep_patchres:
+                    centers_patches = np.zeros((cat_source.npatches, *pcorr.bin_centers.shape), dtype=pcorr.bin_centers.dtype)
+                    xi_patches = np.zeros((cat_source.npatches, *pcorr.xi.shape), dtype=pcorr.xi.dtype)
+                    norm_patches = np.zeros((cat_source.npatches, *pcorr.norm.shape), dtype=pcorr.norm.dtype)
+                    npair_patches = np.zeros((cat_source.npatches, *pcorr.npair.shape), dtype=pcorr.npair.dtype)
+            self.bin_centers += pcorr.norm*pcorr.bin_centers
+            self.xi += pcorr.norm*pcorr.xi
+            self.norm += pcorr.norm
+            self.npair += pcorr.npair
+            if keep_patchres:
+                centers_patches[elp] += pcorr.bin_centers
+                xi_patches[elp] += pcorr.xi
+                norm_patches[elp] += pcorr.norm
+                npair_patches[elp] += pcorr.npair
+            if save_patchres:
+                pcorr.saveinst(save_patchres, save_filebase+'_patch%i'%elp)
+
+        # Finalize on the full footprint (norm-weighted mean of the patches).
+        self.bin_centers = np.divide(self.bin_centers, self.norm, out=np.zeros_like(self.bin_centers), where=self.norm > 0)
+        self.bin_centers_mean = np.mean(self.bin_centers, axis=0)
+        self.xi = np.divide(self.xi, self.norm, out=np.zeros_like(self.xi), where=self.norm > 0)
+        self.projection = None
+
+        if keep_patchres:
+            return centers_patches, xi_patches, norm_patches, npair_patches
+
+    def saveinst(self, path_save, fname):
+        if not Path(path_save).is_dir():
+            raise ValueError('Path to directory does not exist.')
+        np.savez(path_save+fname,
+                 nbinsz_shape=self.nbinsz_shape, nbinsz_pos=self.nbinsz_pos,
+                 min_sep=self.min_sep, max_sep=self.max_sep, nbinsr=self.nbinsr,
+                 method=self.method, shuffle_pix=self.shuffle_pix, tree_resos=self.tree_resos,
+                 rmin_pixsize=self.rmin_pixsize, nthreads=self.nthreads,
+                 bin_centers=self.bin_centers, xi=self.xi, norm=self.norm, npair=self.npair)
+
+    def computeMapNap(self, radii, tofile=False):
+        """ Computes second-order aperture statistics given the projected position-shape correlation function.
+        Uses the Crittenden 2002 filter.
+        """
+
+        mapnap = np.zeros((self.xi.shape[0], len(radii)), dtype=complex)
+        for elr, R in enumerate(radii):
+            thetared = self.bin_centers_mean[np.newaxis,:]/R
+            measure = (self.bin_edges[1:]-self.bin_edges[:-1])*self.bin_centers_mean/(R**2)
+            filt = thetared**2*(12.-thetared**2)/128. * np.exp(-thetared**2/4.)
+            mapnap[:,elr] = np.sum(measure*filt*self.xi,axis=1)
+            
+        return mapnap

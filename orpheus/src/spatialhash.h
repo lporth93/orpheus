@@ -35,4 +35,18 @@ void reducecat(double *isinner, double *w, double *pos_1, double *pos_2, double 
                double mask_d1, double mask_d2, double mask_min1, double mask_min2, int mask_n1, int mask_n2, int shuffle,
                double *isinner_red, double *w_red, double *pos1_red, double *pos2_red, double *scalarquants_red, int ngal_red);
 
+// Tomographic + parallel version of reducecat.
+// Builds a single spatial hash over all galaxies, then reduces every tomographic
+// bin in one call (the zbin loop is internal, not in Python). Galaxies in the same
+// pixel but different zbins yield separate super-galaxies. The pixel loop is
+// OpenMP-parallel: a prefix sum over the per-pixel (distinct-zbin) counts assigns
+// each occupied pixel a disjoint, contiguous output slice, so threads never race.
+// Output arrays have length ngal (isinner/w/pos/zbins_red) resp. nscalarquants*ngal;
+// only the first (returned) entries are filled, the caller drops trailing w_red==0.
+void reducecat_tomo(double *isinner, double *w, double *pos_1, double *pos_2, double *scalarquants,
+               int *zbins, int ngal, int nscalarquants, int nbinsz, int normed,
+               double mask_d1, double mask_d2, double mask_min1, double mask_min2, int mask_n1, int mask_n2, int shuffle,
+               int nthreads,
+               double *isinner_red, double *w_red, double *pos1_red, double *pos2_red, int *zbins_red, double *scalarquants_red);
+
 

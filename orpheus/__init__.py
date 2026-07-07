@@ -1,4 +1,5 @@
 from .catalog import *
+from .covariance import *
 from .npcf_base import *
 from .npcf_second import *
 from .npcf_third import *

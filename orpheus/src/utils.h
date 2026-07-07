@@ -12,3 +12,6 @@ int maxarr(int *arr, int len);
 void fillconsti(int *arr, int len_arr, int c);
 void fillconstd(double *arr, int len_arr, double c);
 void print_progress(int nregionsdone, int nfilledregions, int verbose);
+double sphere_dist(double x1, double y1, double z1, double x2, double y2, double z2);
+double sphere_bearing(double ra_a, double sindec_a, double cosdec_a,
+                      double ra_b, double sindec_b, double cosdec_b);

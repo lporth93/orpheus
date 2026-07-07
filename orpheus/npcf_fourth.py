@@ -32,17 +32,25 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
 
     """
     
-    def __init__(self, min_sep, max_sep, verbose=False, thetabatchsize_max=10000, method="Tree", **kwargs):
+    def __init__(self, min_sep, max_sep, verbose=False, thetabatchsize_max=10000, method="Tree",
+                 process_spherical=False, **kwargs):
         super().__init__(order=4, spins=np.array([0,0,0,0], dtype=np.int32),
-                         n_cfs=1, min_sep=min_sep, max_sep=max_sep, 
-                         method=method, methods_avail=["Tree"], **kwargs)
-        
+                         n_cfs=1, min_sep=min_sep, max_sep=max_sep,
+                         method=method, methods_avail=["Tree", "DoubleTree"], **kwargs)
+
         self.thetabatchsize_max = thetabatchsize_max
         self.nbinsz = 1
         self.nzcombis = 1
+        # Opt-in full-sky estimation: when True (and the catalog is spherical) the
+        # multipoles-only Tree path dispatches to the curved-sky C estimator
+        # (geodesic kernels + nested-HEALPix navigation). Default False keeps the
+        # flat-sky path byte-identical. See alloc_nnnn_tree_spherical /
+        # Catalog.multihash_spherical and Tutorials_private/fullsky_covariance_notes.md.
+        self.process_spherical = bool(process_spherical)
         
-    def process(self, cat, statistics="all", tofile=False, apply_edge_correction=False, 
-                lowmem=True, mapradii=None, batchsize=None, custom_thetacombis=None, cutlen=2**31-1):
+    def process(self, cat, statistics="all", tofile=False, apply_edge_correction=False,
+                lowmem=True, mapradii=None, batchsize=None, custom_thetacombis=None, cutlen=2**31-1,
+                memory_bound=512.):
         r"""
         Arguments:
         
@@ -155,16 +163,23 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
         sc = (2*_nmax+1,2*_nmax+1,self.nzcombis,self.nbinsr,self.nbinsr,self.nbinsr)
         szr = (self.nbinsz, self.nbinsr)
         s4pcf = (self.nzcombis,self.nbinsr,self.nbinsr,self.nbinsr,_nphis,_nphis)
+        # Opt-in full-sky path: dispatch to the curved-sky estimator only when the
+        # flag is set AND the catalog is spherical (never mix geometries).
+        use_spherical = self.process_spherical and getattr(cat, 'geometry', 'flat2d') == 'spherical'
+        if self.process_spherical and not use_spherical:
+            raise ValueError("process_spherical=True requires a spherical catalog "
+                             "(cat.geometry=='spherical').")
         # Init default args
         bin_centers = np.zeros(self.nbinsz*self.nbinsr).astype(np.float64)
-        if not cat.hasspatialhash:
-            cat.build_spatialhash(dpix=max(1.,self.max_sep//10.))
-        nregions = np.int32(len(np.argwhere(cat.index_matcher>-1).flatten()))
-        args_basecat = (cat.isinner.astype(np.float64), cat.weight, cat.pos1, cat.pos2, 
+        if not use_spherical:
+            if not cat.hasspatialhash:
+                cat.build_spatialhash(dpix=max(1.,self.max_sep//10.))
+            nregions = np.int32(len(np.argwhere(cat.index_matcher>-1).flatten()))
+            args_hash = (cat.index_matcher, cat.pixs_galind_bounds, cat.pix_gals, nregions,
+                         np.float64(cat.pix1_start), np.float64(cat.pix1_d), np.int32(cat.pix1_n),
+                         np.float64(cat.pix2_start), np.float64(cat.pix2_d), np.int32(cat.pix2_n), )
+        args_basecat = (cat.isinner.astype(np.float64), cat.weight, cat.pos1, cat.pos2,
                         np.int32(cat.ngal), )
-        args_hash = (cat.index_matcher, cat.pixs_galind_bounds, cat.pix_gals, nregions, 
-                     np.float64(cat.pix1_start), np.float64(cat.pix1_d), np.int32(cat.pix1_n), 
-                     np.float64(cat.pix2_start), np.float64(cat.pix2_d), np.int32(cat.pix2_n), )
         
         # Init optional args
         __lenflag = 10
@@ -192,11 +207,67 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
 
         
         # Build args based on chosen methods
-        if self.method=="Discrete" and not lowmem:
+        if use_spherical:
+            # Curved-sky scalar 4PCF multipoles (Tree, multipoles-only). Self-contained:
+            # geodesic kernels + nested-HEALPix navigation via Catalog.multihash_spherical.
+            # All separations passed to / returned from C are in radians.
+            from healpy import nside2resol
+            if self.method == "DoubleTree":
+                raise NotImplementedError(
+                    "Curved-sky (process_spherical=True) is implemented for method='Tree' "
+                    "only; the DoubleTree spherical variant is validated against the Tree "
+                    "oracle and not yet available.")
+            only_multipoles = ("4pcf_multipole" in statistics and
+                               "4pcf_real" not in statistics and not hasintegratedstats)
+            if not only_multipoles:
+                raise NotImplementedError(
+                    "Curved-sky NNNN currently supports the multipoles-only path; request "
+                    "statistics='4pcf_multipole' (no 4pcf_real / aperture statistics).")
+            # theta- and multipole-index masks (geometry-independent)
+            _resradial = gen_thetacombis_fourthorder(nbinsr=self.nbinsr, nthreads=self.nthreads,
+                                                     batchsize=batchsize, batchsize_max=self.thetabatchsize_max,
+                                                     ordered=True, custom=custom_thetacombis,
+                                                     verbose=self._verbose_python)
+            _, _, thetacombis_batches, cumnthetacombis_batches, nthetacombis_batches, nbatches = _resradial
+            assert(self.nmaxs[0]==self.nmaxs[1])
+            _shape, _inds, _n2s, _n3s = gen_n2n3indices_Upsfourth(self.nmaxs[0])
+            # HEALPix nside per radial band: band cell size tree_resos[r] -> smallest
+            # nside whose pixel is no larger; tree_resos[r]==0 marks the discrete band.
+            _deg2rad = np.pi/180.
+            def _nside_for(target_rad):
+                ns = 1
+                while nside2resol(ns) > target_rad and ns < 2**29:
+                    ns *= 2
+                return ns
+            nsides = [0 if self.tree_resos[r]==0. else _nside_for(self.tree_resos[r]*_deg2rad)
+                      for r in range(self.tree_nresos)]
+            nside_hash = _nside_for(max(self.min_sep, 0.5*self.tree_redges[1])*_deg2rad)
+            # Geometry-aware dispatch: cat.geometry=='spherical' routes to the
+            # nested-HEALPix bundle (identical payload to multihash_spherical).
+            sph = cat.multihash_bundle(reso_redges=self.tree_redges, nsides=nsides,
+                                       nside_hash=nside_hash, legacy_navcsr=True,
+                                       verbose=self._verbose_python)
+            assert sph['geometry'] == 'spherical'
+            args_thetas = (thetacombis_batches, nthetacombis_batches, cumnthetacombis_batches, nbatches, )
+            args = (sph['cen_isinner'].astype(np.float64), sph['cen_w'].astype(np.float64),
+                    sph['cen_vx'], sph['cen_vy'], sph['cen_vz'],
+                    sph['cen_ra'], sph['cen_sindec'], sph['cen_cosdec'], np.int32(cat.ngal),
+                    np.int32(_nmax), np.float64(self.min_sep*_deg2rad), np.float64(self.max_sep*_deg2rad),
+                    np.int32(self.nbinsr), np.int32(self.multicountcorr),
+                    _inds, np.int32(len(_inds)),
+                    np.int32(self.tree_nresos), sph['reso_redges'], sph['ngal_resos'], sph['ncells_resos'],
+                    sph['leg_w'], sph['leg_vx'], sph['leg_vy'], sph['leg_vz'],
+                    sph['leg_ra'], sph['leg_sindec'], sph['leg_cosdec'], sph['rshift_leg'],
+                    sph['cen_cell'], sph['nav_off'], sph['rshift_cell'], sph['nav_legidx'], sph['rshift_nav'],
+                    *args_thetas,
+                    np.int32(self.nthreads), np.float64(memory_bound),
+                    bin_centers, N_n)
+            func = self.clib.alloc_nnnn_tree_spherical
+        elif self.method=="Discrete" and not lowmem:
             raise NotImplementedError
-        if self.method=="Discrete" and lowmem:
+        elif self.method=="Discrete" and lowmem:
             raise NotImplementedError
-        if self.method=="Tree" and lowmem:
+        elif self.method in ("Tree", "DoubleTree") and lowmem:
             # Prepare mask for nonredundant theta- and multipole configurations
             _resradial = gen_thetacombis_fourthorder(nbinsr=self.nbinsr, nthreads=self.nthreads, batchsize=batchsize, 
                                                      batchsize_max=self.thetabatchsize_max, ordered=True, custom=custom_thetacombis,
@@ -208,18 +279,18 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
             
             # Prepare reduced catalogs
             cutfirst = np.int32(self.tree_resos[0]==0.)
-            mhash = cat.multihash(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1], 
-                                  shuffle=self.shuffle_pix, normed=False)
-            (ngal_resos, pos1s, pos2s, weights, zbins, isinners, allfields, 
-             index_matchers, pixs_galind_bounds, pix_gals, dpixs1_true, dpixs2_true) = mhash
-            weight_resos = np.concatenate(weights).astype(np.float64)
-            pos1_resos = np.concatenate(pos1s).astype(np.float64)
-            pos2_resos = np.concatenate(pos2s).astype(np.float64)
-            zbin_resos = np.concatenate(zbins).astype(np.int32)
-            isinner_resos = np.concatenate(isinners).astype(np.float64)
-            index_matcher_resos = np.concatenate(index_matchers).astype(np.int32)
-            pixs_galind_bounds_resos = np.concatenate(pixs_galind_bounds).astype(np.int32)
-            pix_gals_resos = np.concatenate(pix_gals).astype(np.int32)
+            mh = cat.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1],
+                                      shuffle=self.shuffle_pix, normed=False, nthreads=self.nthreads)
+            ngal_resos = mh['ngal_resos']
+            dpixs1_true, dpixs2_true = mh['dpixs1_true'], mh['dpixs2_true']
+            weight_resos = mh['weight_resos']
+            pos1_resos = mh['pos1_resos']
+            pos2_resos = mh['pos2_resos']
+            zbin_resos = mh['zbin_resos']
+            isinner_resos = mh['isinner_resos']
+            index_matcher_resos = mh['index_matcher_resos']
+            pixs_galind_bounds_resos = mh['pixs_galind_bounds_resos']
+            pix_gals_resos = mh['pix_gals_resos']
             index_matcher_flat = np.argwhere(cat.index_matcher>-1).flatten()
             nregions = len(index_matcher_flat)
             # Build args
@@ -245,7 +316,49 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
                     np.int32(self.nthreads),
                     *args_nap4,
                     *args_4pcf)
-            func = self.clib.alloc_notomoNap4_tree_nnnn 
+            only_multipoles = ("4pcf_multipole" in statistics and
+                               "4pcf_real" not in statistics and
+                               not hasintegratedstats)
+            if self.method=="Tree" and only_multipoles:
+                # Multipoles-only fast path: stops after the multipole reconstruction
+                # (no real-space transform, no Map^4 integral)
+                args = (*args_basecat,
+                        *args_basesetup[:7],
+                        *args_resos,
+                        *args_hash,
+                        *args_thetas,
+                        np.int32(self.nthreads), np.float64(memory_bound),
+                        bin_centers, N_n)
+                func = self.clib.alloc_nnnn_tree
+            elif self.method=="DoubleTree" and only_multipoles:
+                # True double tree (central-vertex gridding), multipoles only.
+                filledregions = []
+                for elregion in range(nregions):
+                    _g = cat.pix_gals[cat.pixs_galind_bounds[elregion]:cat.pixs_galind_bounds[elregion+1]]
+                    if np.sum(cat.isinner[_g]) > 0:
+                        filledregions.append(elregion)
+                filledregions = np.asarray(filledregions, dtype=np.int32)
+                args = (np.int32(self.tree_nresos), np.int32(self.tree_nresos-cutfirst),
+                        dpixs1_true.astype(np.float64), dpixs2_true.astype(np.float64), self.tree_redges,
+                        np.int32(self.resoshift_leafs), np.int32(self.minresoind_leaf), np.int32(self.maxresoind_leaf),
+                        isinner_resos, weight_resos, pos1_resos, pos2_resos, np.array(ngal_resos, dtype=np.int32),
+                        np.int32(_nmax), np.float64(self.min_sep), np.float64(self.max_sep),
+                        np.int32(self.nbinsr), np.int32(self.multicountcorr),
+                        _inds, np.int32(len(_inds)),
+                        index_matcher_resos, index_matcher_flat.astype(np.int32),
+                        pixs_galind_bounds_resos, pix_gals_resos,
+                        filledregions, np.int32(len(filledregions)), np.int32(nregions),
+                        np.float64(cat.pix1_start), np.float64(cat.pix1_d), np.int32(cat.pix1_n),
+                        np.float64(cat.pix2_start), np.float64(cat.pix2_d), np.int32(cat.pix2_n),
+                        *args_thetas,
+                        np.int32(self.nthreads), np.float64(memory_bound),
+                        np.int32(self._verbose_c+self._verbose_debug),
+                        bin_centers, N_n)
+                func = self.clib.alloc_nnnn_doubletree
+            elif self.method=="DoubleTree":
+                func = self.clib.alloc_notomoNap4_doubletree_nnnn
+            else:
+                func = self.clib.alloc_notomoNap4_tree_nnnn
 
         # Optionally print the arguments 
         if self._verbose_debug:
@@ -263,9 +376,13 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
         
         ## Compute 4th order stats ##
         func(*args)
-        
+
         ## Massage the output ##
         istatout = ()
+        if use_spherical:
+            # The curved-sky C path works in radians; report bin centers back in
+            # the catalogue's angular unit (degrees for spherical catalogs).
+            bin_centers = bin_centers * (180./np.pi)
         self.bin_centers = bin_centers.reshape(szr)
         self.bin_centers_mean = np.mean(self.bin_centers, axis=0)
         if "4pcf_multipole" in statistics:
@@ -311,7 +428,38 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
             npcf_out)
         
         return npcf_out.reshape(( _nphis1,_nphis2))
+    
+    def multipoles2npcf(self):
+        r""" Converts a 4PCF from the multipole basis to the real-space basis for a fixed combination of radial bins.
 
+        Returns:
+        --------
+        npcf_out: np.ndarray
+            Natural 4PCF components in the real-space basis for all angular combinations.
+        npcf_norm_out: np.ndarray
+            4PCF weighted counts in the real-space basis for all angular combinations.
+        """
+
+
+        _phis1 = self.phis[0].astype(np.float64)
+        _phis2 = self.phis[1].astype(np.float64)
+        _nphis1 = len(self.phis[0])
+        _nphis2 = len(self.phis[1])
+        nnvals, _, nzcombis, nbinsr, _, _ = np.shape(self.npcf_multipoles)
+        
+        N_in = self.npcf_multipoles.flatten()
+        npcf_out = np.zeros(self.nbinsr*self.nbinsr*self.nbinsr*_nphis1*_nphis2, dtype=np.complex128)
+        self.clib.multipoles2npcf_nnnn(
+            N_in.astype(np.complex128, copy=False),
+            np.int32(self.nmaxs[0]), np.int32(self.nmaxs[1]),
+            self.bin_centers_mean.astype(np.float64, copy=False),
+            np.int32(len(self.bin_centers_mean)),
+            _phis1, _phis2,
+            np.int32(_nphis1), np.int32(_nphis2),
+            npcf_out,
+            np.int32(self.nthreads))
+        
+        self.npcf = npcf_out.reshape((self.nbinsr, self.nbinsr, self.nbinsr, 1, _nphis1,_nphis2))
 
 class GGGGCorrelation_NoTomo(BinnedNPCF):
     r""" Class containing methods to measure and obtain statistics that are built
@@ -560,20 +708,21 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
             
             # Prepare reduced catalogs
             cutfirst = np.int32(self.tree_resos[0]==0.)
-            mhash = cat.multihash(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1], 
-                                  shuffle=self.shuffle_pix, w2field=True, normed=True)
-            (ngal_resos, pos1s, pos2s, weights, zbins, isinners, allfields, 
-             index_matchers, pixs_galind_bounds, pix_gals, dpixs1_true, dpixs2_true) = mhash
-            weight_resos = np.concatenate(weights).astype(np.float64)
-            pos1_resos = np.concatenate(pos1s).astype(np.float64)
-            pos2_resos = np.concatenate(pos2s).astype(np.float64)
-            zbin_resos = np.concatenate(zbins).astype(np.int32)
-            isinner_resos = np.concatenate(isinners).astype(np.float64)
+            mh = cat.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1],
+                                      shuffle=self.shuffle_pix, w2field=True, normed=True, nthreads=self.nthreads)
+            ngal_resos = mh['ngal_resos']
+            dpixs1_true, dpixs2_true = mh['dpixs1_true'], mh['dpixs2_true']
+            weight_resos = mh['weight_resos']
+            pos1_resos = mh['pos1_resos']
+            pos2_resos = mh['pos2_resos']
+            zbin_resos = mh['zbin_resos']
+            isinner_resos = mh['isinner_resos']
+            allfields = mh['allfields']
             e1_resos = np.concatenate([allfields[i][0] for i in range(len(allfields))]).astype(np.float64)
             e2_resos = np.concatenate([allfields[i][1] for i in range(len(allfields))]).astype(np.float64)
-            index_matcher_resos = np.concatenate(index_matchers).astype(np.int32)
-            pixs_galind_bounds_resos = np.concatenate(pixs_galind_bounds).astype(np.int32)
-            pix_gals_resos = np.concatenate(pix_gals).astype(np.int32)
+            index_matcher_resos = mh['index_matcher_resos']
+            pixs_galind_bounds_resos = mh['pixs_galind_bounds_resos']
+            pix_gals_resos = mh['pix_gals_resos']
             index_matcher_flat = np.argwhere(cat.index_matcher>-1).flatten()
             nregions = len(index_matcher_flat)
             if not lowmem:
@@ -1338,16 +1487,16 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
             
             # Prepare reduced catalogs
             cutfirst = np.int32(self.tree_resos[0]==0.)
-            mhash = cat_lens.multihash(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1], 
-                                       shuffle=self.shuffle_pix, normed=True)
-            (ngal_resos_lens, pos1s_lens, pos2s_lens, weights_lens, _, _, _, 
-             index_matchers_lens, pixs_galind_bounds_lens, pix_gals_lens, dpixs1_true_lens, dpixs2_true_lens) = mhash
-            weight_resos_lens = np.concatenate(weights_lens).astype(np.float64)
-            pos1_resos_lens = np.concatenate(pos1s_lens).astype(np.float64)
-            pos2_resos_lens = np.concatenate(pos2s_lens).astype(np.float64)
-            index_matcher_resos_lens = np.concatenate(index_matchers_lens).astype(np.int32)
-            pixs_galind_bounds_resos_lens = np.concatenate(pixs_galind_bounds_lens).astype(np.int32)
-            pix_gals_resos_lens = np.concatenate(pix_gals_lens).astype(np.int32)
+            mhl = cat_lens.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1],
+                                            shuffle=self.shuffle_pix, normed=True, nthreads=self.nthreads)
+            ngal_resos_lens = mhl['ngal_resos']
+            dpixs1_true_lens, dpixs2_true_lens = mhl['dpixs1_true'], mhl['dpixs2_true']
+            weight_resos_lens = mhl['weight_resos']
+            pos1_resos_lens = mhl['pos1_resos']
+            pos2_resos_lens = mhl['pos2_resos']
+            index_matcher_resos_lens = mhl['index_matcher_resos']
+            pixs_galind_bounds_resos_lens = mhl['pixs_galind_bounds_resos']
+            pix_gals_resos_lens = mhl['pix_gals_resos']
             index_matcher_flat = np.argwhere(cat_source.index_matcher>-1).flatten()
             nregions = len(index_matcher_flat)
 

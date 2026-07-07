@@ -106,3 +106,52 @@ void alloc_notomoNap4_tree_nnnn(
     int nthreads, double *napradii, int nnapradii, double complex *N4correlators, 
     int alloc_4pcfmultipoles, int alloc_4pcfreal,
     double *bin_centers, double complex *N_n, double complex *Counts);
+
+void alloc_notomoNap4_doubletree_nnnn(
+    double *isinner, double *weight, double *pos1, double *pos2, int ngal,
+    int nmax, double rmin, double rmax, int nbinsr, int dccorr,
+    int *nindices, int len_nindices, double *phibins, double *dbinsphi, int nbinsphi,
+    int nresos, double *reso_redges, int *ngal_resos,
+    double *isinner_resos, double *weight_resos, double *pos1_resos, double *pos2_resos,
+    int *index_matcher_hash, int *pixs_galind_bounds, int *pix_gals, int nregions,
+    double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n,
+    int *thetacombis_batches, int *nthetacombis_batches, int *cumthetacombis_batches, int nthetbatches,
+    int nthreads, double *napradii, int nnapradii, double complex *N4correlators,
+    int alloc_4pcfmultipoles, int alloc_4pcfreal,
+    double *bin_centers, double complex *N_n, double complex *Counts);
+
+void alloc_nnnn_tree(
+    double *isinner, double *weight, double *pos1, double *pos2, int ngal,
+    int nmax, double rmin, double rmax, int nbinsr, int dccorr,
+    int *nindices, int len_nindices,
+    int nresos, double *reso_redges, int *ngal_resos,
+    double *isinner_resos, double *weight_resos, double *pos1_resos, double *pos2_resos,
+    int *index_matcher_hash, int *pixs_galind_bounds, int *pix_gals, int nregions,
+    double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n,
+    int *thetacombis_batches, int *nthetacombis_batches, int *cumthetacombis_batches, int nthetbatches,
+    int nthreads, double memory_bound, double *bin_centers, double complex *N_n);
+
+void alloc_nnnn_tree_spherical(
+    double *cen_isinner, double *cen_w,
+    double *cen_vx, double *cen_vy, double *cen_vz,
+    double *cen_ra, double *cen_sindec, double *cen_cosdec, int ngal,
+    int nmax, double rmin, double rmax, int nbinsr, int dccorr,
+    int *nindices, int len_nindices,
+    int nresos, double *reso_redges, int *ngal_resos, int *ncells_resos,
+    double *leg_w, double *leg_vx, double *leg_vy, double *leg_vz,
+    double *leg_ra, double *leg_sindec, double *leg_cosdec, int *rshift_leg,
+    int *cen_cell, int *nav_off, int *rshift_cell, int *nav_legidx, int *rshift_nav,
+    int *thetacombis_batches, int *nthetacombis_batches, int *cumthetacombis_batches, int nthetbatches,
+    int nthreads, double memory_bound, double *bin_centers, double complex *N_n);
+
+void alloc_nnnn_doubletree(
+    int nresos, int nresos_grid, double *dpix1_resos, double *dpix2_resos, double *reso_redges,
+    int resoshift_leafs, int minresoind_leaf, int maxresoind_leaf,
+    double *isinner_resos, double *weight_resos, double *pos1_resos, double *pos2_resos, int *ngal_resos,
+    int nmax, double rmin, double rmax, int nbinsr, int dccorr,
+    int *nindices, int len_nindices,
+    int *index_matcher_hash, int *index_matcher_full, int *pixs_galind_bounds, int *pix_gals,
+    int *filledregions, int nfilledregions, int nregions,
+    double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n,
+    int *thetacombis_batches, int *nthetacombis_batches, int *cumthetacombis_batches, int nthetbatches,
+    int nthreads, double memory_bound, int verbose, double *bin_centers, double complex *N_n);

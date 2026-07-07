@@ -1823,6 +1823,39 @@ void getMultipolesFromSymm_NNNN(double complex *Nn_in,
 }
 
 // Upsilon_n has shape (1,nphi12,nphi13)
+void multipoles2npcf_nnnn(double complex *N_n, int n1max, int n2max,
+                          double *theta_centers, int nbinsstheta,
+                          double *phis12, double *phis13, int nbinsphi12, int nbinsphi13,
+                          double complex *npcf, int nthreads){
+    
+    #pragma omp parallel for num_threads(nthreads)
+    for (int nthetacombi=0; nthetacombi<nbinsstheta*nbinsstheta*nbinsstheta; nthetacombi++){
+        int n12combis = (2*n1max+1)*(2*n2max+1);
+        int phi23combis = nbinsphi12*nbinsphi13;
+        int ntheta2 = nbinsstheta*nbinsstheta;
+        int ntheta3 = ntheta2*nbinsstheta;
+        int eltheta1=nthetacombi/ntheta2;
+        int eltheta2=(nthetacombi-eltheta1*ntheta2)/nbinsstheta;
+        int eltheta3=nthetacombi%nbinsstheta;
+        double complex *tmpnpcf = calloc(phi23combis, sizeof(double complex));
+        double complex *tmpNn = calloc(n12combis, sizeof(double complex));
+        for (int n12=0;n12<n12combis;n12++){
+            tmpNn[n12] = N_n[n12*ntheta3+nthetacombi];
+        }
+        multipoles2npcf_nnnn_singletheta(
+            tmpNn, n1max,n2max, theta_centers[eltheta1], theta_centers[eltheta2], theta_centers[eltheta3],
+            phis12, phis13, nbinsphi12, nbinsphi13, tmpnpcf);
+        for (int elphi12=0; elphi12<nbinsphi12; elphi12++){
+            for (int elphi13=0; elphi13<nbinsphi13; elphi13++){
+                npcf[nthetacombi*phi23combis+elphi12*nbinsphi13+elphi13] += tmpnpcf[elphi12*nbinsphi13+elphi13];
+            }
+        }
+        free(tmpnpcf);
+        free(tmpNn);
+    }
+}
+
+// Upsilon_n has shape (1,nphi12,nphi13)
 void multipoles2npcf_nnnn_singletheta(double complex *N_n, int n1max, int n2max,
                                       double theta1, double theta2, double theta3,
                                       double *phis12, double *phis13, int nbinsphi12, int nbinsphi13,
