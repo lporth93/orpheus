@@ -660,6 +660,80 @@ void alloc_Gammans_doubletree_nnn(const MultiresoCatalog *cat, const NavHash *na
 ///////////////////////////////////////////////
 /// THIRD-ORDER SHEAR CORRELATION FUNCTIONS ///
 ///////////////////////////////////////////////
+
+// Per-pair fill of the spin-2 leg multipoles G_n (n-3 trick, 2*nmax+3 slots in
+// nextGns; running +/- power recursion) plus the count multipoles G_n_norm and
+// the four double-counting self-terms nextG2ns. Shared by the nmin=0 path of the
+// discrete/tree/basetree/doubletree GGG kernels; the caller keeps the per-pair
+// geometry, tmpwcounts/tmpwnorms, and (doubletree/basetree) the nextncounts bump.
+static inline void ggg_fill_gn(
+    double complex *nextGns, double complex *nextGns_norm,
+    double complex *nextG2ns, double complex *nextG2ns_norm,
+    int zrshift, int nbinszr, int nmax, double w2, double complex wshape,
+    double complex phirot, double complex phirotc, double complex twophirotc){
+    int ind_Gn = (nmax+3)*nbinszr + zrshift;
+    int ind_Gnnorm = zrshift;
+    double complex nphirot = 1+I*0;
+    double complex nphirotc = 1+I*0;
+    nextGns[ind_Gn] += wshape*nphirot;
+    nextGns_norm[ind_Gnnorm] += w2*nphirot;
+    double complex _wwphi = wshape*wshape*twophirotc;
+    double complex _wwphic = wshape*conj(wshape)*twophirotc;
+    nextG2ns[0*nbinszr+zrshift] += _wwphi*twophirotc*twophirotc;
+    nextG2ns[1*nbinszr+zrshift] += _wwphi;
+    nextG2ns[2*nbinszr+zrshift] += _wwphic;
+    nextG2ns[3*nbinszr+zrshift] += _wwphic;
+    nextG2ns_norm[zrshift] += w2*w2;
+    nphirot *= phirot;
+    nphirotc *= phirotc;
+    int nextnshift = 0;
+    for (int nextn=1;nextn<nmax;nextn++){
+        nextnshift = nextn*nbinszr;
+        nextGns[ind_Gn+nextnshift] += wshape*nphirot;
+        nextGns[ind_Gn-nextnshift] += wshape*nphirotc;
+        nextGns_norm[ind_Gnnorm+nextnshift] += w2*nphirot;
+        nphirot *= phirot;
+        nphirotc *= phirotc;
+    }
+    nextGns_norm[ind_Gnnorm+nextnshift+nbinszr] += w2*nphirot;
+    nextGns[zrshift+3*nbinszr] += wshape*nphirotc;
+    nphirotc *= phirotc;
+    nextGns[zrshift+2*nbinszr] += wshape*nphirotc;
+    nphirotc *= phirotc;
+    nextGns[zrshift+nbinszr] += wshape*nphirotc;
+    nphirotc *= phirotc;
+    nextGns[zrshift] += wshape*nphirotc;
+}
+
+// Per-pair fill for the nmin>3 band (discrete/tree GGG only): the G_n slots run
+// [-nmax-3..-nmin-1] and [nmin-3..nmax-1] with no double-counting self-terms.
+static inline void ggg_fill_gn_nminband(
+    double complex *nextGns, double complex *nextGns_norm,
+    int zrshift, int nbinszr, int nmin, int nmax, double w2, double complex wshape,
+    double complex phirot, double complex phirotc){
+    double complex phirotm = cpow(phirotc,nmax+3);
+    double complex phirotp = cpow(phirot,nmin-3);
+    double complex phirotn = phirotp*phirot*phirot*phirot;
+    int pshift = (nmax-nmin+3)*nbinszr;
+    int nextnshift = zrshift;
+    for (int nextn=0;nextn<nmax-nmin+1;nextn++){
+        nextGns[nextnshift] += wshape*phirotm;
+        nextGns[pshift+nextnshift] += wshape*phirotp;
+        nextGns_norm[nextnshift] += w2*phirotn;
+        phirotm *= phirot;
+        phirotp *= phirot;
+        phirotn *= phirot;
+        nextnshift += nbinszr;
+    }
+    nextGns[nextnshift] += wshape*phirotm;
+    nextGns[pshift+nextnshift] += wshape*phirotp;
+    phirotm *= phirot;
+    phirotp *= phirot;
+    nextnshift += nbinszr;
+    nextGns[nextnshift] += wshape*phirotm;
+    nextGns[pshift+nextnshift] += wshape*phirotp;
+}
+
 // Allocates multipoles of shape catalog via discrete estimator
 void alloc_Gammans_discrete_ggg(const MultiresoCatalog *cat, const NavHash *nav,
                                 const BinningParams *bin, int nthreads, int verbose,
@@ -729,8 +803,8 @@ void alloc_Gammans_discrete_ggg(const MultiresoCatalog *cat, const NavHash *nav,
                 double  p21, p22, w2, z2, e21, e22;
                 double rel1, rel2, dist;
                 double complex wshape;
-                int nnvals, nnvals_norm, nextn, nzero;
-                double complex nphirot, twophirotc, nphirotc, phirot, phirotc, phirotm, phirotp, phirotn;
+                int nnvals, nnvals_norm, nzero;
+                double complex twophirotc, phirot, phirotc;
                 
                 // Check how many ns we need for Gn
                 // Gns have shape (nnvals, nbinsz, nbinsr)
@@ -745,7 +819,7 @@ void alloc_Gammans_discrete_ggg(const MultiresoCatalog *cat, const NavHash *nav,
                 double complex *nextG2ns_norm =  calloc(nbinsz*nbinsr, sizeof(double complex));
 
                 int ind_rbin, rbin;
-                int ind_Gn, ind_Gnnorm, zrshift, nextnshift;
+                int zrshift;
                 int nbinszr = nbinsz*nbinsr;
                 double drbin = (log(rmax)-log(rmin))/(nbinsr);
                 /*if (ind_gal%10000==0){
@@ -798,73 +872,15 @@ void alloc_Gammans_discrete_ggg(const MultiresoCatalog *cat, const NavHash *nav,
                             //   -> Gns axis: [-nmax-3, ..., -nmin-1, nmin-3, nmax-1]
                             //   -> Gn_norm axis: [0,...,nmax]
                             if (nmin==0){
-                                nzero = nmax+3;
-                                ind_Gn = nzero*nbinszr + zrshift;
-                                ind_Gnnorm = zrshift;
-                                nphirot = 1+I*0;
-                                nphirotc = 1+I*0;
-                                
-                                // n = 0
-                                tmpwcounts[ind_rbin] += w1*w2*dist; 
-                                tmpwnorms[ind_rbin] += w1*w2; 
-                                nextGns[ind_Gn] += wshape*nphirot;
-                                nextGns_norm[ind_Gnnorm] += w2*nphirot;  
-                                nextG2ns[zrshift] += wshape*wshape*twophirotc*twophirotc*twophirotc;
-                                nextG2ns[nbinszr+zrshift] += wshape*wshape*twophirotc;
-                                nextG2ns[2*nbinszr+zrshift] += wshape*conj(wshape)*twophirotc;
-                                nextG2ns[3*nbinszr+zrshift] += wshape*conj(wshape)*twophirotc;
-                                nextG2ns_norm[zrshift] += w2*w2;
-                                nphirot *= phirot;
-                                nphirotc *= phirotc; 
-                                // n in [1, ..., nmax-1] x {+1,-1}
-                                nextnshift=0;
-                                for (nextn=1;nextn<nmax;nextn++){
-                                    nextnshift = nextn*nbinszr;
-                                    nextGns[ind_Gn+nextnshift] += wshape*nphirot;
-                                    nextGns[ind_Gn-nextnshift] += wshape*nphirotc;
-                                    nextGns_norm[ind_Gnnorm+nextnshift] += w2*nphirot;  
-                                    nphirot *= phirot;
-                                    nphirotc *= phirotc; 
-                                }
-                                // n in [nmax, -nmax, -nmax-1, -nmax-2, -nmax-3]
-                                nextGns_norm[ind_Gnnorm+nextnshift+nbinszr] += w2*nphirot;  
-                                nextGns[zrshift+3*nbinszr] += wshape*nphirotc;
-                                nphirotc *= phirotc; 
-                                nextGns[zrshift+2*nbinszr] += wshape*nphirotc;
-                                nphirotc *= phirotc; 
-                                nextGns[zrshift+nbinszr] += wshape*nphirotc;
-                                nphirotc *= phirotc; 
-                                nextGns[zrshift] += wshape*nphirotc;
+                                tmpwcounts[ind_rbin] += w1*w2*dist;
+                                tmpwnorms[ind_rbin] += w1*w2;
+                                ggg_fill_gn(nextGns, nextGns_norm, nextG2ns, nextG2ns_norm,
+                                    zrshift, nbinszr, nmax, w2, wshape, phirot, phirotc, twophirotc);
                             }
-                            
-                            // nmin>3 
-                            //   --> Gns axis: [-nmax-3, ..., -nmin+1, nmin-3, ..., nmax+1]
-                            //   --> Gn_norm axis: [nmin, ..., nmax]
                             else{
-                                phirotm = cpow(phirotc,nmax+3);
-                                phirotp = cpow(phirot,nmin-3);
-                                phirotn = phirotp*phirot*phirot*phirot;
-                                int pshift = (nmax-nmin+3)*nbinszr;
-                                nextnshift = zrshift;
-                                // n in [-nmax-3, ..., -nmin-3] + [nmin-3, ..., nmax-3]
-                                for (nextn=0;nextn<nmax-nmin+1;nextn++){
-                                    nextGns[nextnshift] += wshape*phirotm;
-                                    nextGns[pshift+nextnshift] += wshape*phirotp;
-                                    nextGns_norm[nextnshift] += w2*phirotn;
-                                    phirotm *= phirot;
-                                    phirotp *= phirot;
-                                    phirotn *= phirot;
-                                    nextnshift += nbinszr;
-                                }
-                                // n in [-nmin-2, -nmin-1] + [nmax-2, nmax-1]
-                                nextGns[nextnshift] += wshape*phirotm;
-                                nextGns[pshift+nextnshift] += wshape*phirotp;
-                                phirotm *= phirot;
-                                phirotp *= phirot;
-                                nextnshift += nbinszr;
-                                nextGns[nextnshift] += wshape*phirotm;
-                                nextGns[pshift+nextnshift] += wshape*phirotp;
-                            } 
+                                ggg_fill_gn_nminband(nextGns, nextGns_norm, zrshift, nbinszr,
+                                    nmin, nmax, w2, wshape, phirot, phirotc);
+                            }
                         }
                     }
                 }
@@ -1102,8 +1118,8 @@ void alloc_Gammans_tree_ggg(const MultiresoCatalog *cat, const MultiresoCatalog 
                 double  p21, p22, w2, z2, e21, e22;
                 double rel1, rel2, dist;
                 double complex wshape;
-                int nnvals, nnvals_norm, nextn, nzero;
-                double complex nphirot, twophirotc, nphirotc, phirot, phirotc, phirotm, phirotp, phirotn;
+                int nnvals, nnvals_norm, nzero;
+                double complex twophirotc, phirot, phirotc;
                 
                 // Check how many ns we need for Gn
                 // Gns have shape (nnvals, nbinsz, nbinsr)
@@ -1118,7 +1134,7 @@ void alloc_Gammans_tree_ggg(const MultiresoCatalog *cat, const MultiresoCatalog 
                 double complex *nextG2ns_norm =  calloc(nbinsz*nbinsr, sizeof(double complex));
 
                 int ind_rbin, rbin;
-                int ind_Gn, ind_Gnnorm, zrshift, nextnshift;
+                int zrshift;
                 int nbinszr = nbinsz*nbinsr;
                 double drbin = (log(rmax)-log(rmin))/(nbinsr);
                 /*if (ind_gal%10000==0){
@@ -1173,73 +1189,15 @@ void alloc_Gammans_tree_ggg(const MultiresoCatalog *cat, const MultiresoCatalog 
                                 //   -> Gns axis: [-nmax-3, ..., -nmin-1, nmin-3, nmax-1]
                                 //   -> Gn_norm axis: [0,...,nmax]
                                 if (nmin==0){
-                                    nzero = nmax+3;
-                                    ind_Gn = nzero*nbinszr + zrshift;
-                                    ind_Gnnorm = zrshift;
-                                    nphirot = 1+I*0;
-                                    nphirotc = 1+I*0;
-
-                                    // n = 0
-                                    tmpwcounts[ind_rbin] += w1*w2*dist; 
-                                    tmpwnorms[ind_rbin] += w1*w2; 
-                                    nextGns[ind_Gn] += wshape*nphirot;
-                                    nextGns_norm[ind_Gnnorm] += w2*nphirot;  
-                                    nextG2ns[zrshift] += wshape*wshape*twophirotc*twophirotc*twophirotc;
-                                    nextG2ns[nbinszr+zrshift] += wshape*wshape*twophirotc;
-                                    nextG2ns[2*nbinszr+zrshift] += wshape*conj(wshape)*twophirotc;
-                                    nextG2ns[3*nbinszr+zrshift] += wshape*conj(wshape)*twophirotc;
-                                    nextG2ns_norm[zrshift] += w2*w2;
-                                    nphirot *= phirot;
-                                    nphirotc *= phirotc; 
-                                    // n in [1, ..., nmax-1] x {+1,-1}
-                                    nextnshift = 0;
-                                    for (nextn=1;nextn<nmax;nextn++){
-                                        nextnshift = nextn*nbinszr;
-                                        nextGns[ind_Gn+nextnshift] += wshape*nphirot;
-                                        nextGns[ind_Gn-nextnshift] += wshape*nphirotc;
-                                        nextGns_norm[ind_Gnnorm+nextnshift] += w2*nphirot;  
-                                        nphirot *= phirot;
-                                        nphirotc *= phirotc; 
-                                    }
-                                    // n in [nmax, -nmax, -nmax-1, -nmax-2, -nmax-3]
-                                    nextGns_norm[ind_Gnnorm+nextnshift+nbinszr] += w2*nphirot;  
-                                    nextGns[zrshift+3*nbinszr] += wshape*nphirotc;
-                                    nphirotc *= phirotc; 
-                                    nextGns[zrshift+2*nbinszr] += wshape*nphirotc;
-                                    nphirotc *= phirotc; 
-                                    nextGns[zrshift+nbinszr] += wshape*nphirotc;
-                                    nphirotc *= phirotc; 
-                                    nextGns[zrshift] += wshape*nphirotc;
+                                    tmpwcounts[ind_rbin] += w1*w2*dist;
+                                    tmpwnorms[ind_rbin] += w1*w2;
+                                    ggg_fill_gn(nextGns, nextGns_norm, nextG2ns, nextG2ns_norm,
+                                        zrshift, nbinszr, nmax, w2, wshape, phirot, phirotc, twophirotc);
                                 }
-
-                                // nmin>3 
-                                //   --> Gns axis: [-nmax-3, ..., -nmin+1, nmin-3, ..., nmax+1]
-                                //   --> Gn_norm axis: [nmin, ..., nmax]
                                 else{
-                                    phirotm = cpow(phirotc,nmax+3);
-                                    phirotp = cpow(phirot,nmin-3);
-                                    phirotn = phirotp*phirot*phirot*phirot;
-                                    int pshift = (nmax-nmin+3)*nbinszr;
-                                    nextnshift = zrshift;
-                                    // n in [-nmax-3, ..., -nmin-3] + [nmin-3, ..., nmax-3]
-                                    for (nextn=0;nextn<nmax-nmin+1;nextn++){
-                                        nextGns[nextnshift] += wshape*phirotm;
-                                        nextGns[pshift+nextnshift] += wshape*phirotp;
-                                        nextGns_norm[nextnshift] += w2*phirotn;
-                                        phirotm *= phirot;
-                                        phirotp *= phirot;
-                                        phirotn *= phirot;
-                                        nextnshift += nbinszr;
-                                    }
-                                    // n in [-nmin-2, -nmin-1] + [nmax-2, nmax-1]
-                                    nextGns[nextnshift] += wshape*phirotm;
-                                    nextGns[pshift+nextnshift] += wshape*phirotp;
-                                    phirotm *= phirot;
-                                    phirotp *= phirot;
-                                    nextnshift += nbinszr;
-                                    nextGns[nextnshift] += wshape*phirotm;
-                                    nextGns[pshift+nextnshift] += wshape*phirotp;
-                                } 
+                                    ggg_fill_gn_nminband(nextGns, nextGns_norm, zrshift, nbinszr,
+                                        nmin, nmax, w2, wshape, phirot, phirotc);
+                                }
                             }
                         }
                     }
@@ -1846,7 +1804,6 @@ static void _ggg_flat(const MultiresoCatalog *cat, const NavHash *nav,
                     double e1_gal1 = e1_resos[ind_gal1];
                     double e2_gal1 = e2_resos[ind_gal1];
                     double complex wshape_gal1 = (double complex) w_gal1 * (e1_gal1+I*e2_gal1);
-                    int nzero = nmax+3;
 
                     for (int elreso_leaf = _leaf_lo; elreso_leaf <= _leaf_hi; elreso_leaf++) {
                         double _rmin_sub2, _rmax_sub2;
@@ -1891,41 +1848,11 @@ static void _ggg_flat(const MultiresoCatalog *cat, const NavHash *nav,
                                     double complex twophirotc = phirotc*phirotc;
                                     int zrshift = z_gal2*nbinsr_reso + rbin;
                                     int ind_rbin = elthread*nbinsz*nbinsr + z_gal2*nbinsr + rbin+rbinmin;
-                                    int ind_Gn = nzero*nbinszr_reso + zrshift;
-                                    int ind_Gnnorm = zrshift;
-                                    double complex nphirot = 1+I*0;
-                                    double complex nphirotc = 1+I*0;
                                     nextncounts[zrshift] += 1;
                                     tmpwcounts[ind_rbin] += w_gal1*w_gal2*dist;
                                     tmpwnorms[ind_rbin] += w_gal1*w_gal2;
-                                    nextGns[ind_Gn] += wshape_gal2*nphirot;
-                                    nextGns_norm[ind_Gnnorm] += w_gal2*nphirot;
-                                    double complex _wwphi = wshape_gal2*wshape_gal2*twophirotc;
-                                    double complex _wwphic = wshape_gal2*conj(wshape_gal2)*twophirotc;
-                                    nextG2ns[0*nbinszr_reso+zrshift] += _wwphi*twophirotc*twophirotc;
-                                    nextG2ns[1*nbinszr_reso+zrshift] += _wwphi;
-                                    nextG2ns[2*nbinszr_reso+zrshift] += _wwphic;
-                                    nextG2ns[3*nbinszr_reso+zrshift] += _wwphic;
-                                    nextG2ns_norm[zrshift] += w_gal2*w_gal2;
-                                    nphirot *= phirot;
-                                    nphirotc *= phirotc;
-                                    int nextnshift = 0;
-                                    for (int nextn=1;nextn<nmax;nextn++){
-                                        nextnshift = nextn*nbinszr_reso;
-                                        nextGns[ind_Gn+nextnshift] += wshape_gal2*nphirot;
-                                        nextGns[ind_Gn-nextnshift] += wshape_gal2*nphirotc;
-                                        nextGns_norm[ind_Gnnorm+nextnshift] += w_gal2*nphirot;
-                                        nphirot *= phirot;
-                                        nphirotc *= phirotc;
-                                    }
-                                    nextGns_norm[ind_Gnnorm+nextnshift+nbinszr_reso] += w_gal2*nphirot;
-                                    nextGns[zrshift+3*nbinszr_reso] += wshape_gal2*nphirotc;
-                                    nphirotc *= phirotc;
-                                    nextGns[zrshift+2*nbinszr_reso] += wshape_gal2*nphirotc;
-                                    nphirotc *= phirotc;
-                                    nextGns[zrshift+nbinszr_reso] += wshape_gal2*nphirotc;
-                                    nphirotc *= phirotc;
-                                    nextGns[zrshift] += wshape_gal2*nphirotc;
+                                    ggg_fill_gn(nextGns, nextGns_norm, nextG2ns, nextG2ns_norm,
+                                        zrshift, nbinszr_reso, nmax, w_gal2, wshape_gal2, phirot, phirotc, twophirotc);
                                 }
                             }
                         }
@@ -2451,16 +2378,13 @@ void alloc_Gammans_basetree_ggg(const MultiresoCatalog *cat, const NavHash *nav,
             //.    allocate the Gncaches
             //.    compute the Gamman for all combinations of the same resolution
             int ind_pix1, ind_pix2, ind_inpix1, ind_inpix2, ind_red, ind_gal1, ind_gal2, z_gal1, z_gal2;
-            int ind_Gn, ind_Gnnorm;
-            int rbin, nextn, nextnshift, nbinszr, nbinszr_reso, zrshift, ind_rbin;
+            int rbin, nbinszr, nbinszr_reso, zrshift, ind_rbin;
             double innergal, pos1_gal1, pos2_gal1, pos1_gal2, pos2_gal2, w_gal1, w_gal2, e1_gal1, e2_gal1, e1_gal2, e2_gal2;
             double rel1, rel2, dist;
             double complex wshape_gal1, wshape_gal2;
-            double complex _wwphic, _wwphi;
-            double complex nphirot, twophirotc, nphirotc, phirot, phirotc;
+            double complex twophirotc, phirot, phirotc;
             double rmin_reso, rmax_reso, rmin_reso2, rmax_reso2;
             int rbinmin, rbinmax;
-            int nzero = nmax+3;
             nbinszr =  nbinsz*nbinsr;
             int elreso_leaf = 0;
             for (int elreso=0;elreso<nresos;elreso++){
@@ -2534,46 +2458,11 @@ void alloc_Gammans_basetree_ggg(const MultiresoCatalog *cat, const NavHash *nav,
                                 // nmin=0 
                                 //   -> Gns axis: [-nmax-3, ..., -nmin-1, nmin-3, nmax-1]
                                 //   -> Gn_norm axis: [0,...,nmax]
-                                ind_Gn = nzero*nbinszr_reso + zrshift;
-                                ind_Gnnorm = zrshift;
-                                nphirot = 1+I*0;
-                                nphirotc = 1+I*0;
-
-                                // n = 0
                                 nextncounts[zrshift] += 1;
-                                tmpwcounts[ind_rbin] += w_gal1*w_gal2*dist; 
-                                tmpwnorms[ind_rbin] += w_gal1*w_gal2; 
-                                nextGns[ind_Gn] += wshape_gal2*nphirot;
-                                nextGns_norm[ind_Gnnorm] += w_gal2*nphirot;  
-                                _wwphi = wshape_gal2*wshape_gal2*twophirotc;
-                                _wwphic = wshape_gal2*conj(wshape_gal2)*twophirotc;
-                                nextG2ns[0*nbinszr_reso+zrshift] += _wwphi*twophirotc*twophirotc;
-                                nextG2ns[1*nbinszr_reso+zrshift] += _wwphi;
-                                nextG2ns[2*nbinszr_reso+zrshift] += _wwphic;
-                                nextG2ns[3*nbinszr_reso+zrshift] += _wwphic;
-                                nextG2ns_norm[zrshift] += w_gal2*w_gal2;
-                                nphirot *= phirot;
-                                nphirotc *= phirotc; 
-
-                                // n in [1, ..., nmax-1] x {+1,-1}
-                                nextnshift = 0;
-                                for (nextn=1;nextn<nmax;nextn++){
-                                    nextnshift = nextn*nbinszr_reso;
-                                    nextGns[ind_Gn+nextnshift] += wshape_gal2*nphirot;
-                                    nextGns[ind_Gn-nextnshift] += wshape_gal2*nphirotc;
-                                    nextGns_norm[ind_Gnnorm+nextnshift] += w_gal2*nphirot;  
-                                    nphirot *= phirot;
-                                    nphirotc *= phirotc; 
-                                }
-                                // n in [nmax, -nmax, -nmax-1, -nmax-2, -nmax-3]
-                                nextGns_norm[ind_Gnnorm+nextnshift+nbinszr_reso] += w_gal2*nphirot;  
-                                nextGns[zrshift+3*nbinszr_reso] += wshape_gal2*nphirotc;
-                                nphirotc *= phirotc; 
-                                nextGns[zrshift+2*nbinszr_reso] += wshape_gal2*nphirotc;
-                                nphirotc *= phirotc; 
-                                nextGns[zrshift+nbinszr_reso] += wshape_gal2*nphirotc;
-                                nphirotc *= phirotc; 
-                                nextGns[zrshift] += wshape_gal2*nphirotc;
+                                tmpwcounts[ind_rbin] += w_gal1*w_gal2*dist;
+                                tmpwnorms[ind_rbin] += w_gal1*w_gal2;
+                                ggg_fill_gn(nextGns, nextGns_norm, nextG2ns, nextG2ns_norm,
+                                    zrshift, nbinszr_reso, nmax, w_gal2, wshape_gal2, phirot, phirotc, twophirotc);
                             }
                         }
                     }
@@ -2883,6 +2772,25 @@ static void gnn_reduce(int nbinsz_source, int nbinsz_lens, int nbinsr, int nmax,
     free(totcounts); free(totnorms);
 }
 
+// Per-pair fill of the GNN leg count multipoles W_m (m in [-1, nmax+1], stored
+// at stride nbinszr; running phirotc power) plus the single count self-term
+// thisW2ns and the polar self-term thisG2ns. Shared by the discrete/doubletree
+// GNN kernels; the caller keeps the nextncounts bump and tmpwcounts/tmpwnorms.
+static inline void gnn_fill_wn(
+    double complex *thisWns, double complex *thisG2ns, double complex *thisW2ns,
+    int z2rshift, int nbinszr, int nmax, double w_gal1, double w_gal2,
+    double complex wshape_gal1, double complex phirot, double complex phirotc){
+    thisG2ns[z2rshift] += wshape_gal1*w_gal2*w_gal2*phirotc*phirotc;
+    thisW2ns[z2rshift] += w_gal1*w_gal2*w_gal2;
+    int ind_Wn = z2rshift;
+    double complex nphirot = phirotc;
+    for (int nextn=-1;nextn<=nmax+1;nextn++){
+        thisWns[ind_Wn] += w_gal2*nphirot;
+        nphirot *= phirot;
+        ind_Wn += nbinszr;
+    }
+}
+
 // Discrete estimtor of Source-Lens-Lens (G3L) Correlator
 void alloc_Gammans_discrete_GNN(const MultiresoCatalog *cat_source, const NavHash *nav_source,
                                 const MultiresoCatalog *cat_lens, const NavHash *nav_lens,
@@ -2973,9 +2881,9 @@ void alloc_Gammans_discrete_GNN(const MultiresoCatalog *cat_source, const NavHas
                 wshape_gal1 = w_gal1*(e1_gal1+I*e2_gal1);
                 
                 // Allocate the G_n and W_n coefficients + Double-counting correction factors
-                double complex phirot, phirotc, nphirot;
+                double complex phirot, phirotc;
                 double rel1, rel2, dist;
-                int ind_Wn, ind_counts, z1shift, z2rshift, rbin;
+                int ind_counts, z1shift, z2rshift, rbin;
                 double complex *thisWns = calloc(nnvals_Gn*nbinszr_Gn, sizeof(double complex)); // Here we do not need Gns!
                 double complex *thisG2ns = calloc(nbinszr_Gn, sizeof(double complex));
                 double complex *thisW2ns = calloc(nbinszr_Gn, sizeof(double complex));
@@ -3018,16 +2926,8 @@ void alloc_Gammans_discrete_GNN(const MultiresoCatalog *cat_source, const NavHas
                             thisncounts[z2rshift] += 1;
                             tmpwcounts[ind_counts] += w_gal1*w_gal2*dist; 
                             tmpwnorms[ind_counts] += w_gal1*w_gal2; 
-                            thisG2ns[z2rshift] += wshape_gal1*w_gal2*w_gal2*phirotc*phirotc;
-                            thisW2ns[z2rshift] += w_gal1*w_gal2*w_gal2;
-                            
-                            ind_Wn = z2rshift;
-                            nphirot = phirotc;
-                            for (int nextn=-1;nextn<=nmax+1;nextn++){
-                                thisWns[ind_Wn] += w_gal2*nphirot;
-                                nphirot *= phirot; 
-                                ind_Wn += nbinszr_Gn;
-                            }
+                            gnn_fill_wn(thisWns, thisG2ns, thisW2ns, z2rshift, nbinszr_Gn, nmax,
+                                w_gal1, w_gal2, wshape_gal1, phirot, phirotc);
                         }
                     }
                 }
@@ -4083,7 +3983,7 @@ void alloc_Gammans_doubletree_GNN(const MultiresoCatalog *cat_source, const NavH
             double innergal, pos1_gal1, pos2_gal1, pos1_gal2, pos2_gal2, w_gal1, w_gal2, e1_gal1, e2_gal1;
             double rel1, rel2, dist;
             double complex wshape_gal1;
-            double complex nphirot, phirot, phirotc;
+            double complex phirot, phirotc;
             double rmin_reso, rmax_reso, rmin_reso_sq, rmax_reso_sq;
             int elreso_leaf, rbinmin, rbinmax;
             
@@ -4108,7 +4008,7 @@ void alloc_Gammans_doubletree_GNN(const MultiresoCatalog *cat_source, const NavH
                 int *allowedrinds = calloc(nbinszr_reso, sizeof(int));
                 int *allowedzinds = calloc(nbinszr_reso, sizeof(int));
                 //if (elregion==region_debug){printf("rbinmin=%d, rbinmax%d\n",rbinmin,rbinmax);}
-                int ind_Wn, ind_counts, z1shift, z2rshift, rbin;
+                int ind_counts, z1shift, z2rshift, rbin;
                 for (ind_inpix1=lower1; ind_inpix1<upper1; ind_inpix1++){
                     ind_gal1 = rshift_pix_gals_source[elreso] + pix_gals_source[rshift_pix_gals_source[elreso]+ind_inpix1];
                     innergal = isinner_source_resos[ind_gal1];
@@ -4155,16 +4055,8 @@ void alloc_Gammans_doubletree_GNN(const MultiresoCatalog *cat_source, const NavH
                                 nextncounts[z2rshift] += 1;
                                 tmpwcounts[ind_counts] += w_gal1*w_gal2*dist; 
                                 tmpwnorms[ind_counts] += w_gal1*w_gal2; 
-                                thisG2ns[z2rshift] += wshape_gal1*w_gal2*w_gal2*phirotc*phirotc;
-                                thisW2ns[z2rshift] += w_gal1*w_gal2*w_gal2;
-                                
-                                ind_Wn = z2rshift;
-                                nphirot = phirotc;
-                                for (int nextn=-1;nextn<=nmax+1;nextn++){
-                                    thisWns[ind_Wn] += w_gal2*nphirot;
-                                    nphirot *= phirot; 
-                                    ind_Wn += nbinszr_reso;
-                                }
+                                gnn_fill_wn(thisWns, thisG2ns, thisW2ns, z2rshift, nbinszr_reso, nmax,
+                                    w_gal1, w_gal2, wshape_gal1, phirot, phirotc);
                             }
                         }
                     }
@@ -4492,6 +4384,49 @@ static void ngg_reduce(int nbinsz_lens, int nbinsz_source, int nbinsr, int nmax,
     free(totcounts); free(totnorms);
 }
 
+// Per-pair fill of the NGG leg multipoles: the spin-2 shear G_m (m in
+// [-nmax-2, nmax+2], stride nbinszr_Gn) and count W_m (m in [-nmax, nmax],
+// stride nbinszr_Wn), filled together via one symmetric +/- recursion, plus the
+// two polar self-terms thisG2ns and the count self-term thisW2ns. Shared by the
+// discrete/tree/doubletree NGG kernels; caller keeps counts + tmpwcounts/norms.
+static inline void ngg_fill_gnwn(
+    double complex *thisGns, double complex *thisWns,
+    double complex *thisG2ns, double complex *thisW2ns,
+    int z2rshift, int nbinszr_Gn, int nbinszr_Wn, int nmax,
+    double w_gal1, double w_gal2, double complex wshape_gal2, double complex phirot){
+    thisG2ns[z2rshift] += w_gal1*wshape_gal2*wshape_gal2*conj(phirot*phirot*phirot*phirot);
+    thisG2ns[nbinszr_Gn+z2rshift] += w_gal1*wshape_gal2*conj(wshape_gal2);
+    thisW2ns[z2rshift] += w_gal1*w_gal2*w_gal2;
+    int ind_Wnp = nmax*nbinszr_Wn + z2rshift;
+    int ind_Wnm = ind_Wnp;
+    int ind_Gnp = (nmax+2)*nbinszr_Gn+z2rshift;
+    int ind_Gnm = ind_Gnp;
+    double complex nphirot = 1;
+    thisGns[ind_Gnp] += wshape_gal2;
+    thisWns[ind_Wnp] += w_gal2;
+    for (int nextn=1;nextn<=nmax;nextn++){
+        nphirot *= phirot;
+        ind_Wnp += nbinszr_Wn;
+        ind_Wnm -= nbinszr_Wn;
+        ind_Gnp += nbinszr_Gn;
+        ind_Gnm -= nbinszr_Gn;
+        thisGns[ind_Gnp] += wshape_gal2*nphirot;
+        thisGns[ind_Gnm] += wshape_gal2*conj(nphirot);
+        thisWns[ind_Wnp] += w_gal2*nphirot;
+        thisWns[ind_Wnm] += w_gal2*conj(nphirot);
+    }
+    nphirot *= phirot;
+    ind_Gnp += nbinszr_Gn;
+    ind_Gnm -= nbinszr_Gn;
+    thisGns[ind_Gnp] += wshape_gal2*nphirot;
+    thisGns[ind_Gnm] += wshape_gal2*conj(nphirot);
+    nphirot *= phirot;
+    ind_Gnp += nbinszr_Gn;
+    ind_Gnm -= nbinszr_Gn;
+    thisGns[ind_Gnp] += wshape_gal2*nphirot;
+    thisGns[ind_Gnm] += wshape_gal2*conj(nphirot);
+}
+
 // Discrete estimator of Lens-Source-Source Correlator
 void alloc_Gammans_discrete_NGG(const MultiresoCatalog *cat_source, const NavHash *nav_source,
                                 const MultiresoCatalog *cat_lens, const NavHash *nav_lens,
@@ -4590,9 +4525,9 @@ void alloc_Gammans_discrete_NGG(const MultiresoCatalog *cat_source, const NavHas
                 zbin_gal1 = zbin_lens[ind_gal1];
                 
                 // Allocate the G_n and W_n coefficients + Double-counting correction factors
-                double complex phirot, nphirot;
+                double complex phirot;
                 double rel1, rel2, dist;
-                int ind_Wnp, ind_Wnm, ind_Gnp, ind_Gnm, ind_counts, z1shift, z2rshift, rbin;
+                int ind_counts, z1shift, z2rshift, rbin;
                 double complex *thisGns = calloc(nnvals_Gn*nbinszr_Gn, sizeof(double complex)); 
                 double complex *thisWns = calloc(nnvals_Wn*nbinszr_Wn, sizeof(double complex)); 
                 double complex *thisG2ns = calloc(2*nbinszr_Gn, sizeof(double complex));
@@ -4636,42 +4571,8 @@ void alloc_Gammans_discrete_NGG(const MultiresoCatalog *cat_source, const NavHas
                             thisncounts[z2rshift] += 1;
                             tmpwcounts[ind_counts] += w_gal1*w_gal2*dist; 
                             tmpwnorms[ind_counts] += w_gal1*w_gal2; 
-                            thisG2ns[z2rshift] += w_gal1*wshape_gal2*wshape_gal2*conj(phirot*phirot*phirot*phirot);
-                            thisG2ns[nbinszr_Gn+z2rshift] += w_gal1*wshape_gal2*conj(wshape_gal2);
-                            thisW2ns[z2rshift] += w_gal1*w_gal2*w_gal2;
-                            
-                            // n=0
-                            ind_Wnp = nmax*nbinszr_Wn + z2rshift;
-                            ind_Wnm = ind_Wnp;
-                            ind_Gnp = (nmax+2)*nbinszr_Gn+z2rshift;
-                            ind_Gnm = ind_Gnp;
-                            nphirot = 1;
-                            thisGns[ind_Gnp] += wshape_gal2;
-                            thisWns[ind_Wnp] += w_gal2;
-                            // n \in {-nmax, ..., -1, 1, ...,  nmax}
-                            for (int nextn=1;nextn<=nmax;nextn++){
-                                nphirot *= phirot; 
-                                ind_Wnp += nbinszr_Wn;
-                                ind_Wnm -= nbinszr_Wn;
-                                ind_Gnp += nbinszr_Gn;
-                                ind_Gnm -= nbinszr_Gn;
-                                thisGns[ind_Gnp] += wshape_gal2*nphirot;
-                                thisGns[ind_Gnm] += wshape_gal2*conj(nphirot);
-                                thisWns[ind_Wnp] += w_gal2*nphirot;
-                                thisWns[ind_Wnm] += w_gal2*conj(nphirot);
-                            }
-                            
-                            // n \in {-nmax-2, -nmax-1, nmax+1, nmax+2}
-                            nphirot *= phirot; 
-                            ind_Gnp += nbinszr_Gn;
-                            ind_Gnm -= nbinszr_Gn;
-                            thisGns[ind_Gnp] += wshape_gal2*nphirot;
-                            thisGns[ind_Gnm] += wshape_gal2*conj(nphirot);
-                            nphirot *= phirot; 
-                            ind_Gnp += nbinszr_Gn;
-                            ind_Gnm -= nbinszr_Gn;
-                            thisGns[ind_Gnp] += wshape_gal2*nphirot;
-                            thisGns[ind_Gnm] += wshape_gal2*conj(nphirot);
+                            ngg_fill_gnwn(thisGns, thisWns, thisG2ns, thisW2ns, z2rshift,
+                                nbinszr_Gn, nbinszr_Wn, nmax, w_gal1, w_gal2, wshape_gal2, phirot);
                         }
                     }
                 }
@@ -4805,9 +4706,9 @@ void alloc_Gammans_tree_NGG(const MultiresoCatalog *cat_source, const NavHash *n
                 zbin_gal1 = zbin_lens[ind_gal1];
                 
                 // Allocate the G_n and W_n coefficients + Double-counting correction factors
-                double complex phirot, nphirot;
+                double complex phirot;
                 double rel1, rel2, dist;
-                int ind_Wnp, ind_Wnm, ind_Gnp, ind_Gnm, ind_counts, z1shift, z2rshift, rbin;
+                int ind_counts, z1shift, z2rshift, rbin;
                 double complex *thisGns = calloc(nnvals_Gn*nbinszr_Gn, sizeof(double complex)); 
                 double complex *thisWns = calloc(nnvals_Wn*nbinszr_Wn, sizeof(double complex)); 
                 double complex *thisG2ns = calloc(2*nbinszr_Gn, sizeof(double complex));
@@ -4859,42 +4760,8 @@ void alloc_Gammans_tree_NGG(const MultiresoCatalog *cat_source, const NavHash *n
                                 thisncounts[z2rshift] += 1;
                                 tmpwcounts[ind_counts] += w_gal1*w_gal2*dist; 
                                 tmpwnorms[ind_counts] += w_gal1*w_gal2; 
-                                thisG2ns[z2rshift] += w_gal1*wshape_gal2*wshape_gal2*conj(phirot*phirot*phirot*phirot);
-                                thisG2ns[nbinszr_Gn+z2rshift] += w_gal1*wshape_gal2*conj(wshape_gal2);
-                                thisW2ns[z2rshift] += w_gal1*w_gal2*w_gal2;
-
-                                // n=0
-                                ind_Wnp = nmax*nbinszr_Wn + z2rshift;
-                                ind_Wnm = ind_Wnp;
-                                ind_Gnp = (nmax+2)*nbinszr_Gn+z2rshift;
-                                ind_Gnm = ind_Gnp;
-                                nphirot = 1;
-                                thisGns[ind_Gnp] += wshape_gal2;
-                                thisWns[ind_Wnp] += w_gal2;
-                                // n \in {-nmax, ..., -1, 1, ...,  nmax}
-                                for (int nextn=1;nextn<=nmax;nextn++){
-                                    nphirot *= phirot; 
-                                    ind_Wnp += nbinszr_Wn;
-                                    ind_Wnm -= nbinszr_Wn;
-                                    ind_Gnp += nbinszr_Gn;
-                                    ind_Gnm -= nbinszr_Gn;
-                                    thisGns[ind_Gnp] += wshape_gal2*nphirot;
-                                    thisGns[ind_Gnm] += wshape_gal2*conj(nphirot);
-                                    thisWns[ind_Wnp] += w_gal2*nphirot;
-                                    thisWns[ind_Wnm] += w_gal2*conj(nphirot);
-                                }
-
-                                // n \in {-nmax-2, -nmax-1, nmax+1, nmax+2}
-                                nphirot *= phirot; 
-                                ind_Gnp += nbinszr_Gn;
-                                ind_Gnm -= nbinszr_Gn;
-                                thisGns[ind_Gnp] += wshape_gal2*nphirot;
-                                thisGns[ind_Gnm] += wshape_gal2*conj(nphirot);
-                                nphirot *= phirot; 
-                                ind_Gnp += nbinszr_Gn;
-                                ind_Gnm -= nbinszr_Gn;
-                                thisGns[ind_Gnp] += wshape_gal2*nphirot;
-                                thisGns[ind_Gnm] += wshape_gal2*conj(nphirot);
+                                ngg_fill_gnwn(thisGns, thisWns, thisG2ns, thisW2ns, z2rshift,
+                                    nbinszr_Gn, nbinszr_Wn, nmax, w_gal1, w_gal2, wshape_gal2, phirot);
                             }
                         }
                     }
@@ -5096,7 +4963,7 @@ void alloc_Gammans_doubletree_NGG(const MultiresoCatalog *cat_source, const NavH
             double innergal, pos1_gal1, pos2_gal1, pos1_gal2, pos2_gal2, w_gal1, w_gal2, e1_gal2, e2_gal2;
             double rel1, rel2, dist;
             double complex wshape_gal2;
-            double complex nphirot, phirot;
+            double complex phirot;
             double rmin_reso, rmax_reso, rmin_reso_sq, rmax_reso_sq;
             int elreso_leaf, rbinmin, rbinmax;
             
@@ -5121,7 +4988,7 @@ void alloc_Gammans_doubletree_NGG(const MultiresoCatalog *cat_source, const NavH
                 int *thisncounts = calloc(nbinszr_reso, sizeof(int));
                 int *allowedrinds = calloc(nbinszr_reso, sizeof(int));
                 int *allowedzinds = calloc(nbinszr_reso, sizeof(int));
-                int ind_Wnp, ind_Wnm, ind_Gnp, ind_Gnm, ind_counts, z1shift, z2rshift, rbin;
+                int ind_counts, z1shift, z2rshift, rbin;
                 for (ind_inpix1=lower1; ind_inpix1<upper1; ind_inpix1++){
                     ind_gal1 = rshift_pix_gals_lens[elreso] + pix_gals_lens[rshift_pix_gals_lens[elreso]+ind_inpix1];
                     innergal = isinner_lens_resos[ind_gal1];
@@ -5167,41 +5034,8 @@ void alloc_Gammans_doubletree_NGG(const MultiresoCatalog *cat_source, const NavH
                                 thisncounts[z2rshift] += 1;
                                 tmpwcounts[ind_counts] += w_gal1*w_gal2*dist; 
                                 tmpwnorms[ind_counts] += w_gal1*w_gal2; 
-                                thisG2ns[z2rshift] += w_gal1*wshape_gal2*wshape_gal2*conj(phirot*phirot*phirot*phirot);
-                                thisG2ns[nbinszr_reso+z2rshift] += w_gal1*wshape_gal2*conj(wshape_gal2);
-                                thisW2ns[z2rshift] += w_gal1*w_gal2*w_gal2;
-                                
-                                // n=0
-                                ind_Wnp = nmax*nbinszr_reso + z2rshift;
-                                ind_Wnm = ind_Wnp;
-                                ind_Gnp = (nmax+2)*nbinszr_reso+z2rshift;
-                                ind_Gnm = ind_Gnp;
-                                nphirot = 1;
-                                thisGns[ind_Gnp] += wshape_gal2;
-                                thisWns[ind_Wnp] += w_gal2;
-                                // n \in {-nmax, ..., -1, 1, ...,  nmax}
-                                for (int nextn=1;nextn<=nmax;nextn++){
-                                    nphirot *= phirot; 
-                                    ind_Wnp += nbinszr_reso;
-                                    ind_Wnm -= nbinszr_reso;
-                                    ind_Gnp += nbinszr_reso;
-                                    ind_Gnm -= nbinszr_reso;
-                                    thisGns[ind_Gnp] += wshape_gal2*nphirot;
-                                    thisGns[ind_Gnm] += wshape_gal2*conj(nphirot);
-                                    thisWns[ind_Wnp] += w_gal2*nphirot;
-                                    thisWns[ind_Wnm] += w_gal2*conj(nphirot);
-                                }
-                                // n \in {-nmax-2, -nmax-1, nmax+1, nmax+2}
-                                nphirot *= phirot; 
-                                ind_Gnp += nbinszr_reso;
-                                ind_Gnm -= nbinszr_reso;
-                                thisGns[ind_Gnp] += wshape_gal2*nphirot;
-                                thisGns[ind_Gnm] += wshape_gal2*conj(nphirot);
-                                nphirot *= phirot; 
-                                ind_Gnp += nbinszr_reso;
-                                ind_Gnm -= nbinszr_reso;
-                                thisGns[ind_Gnp] += wshape_gal2*nphirot;
-                                thisGns[ind_Gnm] += wshape_gal2*conj(nphirot);
+                                ngg_fill_gnwn(thisGns, thisWns, thisG2ns, thisW2ns, z2rshift,
+                                    nbinszr_reso, nbinszr_reso, nmax, w_gal1, w_gal2, wshape_gal2, phirot);
                             }
                         }
                     }
