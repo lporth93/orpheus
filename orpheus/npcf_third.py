@@ -1202,6 +1202,10 @@ class GNNCorrelation(BinnedNPCF):
         f3 = f[z3_i].reshape(1, _z3combis, 1, 1)
         self.npcf_multipoles = (self._SDD - f3*self._SDR - f2*self._SRD + f2*f3*self._SRR)[None]
         self.npcf_multipoles_norm = fc*f2*f3*self._RRR
+        # Per-z-combo weighted single-triangle count scale, mean(w_R)^3 f_c f_2 f_3, in
+        # the f^3-rescaled RRR units of npcf_multipoles_norm. multipoles2npcf floors the
+        # near-zero-count divisions against count_floor_rtol times this (empty configs).
+        self._normcountscale = np.mean(cat_random.weight)**3 * (fc*f2*f3).reshape(_z3combis)
 
         self.bin_centers = bin_centers.reshape(szr)
         self.bin_centers_mean = np.mean(self.bin_centers, axis=(0, 1))
@@ -1263,7 +1267,7 @@ class GNNCorrelation(BinnedNPCF):
     # * Do a voronoi-tesselation at the multipole level? Would be just 2D, but still might help? Eventually
     #   bundle together cells s.t. tot_weight > theshold? However, this might then make the binning courser
     #   for certain triangle configs(?)
-    def multipoles2npcf(self, xi=None):
+    def multipoles2npcf(self, xi=None, count_floor_rtol=1e-3):
         r"""
         Notes
         -----
@@ -1305,16 +1309,22 @@ class GNNCorrelation(BinnedNPCF):
                 tmptotnorm += _const.conj() * self.npcf_multipoles_norm[n][ztiler].astype(complex).transpose(0,2,1)
             self.npcf_norm[...,elphi] = tmptotnorm.real
             
+        # Divide out the (weighted) triangle count, masking bins whose count is a
+        # negligible fraction (count_floor_rtol) of a single weighted triangle: the
+        # truncated multipole sum drives npcf_norm through ~0 (even slightly negative)
+        # for essentially-empty configs, and an unguarded 1/norm blows the estimator up.
+        _scale = getattr(self, '_normcountscale', None)
         if self.is_edge_corrected:
             sel_zero = np.isnan(N0)
             _a = self.npcf
             _b = N0.real[:, :, np.newaxis]
-            self.npcf = np.divide(_a, _b, out=np.zeros_like(_a), where=np.abs(_b)>0)
+            _thr = 0. if _scale is None else count_floor_rtol*_scale.reshape(-1, 1, 1, 1)
+            self.npcf = np.divide(_a, _b, out=np.zeros_like(_a), where=_b > _thr)
         else:
             _a = self.npcf
             _b = self.npcf_norm
-            self.npcf = np.divide(_a, _b, out=np.zeros_like(_a), where=np.abs(_b)>0)
-            #self.npcf = self.npcf/self.npcf_norm[0][None, ...].astype(complex)
+            _thr = 0. if _scale is None else count_floor_rtol*_scale.reshape(-1, 1, 1, 1)
+            self.npcf = np.divide(_a, _b, out=np.zeros_like(_a), where=_b > _thr)
         self.projection = "X"
 
         # Optionally correct by clustering correlation function
@@ -1615,6 +1625,10 @@ class NGGCorrelation(BinnedNPCF):
         fc = f[zc_i]; f2 = f[z2_i]; f3 = f[z3_i]
         self.npcf_multipoles = _DSS - fc.reshape(1, 1, _z3combis, 1, 1)*_RSS
         self.npcf_multipoles_norm = (fc*f2*f3).reshape(1, _z3combis, 1, 1)*self._RRR
+        # Per-z-combo weighted single-triangle count scale, mean(w_R)^3 f_c f_2 f_3, in
+        # the f^3-rescaled RRR units of npcf_multipoles_norm. multipoles2npcf floors the
+        # near-zero-count divisions against count_floor_rtol times this (empty configs).
+        self._normcountscale = np.mean(cat_random.weight)**3 * (fc*f2*f3)
 
         self.bin_centers = bin_centers.reshape(szr)
         self.bin_centers_mean = np.mean(self.bin_centers, axis=(0, 1))
@@ -1838,11 +1852,13 @@ class NGGCorrelation(BinnedNPCF):
         if ret_matrices:
             return threepcf_n_corr, mats
     
-    def multipoles2npcf(self, integrated=False):
+    def multipoles2npcf(self, integrated=False, count_floor_rtol=1e-3):
         r"""
         Notes
         -----
-        * When dividing by the (weighted) counts ``N``, all contributions for which ``N <= 0`` are set to zero.
+        * When dividing by the (weighted) counts ``N``, bins whose count falls below
+          ``count_floor_rtol`` times a single weighted triangle (mean(w_R)^3 f_c f_2 f_3)
+          are treated as empty and set to zero.
 
         """
         _, nzcombis, rbins, rbins = np.shape(self.npcf_multipoles[0])
@@ -1871,17 +1887,23 @@ class NGGCorrelation(BinnedNPCF):
             self.npcf[...,elphi] = tmp
             self.npcf_norm[...,elphi] = tmpnorm.real
             
+        # Divide out the (weighted) triangle count, masking bins whose count is a
+        # negligible fraction (count_floor_rtol) of a single weighted triangle: the
+        # truncated multipole sum drives npcf_norm through ~0 (even slightly negative)
+        # for essentially-empty configs, and an unguarded 1/norm blows the estimator up.
+        _scale = getattr(self, '_normcountscale', None)
         if self.is_edge_corrected:
             N0 = dphi/(2*np.pi) * self.npcf_multipoles_norm[self.nmax].astype(complex)
             sel_zero = np.isnan(N0)
             _a = self.npcf
             _b = N0.real[np.newaxis, :, :, :, np.newaxis]
-            self.npcf = np.divide(_a, _b, out=np.zeros_like(_a), where=_b>0)
+            _thr = 0. if _scale is None else count_floor_rtol*_scale.reshape(1, -1, 1, 1, 1)
+            self.npcf = np.divide(_a, _b, out=np.zeros_like(_a), where=_b > _thr)
         else:
             _a = self.npcf
             _b = self.npcf_norm
-            self.npcf = np.divide(_a, _b, out=np.zeros_like(_a), where=_b>0)
-            #self.npcf = self.npcf/self.npcf_norm[0][None, ...].astype(complex)
+            _thr = 0. if _scale is None else count_floor_rtol*_scale.reshape(-1, 1, 1, 1)
+            self.npcf = np.divide(_a, _b, out=np.zeros_like(_a), where=_b > _thr)
         self.projection = "X"
             
     ## PROJECTIONS ##
