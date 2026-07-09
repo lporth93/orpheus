@@ -394,7 +394,7 @@ static inline void ggg_fill_GnWn_projected(
     double complex *nextGns, double complex *nextWns,
     double complex *nextG2ns, double complex *nextW2ns,
     int zrshift, int nbinszr, int nmax, double w2, double complex wshape,
-    double complex phirot, double complex phirotc, double complex twophirotc){
+    double complex phirot, double complex twophirotc){
     int nzero = nmax+1;
     int ind_Gn = nzero*nbinszr + zrshift;
     nextGns[ind_Gn] += wshape;
@@ -405,13 +405,20 @@ static inline void ggg_fill_GnWn_projected(
     nextG2ns[3*nbinszr+zrshift] += wshape*conj(wshape)*twophirotc;
     nextW2ns[zrshift] += w2*w2;
     double complex nphirot = phirot;
-    double complex nphirotc = phirotc;
+    double wr = creal(wshape), wi = cimag(wshape);
     for (int m=1; m<=nmax+1; m++){
-        nextGns[ind_Gn + m*nbinszr] += wshape*nphirot;
-        nextGns[ind_Gn - m*nbinszr] += wshape*nphirotc;
+        // phirotc^m == conj(phirot^m) exactly in IEEE754 (conjugating both factors
+        // of a complex product conjugates the result bit-for-bit), so nphirot alone
+        // suffices -- no need to also chain-multiply a separate nphirotc. Likewise
+        // wshape*nphirot and wshape*conj(nphirot) share the same 4 real partial
+        // products (only the +/- combination differs), so compute those once
+        // instead of running two independent complex multiplies.
+        double nr = creal(nphirot), ni = cimag(nphirot);
+        double a = wr*nr, b = wi*ni, c = wr*ni, d = wi*nr;
+        nextGns[ind_Gn + m*nbinszr] += (a-b) + I*(c+d);
+        nextGns[ind_Gn - m*nbinszr] += (a+b) + I*(d-c);
         if (m <= nmax){ nextWns[zrshift + m*nbinszr] += w2*nphirot; }
         nphirot *= phirot;
-        nphirotc *= phirotc;
     }
 }
 
@@ -482,34 +489,40 @@ static void ggg_update_gnwncache(GggCtx *c, int elreso, int rbinmin, int rbinmax
     int nbinsr_reso, int z_gal1, double w_gal1, double complex wshape_gal1,
     const int *redpix_by_reso2,
     const double complex *nextGns, const double complex *nextWns){
-    int nbinszr_reso = c->nbinsz*nbinsr_reso;
-    for (int elreso2=elreso; elreso2<c->nresos; elreso2++){
-        int redpix_reso2 = redpix_by_reso2[elreso2];
-        for (int zbin2=0; zbin2<c->nbinsz; zbin2++){
+    int nbinsz = c->nbinsz, nresos = c->nresos, nshift = c->nshift;
+    int nnvals_Gn = c->nnvals_Gn, nnvals_Nn = c->nnvals_Nn, zbin2shift = c->zbin2shift;
+    int zbinshift_z1 = c->zbinshifts[z_gal1], thetashift_z1 = c->thetashifts_z[z_gal1];
+    const int *cumresoshift_z1 = c->cumresoshift_z + z_gal1*(nresos+1);
+    double complex *Gncache = c->Gncache, *wGncache = c->wGncache, *cwGncache = c->cwGncache;
+    double complex *Nncache = c->Nncache, *wNncache = c->wNncache;
+    double complex conj_wshape_gal1 = conj(wshape_gal1);
+    int nbinszr_reso = nbinsz*nbinsr_reso;
+    for (int elreso2=elreso; elreso2<nresos; elreso2++){
+        int cumshift = cumresoshift_z1[elreso2] + redpix_by_reso2[elreso2];
+        for (int zbin2=0; zbin2<nbinsz; zbin2++){
+            int zbase = zbin2*zbin2shift + zbinshift_z1 + cumshift;
             for (int thisrbin=rbinmin; thisrbin<rbinmax; thisrbin++){
                 int zrshift = zbin2*nbinsr_reso + thisrbin-rbinmin;
                 if (cabs(nextWns[zrshift])<1e-10){continue;}
-                int ind_Gncacheshift = zbin2*c->zbin2shift + c->zbinshifts[z_gal1] +
-                    thisrbin*c->thetashifts_z[z_gal1] +
-                    c->cumresoshift_z[z_gal1*(c->nresos+1) + elreso2] + redpix_reso2;
+                int ind_Gncacheshift = zbase + thisrbin*thetashift_z1;
                 int _tmpindGn = zrshift;
                 int _tmpindcache = ind_Gncacheshift;
-                for(int thisn=0; thisn<c->nnvals_Gn; thisn++){
+                for(int thisn=0; thisn<nnvals_Gn; thisn++){
                     double complex thisGn = nextGns[_tmpindGn];
-                    c->Gncache[_tmpindcache] += thisGn;
-                    c->wGncache[_tmpindcache] += wshape_gal1*thisGn;
-                    c->cwGncache[_tmpindcache] += conj(wshape_gal1)*thisGn;
+                    Gncache[_tmpindcache] += thisGn;
+                    wGncache[_tmpindcache] += wshape_gal1*thisGn;
+                    cwGncache[_tmpindcache] += conj_wshape_gal1*thisGn;
                     _tmpindGn += nbinszr_reso;
-                    _tmpindcache += c->nshift;
+                    _tmpindcache += nshift;
                 }
                 _tmpindGn = zrshift;
                 _tmpindcache = ind_Gncacheshift;
-                for(int thisn=0; thisn<c->nnvals_Nn; thisn++){
+                for(int thisn=0; thisn<nnvals_Nn; thisn++){
                     double complex thisGnnorm = nextWns[_tmpindGn];
-                    c->Nncache[_tmpindcache] += thisGnnorm;
-                    c->wNncache[_tmpindcache] += w_gal1*thisGnnorm;
+                    Nncache[_tmpindcache] += thisGnnorm;
+                    wNncache[_tmpindcache] += w_gal1*thisGnnorm;
                     _tmpindGn += nbinszr_reso;
-                    _tmpindcache += c->nshift;
+                    _tmpindcache += nshift;
                 }
             }
         }
@@ -528,7 +541,13 @@ static void ggg_accum_samereso(GggCtx *c, int rbinmin, int nbinsr_reso,
     const double complex *nextGns, const double complex *nextWns,
     const double complex *nextG2ns, const double complex *nextW2ns,
     const int *nextncounts, int *allowedrinds, int *allowedzinds){
-    int nbinsz=c->nbinsz, nbinsr=c->nbinsr, nmax=c->nmax;
+    int nbinsz=c->nbinsz, nbinsr=c->nbinsr, nmax=c->nmax, dccorr=c->dccorr;
+    int elthread=c->elthread, gamma_compshift=c->gamma_compshift;
+    int gamma_nshift=c->gamma_nshift, gamma_zshift=c->gamma_zshift;
+    double complex *tmpGamma0s=c->tmpGamma0s, *tmpGamma1s=c->tmpGamma1s;
+    double complex *tmpGamma2s=c->tmpGamma2s, *tmpGamma3s=c->tmpGamma3s;
+    double complex *tmpGammans_norm=c->tmpGammans_norm;
+    double complex conj_wshape_gal1 = conj(wshape_gal1);
     int nbinszr_reso = nbinsz*nbinsr_reso;
     int nzero = nmax+3;
 
@@ -550,24 +569,24 @@ static void ggg_accum_samereso(GggCtx *c, int rbinmin, int nbinsr_reso,
         int ind_nm3 = (nzero+thisn-3)*nbinszr_reso;
         int ind_nm1 = (nzero+thisn-1)*nbinszr_reso;
         int ind_norm = thisn*nbinszr_reso;
-        int thisnshift = c->elthread*c->gamma_compshift + thisn*c->gamma_nshift;
+        int thisnshift = elthread*gamma_compshift + thisn*gamma_nshift;
         for (int zrcombis1=0; zrcombis1<nallowedcounts; zrcombis1++){
             int elb1 = allowedrinds[zrcombis1];
             int zbin2 = allowedzinds[zrcombis1];
             int elb1_full = elb1 + rbinmin;
             int zrshift = zbin2*nbinsr_reso + elb1;
-            if (c->dccorr==1){
+            if (dccorr==1){
                 int zcombi = z_gal1*nbinsz*nbinsz + zbin2*nbinsz + zbin2;
-                int gammashift1 = thisnshift + zcombi*c->gamma_zshift + elb1_full*nbinsr;
+                int gammashift1 = thisnshift + zcombi*gamma_zshift + elb1_full*nbinsr;
                 int gammashift = gammashift1 + elb1_full;
-                c->tmpGamma0s[gammashift] += wshape_gal1*nextG2ns[0*nbinszr_reso + zrshift];
-                c->tmpGamma1s[gammashift] += conj(wshape_gal1)*nextG2ns[1*nbinszr_reso + zrshift];
-                c->tmpGamma2s[gammashift] += wshape_gal1*nextG2ns[2*nbinszr_reso + zrshift];
-                c->tmpGamma3s[gammashift] += wshape_gal1*nextG2ns[3*nbinszr_reso + zrshift];
-                c->tmpGammans_norm[gammashift1 + elb1_full] -= w_gal1*nextW2ns[zrshift];
+                tmpGamma0s[gammashift] += wshape_gal1*nextG2ns[0*nbinszr_reso + zrshift];
+                tmpGamma1s[gammashift] += conj_wshape_gal1*nextG2ns[1*nbinszr_reso + zrshift];
+                tmpGamma2s[gammashift] += wshape_gal1*nextG2ns[2*nbinszr_reso + zrshift];
+                tmpGamma3s[gammashift] += wshape_gal1*nextG2ns[3*nbinszr_reso + zrshift];
+                tmpGammans_norm[gammashift1 + elb1_full] -= w_gal1*nextW2ns[zrshift];
             }
             double complex h0 = -wshape_gal1 * nextGns[ind_nm3 + zrshift];
-            double complex h1 = -conj(wshape_gal1) * nextGns[ind_nm1 + zrshift];
+            double complex h1 = -conj_wshape_gal1 * nextGns[ind_nm1 + zrshift];
             double complex h2 = -wshape_gal1 * conj(nextGns[ind_mnm1 + zrshift]);
             double complex h3 = -wshape_gal1 * nextGns[ind_nm3 + zrshift];
             double complex w0 = w_gal1 * nextWns[ind_norm + zrshift];
@@ -575,16 +594,16 @@ static void ggg_accum_samereso(GggCtx *c, int rbinmin, int nbinsr_reso,
             int _gammashift1 = thisnshift + elb1_full*nbinsr;
             for (int zrcombis2=0; zrcombis2<nallowedcounts; zrcombis2++){
                 int zcombi = _zcombi+allowedzinds[zrcombis2];
-                int gammashift1 = _gammashift1 + zcombi*c->gamma_zshift;
+                int gammashift1 = _gammashift1 + zcombi*gamma_zshift;
                 int elb2_full = allowedrinds[zrcombis2] + rbinmin;
                 int zrshift2 = allowedzinds[zrcombis2]*nbinsr_reso + allowedrinds[zrcombis2];
                 int gammashift = gammashift1 + elb2_full;
                 double complex Gmnm3 = nextGns[ind_mnm3 + zrshift2];
-                c->tmpGamma0s[gammashift] += h0*Gmnm3;
-                c->tmpGamma1s[gammashift] += h1*nextGns[ind_mnm1 + zrshift2];
-                c->tmpGamma2s[gammashift] += h2*Gmnm3;
-                c->tmpGamma3s[gammashift] += h3*conj(nextGns[ind_nm1 + zrshift2]);
-                c->tmpGammans_norm[gammashift1 + elb2_full] += w0*conj(nextWns[ind_norm + zrshift2]);
+                tmpGamma0s[gammashift] += h0*Gmnm3;
+                tmpGamma1s[gammashift] += h1*nextGns[ind_mnm1 + zrshift2];
+                tmpGamma2s[gammashift] += h2*Gmnm3;
+                tmpGamma3s[gammashift] += h3*conj(nextGns[ind_nm1 + zrshift2]);
+                tmpGammans_norm[gammashift1 + elb2_full] += w0*conj(nextWns[ind_norm + zrshift2]);
             }
         }
     }
@@ -596,33 +615,46 @@ static void ggg_accum_samereso(GggCtx *c, int rbinmin, int nbinsr_reso,
 // where wG_xxx := wshape*G_xxx and cwG_xxx := conj(wshape)*G_xxx.,
 static void ggg_accum_crossreso(GggCtx *c){
     int nbinsz=c->nbinsz, nbinsr=c->nbinsr, nmax=c->nmax, nresos=c->nresos, nshift=c->nshift;
+    int elthread=c->elthread, gamma_compshift=c->gamma_compshift;
+    int gamma_nshift=c->gamma_nshift, gamma_zshift=c->gamma_zshift, zbin2shift=c->zbin2shift;
+    const int *zbinshifts=c->zbinshifts, *thetashifts_z=c->thetashifts_z;
+    const int *cumresoshift_z=c->cumresoshift_z, *reso_rindedges=c->reso_rindedges;
+    const int *ngal_in_pix=c->ngal_in_pix;
+    double complex *Gncache=c->Gncache, *wGncache=c->wGncache, *cwGncache=c->cwGncache;
+    double complex *Nncache=c->Nncache, *wNncache=c->wNncache;
+    double complex *tmpGamma0s=c->tmpGamma0s, *tmpGamma1s=c->tmpGamma1s;
+    double complex *tmpGamma2s=c->tmpGamma2s, *tmpGamma3s=c->tmpGamma3s;
+    double complex *tmpGammans_norm=c->tmpGammans_norm;
     for (int thisn=0; thisn<nmax+1; thisn++){
-        int thisnshift = c->elthread*c->gamma_compshift + thisn*c->gamma_nshift;
+        int thisnshift = elthread*gamma_compshift + thisn*gamma_nshift;
         for (int zbin1=0; zbin1<nbinsz; zbin1++){
+            int zbinshift_z1 = zbinshifts[zbin1], thetashift_z1 = thetashifts_z[zbin1];
+            const int *cumresoshift_z1 = cumresoshift_z + zbin1*(nresos+1);
             for (int zbin2=0; zbin2<nbinsz; zbin2++){
                 for (int zbin3=0; zbin3<nbinsz; zbin3++){
                     int zcombi = zbin1*nbinsz*nbinsz + zbin2*nbinsz + zbin3;
-                    int _thetashift_z = c->thetashifts_z[zbin1];
+                    int _thetashift_z = thetashift_z1;
                     // Case max(reso1, reso2) = reso2
                     for (int thisreso1=0; thisreso1<nresos; thisreso1++){
-                        int rbinmin1 = c->reso_rindedges[thisreso1];
-                        int rbinmax1 = c->reso_rindedges[thisreso1+1];
+                        int rbinmin1 = reso_rindedges[thisreso1];
+                        int rbinmax1 = reso_rindedges[thisreso1+1];
                         for (int thisreso2=thisreso1+1; thisreso2<nresos; thisreso2++){
-                            int rbinmin2 = c->reso_rindedges[thisreso2];
-                            int rbinmax2 = c->reso_rindedges[thisreso2+1];
-                            for (int elgal=0; elgal<c->ngal_in_pix[zbin1*nresos+thisreso2]; elgal++){
+                            int rbinmin2 = reso_rindedges[thisreso2];
+                            int rbinmax2 = reso_rindedges[thisreso2+1];
+                            int cumshift2 = cumresoshift_z1[thisreso2];
+                            for (int elgal=0; elgal<ngal_in_pix[zbin1*nresos+thisreso2]; elgal++){
                                 for (int elb1=rbinmin1; elb1<rbinmax1; elb1++){
-                                    int gammashift1 = thisnshift + zcombi*c->gamma_zshift + elb1*nbinsr;
-                                    int ind_Nncacheshift = zbin2*c->zbin2shift + c->zbinshifts[zbin1] + elb1*c->thetashifts_z[zbin1] +
-                                        c->cumresoshift_z[zbin1*(nresos+1) + thisreso2] + elgal;
+                                    int gammashift1 = thisnshift + zcombi*gamma_zshift + elb1*nbinsr;
+                                    int ind_Nncacheshift = zbin2*zbin2shift + zbinshift_z1 + elb1*thetashift_z1 +
+                                        cumshift2 + elgal;
                                     int ind_Gncacheshift = (nmax+3)*nshift + ind_Nncacheshift;
-                                    double complex h0 = -c->wGncache[(thisn-3)*nshift + ind_Gncacheshift];
-                                    double complex h1 = -c->cwGncache[(thisn-1)*nshift + ind_Gncacheshift];
-                                    double complex h2 = -conj(c->cwGncache[(-thisn-1)*nshift + ind_Gncacheshift]);
-                                    double complex h3 = -c->wGncache[(thisn-3)*nshift + ind_Gncacheshift];
-                                    double complex w0 = c->wNncache[thisn*nshift + ind_Nncacheshift];
-                                    ind_Nncacheshift = zbin3*c->zbin2shift + c->zbinshifts[zbin1] + rbinmin2*c->thetashifts_z[zbin1] +
-                                            c->cumresoshift_z[zbin1*(nresos+1) + thisreso2] + elgal;
+                                    double complex h0 = -wGncache[(thisn-3)*nshift + ind_Gncacheshift];
+                                    double complex h1 = -cwGncache[(thisn-1)*nshift + ind_Gncacheshift];
+                                    double complex h2 = -conj(cwGncache[(-thisn-1)*nshift + ind_Gncacheshift]);
+                                    double complex h3 = -wGncache[(thisn-3)*nshift + ind_Gncacheshift];
+                                    double complex w0 = wNncache[thisn*nshift + ind_Nncacheshift];
+                                    ind_Nncacheshift = zbin3*zbin2shift + zbinshift_z1 + rbinmin2*thetashift_z1 +
+                                            cumshift2 + elgal;
                                     ind_Gncacheshift = (nmax+3)*nshift + ind_Nncacheshift;
                                     int _imnm3 = (-thisn-3)*nshift + ind_Gncacheshift;
                                     int _imnm1 = (-thisn-1)*nshift + ind_Gncacheshift;
@@ -630,11 +662,12 @@ static void ggg_accum_crossreso(GggCtx *c){
                                     int _in = thisn*nshift + ind_Nncacheshift;
                                     for (int elb2=rbinmin2; elb2<rbinmax2; elb2++){
                                         int gammashift = gammashift1 + elb2;
-                                        c->tmpGamma0s[gammashift] += h0*c->Gncache[_imnm3];
-                                        c->tmpGamma1s[gammashift] += h1*c->Gncache[_imnm1];
-                                        c->tmpGamma2s[gammashift] += h2*c->Gncache[_imnm3];
-                                        c->tmpGamma3s[gammashift] += h3*conj(c->Gncache[_inm1]);
-                                        c->tmpGammans_norm[gammashift1 + elb2] += w0*conj(c->Nncache[_in]);
+                                        double complex Gmnm3 = Gncache[_imnm3];
+                                        tmpGamma0s[gammashift] += h0*Gmnm3;
+                                        tmpGamma1s[gammashift] += h1*Gncache[_imnm1];
+                                        tmpGamma2s[gammashift] += h2*Gmnm3;
+                                        tmpGamma3s[gammashift] += h3*conj(Gncache[_inm1]);
+                                        tmpGammans_norm[gammashift1 + elb2] += w0*conj(Nncache[_in]);
                                         ind_Nncacheshift += _thetashift_z; ind_Gncacheshift += _thetashift_z;
                                         _imnm3 += _thetashift_z; _imnm1 += _thetashift_z; _inm1 += _thetashift_z; _in += _thetashift_z;
                                     }
@@ -644,24 +677,25 @@ static void ggg_accum_crossreso(GggCtx *c){
                     }
                     // Case max(reso1, reso2) = reso1
                     for (int thisreso2=0; thisreso2<nresos; thisreso2++){
-                        int rbinmin2 = c->reso_rindedges[thisreso2];
-                        int rbinmax2 = c->reso_rindedges[thisreso2+1];
+                        int rbinmin2 = reso_rindedges[thisreso2];
+                        int rbinmax2 = reso_rindedges[thisreso2+1];
                         for (int thisreso1=thisreso2+1; thisreso1<nresos; thisreso1++){
-                            int rbinmin1 = c->reso_rindedges[thisreso1];
-                            int rbinmax1 = c->reso_rindedges[thisreso1+1];
-                            for (int elgal=0; elgal<c->ngal_in_pix[zbin1*nresos+thisreso1]; elgal++){
+                            int rbinmin1 = reso_rindedges[thisreso1];
+                            int rbinmax1 = reso_rindedges[thisreso1+1];
+                            int cumshift1 = cumresoshift_z1[thisreso1];
+                            for (int elgal=0; elgal<ngal_in_pix[zbin1*nresos+thisreso1]; elgal++){
                                 for (int elb1=rbinmin1; elb1<rbinmax1; elb1++){
-                                    int gammashift1 = thisnshift + zcombi*c->gamma_zshift + elb1*nbinsr;
-                                    int ind_Nncacheshift = zbin2*c->zbin2shift + c->zbinshifts[zbin1] + elb1*c->thetashifts_z[zbin1] +
-                                        c->cumresoshift_z[zbin1*(nresos+1) + thisreso1] + elgal;
+                                    int gammashift1 = thisnshift + zcombi*gamma_zshift + elb1*nbinsr;
+                                    int ind_Nncacheshift = zbin2*zbin2shift + zbinshift_z1 + elb1*thetashift_z1 +
+                                        cumshift1 + elgal;
                                     int ind_Gncacheshift = (nmax+3)*nshift + ind_Nncacheshift;
-                                    double complex h0 = -c->Gncache[(thisn-3)*nshift + ind_Gncacheshift];
-                                    double complex h1 = -c->Gncache[(thisn-1)*nshift + ind_Gncacheshift];
-                                    double complex h2 = -conj(c->Gncache[(-thisn-1)*nshift + ind_Gncacheshift]);
-                                    double complex h3 = -c->Gncache[(thisn-3)*nshift + ind_Gncacheshift];
-                                    double complex w0 = c->Nncache[thisn*nshift + ind_Nncacheshift];
-                                    ind_Nncacheshift = zbin3*c->zbin2shift + c->zbinshifts[zbin1] + rbinmin2*c->thetashifts_z[zbin1] +
-                                            c->cumresoshift_z[zbin1*(nresos+1) + thisreso1] + elgal;
+                                    double complex h0 = -Gncache[(thisn-3)*nshift + ind_Gncacheshift];
+                                    double complex h1 = -Gncache[(thisn-1)*nshift + ind_Gncacheshift];
+                                    double complex h2 = -conj(Gncache[(-thisn-1)*nshift + ind_Gncacheshift]);
+                                    double complex h3 = -Gncache[(thisn-3)*nshift + ind_Gncacheshift];
+                                    double complex w0 = Nncache[thisn*nshift + ind_Nncacheshift];
+                                    ind_Nncacheshift = zbin3*zbin2shift + zbinshift_z1 + rbinmin2*thetashift_z1 +
+                                            cumshift1 + elgal;
                                     ind_Gncacheshift = (nmax+3)*nshift + ind_Nncacheshift;
                                     int _imnm3 = (-thisn-3)*nshift + ind_Gncacheshift;
                                     int _imnm1 = (-thisn-1)*nshift + ind_Gncacheshift;
@@ -669,11 +703,12 @@ static void ggg_accum_crossreso(GggCtx *c){
                                     int _in = thisn*nshift + ind_Nncacheshift;
                                     for (int elb2=rbinmin2; elb2<rbinmax2; elb2++){
                                         int gammashift = gammashift1 + elb2;
-                                        c->tmpGamma0s[gammashift] += h0*c->wGncache[_imnm3];
-                                        c->tmpGamma1s[gammashift] += h1*c->cwGncache[_imnm1];
-                                        c->tmpGamma2s[gammashift] += h2*c->wGncache[_imnm3];
-                                        c->tmpGamma3s[gammashift] += h3*conj(c->cwGncache[_inm1]);
-                                        c->tmpGammans_norm[gammashift1 + elb2] += w0*conj(c->wNncache[_in]);
+                                        double complex wGmnm3 = wGncache[_imnm3];
+                                        tmpGamma0s[gammashift] += h0*wGmnm3;
+                                        tmpGamma1s[gammashift] += h1*cwGncache[_imnm1];
+                                        tmpGamma2s[gammashift] += h2*wGmnm3;
+                                        tmpGamma3s[gammashift] += h3*conj(cwGncache[_inm1]);
+                                        tmpGammans_norm[gammashift1 + elb2] += w0*conj(wNncache[_in]);
                                         ind_Nncacheshift += _thetashift_z; ind_Gncacheshift += _thetashift_z;
                                         _imnm3 += _thetashift_z; _imnm1 += _thetashift_z; _inm1 += _thetashift_z; _in += _thetashift_z;
                                     }
@@ -1151,7 +1186,7 @@ void alloc_Gammans_discrete_ggg(const MultiresoCatalog *cat, const NavHash *nav,
                                 tmpwcounts[ind_rbin] += w1*w2*dist;
                                 tmpwnorms[ind_rbin] += w1*w2;
                                 ggg_fill_GnWn_projected(nextGns, nextWns, nextG2ns, nextW2ns,
-                                    zrshift, nbinszr, nmax, w2, wshape*twophirotc, phirot, phirotc, twophirotc);
+                                    zrshift, nbinszr, nmax, w2, wshape*twophirotc, phirot, twophirotc);
                             }
                             else{
                                 ggg_fill_GnWn_nminband(nextGns, nextWns, zrshift, nbinszr,
@@ -1459,7 +1494,7 @@ void alloc_Gammans_tree_ggg(const MultiresoCatalog *cat, const MultiresoCatalog 
                                     tmpwcounts[ind_rbin] += w1*w2*dist;
                                     tmpwnorms[ind_rbin] += w1*w2;
                                     ggg_fill_GnWn_projected(nextGns, nextWns, nextG2ns, nextW2ns,
-                                        zrshift, nbinszr, nmax, w2, wshape*twophirotc, phirot, phirotc, twophirotc);
+                                        zrshift, nbinszr, nmax, w2, wshape*twophirotc, phirot, twophirotc);
                                 }
                                 else{
                                     ggg_fill_GnWn_nminband(nextGns, nextWns, zrshift, nbinszr,
@@ -1817,7 +1852,7 @@ void alloc_Gammans_basetree_ggg(const MultiresoCatalog *cat, const NavHash *nav,
                             tmpwcounts[ind_rbin] += w_gal1*w_gal2*dist;
                             tmpwnorms[ind_rbin] += w_gal1*w_gal2;
                             ggg_fill_GnWn_projected(nextGns, nextWns, nextG2ns, nextW2ns,
-                                zrshift, nbinszr_reso, nmax, w_gal2, wshape_gal2*twophirotc, phirot, phirotc, twophirotc);
+                                zrshift, nbinszr_reso, nmax, w_gal2, wshape_gal2*twophirotc, phirot, twophirotc);
                         }
                     }
                     // Update the region caches and the same-reso Upsilon_n
@@ -2092,7 +2127,7 @@ static void alloc_ggg_doubletree_flat(const MultiresoCatalog *cat, const NavHash
                                     tmpwcounts[ind_rbin] += w_gal1*w_gal2*dist;
                                     tmpwnorms[ind_rbin] += w_gal1*w_gal2;
                                     ggg_fill_GnWn_projected(nextGns, nextWns, nextG2ns, nextW2ns,
-                                        zrshift, nbinszr_reso, nmax, w_gal2, wshape_gal2*twophirotc, phirot, phirotc, twophirotc);
+                                        zrshift, nbinszr_reso, nmax, w_gal2, wshape_gal2*twophirotc, phirot, twophirotc);
                                 }
                         }
                     }
@@ -2396,7 +2431,7 @@ static void alloc_ggg_doubletree_spherical(const MultiresoCatalog *cat, const Na
                                     // wshape_gal2 is already geodesic-projected (*rc2), so this is
                                     // the general (non-degenerate) use of ggg_fill_GnWn_projected.
                                     ggg_fill_GnWn_projected(nextGns, nextWns, nextG2ns, nextW2ns,
-                                        zrshift, nbinszr_reso, nmax, w_gal2, wshape_gal2, phirot, phirotc, twophirotc);
+                                        zrshift, nbinszr_reso, nmax, w_gal2, wshape_gal2, phirot, twophirotc);
                                 }
                                 ci++;
                             }
