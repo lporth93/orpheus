@@ -482,21 +482,26 @@ const maxcellPixV = Math.max(3, maxcellsize * (rViewMax / maxSep));
         {desc}
       </p>
 
+      {/* ==================================================================
+          CONTROL PANEL — three columns side by side, sitting above the
+          diagram. Splitting the (long) argument list into columns keeps
+          the widget's overall height reasonable for embedding.
+          ================================================================== */}
       <div style={{
-        display: "flex", gap: 14, flexWrap: "wrap",
-        justifyContent: "center", alignItems: "flex-start",
+        display: "grid",
+        gridTemplateColumns: "repeat(3, minmax(200px, 1fr))",
+        gap: 14,
+        width: "100%",
+        maxWidth: 700,
+        marginBottom: 14,
       }}>
 
-        {/* ================================================================
-            CONTROL PANEL
-            ================================================================ */}
+        {/* ---- COLUMN 1 : Method / Survey / Radii ------------------------- */}
         <div style={{
           background: C.panel, border: `1px solid ${C.border}`,
           borderRadius: 6, padding: "12px 14px",
-          width: 210, fontSize: 12, color: C.text,
-          maxHeight: VW, overflowY: "auto",
+          fontSize: 12, color: C.text,
         }}>
-
           {/* ---- Algorithm selection --------------------------------------- */}
           <div style={{
             fontWeight: 700, fontSize: 13, marginBottom: 8,
@@ -544,7 +549,7 @@ const maxcellPixV = Math.max(3, maxcellsize * (rViewMax / maxSep));
             extra={`Powers of 2: ${RMAX_OPTIONS.join(", ")}`} />
 
           {/* Log / Linear toggle */}
-          <div style={{ display: "flex", gap: 10, marginBottom: 8, marginTop: 2 }}>
+          <div style={{ display: "flex", gap: 10, marginBottom: 2, marginTop: 2 }}>
             {["Log", "Linear"].map(s => (
               <label key={s} style={{
                 display: "flex", alignItems: "center", gap: 4,
@@ -560,10 +565,17 @@ const maxcellPixV = Math.max(3, maxcellsize * (rViewMax / maxSep));
               </label>
             ))}
           </div>
+        </div>
 
+        {/* ---- COLUMN 2 : Tree Parameters / Display ----------------------- */}
+        <div style={{
+          background: C.panel, border: `1px solid ${C.border}`,
+          borderRadius: 6, padding: "12px 14px",
+          fontSize: 12, color: C.text,
+        }}>
           {/* ---- Tree parameters ------------------------------------------ */}
           <div style={{
-            fontWeight: 700, fontSize: 13, marginTop: 12, marginBottom: 6,
+            fontWeight: 700, fontSize: 13, marginBottom: 8,
             borderBottom: `1px solid ${C.border}`, paddingBottom: 5,
           }}>Tree Parameters</div>
 
@@ -646,10 +658,16 @@ const maxcellPixV = Math.max(3, maxcellsize * (rViewMax / maxSep));
               style={{ accentColor: C.accent }} />
             Radial labels
           </label>
+        </div>
 
-          {/* ---- Level legend --------------------------------------------- */}
+        {/* ---- COLUMN 3 : Levels legend ------------------------------------ */}
+        <div style={{
+          background: C.panel, border: `1px solid ${C.border}`,
+          borderRadius: 6, padding: "12px 14px",
+          fontSize: 12, color: C.text,
+        }}>
           <div style={{
-            fontWeight: 700, fontSize: 13, marginTop: 12, marginBottom: 6,
+            fontWeight: 700, fontSize: 13, marginBottom: 8,
             borderBottom: `1px solid ${C.border}`, paddingBottom: 5,
           }}>Levels</div>
           {active.map(l => {
@@ -699,10 +717,12 @@ const maxcellPixV = Math.max(3, maxcellsize * (rViewMax / maxSep));
             </div>
           )}
         </div>
+      </div>
 
-        {/* ================================================================
-            SVG DIAGRAM
-            ================================================================ */}
+      {/* ==================================================================
+          SVG DIAGRAM — centred below the control columns.
+          ================================================================== */}
+      <div style={{ display: "flex", justifyContent: "center", width: "100%" }}>
         <svg width={VW} height={VW} viewBox={`0 0 ${VW} ${VW}`}
           style={{ background: C.bg, borderRadius: 6, border: `1px solid ${C.border}` }}>
 

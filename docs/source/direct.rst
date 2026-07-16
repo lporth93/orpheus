@@ -5,6 +5,7 @@ There is currently a class for computing higher-order aperture mass and aperture
 statistics using the direct estimator approach.
 
 .. toctree::
+    :maxdepth: 1
 
     directmapn
     directnapn

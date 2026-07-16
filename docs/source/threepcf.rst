@@ -4,6 +4,7 @@ Three-point Correlation Functions
 There are currently three different classes for calculating the possible three-point correlation functions:
 
 .. toctree::
+    :maxdepth: 1
 
     ggg
     gnn

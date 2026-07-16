@@ -1,0 +1,248 @@
+<div class="orpheus-hash-fig">
+<style>
+.orpheus-hash{--fg:#3d3d3a;--muted:#73726c;--gray-f:#F1EFE8;--gray-s:#5F5E5A;--gray-t:#2C2C2A;--blue-f:#E6F1FB;--blue-s:#185FA5;--blue-t:#0C447C;--teal-f:#E1F5EE;--teal-s:#0F6E56;--teal-t:#085041;--teal-l:#0F6E56;--amber-f:#FAEEDA;--amber-s:#BA7517;--amber-t:#633806;--amber-l:#BA7517}
+@media (prefers-color-scheme:dark){.orpheus-hash{--fg:#c2c0b6;--muted:#9c9a92;--gray-f:#444441;--gray-s:#B4B2A9;--gray-t:#D3D1C7;--blue-f:#0C447C;--blue-s:#85B7EB;--blue-t:#E6F1FB;--teal-f:#085041;--teal-s:#5DCAA5;--teal-t:#E1F5EE;--teal-l:#5DCAA5;--amber-f:#633806;--amber-s:#EF9F27;--amber-t:#FAEEDA;--amber-l:#EF9F27}}
+html[data-theme="dark"] .orpheus-hash,body.theme-dark .orpheus-hash,body.dark .orpheus-hash{--fg:#c2c0b6;--muted:#9c9a92;--gray-f:#444441;--gray-s:#B4B2A9;--gray-t:#D3D1C7;--blue-f:#0C447C;--blue-s:#85B7EB;--blue-t:#E6F1FB;--teal-f:#085041;--teal-s:#5DCAA5;--teal-t:#E1F5EE;--teal-l:#5DCAA5;--amber-f:#633806;--amber-s:#EF9F27;--amber-t:#FAEEDA;--amber-l:#EF9F27}
+.orpheus-hash text{font-family:system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;fill:var(--fg)}
+.orpheus-hash .ts{font-size:12px}
+.orpheus-hash .th{font-size:14px;font-weight:500}
+.orpheus-hash .gray rect,.orpheus-hash .gray polygon{fill:var(--gray-f);stroke:var(--gray-s);stroke-width:.5}
+.orpheus-hash .gray text{fill:var(--gray-t)}
+.orpheus-hash .blue rect{fill:var(--blue-f);stroke:var(--blue-s);stroke-width:.5}
+.orpheus-hash .blue text{fill:var(--blue-t)}
+.orpheus-hash .teal rect{fill:var(--teal-f);stroke:var(--teal-s);stroke-width:.5}
+.orpheus-hash .teal text{fill:var(--teal-t)}
+.orpheus-hash .dot{fill:var(--gray-s)}
+.orpheus-hash .arr{stroke:var(--fg);stroke-width:1.5;fill:none}
+.orpheus-hash .permute{stroke:var(--teal-l);stroke-width:1.5;fill:none}
+.orpheus-hash [data-p]{cursor:pointer;outline:none}
+.orpheus-hash [data-p] rect,.orpheus-hash [data-p] polygon,.orpheus-hash [data-p] circle,.orpheus-hash [data-p] text{transition:fill .12s,stroke .12s}
+.orpheus-hash g.on>rect,.orpheus-hash g.on>polygon{fill:var(--amber-f);stroke:var(--amber-s);stroke-width:1}
+.orpheus-hash g.on>text{fill:var(--amber-t)}
+.orpheus-hash g.on>.dot{fill:var(--amber-l)}
+.orpheus-hash [data-p]:focus-visible>rect,.orpheus-hash [data-p]:focus-visible>polygon{stroke-width:2}
+.orpheus-hash .gather{stroke:var(--amber-l);stroke-width:1.5;fill:none;opacity:0;transition:opacity .12s}
+.orpheus-hash .gather.on{opacity:1}
+.orpheus-hash-fig .readout{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.85em;color:var(--muted,#73726c);margin:.2em 0 1.6em;min-height:1.4em}
+@media (prefers-reduced-motion:reduce){.orpheus-hash *{transition:none!important}}
+</style>
+
+<svg id="oh-flat" class="orpheus-hash" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 600" width="100%" role="img" aria-labelledby="ohFlatT ohFlatD">
+<title id="ohFlatT">Flat spatial hash, interactive</title>
+<desc id="ohFlatD">Hover or focus a grid cell to highlight its cell id entries, its index_matcher slot, its CSR bounds, its pix_gals entries, and the scattered position slots they gather from.</desc>
+<defs><marker id="ohfa" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+
+<g class="gray">
+<g data-p="0" tabindex="0" role="button" aria-label="pixel 0, empty"><rect x="220" y="40" width="100" height="70" rx="4"/><text class="ts" x="228" y="55">0</text></g>
+<g data-p="1" tabindex="0" role="button" aria-label="pixel 1, three galaxies"><rect x="325" y="40" width="100" height="70" rx="4"/><text class="ts" x="333" y="55">1</text></g>
+<g data-p="2" tabindex="0" role="button" aria-label="pixel 2, empty"><rect x="430" y="40" width="100" height="70" rx="4"/><text class="ts" x="438" y="55">2</text></g>
+<g data-p="3" tabindex="0" role="button" aria-label="pixel 3, one galaxy"><rect x="535" y="40" width="100" height="70" rx="4"/><text class="ts" x="543" y="55">3</text></g>
+<g data-p="4" tabindex="0" role="button" aria-label="pixel 4, two galaxies"><rect x="220" y="115" width="100" height="70" rx="4"/><text class="ts" x="228" y="130">4</text></g>
+<g data-p="5" tabindex="0" role="button" aria-label="pixel 5, empty"><rect x="325" y="115" width="100" height="70" rx="4"/><text class="ts" x="333" y="130">5</text></g>
+<g data-p="6" tabindex="0" role="button" aria-label="pixel 6, empty"><rect x="430" y="115" width="100" height="70" rx="4"/><text class="ts" x="438" y="130">6</text></g>
+<g data-p="7" tabindex="0" role="button" aria-label="pixel 7, empty"><rect x="535" y="115" width="100" height="70" rx="4"/><text class="ts" x="543" y="130">7</text></g>
+<g data-p="1"><circle class="dot" cx="350" cy="62" r="4"/><text class="ts" x="358" y="66">4</text></g>
+<g data-p="1"><circle class="dot" cx="390" cy="88" r="4"/><text class="ts" x="398" y="92">0</text></g>
+<g data-p="1"><circle class="dot" cx="408" cy="53" r="4"/><text class="ts" x="416" y="57">5</text></g>
+<g data-p="3"><circle class="dot" cx="580" cy="78" r="4"/><text class="ts" x="588" y="82">2</text></g>
+<g data-p="4"><circle class="dot" cx="250" cy="145" r="4"/><text class="ts" x="258" y="149">3</text></g>
+<g data-p="4"><circle class="dot" cx="290" cy="166" r="4"/><text class="ts" x="298" y="170">1</text></g>
+</g>
+<text class="ts" x="186" y="80" text-anchor="end">galaxies</text>
+
+<text class="ts" x="186" y="215" text-anchor="end">cell id p</text>
+<g class="blue">
+<g data-p="1"><rect x="220" y="200" width="40" height="30" rx="4"/><text class="ts" x="240" y="215" text-anchor="middle" dominant-baseline="central">1</text></g>
+<g data-p="4"><rect x="264" y="200" width="40" height="30" rx="4"/><text class="ts" x="284" y="215" text-anchor="middle" dominant-baseline="central">4</text></g>
+<g data-p="3"><rect x="308" y="200" width="40" height="30" rx="4"/><text class="ts" x="328" y="215" text-anchor="middle" dominant-baseline="central">3</text></g>
+<g data-p="4"><rect x="352" y="200" width="40" height="30" rx="4"/><text class="ts" x="372" y="215" text-anchor="middle" dominant-baseline="central">4</text></g>
+<g data-p="1"><rect x="396" y="200" width="40" height="30" rx="4"/><text class="ts" x="416" y="215" text-anchor="middle" dominant-baseline="central">1</text></g>
+<g data-p="1"><rect x="440" y="200" width="40" height="30" rx="4"/><text class="ts" x="460" y="215" text-anchor="middle" dominant-baseline="central">1</text></g>
+</g>
+<text class="ts" x="496" y="215" dominant-baseline="central">p = ix + iy·n1</text>
+<line class="arr" x1="300" y1="232" x2="300" y2="266" marker-end="url(#ohfa)"/>
+
+<text class="ts" x="186" y="285" text-anchor="end">index_matcher</text>
+<g class="blue">
+<g data-p="0"><rect x="220" y="270" width="40" height="30" rx="4"/><text class="ts" x="240" y="285" text-anchor="middle" dominant-baseline="central">-1</text></g>
+<g data-p="1"><rect x="264" y="270" width="40" height="30" rx="4"/><text class="ts" x="284" y="285" text-anchor="middle" dominant-baseline="central">0</text></g>
+<g data-p="2"><rect x="308" y="270" width="40" height="30" rx="4"/><text class="ts" x="328" y="285" text-anchor="middle" dominant-baseline="central">-1</text></g>
+<g data-p="3"><rect x="352" y="270" width="40" height="30" rx="4"/><text class="ts" x="372" y="285" text-anchor="middle" dominant-baseline="central">1</text></g>
+<g data-p="4"><rect x="396" y="270" width="40" height="30" rx="4"/><text class="ts" x="416" y="285" text-anchor="middle" dominant-baseline="central">2</text></g>
+<g data-p="5"><rect x="440" y="270" width="40" height="30" rx="4"/><text class="ts" x="460" y="285" text-anchor="middle" dominant-baseline="central">-1</text></g>
+<g data-p="6"><rect x="484" y="270" width="40" height="30" rx="4"/><text class="ts" x="504" y="285" text-anchor="middle" dominant-baseline="central">-1</text></g>
+<g data-p="7"><rect x="528" y="270" width="40" height="30" rx="4"/><text class="ts" x="548" y="285" text-anchor="middle" dominant-baseline="central">-1</text></g>
+</g>
+<text class="ts" x="584" y="285" dominant-baseline="central">len npix</text>
+<line class="arr" x1="300" y1="302" x2="300" y2="336" marker-end="url(#ohfa)"/>
+
+<text class="ts" x="186" y="355" text-anchor="end">pixs_galind_bounds</text>
+<g class="blue">
+<g data-p="1"><rect x="220" y="340" width="40" height="30" rx="4"/><text class="ts" x="240" y="355" text-anchor="middle" dominant-baseline="central">0</text></g>
+<g data-p="1 3"><rect x="264" y="340" width="40" height="30" rx="4"/><text class="ts" x="284" y="355" text-anchor="middle" dominant-baseline="central">3</text></g>
+<g data-p="3 4"><rect x="308" y="340" width="40" height="30" rx="4"/><text class="ts" x="328" y="355" text-anchor="middle" dominant-baseline="central">4</text></g>
+<g data-p="4"><rect x="352" y="340" width="40" height="30" rx="4"/><text class="ts" x="372" y="355" text-anchor="middle" dominant-baseline="central">6</text></g>
+</g>
+<text class="ts" x="408" y="355" dominant-baseline="central">CSR bounds, ncells + 1</text>
+<line class="arr" x1="300" y1="372" x2="300" y2="406" marker-end="url(#ohfa)"/>
+
+<text class="ts" x="186" y="425" text-anchor="end">pix_gals</text>
+<g class="blue">
+<g data-p="1"><rect x="220" y="410" width="40" height="30" rx="4"/><text class="ts" x="240" y="425" text-anchor="middle" dominant-baseline="central">4</text></g>
+<g data-p="1"><rect x="264" y="410" width="40" height="30" rx="4"/><text class="ts" x="284" y="425" text-anchor="middle" dominant-baseline="central">0</text></g>
+<g data-p="1"><rect x="308" y="410" width="40" height="30" rx="4"/><text class="ts" x="328" y="425" text-anchor="middle" dominant-baseline="central">5</text></g>
+<g data-p="3"><rect x="352" y="410" width="40" height="30" rx="4"/><text class="ts" x="372" y="425" text-anchor="middle" dominant-baseline="central">2</text></g>
+<g data-p="4"><rect x="396" y="410" width="40" height="30" rx="4"/><text class="ts" x="416" y="425" text-anchor="middle" dominant-baseline="central">3</text></g>
+<g data-p="4"><rect x="440" y="410" width="40" height="30" rx="4"/><text class="ts" x="460" y="425" text-anchor="middle" dominant-baseline="central">1</text></g>
+</g>
+<text class="ts" x="496" y="425" dominant-baseline="central">catalogue indices</text>
+
+<path class="gather" data-p="1" d="M240 442 Q240 467 416 476" marker-end="url(#ohfa)"/>
+<path class="gather" data-p="1" d="M284 442 Q284 467 242 476" marker-end="url(#ohfa)"/>
+<path class="gather" data-p="1" d="M328 442 Q328 467 458 476" marker-end="url(#ohfa)"/>
+<path class="gather" data-p="3" d="M372 442 Q372 467 330 476" marker-end="url(#ohfa)"/>
+<path class="gather" data-p="4" d="M416 442 Q416 467 374 476" marker-end="url(#ohfa)"/>
+<path class="gather" data-p="4" d="M460 442 Q460 467 286 476" marker-end="url(#ohfa)"/>
+
+<text class="ts" x="186" y="495" text-anchor="end">pos1, pos2, w</text>
+<g class="gray">
+<g data-p="1"><rect x="220" y="480" width="40" height="30" rx="4"/><text class="ts" x="240" y="495" text-anchor="middle" dominant-baseline="central">0</text></g>
+<g data-p="4"><rect x="264" y="480" width="40" height="30" rx="4"/><text class="ts" x="284" y="495" text-anchor="middle" dominant-baseline="central">1</text></g>
+<g data-p="3"><rect x="308" y="480" width="40" height="30" rx="4"/><text class="ts" x="328" y="495" text-anchor="middle" dominant-baseline="central">2</text></g>
+<g data-p="4"><rect x="352" y="480" width="40" height="30" rx="4"/><text class="ts" x="372" y="495" text-anchor="middle" dominant-baseline="central">3</text></g>
+<g data-p="1"><rect x="396" y="480" width="40" height="30" rx="4"/><text class="ts" x="416" y="495" text-anchor="middle" dominant-baseline="central">4</text></g>
+<g data-p="1"><rect x="440" y="480" width="40" height="30" rx="4"/><text class="ts" x="460" y="495" text-anchor="middle" dominant-baseline="central">5</text></g>
+</g>
+<text class="ts" x="496" y="495" dominant-baseline="central">catalogue order</text>
+<text class="ts" x="186" y="545">Hover a pixel to trace its lookup. Empty pixels stop at the -1.</text>
+</svg>
+<p class="readout" id="oh-flat-out"></p>
+
+<svg id="oh-sph" class="orpheus-hash" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 600" width="100%" role="img" aria-labelledby="ohSphT ohSphD">
+<title id="ohSphT">Spherical spatial hash, interactive</title>
+<desc id="ohSphD">Hover or focus a healpix cell to highlight its nested id entries, its slot in the order permutation, its cell_pix and cell_counts entries, its CSR bounds pair, and the contiguous slice of the reduced arrays it owns.</desc>
+<defs><marker id="ohsa" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+
+<g class="gray">
+<g data-p="0" tabindex="0" role="button" aria-label="pixel 0, empty"><polygon points="290,40 350,85 290,130 230,85"/><text class="ts" x="290" y="89" text-anchor="middle">0</text></g>
+<g data-p="1" tabindex="0" role="button" aria-label="pixel 1, three galaxies"><polygon points="410,40 470,85 410,130 350,85"/><text class="ts" x="410" y="61" text-anchor="middle">1</text></g>
+<g data-p="3" tabindex="0" role="button" aria-label="pixel 3, one galaxy"><polygon points="530,40 590,85 530,130 470,85"/><text class="ts" x="530" y="89" text-anchor="middle">3</text></g>
+<g data-p="4" tabindex="0" role="button" aria-label="pixel 4, two galaxies"><polygon points="350,85 410,130 350,175 290,130"/><text class="ts" x="350" y="134" text-anchor="middle">4</text></g>
+<g data-p="5" tabindex="0" role="button" aria-label="pixel 5, empty"><polygon points="470,85 530,130 470,175 410,130"/><text class="ts" x="470" y="134" text-anchor="middle">5</text></g>
+<g data-p="7" tabindex="0" role="button" aria-label="pixel 7, empty"><polygon points="230,85 290,130 230,175 170,130"/><text class="ts" x="230" y="134" text-anchor="middle">7</text></g>
+<g data-p="1"><circle class="dot" cx="390" cy="85" r="4"/><text class="ts" x="376" y="89" text-anchor="end">4</text></g>
+<g data-p="1"><circle class="dot" cx="425" cy="100" r="4"/><text class="ts" x="433" y="104">0</text></g>
+<g data-p="1"><circle class="dot" cx="420" cy="73" r="4"/><text class="ts" x="428" y="77">5</text></g>
+<g data-p="3"><circle class="dot" cx="530" cy="95" r="4"/><text class="ts" x="538" y="99">2</text></g>
+<g data-p="4"><circle class="dot" cx="342" cy="135" r="4"/><text class="ts" x="350" y="139">3</text></g>
+<g data-p="4"><circle class="dot" cx="358" cy="153" r="4"/><text class="ts" x="366" y="157">1</text></g>
+</g>
+
+<text class="ts" x="186" y="215" text-anchor="end">red_navpix</text>
+<g class="teal">
+<g data-p="1"><rect x="220" y="200" width="40" height="30" rx="4"/><text class="ts" x="240" y="215" text-anchor="middle" dominant-baseline="central">1</text></g>
+<g data-p="4"><rect x="264" y="200" width="40" height="30" rx="4"/><text class="ts" x="284" y="215" text-anchor="middle" dominant-baseline="central">4</text></g>
+<g data-p="3"><rect x="308" y="200" width="40" height="30" rx="4"/><text class="ts" x="328" y="215" text-anchor="middle" dominant-baseline="central">3</text></g>
+<g data-p="4"><rect x="352" y="200" width="40" height="30" rx="4"/><text class="ts" x="372" y="215" text-anchor="middle" dominant-baseline="central">4</text></g>
+<g data-p="1"><rect x="396" y="200" width="40" height="30" rx="4"/><text class="ts" x="416" y="215" text-anchor="middle" dominant-baseline="central">1</text></g>
+<g data-p="1"><rect x="440" y="200" width="40" height="30" rx="4"/><text class="ts" x="460" y="215" text-anchor="middle" dominant-baseline="central">1</text></g>
+</g>
+<text class="ts" x="496" y="215" dominant-baseline="central">ang2pix nest</text>
+<line class="arr" x1="300" y1="232" x2="300" y2="266" marker-end="url(#ohsa)"/>
+
+<text class="ts" x="186" y="285" text-anchor="end">order</text>
+<g class="teal">
+<g data-p="1"><rect x="220" y="270" width="40" height="30" rx="4"/><text class="ts" x="240" y="285" text-anchor="middle" dominant-baseline="central">0</text></g>
+<g data-p="1"><rect x="264" y="270" width="40" height="30" rx="4"/><text class="ts" x="284" y="285" text-anchor="middle" dominant-baseline="central">4</text></g>
+<g data-p="1"><rect x="308" y="270" width="40" height="30" rx="4"/><text class="ts" x="328" y="285" text-anchor="middle" dominant-baseline="central">5</text></g>
+<g data-p="3"><rect x="352" y="270" width="40" height="30" rx="4"/><text class="ts" x="372" y="285" text-anchor="middle" dominant-baseline="central">2</text></g>
+<g data-p="4"><rect x="396" y="270" width="40" height="30" rx="4"/><text class="ts" x="416" y="285" text-anchor="middle" dominant-baseline="central">1</text></g>
+<g data-p="4"><rect x="440" y="270" width="40" height="30" rx="4"/><text class="ts" x="460" y="285" text-anchor="middle" dominant-baseline="central">3</text></g>
+</g>
+<text class="ts" x="496" y="285" dominant-baseline="central">argsort, stable</text>
+<line class="arr" x1="300" y1="302" x2="300" y2="336" marker-end="url(#ohsa)"/>
+
+<text class="ts" x="186" y="355" text-anchor="end">cell_pix</text>
+<g class="teal">
+<g data-p="1"><rect x="220" y="340" width="40" height="30" rx="4"/><text class="ts" x="240" y="355" text-anchor="middle" dominant-baseline="central">1</text></g>
+<g data-p="3"><rect x="264" y="340" width="40" height="30" rx="4"/><text class="ts" x="284" y="355" text-anchor="middle" dominant-baseline="central">3</text></g>
+<g data-p="4"><rect x="308" y="340" width="40" height="30" rx="4"/><text class="ts" x="328" y="355" text-anchor="middle" dominant-baseline="central">4</text></g>
+</g>
+<text class="ts" x="424" y="355" text-anchor="end" dominant-baseline="central">cell_counts</text>
+<g class="teal">
+<g data-p="1"><rect x="434" y="340" width="40" height="30" rx="4"/><text class="ts" x="454" y="355" text-anchor="middle" dominant-baseline="central">3</text></g>
+<g data-p="3"><rect x="478" y="340" width="40" height="30" rx="4"/><text class="ts" x="498" y="355" text-anchor="middle" dominant-baseline="central">1</text></g>
+<g data-p="4"><rect x="522" y="340" width="40" height="30" rx="4"/><text class="ts" x="542" y="355" text-anchor="middle" dominant-baseline="central">2</text></g>
+</g>
+<line class="arr" x1="454" y1="372" x2="380" y2="406" marker-end="url(#ohsa)"/>
+
+<text class="ts" x="186" y="425" text-anchor="end">cell_redbounds</text>
+<g class="teal">
+<g data-p="1"><rect x="220" y="410" width="40" height="30" rx="4"/><text class="ts" x="240" y="425" text-anchor="middle" dominant-baseline="central">0</text></g>
+<g data-p="1 3"><rect x="264" y="410" width="40" height="30" rx="4"/><text class="ts" x="284" y="425" text-anchor="middle" dominant-baseline="central">3</text></g>
+<g data-p="3 4"><rect x="308" y="410" width="40" height="30" rx="4"/><text class="ts" x="328" y="425" text-anchor="middle" dominant-baseline="central">4</text></g>
+<g data-p="4"><rect x="352" y="410" width="40" height="30" rx="4"/><text class="ts" x="372" y="425" text-anchor="middle" dominant-baseline="central">6</text></g>
+</g>
+<text class="ts" x="408" y="425" dominant-baseline="central">cumsum into [1:], leaves 0</text>
+<line class="arr" x1="240" y1="442" x2="240" y2="476" marker-end="url(#ohsa)"/>
+<line class="arr" x1="284" y1="442" x2="328" y2="476" marker-end="url(#ohsa)"/>
+<path class="permute" d="M230 302 L200 302 L200 495 L214 495" marker-end="url(#ohsa)"/>
+
+<text class="ts" x="186" y="495" text-anchor="end">red_vx, red_w</text>
+<g class="gray">
+<g data-p="1"><rect x="220" y="480" width="40" height="30" rx="4"/><text class="ts" x="240" y="495" text-anchor="middle" dominant-baseline="central">0</text></g>
+<g data-p="1"><rect x="264" y="480" width="40" height="30" rx="4"/><text class="ts" x="284" y="495" text-anchor="middle" dominant-baseline="central">4</text></g>
+<g data-p="1"><rect x="308" y="480" width="40" height="30" rx="4"/><text class="ts" x="328" y="495" text-anchor="middle" dominant-baseline="central">5</text></g>
+<g data-p="3"><rect x="352" y="480" width="40" height="30" rx="4"/><text class="ts" x="372" y="495" text-anchor="middle" dominant-baseline="central">2</text></g>
+<g data-p="4"><rect x="396" y="480" width="40" height="30" rx="4"/><text class="ts" x="416" y="495" text-anchor="middle" dominant-baseline="central">1</text></g>
+<g data-p="4"><rect x="440" y="480" width="40" height="30" rx="4"/><text class="ts" x="460" y="495" text-anchor="middle" dominant-baseline="central">3</text></g>
+</g>
+<text class="ts" x="496" y="495" dominant-baseline="central">permuted by order</text>
+<text class="ts" x="186" y="545">Hover a pixel to trace its lookup. Empty pixels never appear in cell_pix.</text>
+</svg>
+<p class="readout" id="oh-sph-out"></p>
+
+<script>
+(function(){
+  var FLAT = {
+    1: "index_matcher[1] = 0  \u2192  bounds [0, 3)  \u2192  pix_gals = [4, 0, 5]  \u2192  gather pos[4], pos[0], pos[5]",
+    3: "index_matcher[3] = 1  \u2192  bounds [3, 4)  \u2192  pix_gals = [2]  \u2192  gather pos[2]",
+    4: "index_matcher[4] = 2  \u2192  bounds [4, 6)  \u2192  pix_gals = [3, 1]  \u2192  gather pos[3], pos[1]",
+    _empty: "index_matcher[{p}] = -1  \u2192  cell empty, skip"
+  };
+  var SPH = {
+    1: "searchsorted(cell_pix, 1) = 0  \u2192  bounds [0, 3)  \u2192  read red[0:3], contiguous",
+    3: "searchsorted(cell_pix, 3) = 1  \u2192  bounds [3, 4)  \u2192  read red[3:4], contiguous",
+    4: "searchsorted(cell_pix, 4) = 2  \u2192  bounds [4, 6)  \u2192  read red[4:6], contiguous",
+    _empty: "searchsorted(cell_pix, {p}) lands on a different id  \u2192  cell absent, skip"
+  };
+  function wire(svgId, outId, table, hint){
+    var svg = document.getElementById(svgId);
+    var out = document.getElementById(outId);
+    if(!svg || !out) return;
+    var nodes = svg.querySelectorAll("[data-p]");
+    function set(p){
+      for(var i=0;i<nodes.length;i++){
+        var list = nodes[i].getAttribute("data-p").split(/\s+/);
+        nodes[i].classList.toggle("on", p !== null && list.indexOf(p) !== -1);
+      }
+      if(p === null){ out.textContent = hint; return; }
+      out.textContent = "pixel " + p + ":  " +
+        (table[p] || table._empty.replace("{p}", p));
+    }
+    for(var j=0;j<nodes.length;j++){
+      (function(el){
+        var p = el.getAttribute("data-p").split(/\s+/)[0];
+        el.addEventListener("mouseenter", function(){ set(p); });
+        el.addEventListener("focus", function(){ set(p); });
+        el.addEventListener("click", function(){ set(p); });
+      })(nodes[j]);
+    }
+    svg.addEventListener("mouseleave", function(){ set("1"); });
+    set("1");
+  }
+  wire("oh-flat", "oh-flat-out", FLAT, "hover a pixel");
+  wire("oh-sph", "oh-sph-out", SPH, "hover a pixel");
+})();
+</script>
+</div>

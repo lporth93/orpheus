@@ -4,6 +4,7 @@ Two-point Correlation Functions
 There are currently two different classes for calculating the possible two-point correlation functions:
 
 .. toctree::
+    :maxdepth: 1
 
     nn
     gg
