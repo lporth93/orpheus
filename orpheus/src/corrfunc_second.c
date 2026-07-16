@@ -20,35 +20,13 @@
 #define M_PI      3.14159265358979323846
 #define INV_2PI   0.15915494309189534561
 
-////////////////////////////////////////////////
-/// SECOND-ORDER SHEAR CORRELATION FUNCTIONS ///
-////////////////////////////////////////////////
 
-////////////////////////////////////////////////
-/// SECOND-ORDER (NN) PAIR COUNTS             ///
-////////////////////////////////////////////////
-
-// Shared radial bin lookup + accumulation: dist -> log-bin via the linear helper
-// array, then scatter into the per-thread tomographic count arrays. Geometry-
-// and metric-agnostic; both _nn_flat and _nn_spherical call this.
-static inline void nn_bin_accumulate(
-    double dist, double w1, double w2, int z1, int z2,
-    double rmin, double *binedges, int *linarr_bins, double dbin_lin_inv,
-    int nbinsz, int nbinsr, int thread,
-    int *tmpnpair, double *tmpwcount, double *tmpwnorm){
-    int tmplogbin = (int) ((dist-rmin)*dbin_lin_inv);
-    int rbin = linarr_bins[tmplogbin];
-    rbin += (dist > binedges[rbin+1]) ? 1 : 0;
-    int ind = thread*nbinsz*nbinsz*nbinsr + z1*nbinsz*nbinsr + z2*nbinsr + rbin;
-    tmpnpair[ind] += 1;
-    tmpwcount[ind] += w1*w2*dist;
-    tmpwnorm[ind] += w1*w2;
-}
+///////////////////////
+/// General helpers ///
+///////////////////////
 
 // Build the shared, region/thread-independent radial-binning helper arrays
-// once. Previously recomputed inside every OpenMP thread on the flat path;
-// hoisted here since none of it depends on thread, region, or galaxy data --
-// only on (rmin, rmax, nbinsr, reso_redges). Caller frees the three outputs.
+// once. Caller frees the three outputs.
 static void build_radial_helpers(
     const TreeResoParams *tree, const BinningParams *bin,
     double **out_binedges, int **out_linarr_bins, int **out_reso_rindedges,
@@ -96,9 +74,7 @@ static void build_radial_helpers(
     *out_dbin_lin_inv = dbin_lin_inv;
 }
 
-// Build the per-reso shift arrays for the flat grid hash once. Previously
-// recomputed inside every OpenMP thread; depends only on ngal_resos and the
-// hash grid size, never on region or galaxy data.
+// Build the per-reso shift arrays for the flat grid hash.
 static void build_flat_rshifts(
     const MultiresoCatalog *cat, const NavHash *nav,
     int **out_rshift_index_matcher, int **out_rshift_pixs_galind_bounds,
@@ -119,11 +95,67 @@ static void build_flat_rshifts(
     *out_rshift_pix_gals = rshift_pix_gals;
 }
 
-// ---------------------------------------------------------------------------
-// Flat-sky NN pair counts. Patch/region decomposition + pixel-box navigation.
-// Numerically identical to the previous METRIC_FLAT branch of
-// alloc_nn_doubletree; only the per-thread-redundant setup has moved out.
-// ---------------------------------------------------------------------------
+
+//////////////////////////////////
+/// CORRELATOR SPECIFIC HELPERS //
+//////////////////////////////////
+
+// Shared radial bin lookup + scatter for every 2nd-order flat/spherical kernel:
+// dist -> radial bin via the linear helper, then accumulate the tomographic pair
+// count / weighted-count / weighted-norm plus `ncomp` natural components (0 for
+// NN, 1 for NG, 2 for GG) from comps[] into the per-thread arrays. The components
+// share one (ncomp, nthreads*nzzr) buffer. Geometry-agnostic; static inline so
+// ncomp folds to a literal and the component loop unrolls at each call site.
+static inline void bin_accumulate(
+    double dist, double w1, double w2, int z1, int z2,
+    double rmin, double *binedges, int *linarr_bins, double dbin_lin_inv,
+    int nbinsz_lens, int nbinsz_source, int nbinsr, int thread, int nthreads,
+    int *tmpnpair, double *tmpwcount, double *tmpwnorm,
+    int ncomp, const double complex *comps, double complex *tmpcomp){
+    int tmplogbin = (int) ((dist-rmin)*dbin_lin_inv);
+    int rbin = linarr_bins[tmplogbin];
+    rbin += (dist > binedges[rbin+1]) ? 1 : 0;
+    int nzzr = nbinsz_lens*nbinsz_source*nbinsr;
+    int ind = thread*nzzr + z1*nbinsz_source*nbinsr + z2*nbinsr + rbin;
+    tmpnpair[ind] += 1;
+    tmpwcount[ind] += w1*w2*dist;
+    tmpwnorm[ind] += w1*w2;
+    for (int c=0; c<ncomp; c++){ tmpcomp[c*nthreads*nzzr + ind] += comps[c]; }
+}
+
+// Reduce the per-thread arrays into the unified NPCFOutput and normalise. Uniform
+// over the 0/1/2-component families: bin_centers = <w*dist>/<w>, each npcf
+// component divided by the pair-weight norm. NN carries its count in npair_cell
+// (npair NULL); GG/NG in npair. The npcf components are stacked with stride nzzr,
+// matching the GG [xip, xim] layout consumed by the Python side.
+static void bin_reduce(int nbinsz_lens, int nbinsz_source, int nbinsr, int nthreads,
+                       double *totcount, int *tmpnpair, double *tmpwcount, double *tmpwnorm,
+                       int ncomp, double complex *tmpcomp, NPCFOutput *out){
+    int nzzr = nbinsz_lens*nbinsz_source*nbinsr;
+    long long int *npair_out = (out->npair != NULL) ? out->npair : out->npair_cell;
+    for (int binind=0; binind<nzzr; binind++){
+        for (int t=0; t<nthreads; t++){
+            int tind = t*nzzr + binind;
+            totcount[binind]  += tmpwcount[tind];
+            npair_out[binind] += tmpnpair[tind];
+            out->norm[binind] += tmpwnorm[tind];
+            for (int c=0; c<ncomp; c++){ out->npcf[c*nzzr + binind] += tmpcomp[c*nthreads*nzzr + tind]; }
+        }
+    }
+    for (int binind=0; binind<nzzr; binind++){
+        if (out->norm[binind] != 0){
+            out->bin_centers[binind] = totcount[binind]/out->norm[binind];
+            for (int c=0; c<ncomp; c++){ out->npcf[c*nzzr + binind] /= out->norm[binind]; }
+        }
+    }
+}
+
+
+///////////////////////////
+// NN CORRELATOR CLASSES //
+///////////////////////////
+
+// Flat-sky DoubleTree estimtor of 2pt pair counts
 static void _nn_flat(const MultiresoCatalog *cat, const NavHash *nav,
                       const TreeResoParams *tree, const BinningParams *bin,
                       int nthreads, int verbose, NPCFOutput *out){
@@ -134,17 +166,14 @@ static void _nn_flat(const MultiresoCatalog *cat, const NavHash *nav,
     double *tmpwcount = calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(double));
     double *tmpwnorm = calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(double));
 
-    // Hoisted out of the thread loop (see build_radial_helpers / build_flat_rshifts
-    // docstrings above) -- read-only inside the parallel region below.
+    // Setup binning and shift vectors
     double drbin, dbin_lin_inv;
     double *binedges; int *linarr_bins; int *reso_rindedges_base;
     build_radial_helpers(tree, bin, &binedges, &linarr_bins, &reso_rindedges_base, &drbin, &dbin_lin_inv);
     int *rshift_index_matcher, *rshift_pixs_galind_bounds, *rshift_pix_gals;
     build_flat_rshifts(cat, nav, &rshift_index_matcher, &rshift_pixs_galind_bounds, &rshift_pix_gals);
 
-    // filledregions is now an input (NavHash), matching the convention GGG
-    // already used -- the "every region is filled" placeholder, if desired,
-    // is the caller's responsibility to construct, not duplicated here.
+    // Prepare vars for parallel region
     int nfilledregions = nav->nfilledregions;
     int *filledregions = nav->filledregions;
     int nregionsdone = 0;
@@ -215,9 +244,10 @@ static void _nn_flat(const MultiresoCatalog *cat, const NavHash *nav,
                                 w_gal2 = cat->weight_resos[ind_gal2];
                                 z_gal2 = cat->zbin_resos[ind_gal2];
 
-                                nn_bin_accumulate(dist, w_gal1, w_gal2, z_gal1, z_gal2,
-                                                  bin->rmin, binedges, linarr_bins, dbin_lin_inv,
-                                                  nbinsz, nbinsr, elthread, tmpnpair, tmpwcount, tmpwnorm);
+                                bin_accumulate(dist, w_gal1, w_gal2, z_gal1, z_gal2,
+                                               bin->rmin, binedges, linarr_bins, dbin_lin_inv,
+                                               nbinsz, nbinsz, nbinsr, elthread, nthreads,
+                                               tmpnpair, tmpwcount, tmpwnorm, 0, NULL, NULL);
                             }
                         }
                     }
@@ -235,39 +265,12 @@ static void _nn_flat(const MultiresoCatalog *cat, const NavHash *nav,
     free(binedges); free(linarr_bins); free(reso_rindedges_base);
     free(rshift_index_matcher); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
 
-    // --- accumulate (identical to the previous shared tail) ---
-    for (int elbinr=0; elbinr<nbinsr; elbinr++){
-        for (int elbinz1=0; elbinz1<nbinsz; elbinz1++){
-            for (int elbinz2=0; elbinz2<nbinsz; elbinz2++){
-                int tmpind = elbinz1*nbinsz*nbinsr + elbinz2*nbinsr + elbinr;
-                for (int thisthread=0; thisthread<nthreads; thisthread++){
-                    int tshift = thisthread*nbinsz*nbinsz*nbinsr;
-                    totcount[tmpind] += tmpwcount[tshift+tmpind];
-                    out->npair_cell[tmpind] += tmpnpair[tshift+tmpind];
-                    out->norm[tmpind] += tmpwnorm[tshift+tmpind];
-                }
-            }
-        }
-    }
-    for (int elbinz1=0; elbinz1<nbinsz; elbinz1++){
-        for (int elbinz2=0; elbinz2<nbinsz; elbinz2++){
-            for (int elbinr=0; elbinr<nbinsr; elbinr++){
-                int tmpind = elbinz1*nbinsz*nbinsr + elbinz2*nbinsr + elbinr;
-                if (out->norm[tmpind] != 0){
-                    out->bin_centers[tmpind] = totcount[tmpind]/out->norm[tmpind];
-                }
-            }
-        }
-    }
+    bin_reduce(nbinsz, nbinsz, nbinsr, nthreads, totcount, tmpnpair, tmpwcount, tmpwnorm, 0, NULL, out);
+
     free(totcount); free(tmpwcount); free(tmpnpair); free(tmpwnorm);
 }
 
-// ---------------------------------------------------------------------------
-// Curved-sky NN pair counts. Per radial band, gal1 = that band's legs; a live
-// nested-HEALPix query_disc at the leaf band's nside returns candidate pixels,
-// whose legs (via the bucket-hash CSR) are the gal2 partners. Numerically
-// identical to the previous METRIC_SPHERICAL branch.
-// ---------------------------------------------------------------------------
+// Full-sky DoubleTree estimtor of 2pt pair counts
 static void _nn_spherical(const MultiresoCatalog *cat, const NavHash *nav,
                            const TreeResoParams *tree, const BinningParams *bin,
                            int nthreads, int verbose, NPCFOutput *out){
@@ -324,17 +327,15 @@ static void _nn_spherical(const MultiresoCatalog *cat, const NavHash *nav,
                         int lo = bounds_leaf[ci], hi = bounds_leaf[ci+1];
                         for (int j=lo; j<hi; j++){
                             long g2 = redleaf_off + j;
-                            // do_dc=0: count each unordered pair once. query_disc is symmetric,
-                            // so when leaf reso == base reso (the default resoshift_leafs=0) both
-                            // orderings are enumerated; keep g2>g1. Halves the geodesic work; the
-                            // Python layer restores norm/npair via its x2 do_dc rescale. Guarded to
-                            // same-reso bands, where the swap symmetry and this index compare hold.
+                            // When we do not double count we use that query_disc is symmetric; so for
+                            // the same reso when keeping only the ordering with g2>g1 eliminates dc.
                             if (bin->do_dc==0 && elreso_leaf==elreso && g2 <= g1){ continue; }
                             double dist = sphere_dist(cx, cy, cz, cat->vx_resos[g2], cat->vy_resos[g2], cat->vz_resos[g2]);
                             if (dist < rmin_reso || dist >= rmax_reso){ continue; }
-                            nn_bin_accumulate(dist, w1, cat->weight_resos[g2], z1, cat->zbin_resos[g2],
-                                              bin->rmin, binedges, linarr_bins, dbin_lin_inv,
-                                              nbinsz, nbinsr, thread, tmpnpair, tmpwcount, tmpwnorm);
+                            bin_accumulate(dist, w1, cat->weight_resos[g2], z1, cat->zbin_resos[g2],
+                                           bin->rmin, binedges, linarr_bins, dbin_lin_inv,
+                                           nbinsz, nbinsz, nbinsr, thread, nthreads,
+                                           tmpnpair, tmpwcount, tmpwnorm, 0, NULL, NULL);
                         }
                         ci++;
                     }
@@ -346,39 +347,12 @@ static void _nn_spherical(const MultiresoCatalog *cat, const NavHash *nav,
     }
     free(binedges); free(linarr_bins); free(reso_rindedges);
 
-    for (int elbinr=0; elbinr<nbinsr; elbinr++){
-        for (int elbinz1=0; elbinz1<nbinsz; elbinz1++){
-            for (int elbinz2=0; elbinz2<nbinsz; elbinz2++){
-                int tmpind = elbinz1*nbinsz*nbinsr + elbinz2*nbinsr + elbinr;
-                for (int thisthread=0; thisthread<nthreads; thisthread++){
-                    int tshift = thisthread*nbinsz*nbinsz*nbinsr;
-                    totcount[tmpind] += tmpwcount[tshift+tmpind];
-                    out->npair_cell[tmpind] += tmpnpair[tshift+tmpind];
-                    out->norm[tmpind] += tmpwnorm[tshift+tmpind];
-                }
-            }
-        }
-    }
-    for (int elbinz1=0; elbinz1<nbinsz; elbinz1++){
-        for (int elbinz2=0; elbinz2<nbinsz; elbinz2++){
-            for (int elbinr=0; elbinr<nbinsr; elbinr++){
-                int tmpind = elbinz1*nbinsz*nbinsr + elbinz2*nbinsr + elbinr;
-                if (out->norm[tmpind] != 0){
-                    out->bin_centers[tmpind] = totcount[tmpind]/out->norm[tmpind];
-                }
-            }
-        }
-    }
+    bin_reduce(nbinsz, nbinsz, nbinsr, nthreads, totcount, tmpnpair, tmpwcount, tmpwnorm, 0, NULL, out);
     free(totcount); free(tmpwcount); free(tmpnpair); free(tmpwnorm);
 }
 
-// ---------------------------------------------------------------------------
-// Public entry point: a thin metric dispatch. This is the only function the
-// Python ctypes binding calls. GGG's analogous entry point
-// (alloc_ggg_doubletree, not implemented here) would have the identical shape:
-// dispatch on cat->metric to _ggg_flat / _ggg_spherical, sharing these same
-// four struct types as input.
-// ---------------------------------------------------------------------------
+
+// Public entry point: Choose function based on passed metric.
 void alloc_nn_doubletree(const MultiresoCatalog *cat, const NavHash *nav,
                           const TreeResoParams *tree, const BinningParams *bin,
                           int nthreads, int verbose, NPCFOutput *out){
@@ -394,74 +368,12 @@ void alloc_nn_doubletree(const MultiresoCatalog *cat, const NavHash *nav,
     if (verbose>0){ printf("\n"); }
 }
 
-////////////////////////////////////////////////
-/// SECOND-ORDER (GG) SHEAR 2PCF              ///
-////////////////////////////////////////////////
+///////////////////////////
+// GG CORRELATOR CLASSES //
+///////////////////////////
 
-// Shared radial bin lookup + spin-2 accumulation. Like nn_bin_accumulate, but
-// also scatters the two natural-component contributions the caller has already
-// projected onto the pair geodesic: xip_c -> tmpggstar (xi_plus, no net phase),
-// xim_c -> tmpgg (xi_minus). Geometry-agnostic; both _gg_flat and _gg_spherical
-// call it.
-static inline void gg_bin_accumulate(
-    double dist, double w1, double w2, int z1, int z2,
-    double complex xip_c, double complex xim_c,
-    double rmin, double *binedges, int *linarr_bins, double dbin_lin_inv,
-    int nbinsz, int nbinsr, int thread,
-    int *tmpnpair, double *tmpwcount, double *tmpwnorm,
-    double complex *tmpgg, double complex *tmpggstar){
-    int tmplogbin = (int) ((dist-rmin)*dbin_lin_inv);
-    int rbin = linarr_bins[tmplogbin];
-    rbin += (dist > binedges[rbin+1]) ? 1 : 0;
-    int ind = thread*nbinsz*nbinsz*nbinsr + z1*nbinsz*nbinsr + z2*nbinsr + rbin;
-    tmpnpair[ind] += 1;
-    tmpwcount[ind] += w1*w2*dist;
-    tmpwnorm[ind] += w1*w2;
-    tmpggstar[ind] += xip_c;
-    tmpgg[ind] += xim_c;
-}
 
-// Reduce the per-thread scatter arrays into the unified NPCFOutput and normalise. Shared
-// by _gg_flat and _gg_spherical (their accumulation tails are identical).
-static void gg_reduce(int nbinsz, int nbinsr, int nthreads,
-                      double *totcount, int *tmpnpair, double *tmpwcount, double *tmpwnorm,
-                      double complex *tmpgg, double complex *tmpggstar, NPCFOutput *out){
-    for (int elbinr=0; elbinr<nbinsr; elbinr++){
-        for (int elbinz1=0; elbinz1<nbinsz; elbinz1++){
-            for (int elbinz2=0; elbinz2<nbinsz; elbinz2++){
-                int tmpind = elbinz1*nbinsz*nbinsr + elbinz2*nbinsr + elbinr;
-                for (int thisthread=0; thisthread<nthreads; thisthread++){
-                    int tshift = thisthread*nbinsz*nbinsz*nbinsr;
-                    totcount[tmpind] += tmpwcount[tshift+tmpind];
-                    out->npair[tmpind] += tmpnpair[tshift+tmpind];
-                    out->norm[tmpind] += tmpwnorm[tshift+tmpind];
-                    out->npcf[tmpind] += tmpggstar[tshift+tmpind];
-                    out->npcf[nbinsz*nbinsz*nbinsr + tmpind] += tmpgg[tshift+tmpind];
-                }
-            }
-        }
-    }
-    for (int elbinz1=0; elbinz1<nbinsz; elbinz1++){
-        for (int elbinz2=0; elbinz2<nbinsz; elbinz2++){
-            for (int elbinr=0; elbinr<nbinsr; elbinr++){
-                int tmpind = elbinz1*nbinsz*nbinsr + elbinz2*nbinsr + elbinr;
-                if (out->norm[tmpind] != 0){
-                    out->bin_centers[tmpind] = totcount[tmpind]/out->norm[tmpind];
-                    out->npcf[tmpind] /= out->norm[tmpind];
-                    out->npcf[nbinsz*nbinsz*nbinsr + tmpind] /= out->norm[tmpind];
-                }
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Flat-sky shear 2PCF. Same patch/region decomposition + pixel-box navigation
-// as _nn_flat; the spin-2 phase is the flat quadrant form phirotc_sq=e^{-2i*phi}
-// with phi=atan2(rel2,rel1). Numerically identical to the previous
-// alloc_xipm_doubletree flat kernel (the shear accumulation expressions are
-// unchanged; only the per-thread-redundant setup has moved out).
-// ---------------------------------------------------------------------------
+// Flat-sky DoubleTree estimator of the shear 2PCFs in the xipm-basis
 static void _gg_flat(const MultiresoCatalog *cat, const NavHash *nav,
                      const TreeResoParams *tree, const BinningParams *bin,
                      int nthreads, int verbose, NPCFOutput *out){
@@ -471,8 +383,7 @@ static void _gg_flat(const MultiresoCatalog *cat, const NavHash *nav,
     int *tmpnpair = calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(int));
     double *tmpwcount = calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(double));
     double *tmpwnorm = calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(double));
-    double complex *tmpgg = calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(double complex));
-    double complex *tmpggstar = calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(double complex));
+    double complex *tmpcomp = calloc(nthreads*2*nbinsz*nbinsz*nbinsr, sizeof(double complex));
 
     double drbin, dbin_lin_inv;
     double *binedges; int *linarr_bins; int *reso_rindedges_base;
@@ -550,12 +461,12 @@ static void _gg_flat(const MultiresoCatalog *cat, const NavHash *nav,
                                 z_gal2 = cat->zbin_resos[ind_gal2];
                                 wshape_gal2 = (double complex) w_gal2 * (cat->e1_resos[ind_gal2]+I*cat->e2_resos[ind_gal2]);
                                 phirotc_sq = (rel1*rel1-rel2*rel2-2*I*rel1*rel2)/dist_sq;
-                                gg_bin_accumulate(dist, w_gal1, w_gal2, z_gal1, z_gal2,
-                                                  wshape_gal1*conj(wshape_gal2),
-                                                  wshape_gal1*wshape_gal2*phirotc_sq*phirotc_sq,
-                                                  bin->rmin, binedges, linarr_bins, dbin_lin_inv,
-                                                  nbinsz, nbinsr, elthread,
-                                                  tmpnpair, tmpwcount, tmpwnorm, tmpgg, tmpggstar);
+                                double complex comps[2] = {wshape_gal1*conj(wshape_gal2),
+                                                           wshape_gal1*wshape_gal2*phirotc_sq*phirotc_sq};
+                                bin_accumulate(dist, w_gal1, w_gal2, z_gal1, z_gal2,
+                                               bin->rmin, binedges, linarr_bins, dbin_lin_inv,
+                                               nbinsz, nbinsz, nbinsr, elthread, nthreads,
+                                               tmpnpair, tmpwcount, tmpwnorm, 2, comps, tmpcomp);
                             }
                         }
                     }
@@ -573,21 +484,11 @@ static void _gg_flat(const MultiresoCatalog *cat, const NavHash *nav,
     free(binedges); free(linarr_bins); free(reso_rindedges_base);
     free(rshift_index_matcher); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
 
-    gg_reduce(nbinsz, nbinsr, nthreads, totcount, tmpnpair, tmpwcount, tmpwnorm, tmpgg, tmpggstar, out);
-    free(totcount); free(tmpwcount); free(tmpnpair); free(tmpwnorm); free(tmpgg); free(tmpggstar);
+    bin_reduce(nbinsz, nbinsz, nbinsr, nthreads, totcount, tmpnpair, tmpwcount, tmpwnorm, 2, tmpcomp, out);
+    free(totcount); free(tmpwcount); free(tmpnpair); free(tmpwnorm); free(tmpcomp);
 }
 
-// ---------------------------------------------------------------------------
-// Curved-sky shear 2PCF. Same nested-HEALPix navigation as _nn_spherical, but
-// the spin-2 shear is projected onto the connecting geodesic at BOTH ends: each
-// galaxy's shape is rotated by e^{-2i*bearing} in its own east-north tangent
-// frame (the sphere back-bearing is not the forward bearing + pi, so a single
-// angle no longer suffices). With proj = w*(e1+i*e2)*e^{-2i*bearing_to_partner},
-//   xi_plus  = proj1 * conj(proj2)   (reduces to w1 g1 conj(w2 g2), no phase)
-//   xi_minus = proj1 * proj2         (reduces to w1 g1 w2 g2 e^{-4i*phi}).
-// This is exactly the flat kernel when the two bearings differ by pi; see
-// Tutorials_private/fullsky_covariance_notes.md sections 1.2-1.3.
-// ---------------------------------------------------------------------------
+// Full-sky DoubleTree estimator of the shear 2PCFs in the xipm-basis
 static void _gg_spherical(const MultiresoCatalog *cat, const NavHash *nav,
                           const TreeResoParams *tree, const BinningParams *bin,
                           int nthreads, int verbose, NPCFOutput *out){
@@ -597,8 +498,7 @@ static void _gg_spherical(const MultiresoCatalog *cat, const NavHash *nav,
     int *tmpnpair = calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(int));
     double *tmpwcount = calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(double));
     double *tmpwnorm = calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(double));
-    double complex *tmpgg = calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(double complex));
-    double complex *tmpggstar = calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(double complex));
+    double complex *tmpcomp = calloc(nthreads*2*nbinsz*nbinsz*nbinsr, sizeof(double complex));
 
     double drbin, dbin_lin_inv;
     double *binedges; int *linarr_bins; int *reso_rindedges;
@@ -648,37 +548,23 @@ static void _gg_spherical(const MultiresoCatalog *cat, const NavHash *nav,
                         int lo = bounds_leaf[ci], hi = bounds_leaf[ci+1];
                         for (int j=lo; j<hi; j++){
                             long g2 = redleaf_off + j;
-                            // do_dc=0: count each unordered pair once (see _nn_spherical). query_disc
-                            // is symmetric, so with leaf reso == base reso both orderings appear; keep
-                            // g2>g1. Halves the geodesic + spin-2 projection work; Python restores
-                            // norm/npair via its x2 do_dc rescale. Guarded to same-reso bands.
+                            // When we do not double count we use that query_disc is symmetric; so for
+                            // the same reso when keeping only the ordering with g2>g1 eliminates dc.
                             if (bin->do_dc==0 && elreso_leaf==elreso && g2 <= g1){ continue; }
                             double dist = sphere_dist(cx, cy, cz, cat->vx_resos[g2], cat->vy_resos[g2], cat->vz_resos[g2]);
                             if (dist < rmin_reso || dist >= rmax_reso){ continue; }
                             double sd2 = cat->sindec_resos[g2], cd2 = cat->cosdec_resos[g2];
-                            double vx2 = cat->vx_resos[g2], vy2 = cat->vy_resos[g2];
+                            double vx2 = cat->vx_resos[g2], vy2 = cat->vy_resos[g2], vz2 = cat->vz_resos[g2];
                             double complex wshape2 = (double complex) cat->weight_resos[g2] * (cat->e1_resos[g2]+I*cat->e2_resos[g2]);
-                            // Spin-2 geodesic projection phase e^{-2i*bearing} at each end, built
-                            // directly from the tangent-frame east/north bearing components (E,N)
-                            // -- no atan2/cexp in the pair loop. sphere_bearing gives phi=atan2(n,e)
-                            // so e^{-2i*phi} = (e^2-n^2-2i*e*n)/(e^2+n^2); here (E,N)=cosdec_a*(e,n)
-                            // (a positive scale, so the phase is unchanged) is formed from the
-                            // position-vector cross/dot, reusing vx/vy already loaded for the
-                            // distance. The back bearing shares E (up to sign) and the equatorial
-                            // dot P. Curved-sky analogue of the flat phirotc_sq.
-                            double P = cx*vx2 + cy*vy2;
-                            double E12 = cx*vy2 - cy*vx2;
-                            double N12 = cd1*cd1*sd2 - sd1*P;
-                            double N21 = cd2*cd2*sd1 - sd2*P;
-                            double complex rc1 = (E12*E12 - N12*N12 - 2.*I*E12*N12)/(E12*E12 + N12*N12);
-                            double complex rc2 = (E12*E12 - N21*N21 + 2.*I*E12*N21)/(E12*E12 + N21*N21);
-                            double complex proj1 = wshape1 * rc1;
-                            double complex proj2 = wshape2 * rc2;
-                            gg_bin_accumulate(dist, w1, cat->weight_resos[g2], z1, cat->zbin_resos[g2],
-                                              proj1*conj(proj2), proj1*proj2,
-                                              bin->rmin, binedges, linarr_bins, dbin_lin_inv,
-                                              nbinsz, nbinsr, thread,
-                                              tmpnpair, tmpwcount, tmpwnorm, tmpgg, tmpggstar);
+                            BearingAB g12 = bearing_AB_cart(cx,cy,cz, vx2,vy2,vz2);
+                            BearingAB g21 = bearing_AB_cart(vx2,vy2,vz2, cx,cy,cz);
+                            double complex proj1 = wshape1 * bearing_rc(g12);
+                            double complex proj2 = wshape2 * bearing_rc(g21);
+                            double complex comps[2] = {proj1*conj(proj2), proj1*proj2};
+                            bin_accumulate(dist, w1, cat->weight_resos[g2], z1, cat->zbin_resos[g2],
+                                           bin->rmin, binedges, linarr_bins, dbin_lin_inv,
+                                           nbinsz, nbinsz, nbinsr, thread, nthreads,
+                                           tmpnpair, tmpwcount, tmpwnorm, 2, comps, tmpcomp);
                         }
                         ci++;
                     }
@@ -690,13 +576,11 @@ static void _gg_spherical(const MultiresoCatalog *cat, const NavHash *nav,
     }
     free(binedges); free(linarr_bins); free(reso_rindedges);
 
-    gg_reduce(nbinsz, nbinsr, nthreads, totcount, tmpnpair, tmpwcount, tmpwnorm, tmpgg, tmpggstar, out);
-    free(totcount); free(tmpwcount); free(tmpnpair); free(tmpwnorm); free(tmpgg); free(tmpggstar);
+    bin_reduce(nbinsz, nbinsz, nbinsr, nthreads, totcount, tmpnpair, tmpwcount, tmpwnorm, 2, tmpcomp, out);
+    free(totcount); free(tmpwcount); free(tmpnpair); free(tmpwnorm); free(tmpcomp);
 }
 
-// ---------------------------------------------------------------------------
-// Public entry point: a thin metric dispatch, mirroring alloc_nn_doubletree.
-// ---------------------------------------------------------------------------
+// Public entry point: Choose function based on passed metric.
 void alloc_gg_doubletree(const MultiresoCatalog *cat, const NavHash *nav,
                          const TreeResoParams *tree, const BinningParams *bin,
                          int nthreads, int verbose, NPCFOutput *out){
@@ -713,63 +597,12 @@ void alloc_gg_doubletree(const MultiresoCatalog *cat, const NavHash *nav,
 }
 
 
-///////////////////////////////
-// Position-shape (NG) 2PCF //
-///////////////////////////////
-// Scatter one lens-source pair into the NG accumulators. Layout mirrors
-// gg_bin_accumulate but rectangular in (z_lens, z_source) and with a single
-// natural component xi = w_l * w_s(e1+i*e2) * e^{-2i*phi}.
-static inline void ng_bin_accumulate(
-    double dist, double w1, double w2, int z1, int z2, double complex xi_c,
-    double rmin, double *binedges, int *linarr_bins, double dbin_lin_inv,
-    int nbinsz_lens, int nbinsz_source, int nbinsr, int thread,
-    int *tmpnpair, double *tmpwcount, double *tmpwnorm, double complex *tmpxi){
-    int tmplogbin = (int) ((dist-rmin)*dbin_lin_inv);
-    int rbin = linarr_bins[tmplogbin];
-    rbin += (dist > binedges[rbin+1]) ? 1 : 0;
-    int ind = thread*nbinsz_lens*nbinsz_source*nbinsr + z1*nbinsz_source*nbinsr + z2*nbinsr + rbin;
-    tmpnpair[ind] += 1;
-    tmpwcount[ind] += w1*w2*dist;
-    tmpwnorm[ind] += w1*w2;
-    tmpxi[ind] += xi_c;
-}
+///////////////////////////
+// NG CORRELATOR CLASSES //
+///////////////////////////
 
-// Reduce the per-thread NG scatter arrays into the unified NPCFOutput and normalise.
-static void ng_reduce(int nbinsz_lens, int nbinsz_source, int nbinsr, int nthreads,
-                      double *totcount, int *tmpnpair, double *tmpwcount, double *tmpwnorm,
-                      double complex *tmpxi, NPCFOutput *out){
-    int nzzr = nbinsz_lens*nbinsz_source*nbinsr;
-    for (int z1=0; z1<nbinsz_lens; z1++){
-        for (int z2=0; z2<nbinsz_source; z2++){
-            for (int elbinr=0; elbinr<nbinsr; elbinr++){
-                int tmpind = z1*nbinsz_source*nbinsr + z2*nbinsr + elbinr;
-                for (int thisthread=0; thisthread<nthreads; thisthread++){
-                    int tshift = thisthread*nzzr;
-                    totcount[tmpind] += tmpwcount[tshift+tmpind];
-                    out->npair[tmpind] += tmpnpair[tshift+tmpind];
-                    out->norm[tmpind] += tmpwnorm[tshift+tmpind];
-                    out->npcf[tmpind] += tmpxi[tshift+tmpind];
-                }
-            }
-        }
-    }
-    for (int i=0; i<nzzr; i++){
-        if (out->norm[i] != 0){
-            out->bin_centers[i] = totcount[i]/out->norm[i];
-            out->npcf[i] /= out->norm[i];
-        }
-    }
-}
 
-// ---------------------------------------------------------------------------
-// Flat-sky position-shape (galaxy-galaxy lensing) 2PCF. A scalar lens catalog
-// (cat_lens/nav_lens, central gal1) cross-correlated with a spin-2 source
-// catalog (cat_source/nav_source, field gal2). Both hashes share the same flat
-// grid (built on a joint extent), so a lens-position search box indexes the
-// source grid directly. Single-sided projection phirotc_sq=e^{-2i*phi}:
-//   xi = <w_l w_s (e1+i*e2)_s e^{-2i*phi}> / <w_l w_s>,  Re xi = -gamma_t.
-// No do_dc: a cross counts every lens-source pair once.
-// ---------------------------------------------------------------------------
+// Flat-sky DoubleTree estimator of the NG correlators in the -(gamma_t, gamma_x) basis.
 static void _ng_flat(const MultiresoCatalog *cat_lens, const NavHash *nav_lens,
                      const MultiresoCatalog *cat_source, const NavHash *nav_source,
                      const TreeResoParams *tree, const BinningParams *bin,
@@ -782,7 +615,7 @@ static void _ng_flat(const MultiresoCatalog *cat_lens, const NavHash *nav_lens,
     int *tmpnpair = calloc(nthreads*nzzr, sizeof(int));
     double *tmpwcount = calloc(nthreads*nzzr, sizeof(double));
     double *tmpwnorm = calloc(nthreads*nzzr, sizeof(double));
-    double complex *tmpxi = calloc(nthreads*nzzr, sizeof(double complex));
+    double complex *tmpcomp = calloc(nthreads*1*nzzr, sizeof(double complex));
 
     double drbin, dbin_lin_inv;
     double *binedges; int *linarr_bins; int *reso_rindedges_base;
@@ -857,11 +690,11 @@ static void _ng_flat(const MultiresoCatalog *cat_lens, const NavHash *nav_lens,
                                 z_gal2 = cat_source->zbin_resos[ind_gal2];
                                 wshape_gal2 = (double complex) w_gal2 * (cat_source->e1_resos[ind_gal2]+I*cat_source->e2_resos[ind_gal2]);
                                 phirotc_sq = (rel1*rel1-rel2*rel2-2*I*rel1*rel2)/dist_sq;
-                                ng_bin_accumulate(dist, w_gal1, w_gal2, z_gal1, z_gal2,
-                                                  w_gal1*wshape_gal2*phirotc_sq,
-                                                  bin->rmin, binedges, linarr_bins, dbin_lin_inv,
-                                                  nbinsz_l, nbinsz_s, nbinsr, elthread,
-                                                  tmpnpair, tmpwcount, tmpwnorm, tmpxi);
+                                double complex comps[1] = {w_gal1*wshape_gal2*phirotc_sq};
+                                bin_accumulate(dist, w_gal1, w_gal2, z_gal1, z_gal2,
+                                               bin->rmin, binedges, linarr_bins, dbin_lin_inv,
+                                               nbinsz_l, nbinsz_s, nbinsr, elthread, nthreads,
+                                               tmpnpair, tmpwcount, tmpwnorm, 1, comps, tmpcomp);
                             }
                         }
                     }
@@ -874,8 +707,8 @@ static void _ng_flat(const MultiresoCatalog *cat_lens, const NavHash *nav_lens,
     free(rsim_l); free(rspgb_l); free(rspg_l);
     free(rsim_s); free(rspgb_s); free(rspg_s);
 
-    ng_reduce(nbinsz_l, nbinsz_s, nbinsr, nthreads, totcount, tmpnpair, tmpwcount, tmpwnorm, tmpxi, out);
-    free(totcount); free(tmpwcount); free(tmpnpair); free(tmpwnorm); free(tmpxi);
+    bin_reduce(nbinsz_l, nbinsz_s, nbinsr, nthreads, totcount, tmpnpair, tmpwcount, tmpwnorm, 1, tmpcomp, out);
+    free(totcount); free(tmpwcount); free(tmpnpair); free(tmpwnorm); free(tmpcomp);
 }
 
 // Public entry point for the position-shape 2PCF. Flat-sky only for now; a
@@ -892,116 +725,114 @@ void alloc_ng_doubletree(const MultiresoCatalog *cat_lens, const NavHash *nav_le
 /////////////////////////
 // Slab-hashed GN pairs //
 /////////////////////////
-// Discrete estimator kernel for the 2-pt position-shape (NI) correlator and its
-// RR pair-count normalization, in a '3dbox' geometry (projected NI / w_{g+};
-// Vedder et al. 2026, arXiv:2601.17914 Eq. 15). Correlates a query (position)
-// catalog against a hashed catalog whose 2D spatial hash is split into
-// line-of-sight slabs of width dpix_z: for each query it visits only the slabs
-// overlapping [z-Pi, z+Pi], runs the transverse search box in each, and for
-// pairs with |dz|<Pi and r_perp in [rmin,rmax) accumulates the spin-2 sum
-// w_q w_h eps_h e^{-2i phi} (has_shapes=1) and/or the weighted pair count
-// (has_shapes=0). Outputs are indexed [z_query, z_hashed, r_perp bin]. This is
-// just the discrete 2-pt correlator with a line-of-sight-window metric; the
-// third-order slab kernels live in corrfunc_third.c.
-void ng_slab(
-    double *q_pos1, double *q_pos2, double *q_pos3, double *q_w, int *q_zbin,
-    int q_ngal, int nbinsz_q,
-    double *h_pos1, double *h_pos2, double *h_pos3, double *h_w, int *h_zbin,
-    double *h_e1, double *h_e2, int nbinsz_h,
-    int nslabs, double z0, double dpix_z,
-    double pix1_start, double pix1_d, int pix1_n,
-    double pix2_start, double pix2_d, int pix2_n,
-    int *slab_offsets, int *index_matcher, int *pixs_galind_bounds,
-    int *rshift_bounds, int *pix_gals,
-    double rmin, double rmax, int nbinsr, double Pi,
-    int self_pairs, int has_shapes, int nthreads,
-    double *out_xs_re, double *out_xs_im, double *out_wnorm,
-    double *out_rsum, long *out_npairs){
+// Discrete estimator of a NG correlator in slabs of a 3dbox geometry
+void ng_slab(const MultiresoCatalog *cat_query, const MultiresoCatalog *cat_hash,
+             const NavHash *nav_hash, const BinningParams *bin,
+             int self_pairs, int has_shapes, int nthreads, NPCFOutput *out)
+{
+    // Hoist every struct field into a local once (the hot loop never touches a
+    // struct). The query catalog is looped directly (nresos=1, no nav); the
+    // hashed catalog carries the shapes (has_shapes) or the random pair counts
+    // and is navigated through nav_hash's slab grid.
+    double *scalar_pos1 = cat_query->pos1_resos, *scalar_pos2 = cat_query->pos2_resos, *scalar_pos3 = cat_query->pos3_resos;
+    double *scalar_w = cat_query->weight_resos; int *scalar_zbin = cat_query->zbin_resos;
+    int scalar_ngal = cat_query->ngal_resos[0], nbinsz_scalar = cat_query->nbinsz;
+    double *polar_pos1 = cat_hash->pos1_resos, *polar_pos2 = cat_hash->pos2_resos, *polar_pos3 = cat_hash->pos3_resos;
+    double *polar_w = cat_hash->weight_resos; int *polar_zbin = cat_hash->zbin_resos;
+    double *polar_e1 = cat_hash->e1_resos, *polar_e2 = cat_hash->e2_resos; int nbinsz_polar = cat_hash->nbinsz;
+    int nslabs = nav_hash->nslabs; double z0 = nav_hash->z0, dpix_z = nav_hash->dpix_z;
+    double pix1_start = nav_hash->pix1_start, pix1_d = nav_hash->pix1_d; int pix1_n = nav_hash->pix1_n;
+    double pix2_start = nav_hash->pix2_start, pix2_d = nav_hash->pix2_d; int pix2_n = nav_hash->pix2_n;
+    int *slab_offsets = nav_hash->slab_offsets, *index_matcher = nav_hash->index_matcher;
+    int *pixs_galind_bounds = nav_hash->pixs_galind_bounds, *rshift_bounds = nav_hash->rshift_bounds, *pix_gals = nav_hash->pix_gals;
+    double rmin = bin->rmin, rmax = bin->rmax, Pi = bin->Pi; int nbinsr = bin->nbinsr;
+    // Output buffers (NG layout): complex shape correlator -> npcf, weighted pair
+    // count -> norm, integer pair count -> npair. bin_centers carries the raw
+    // weighted radial sum (sum of w*r); the LS-like combination and the division
+    // into a mean bin center happen in Python.
+    double complex *out_xs = out->npcf;
+    double *out_wnorm = out->norm, *out_rsum = out->bin_centers;
+    long long int *out_npairs = out->npair;
 
     int npix = pix1_n * pix2_n;
-    int nbinszz = nbinsz_q * nbinsz_h;
+    int nbinszz = nbinsz_scalar * nbinsz_polar;
     int nout = nbinszz * nbinsr;
+
     double rmin2 = rmin * rmin;
     double rmax2 = rmax * rmax;
-    double dlnr_inv = nbinsr / log(rmax/rmin);
+    double dlnr_inv = nbinsr / log(rmax / rmin);
 
-    // Per-thread accumulators to avoid contention; reduced at the end.
-    double *tmp_xs_re = calloc((size_t)nthreads*nout, sizeof(double));
-    double *tmp_xs_im = calloc((size_t)nthreads*nout, sizeof(double));
-    double *tmp_wnorm = calloc((size_t)nthreads*nout, sizeof(double));
-    double *tmp_rsum  = calloc((size_t)nthreads*nout, sizeof(double));
-    long   *tmp_npair = calloc((size_t)nthreads*nout, sizeof(long));
+    // Per-thread accumulators.
+    double *tmp_xs_re = calloc((size_t)nthreads * nout, sizeof(double));
+    double *tmp_xs_im = calloc((size_t)nthreads * nout, sizeof(double));
+    double *tmp_wnorm = calloc((size_t)nthreads * nout, sizeof(double));
+    double *tmp_rsum  = calloc((size_t)nthreads * nout, sizeof(double));
+    long   *tmp_npair = calloc((size_t)nthreads * nout, sizeof(long));
 
     #pragma omp parallel num_threads(nthreads)
     {
-        int elthread = omp_get_thread_num();
-        double *l_xs_re = tmp_xs_re + (size_t)elthread*nout;
-        double *l_xs_im = tmp_xs_im + (size_t)elthread*nout;
-        double *l_wnorm = tmp_wnorm + (size_t)elthread*nout;
-        double *l_rsum  = tmp_rsum  + (size_t)elthread*nout;
-        long   *l_npair = tmp_npair + (size_t)elthread*nout;
+        int thread = omp_get_thread_num();
+        size_t base = (size_t)thread * nout;
 
         #pragma omp for schedule(dynamic, 256)
-        for (int i=0; i<q_ngal; i++){
-            double p1 = q_pos1[i];
-            double p2 = q_pos2[i];
-            double zq = q_pos3[i];
-            double wq = q_w[i];
-            int zbin_q = q_zbin[i];
+        for (int i=0; i<scalar_ngal; i++) {
 
-            // Slabs overlapping [zq-Pi, zq+Pi].
-            int s_lo = (int) floor((zq - Pi - z0)/dpix_z);
-            int s_hi = (int) floor((zq + Pi - z0)/dpix_z);
-            if (s_lo < 0){ s_lo = 0; }
-            if (s_hi > nslabs-1){ s_hi = nslabs-1; }
+            double p1 = scalar_pos1[i];
+            double p2 = scalar_pos2[i];
+            double z_scalar = scalar_pos3[i];
+            double w_scalar = scalar_w[i];
+            int zbin_scalar = scalar_zbin[i];
+
+            // Slabs overlapping [z_scalar-Pi, z_scalar+Pi].
+            int s_lo = (int)floor((z_scalar - Pi - z0) / dpix_z);
+            int s_hi = (int)floor((z_scalar + Pi - z0) / dpix_z);
+            if (s_lo < 0) s_lo = 0;
+            if (s_hi > nslabs - 1) s_hi = nslabs - 1;
 
             // Transverse search box enclosing all neighbours within rmax.
-            int pix1_lo = (int) floor((p1 - (rmax + pix1_d) - pix1_start)/pix1_d);
-            int pix1_hi = (int) floor((p1 + (rmax + pix1_d) - pix1_start)/pix1_d);
-            int pix2_lo = (int) floor((p2 - (rmax + pix2_d) - pix2_start)/pix2_d);
-            int pix2_hi = (int) floor((p2 + (rmax + pix2_d) - pix2_start)/pix2_d);
-            pix1_lo = mymax(0, pix1_lo); pix1_hi = mymin(pix1_n-1, pix1_hi);
-            pix2_lo = mymax(0, pix2_lo); pix2_hi = mymin(pix2_n-1, pix2_hi);
+            int pix1_lo = (int)floor((p1 - (rmax + pix1_d) - pix1_start) / pix1_d);
+            int pix1_hi = (int)floor((p1 + (rmax + pix1_d) - pix1_start) / pix1_d);
+            int pix2_lo = (int)floor((p2 - (rmax + pix2_d) - pix2_start) / pix2_d);
+            int pix2_hi = (int)floor((p2 + (rmax + pix2_d) - pix2_start) / pix2_d);
+            pix1_lo = mymax(0, pix1_lo); pix1_hi = mymin(pix1_n - 1, pix1_hi);
+            pix2_lo = mymax(0, pix2_lo); pix2_hi = mymin(pix2_n - 1, pix2_hi);
 
-            for (int s=s_lo; s<=s_hi; s++){
-                int matcher_shift = s*npix;
+            for (int s=s_lo; s<=s_hi; s++) {
+                int matcher_shift = s * npix;
                 int bounds_shift = rshift_bounds[s];
                 int gals_shift = slab_offsets[s];
-                for (int ip1=pix1_lo; ip1<=pix1_hi; ip1++){
-                    for (int ip2=pix2_lo; ip2<=pix2_hi; ip2++){
+                for (int ip1=pix1_lo; ip1<=pix1_hi; ip1++) {
+                    for (int ip2 = pix2_lo; ip2 <= pix2_hi; ip2++) {
                         int ind_raw = ip2*pix1_n + ip1;
                         int ind_red = index_matcher[matcher_shift + ind_raw];
-                        if (ind_red == -1){ continue; }
+                        if (ind_red == -1){continue;}
                         int lower = pixs_galind_bounds[bounds_shift + ind_red];
                         int upper = pixs_galind_bounds[bounds_shift + ind_red + 1];
-                        for (int k=lower; k<upper; k++){
+                        for (int k=lower; k<upper; k++) {
                             int j = pix_gals[gals_shift + k];
-                            if (self_pairs && j==i){ continue; }
-                            double rel1 = h_pos1[j] - p1;
-                            double rel2 = h_pos2[j] - p2;
+                            if (self_pairs && j==i){continue;}
+                            double rel1 = polar_pos1[j]-p1;
+                            double rel2 = polar_pos2[j]-p2;
                             double d2 = rel1*rel1 + rel2*rel2;
-                            if (d2 < rmin2 || d2 >= rmax2){ continue; }
-                            double dz = h_pos3[j] - zq;
-                            if (dz < 0){ dz = -dz; }
-                            if (dz >= Pi){ continue; }
-
+                            if (d2<rmin2 || d2>=rmax2){continue;}
+                            double dz=fabs(polar_pos3[j]-z_scalar);
+                            if (dz >= Pi){continue;}
                             double r = sqrt(d2);
-                            int rbin = (int) floor(log(r/rmin)*dlnr_inv);
-                            if (rbin < 0 || rbin >= nbinsr){ continue; }
-                            double w = wq * h_w[j];
-                            int outind = (zbin_q*nbinsz_h + h_zbin[j])*nbinsr + rbin;
-
-                            l_wnorm[outind] += w;
-                            l_rsum[outind]  += w*r;
-                            l_npair[outind] += 1;
-                            if (has_shapes){
-                                // e^{-2i phi}: Re=(rel1^2-rel2^2)/d2, Im=-2 rel1 rel2/d2
-                                double pr = (rel1*rel1 - rel2*rel2)/d2;
-                                double pi = -2.*rel1*rel2/d2;
-                                double e1 = h_e1[j];
-                                double e2 = h_e2[j];
-                                l_xs_re[outind] += w*(e1*pr - e2*pi);
-                                l_xs_im[outind] += w*(e1*pi + e2*pr);
+                            int rbin = (int)floor(log(r/rmin) * dlnr_inv);
+                            if (rbin<0 || rbin>=nbinsr){continue;}
+                            double w = w_scalar * polar_w[j];
+                            int outind = (zbin_scalar*nbinsz_polar + polar_zbin[j])*nbinsr + rbin;
+                            size_t ind = base + (size_t)outind;
+                            tmp_wnorm[ind] += w;
+                            tmp_rsum[ind] += w * r;
+                            tmp_npair[ind] += 1;
+                            if (has_shapes) {
+                                double phi_re = (rel1*rel1 - rel2*rel2) / d2;
+                                double phi_im = -2.0*rel1*rel2/d2;
+                                double e1 = polar_e1[j];
+                                double e2 = polar_e2[j];
+                                tmp_xs_re[ind] += w * (e1*phi_re - e2 *phi_im);
+                                tmp_xs_im[ind] += w * (e1*phi_im + e2 *phi_re);
                             }
                         }
                     }
@@ -1009,18 +840,19 @@ void ng_slab(
             }
         }
     }
-
     // Reduce per-thread accumulators into the output arrays.
-    for (int o=0; o<nout; o++){
-        for (int t=0; t<nthreads; t++){
-            size_t ind = (size_t)t*nout + o;
-            out_xs_re[o]  += tmp_xs_re[ind];
-            out_xs_im[o]  += tmp_xs_im[ind];
+    for (int o=0; o<nout; o++) {
+        for (int t=0; t<nthreads; t++) {
+            size_t ind = (size_t)t * nout + o;
+            out_xs[o]     += tmp_xs_re[ind] + I*tmp_xs_im[ind];
             out_wnorm[o]  += tmp_wnorm[ind];
             out_rsum[o]   += tmp_rsum[ind];
             out_npairs[o] += tmp_npair[ind];
         }
     }
-
-    free(tmp_xs_re); free(tmp_xs_im); free(tmp_wnorm); free(tmp_rsum); free(tmp_npair);
+    free(tmp_xs_re);
+    free(tmp_xs_im);
+    free(tmp_wnorm);
+    free(tmp_rsum);
+    free(tmp_npair);
 }

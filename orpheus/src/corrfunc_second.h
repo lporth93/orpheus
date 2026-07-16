@@ -45,17 +45,6 @@ void alloc_ng_doubletree(const MultiresoCatalog *cat_lens, const NavHash *nav_le
 // counts (has_shapes=0). Only the line-of-sight-window metric distinguishes it
 // from the flat discrete correlator, so it lives here beside the other 2nd-order
 // kernels rather than in a separate translation unit.
-void ng_slab(
-    double *q_pos1, double *q_pos2, double *q_pos3, double *q_w, int *q_zbin,
-    int q_ngal, int nbinsz_q,
-    double *h_pos1, double *h_pos2, double *h_pos3, double *h_w, int *h_zbin,
-    double *h_e1, double *h_e2, int nbinsz_h,
-    int nslabs, double z0, double dpix_z,
-    double pix1_start, double pix1_d, int pix1_n,
-    double pix2_start, double pix2_d, int pix2_n,
-    int *slab_offsets, int *index_matcher, int *pixs_galind_bounds,
-    int *rshift_bounds, int *pix_gals,
-    double rmin, double rmax, int nbinsr, double Pi,
-    int self_pairs, int has_shapes, int nthreads,
-    double *out_xs_re, double *out_xs_im, double *out_wnorm,
-    double *out_rsum, long *out_npairs);
+void ng_slab(const MultiresoCatalog *cat_query, const MultiresoCatalog *cat_hash,
+             const NavHash *nav_hash, const BinningParams *bin,
+             int self_pairs, int has_shapes, int nthreads, NPCFOutput *out);

@@ -231,21 +231,20 @@ void reducecat(double *isinner, double *w, double *pos_1, double *pos_2, double 
     free(spatialhash);
 }
 
-// Counter-based PRNG: a splitmix32 finalizer (strong avalanche) keyed on an
-// integer counter. Decorrelates adjacent inputs, so per-super-galaxy random
-// draws keyed on the unique output slot carry no spatial pattern -- unlike an
-// LCG seeded affinely in the pixel index, which produces an evenly-spaced
-// lattice of shifts. Stateless => thread-safe and reproducible under OpenMP.
+// Counter-based PRNG: 
+// This is a super basic PRNG that randomizes bits of an input 32 bit integer.
+// So here this is a basic thead safe and reproducible option when using openmp.
 static inline unsigned int _hash_u32(unsigned int x){
-    x += 0x9e3779b9u;
+    x += 0x9e3779b9u; // 32 bit golden ratio constant
     x = (x ^ (x >> 16)) * 0x21f0aaadu;
     x = (x ^ (x >> 15)) * 0x735a2d97u;
     return x ^ (x >> 15);
 }
+// Maps a 32 bit integer to the interval [0,1)
 static inline double _u01(unsigned int h){ return (double)h * (1./4294967296.); }
 
-// Tomographic + OpenMP variant of reducecat (see spatialhash.h). One hash over all
-// galaxies; per pixel each occupied zbin becomes its own super-galaxy.
+// Reduce a tomographic catalog by aggregating galaxies within each spatial pixel.
+// Each occupied (pixel, zbin)-pair produces one reduced galaxy.
 void reducecat_tomo(double *isinner, double *w, double *pos_1, double *pos_2, double *scalarquants,
                int *zbins, int ngal, int nscalarquants, int nbinsz, int normed,
                double mask_d1, double mask_d2, double mask_min1, double mask_min2, int mask_n1, int mask_n2, int shuffle,
@@ -262,8 +261,9 @@ void reducecat_tomo(double *isinner, double *w, double *pos_1, double *pos_2, do
                       mask_d1, mask_d2, mask_min1, mask_min2, mask_n1, mask_n2,
                       spatialhash);
 
-    // Reverse map (compacted occupied-pixel index -> raw pixel) for the pixel-center
-    // shuffle modes, plus the number of occupied pixels.
+    // Build mapping from compact occupied-pixel index (ir) back to original pixel index. 
+    // We use this for shuffle modes 1 and 2 where the reduced galaxy position is derived from
+    // the pixel location.
     int noccupied = 0;
     for (int p=0; p<npix; p++){ if (spatialhash[start_matcher+p]!=FLAG_NOGAL){ noccupied += 1; } }
     if (noccupied==0){ free(spatialhash); return; }
@@ -273,14 +273,15 @@ void reducecat_tomo(double *isinner, double *w, double *pos_1, double *pos_2, do
         if (ir!=FLAG_NOGAL){ pix_of_red[ir] = p; }
     }
 
-    // Pass A: distinct zbins per occupied pixel -> contiguous output offsets via a
-    // prefix sum. Each pixel then owns the disjoint slice [outoffset[ir], outoffset[ir+1]).
-    // The per-thread `stamp` array is marked with the unique value ir+1, so membership
-    // resets for free between iterations (no clearing).
-    int *pix_nbuckets = malloc(noccupied*sizeof(int));
+    // Pass A: Count number of occupied zbins in each occupied pixel. A prefix sum over
+    // these counts assigns each pixel a disjoint output range [outoffset[ir], outoffset[ir+1]).
+    int *pix_nzocc = malloc(noccupied*sizeof(int));
     #pragma omp parallel num_threads(nthreads)
     {
-        int *stamp = calloc(nbinsz, sizeof(int));
+        // This array checks whether a zbin was already allocated for the pixel. Does only need
+        // to be intialised once as we define allocated by the pixel index which gets refreshed
+        // for each new pixel   
+        int *counted = calloc(nbinsz, sizeof(int)); // Check
         #pragma omp for schedule(dynamic, 64)
         for (int ir=0; ir<noccupied; ir++){
             int lower = spatialhash[start_bounds+ir];
@@ -289,29 +290,30 @@ void reducecat_tomo(double *isinner, double *w, double *pos_1, double *pos_2, do
             int cnt = 0;
             for (int j=lower; j<upper; j++){
                 int z = zbins[spatialhash[start_pixgals+j]];
-                if (stamp[z]!=marker){ stamp[z]=marker; cnt += 1; }
+                if (counted[z]!=marker){ counted[z]=marker; cnt += 1; }
             }
-            pix_nbuckets[ir] = cnt;
+            pix_nzocc[ir] = cnt;
         }
-        free(stamp);
+        free(counted);
     }
     int *outoffset = malloc((noccupied+1)*sizeof(int));
     outoffset[0] = 0;
-    for (int ir=0; ir<noccupied; ir++){ outoffset[ir+1] = outoffset[ir] + pix_nbuckets[ir]; }
+    for (int ir=0; ir<noccupied; ir++){ outoffset[ir+1] = outoffset[ir] + pix_nzocc[ir]; }
 
-    // Pass B: reduce each pixel into its per-zbin super-galaxies. Scratch accumulators
-    // are allocated once per thread and only the used zbin range is reset per pixel.
-    // Threads write into disjoint output slices, so no synchronisation is needed.
+    // Pass B: accumulate weighted quantities for each zbin within a pixel and write
+    // one reduced galaxy per occupied zbin. Scratch arrays are allocated once per
+    // thread and reused for every pixel. Since each thread writes to a disjoint
+    // output range, no synchronisation is required.
     #pragma omp parallel num_threads(nthreads)
     {
-        double *aw  = malloc(nbinsz*sizeof(double));
-        double *ais = malloc(nbinsz*sizeof(double));
-        double *ap1 = malloc(nbinsz*sizeof(double));
-        double *ap2 = malloc(nbinsz*sizeof(double));
-        double *amw = malloc(nbinsz*sizeof(double));
-        int *aimw = malloc(nbinsz*sizeof(int));
-        int *arnd = malloc(nbinsz*sizeof(int));
-        int *acnt = malloc(nbinsz*sizeof(int));
+        double *scratchw  = malloc(nbinsz*sizeof(double));
+        double *scratchis = malloc(nbinsz*sizeof(double));
+        double *scratchp1 = malloc(nbinsz*sizeof(double));
+        double *scratchp2 = malloc(nbinsz*sizeof(double));
+        double *scratchmw = malloc(nbinsz*sizeof(double));
+        int *largestwind = malloc(nbinsz*sizeof(int));
+        int *randind = malloc(nbinsz*sizeof(int));
+        int *scratchcounts = malloc(nbinsz*sizeof(int));
         double *asq = (nscalarquants>0) ? malloc((size_t)nbinsz*nscalarquants*sizeof(double)) : NULL;
 
         #pragma omp for schedule(dynamic, 64)
@@ -322,43 +324,44 @@ void reducecat_tomo(double *isinner, double *w, double *pos_1, double *pos_2, do
             int ind_pix1 = pix % mask_n1;
             int ind_pix2 = pix / mask_n1;
 
-            memset(aw,  0, nbinsz*sizeof(double));
-            memset(ais, 0, nbinsz*sizeof(double));
-            memset(ap1, 0, nbinsz*sizeof(double));
-            memset(ap2, 0, nbinsz*sizeof(double));
+            memset(scratchw,  0, nbinsz*sizeof(double));
+            memset(scratchis, 0, nbinsz*sizeof(double));
+            memset(scratchp1, 0, nbinsz*sizeof(double));
+            memset(scratchp2, 0, nbinsz*sizeof(double));
             if (asq){ memset(asq, 0, (size_t)nbinsz*nscalarquants*sizeof(double)); }
-            if (shuffle==3){ memset(amw, 0, nbinsz*sizeof(double)); for (int z=0; z<nbinsz; z++){ aimw[z]=-1; } }
-            if (shuffle==4){ memset(acnt, 0, nbinsz*sizeof(int)); for (int z=0; z<nbinsz; z++){ arnd[z]=-1; } }
+            if (shuffle==3){ memset(scratchmw, 0, nbinsz*sizeof(double)); for (int z=0; z<nbinsz; z++){ largestwind[z]=-1; } }
+            if (shuffle==4){ memset(scratchcounts, 0, nbinsz*sizeof(int)); for (int z=0; z<nbinsz; z++){ randind[z]=-1; } }
 
             for (int j=lower; j<upper; j++){
                 int ind_gal = spatialhash[start_pixgals+j];
                 int z = zbins[ind_gal];
                 double wg = w[ind_gal];
-                ais[z] += wg*isinner[ind_gal];
-                aw[z]  += wg;
-                ap1[z] += wg*pos_1[ind_gal];
-                ap2[z] += wg*pos_2[ind_gal];
+                scratchis[z] += wg*isinner[ind_gal];
+                scratchw[z]  += wg;
+                scratchp1[z] += wg*pos_1[ind_gal];
+                scratchp2[z] += wg*pos_2[ind_gal];
                 for (int e=0; e<nscalarquants; e++){
                     asq[(size_t)z*nscalarquants+e] += wg*scalarquants[(size_t)e*ngal+ind_gal];
                 }
-                if (shuffle==3 && wg>amw[z]){ amw[z]=wg; aimw[z]=ind_gal; }
-                if (shuffle==4){ acnt[z]+=1;
-                    unsigned int hr = _hash_u32(_hash_u32((unsigned int)(ir*nbinsz+z)) + (unsigned int)acnt[z]);
-                    if (hr % (unsigned int)acnt[z] == 0){ arnd[z]=ind_gal; } }
+                if (shuffle==3 && wg>scratchmw[z]){ scratchmw[z]=wg; largestwind[z]=ind_gal; }
+                if (shuffle==4){ scratchcounts[z]+=1;
+                    unsigned int hr = _hash_u32(_hash_u32((unsigned int)(ir*nbinsz+z)) + (unsigned int)scratchcounts[z]);
+                    if (hr % (unsigned int)scratchcounts[z] == 0){ randind[z]=ind_gal; } }
             }
 
             int slot = outoffset[ir];
             for (int z=0; z<nbinsz; z++){
-                if (aw[z]==0.){ continue; }
-                w_red[slot] = aw[z];
-                isinner_red[slot] = ais[z]/aw[z];
+                if (scratchw[z]==0.){ continue; }
+                w_red[slot] = scratchw[z];
+                isinner_red[slot] = scratchis[z]/scratchw[z];
                 zbins_red[slot] = z;
                 if (shuffle==0){
-                    pos1_red[slot] = ap1[z]/aw[z];
-                    pos2_red[slot] = ap2[z]/aw[z]; }
+                    pos1_red[slot] = scratchp1[z]/scratchw[z];
+                    pos2_red[slot] = scratchp2[z]/scratchw[z]; }
                 else if (shuffle==1){
-                    // Unique, decorrelated shift per super-galaxy (keyed on the
-                    // output slot, which is deterministic across thread counts).
+                    // Get random shift by first, scrambling the bits of the output slot to
+                    // random 32 bit integer, then map this to [0,1) and normalise by mask_d.
+                    // So this is pretty random but still deterministic independent of threads etc.
                     double s1 = _u01(_hash_u32((unsigned int)slot*2u))      * mask_d1;
                     double s2 = _u01(_hash_u32((unsigned int)slot*2u + 1u)) * mask_d2;
                     pos1_red[slot] = mask_min1+ind_pix1*mask_d1 + s1;
@@ -367,25 +370,25 @@ void reducecat_tomo(double *isinner, double *w, double *pos_1, double *pos_2, do
                     pos1_red[slot] = mask_min1+ind_pix1*mask_d1 + mask_d1/2;
                     pos2_red[slot] = mask_min2+ind_pix2*mask_d2 + mask_d2/2; }
                 else if (shuffle==3){
-                    pos1_red[slot] = pos_1[aimw[z]];
-                    pos2_red[slot] = pos_2[aimw[z]]; }
+                    pos1_red[slot] = pos_1[largestwind[z]];
+                    pos2_red[slot] = pos_2[largestwind[z]]; }
                 else if (shuffle==4){
-                    pos1_red[slot] = pos_1[arnd[z]];
-                    pos2_red[slot] = pos_2[arnd[z]]; }
+                    pos1_red[slot] = pos_1[randind[z]];
+                    pos2_red[slot] = pos_2[randind[z]]; }
                 for (int e=0; e<nscalarquants; e++){
-                    double denom = (normed==1) ? aw[z] : 1.;
+                    double denom = (normed==1) ? scratchw[z] : 1.;
                     scalarquants_red[(size_t)e*ngal+slot] = asq[(size_t)z*nscalarquants+e]/denom;
                 }
                 slot += 1;
             }
         }
-        free(aw); free(ais); free(ap1); free(ap2); free(amw);
-        free(aimw); free(arnd); free(acnt);
+        free(scratchw); free(scratchis); free(scratchp1); free(scratchp2); free(scratchmw);
+        free(largestwind); free(randind); free(scratchcounts);
         if (asq){ free(asq); }
     }
 
     free(pix_of_red);
-    free(pix_nbuckets);
+    free(pix_nzocc);
     free(outoffset);
     free(spatialhash);
 }

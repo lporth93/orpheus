@@ -1,6 +1,5 @@
-// extern "C" shim over healpix_cxx -- see healpix_utils.h. The only C++ TU in
-// orpheus; it exists solely so the C estimators can call query_disc without
-// reimplementing the nested-HEALPix geometry.
+// extern "C" shim over healpix_cxx. We only need this such that the C estimators
+// can call query_disc without reimplementing the nested-HEALPix geometry.
 
 #include <cmath>
 #include "healpix_base.h"
@@ -15,7 +14,7 @@ extern "C" long hpx_query_disc_nest(long nside, const double *vec, double radius
     T_Healpix_Base<int64> base((int64)nside, NEST, SET_NSIDE);
     pointing ptg(vec3(vec[0], vec[1], vec[2]));
     rangeset<int64> pixset;
-    // fact=4: balances false positives vs. work; never yields false negatives.
+    // fact=4: balance false positives vs. work; never yields false negatives.
     base.query_disc_inclusive(ptg, radius, pixset, 4);
 
     long n = 0;
@@ -36,7 +35,7 @@ extern "C" long hpx_query_disc_nest_ranges(long nside, const double *vec, double
     T_Healpix_Base<int64> base((int64)nside, NEST, SET_NSIDE);
     pointing ptg(vec3(vec[0], vec[1], vec[2]));
     rangeset<int64> pixset;
-    // fact=1: loosest inclusive refinement (~5% more candidate pixels than fact=4
+    // fact=1: loosest inclusive refinement (some more candidate pixels than fact=4
     // but a cheaper query); the exact geodesic filter removes the extras anyway.
     base.query_disc_inclusive(ptg, radius, pixset, 1);
     long nr = pixset.nranges();

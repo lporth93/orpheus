@@ -13,6 +13,7 @@
 #include "corrfunc_fourth.h"
 #include "corrfunc_fourth_derived.h"
 #include "utils.h"
+#include "healpix_utils.h"
 
 #define mymin(x,y) ((x) <= (y)) ? (x) : (y)
 #define mymax(x,y) ((x) >= (y)) ? (x) : (y)
@@ -4869,9 +4870,10 @@ void alloc_nnnn_tree_spherical(
     int nmax, double rmin, double rmax, int nbinsr, int dccorr,
     int *nindices, int len_nindices,
     int nresos, double *reso_redges, int *ngal_resos, int *ncells_resos,
-    double *leg_w, double *leg_vx, double *leg_vy, double *leg_vz,
-    double *leg_ra, double *leg_sindec, double *leg_cosdec, int *rshift_leg,
-    int *cen_cell, int *nav_off, int *rshift_cell, int *nav_legidx, int *rshift_nav,
+    long *nside_nav,
+    double *red_w, double *red_vx, double *red_vy, double *red_vz,
+    double *red_ra, double *red_sindec, double *red_cosdec, int *rshift_red,
+    long *cell_pix, int *cell_redbounds, int *rshift_cellpix, int *rshift_cellbounds,
     int *thetacombis_batches, int *nthetacombis_batches, int *cumthetacombis_batches, int nthetbatches,
     int nthreads, double memory_bound, double *bin_centers, double complex *N_n){
 
@@ -4891,8 +4893,8 @@ void alloc_nnnn_tree_spherical(
     ///////////////////////////////////////////////////////////////////
     // Plan the galaxy-blocking so the moment cache stays <= memory_bound
     ///////////////////////////////////////////////////////////////////
-    // Centrals are the inner galaxies directly (no hash indirection needed:
-    // multihash_spherical already supplies the per-central navigation).
+    // Centrals are the inner galaxies directly; neighbours per band are found on the
+    // fly with query_disc over the reduced-catalogue nested-HEALPix hash (see Phase 1).
     int *centralinds = malloc((ngal>0?ngal:1)*sizeof(int));
     long ncache = 0;
     for (int ig=0; ig<ngal; ig++){
@@ -4969,49 +4971,71 @@ void alloc_nnnn_tree_spherical(
 
             double w2, w2_sq, dist, dphi;
             double complex phirot, phirotc, nphirot, nphirotc;
+            long qcap = 2048;
+            long *ranges = malloc(2*qcap*sizeof(long));
+            double v1[3] = {cx, cy, cz};
             for (int elreso=0;elreso<nresos;elreso++){
                 int rbin, zrshift, nextnshift, ind_Wn;
                 double rmin_reso = reso_redges[elreso];
                 double rmax_reso = reso_redges[elreso+1];
-                // Curved-sky navigation: iterate this central's precomputed
-                // neighbour-leg list for this band (nested-HEALPix query_disc CSR).
-                int slot = cen_cell[(long)elreso*ngal + ic];
-                int off0 = nav_off[rshift_cell[elreso] + slot];
-                int off1 = nav_off[rshift_cell[elreso] + slot + 1];
-                for (int k=off0; k<off1; k++){
-                    int lg = rshift_leg[elreso] + nav_legidx[rshift_nav[elreso] + k];
-                    dist = sphere_dist(cx, cy, cz, leg_vx[lg], leg_vy[lg], leg_vz[lg]);
-                    if (dist < rmin_reso || dist >= rmax_reso) continue;
-                    w2 = leg_w[lg];
-                    rbin = (int) floor((log(dist)-log(rmin))/drbin);
-                    w2_sq = w2*w2;
-                    dphi = sphere_bearing(cra, csdec, ccdec,
-                                          leg_ra[lg], leg_sindec[lg], leg_cosdec[lg]);
-                    phirot = cexp(I*dphi);
-                    phirotc = conj(phirot);
-                    zrshift = 0*nbinsr + rbin;
-                    ind_Wn = nzero_Wn*nbinszr + zrshift;
-                    nphirot = 1+I*0;
-                    nphirotc = 1+I*0;
-                    nextW3ns[zrshift] += w2_sq*w2;
-                    tmp_totcounts[thisthread*nbinsr+zrshift] += cen_w[ic]*w2*dist;
-                    tmp_totnorms[thisthread*nbinsr+zrshift]  += cen_w[ic]*w2;
-                    nextWns[ind_Wn] += w2*nphirot;
-                    nextW2ns[ind_Wn] += w2_sq*nphirot;
-                    nphirot *= phirot;
-                    nphirotc *= phirotc;
-                    nextnshift = 0;
-                    for (int nextn=1;nextn<=2*nmax_alloc;nextn++){
-                        nextnshift = nextn*nbinszr;
-                        nextWns[ind_Wn+nextnshift] += w2*nphirot;
-                        nextWns[ind_Wn-nextnshift] += w2*nphirotc;
-                        nextW2ns[ind_Wn+nextnshift] += w2_sq*nphirot;
-                        nextW2ns[ind_Wn-nextnshift] += w2_sq*nphirotc;
-                        nphirot *= phirot;
-                        nphirotc *= phirotc;
+                // Curved-sky single-tree navigation: query_disc at this band's nav nside,
+                // merge-join the occupied cells against cell_pix, iterate their reduced
+                // galaxies. Inclusive query + the distance cut below make this exact and
+                // robust to nav coarsening (nside_nav may be coarser than the reduction).
+                long ns_nav_r = nside_nav[elreso];
+                long nr = hpx_query_disc_nest_ranges(ns_nav_r, v1, rmax_reso, ranges, qcap);
+                if (nr > qcap){ qcap = nr; ranges = realloc(ranges, 2*qcap*sizeof(long));
+                                nr = hpx_query_disc_nest_ranges(ns_nav_r, v1, rmax_reso, ranges, qcap); }
+                const long *cp = cell_pix + rshift_cellpix[elreso];
+                const int  *cb = cell_redbounds + rshift_cellbounds[elreso];
+                int ncells_r = ncells_resos[elreso];
+                long red_off = rshift_red[elreso];
+                int ci = 0;
+                for (long qr=0; qr<nr; qr++){
+                    long plo = ranges[2*qr], phr = ranges[2*qr+1];
+                    int loi = ci, hii = ncells_r;
+                    while (loi < hii){ int m=(loi+hii)>>1; if (cp[m] < plo){ loi=m+1; } else { hii=m; } }
+                    ci = loi;
+                    while (ci < ncells_r && cp[ci] < phr){
+                        int clo = cb[ci], chi = cb[ci+1];
+                        for (int j=clo; j<chi; j++){
+                            long lg = red_off + j;
+                            dist = sphere_dist(cx, cy, cz, red_vx[lg], red_vy[lg], red_vz[lg]);
+                            if (dist < rmin_reso || dist >= rmax_reso) continue;
+                            w2 = red_w[lg];
+                            rbin = (int) floor((log(dist)-log(rmin))/drbin);
+                            w2_sq = w2*w2;
+                            dphi = sphere_bearing(cra, csdec, ccdec,
+                                                  red_ra[lg], red_sindec[lg], red_cosdec[lg]);
+                            phirot = cexp(I*dphi);
+                            phirotc = conj(phirot);
+                            zrshift = 0*nbinsr + rbin;
+                            ind_Wn = nzero_Wn*nbinszr + zrshift;
+                            nphirot = 1+I*0;
+                            nphirotc = 1+I*0;
+                            nextW3ns[zrshift] += w2_sq*w2;
+                            tmp_totcounts[thisthread*nbinsr+zrshift] += cen_w[ic]*w2*dist;
+                            tmp_totnorms[thisthread*nbinsr+zrshift]  += cen_w[ic]*w2;
+                            nextWns[ind_Wn] += w2*nphirot;
+                            nextW2ns[ind_Wn] += w2_sq*nphirot;
+                            nphirot *= phirot;
+                            nphirotc *= phirotc;
+                            nextnshift = 0;
+                            for (int nextn=1;nextn<=2*nmax_alloc;nextn++){
+                                nextnshift = nextn*nbinszr;
+                                nextWns[ind_Wn+nextnshift] += w2*nphirot;
+                                nextWns[ind_Wn-nextnshift] += w2*nphirotc;
+                                nextW2ns[ind_Wn+nextnshift] += w2_sq*nphirot;
+                                nextW2ns[ind_Wn-nextnshift] += w2_sq*nphirotc;
+                                nphirot *= phirot;
+                                nphirotc *= phirotc;
+                            }
+                        }
+                        ci++;
                     }
                 }
             }
+            free(ranges);
         }
 
         /////////////////////////////////////////////////////////

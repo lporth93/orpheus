@@ -138,9 +138,10 @@ void alloc_nnnn_tree_spherical(
     int nmax, double rmin, double rmax, int nbinsr, int dccorr,
     int *nindices, int len_nindices,
     int nresos, double *reso_redges, int *ngal_resos, int *ncells_resos,
-    double *leg_w, double *leg_vx, double *leg_vy, double *leg_vz,
-    double *leg_ra, double *leg_sindec, double *leg_cosdec, int *rshift_leg,
-    int *cen_cell, int *nav_off, int *rshift_cell, int *nav_legidx, int *rshift_nav,
+    long *nside_nav,
+    double *red_w, double *red_vx, double *red_vy, double *red_vz,
+    double *red_ra, double *red_sindec, double *red_cosdec, int *rshift_red,
+    long *cell_pix, int *cell_redbounds, int *rshift_cellpix, int *rshift_cellbounds,
     int *thetacombis_batches, int *nthetacombis_batches, int *cumthetacombis_batches, int nthetbatches,
     int nthreads, double memory_bound, double *bin_centers, double complex *N_n);
 

@@ -15,187 +15,6 @@
 
 #define M_PI      3.14159265358979323846
 
-// TODO: THIS IMPLEMENTATION IS OK BUT CONCEPTUALLY HORRIBLE AS IT BASICALLY COPIES THE 
-//       SAME LOOP TWICE. ALSO THE PARALLELIZATION IS BAD. SHOULD BE FIXED...
-void multipoles2npcf_ggg(double complex *Upsilon_n, double complex *N_n, int nmax, int nbinsz,
-                         double *theta_centers, int nbinstheta, double *phi_centers, int nbinsphi,
-                         int projection, int nthreads,
-                         double complex *npcf, double complex *npcf_norm){
-
-    // We split the calculation in two separate loops, one for theta1<=theta2
-    // and one for theta2<theta1. We do this as due to the symmetry properties
-    // we need to call both, (theta1,theta2) and (theta2,theta1) combinations of
-    // the Upsilon_n in the innermost loop which might introduce race conditions.
-    // Notes:
-    // 1) In principle, running both loops may not be neccessary due to the symmetry property
-    //      Gamma_mu(thet1,thet2,z1,z2,z3,phi) = Gamma_mu'(thet2,thet1,z1,z3,z2,-phi),
-    //    but as we do not enforce a symmetric phi-binning this may not hold.
-    // 2) In contrast to P24 we normalise the individual triplet correlators by the number of
-    //    angular bins (nphi) instead of 2*pi. For the Quotient leading to the natural
-    //    components this does not matter, but it gives the correctly normalised counts
-    
-    // Run first batch (theta1<=theta2)
-    #pragma omp parallel for num_threads(nthreads)
-    for (int itheta1=0; itheta1<nbinstheta; itheta1++){
-        int z1, z2, z3, zcombi_t;
-        int thetcombi, thetcombi_t;
-        int indNn_p, indNn_m, ind_Norm;
-        int indexpphi_p, indexpphi_m;
-        int n_cfs=4;
-        int nthetcombis=nbinstheta*nbinstheta;
-        int nzcombis=nbinsz*nbinsz*nbinsz;
-        int nns=nmax+1;
-        int ups_zshift=nthetcombis;
-        int ups_nshift=nzcombis*ups_zshift;
-        int ups_compshift=nns*ups_nshift;
-        int gam_thetshift=nbinsphi;
-        int gam_zshift=nthetcombis*gam_thetshift;
-        int gam_compshift=nzcombis*gam_zshift;
-        double norm_triplets = 1./nbinsphi;
-        // Allocate lookup table for all exponential factors appearing
-        double complex *expphis = calloc((2*nmax+1)*nbinsphi, sizeof(double complex));
-        for (int nextn=0;nextn<=nmax;nextn++){
-            for (int elphi=0;elphi<nbinsphi;elphi++){
-                expphis[(nmax+nextn)*nbinsphi+elphi] = cexp(I*nextn*phi_centers[elphi]);
-                expphis[(nmax-nextn)*nbinsphi+elphi] = conj(expphis[(nmax+nextn)*nbinsphi+elphi]);
-            }
-        }
-        // Continue with transformation 
-        for (int itheta2=itheta1; itheta2<nbinstheta; itheta2++){
-            thetcombi   = itheta1*nbinstheta+itheta2;
-            thetcombi_t = itheta2*nbinstheta+itheta1;
-            for (int zcombi=0;zcombi<nbinsz*nbinsz*nbinsz; zcombi++){
-                z1 = zcombi/(nbinsz*nbinsz);
-                z2 = (zcombi-z1*nbinsz*nbinsz)/nbinsz;
-                z3 = zcombi%nbinsz;
-                zcombi_t = z1*nbinsz*nbinsz+z3*nbinsz+z2;
-                for (int elphi=0; elphi<nbinsphi; elphi++){
-                    // Convert multipoles to npcf
-                    ind_Norm = zcombi*gam_zshift+thetcombi*gam_thetshift+elphi;
-                    // Base case (n=0)
-                    indNn_p = zcombi*ups_zshift+thetcombi;
-                    npcf_norm[ind_Norm] += N_n[indNn_p];                    
-                    npcf[0*gam_compshift+ind_Norm] += Upsilon_n[0*ups_compshift+indNn_p];
-                    npcf[1*gam_compshift+ind_Norm] += Upsilon_n[1*ups_compshift+indNn_p];
-                    npcf[2*gam_compshift+ind_Norm] += Upsilon_n[2*ups_compshift+indNn_p];
-                    npcf[3*gam_compshift+ind_Norm] += Upsilon_n[3*ups_compshift+indNn_p];
-                    //if (itheta1==10 && itheta2==20 && zcombi==33 && elphi==44){
-                    //    printf("Added %.4f+i*%.4f to norm\n",creal(N_n[indNn_p]),cimag(N_n[indNn_p]));
-                    //    printf("Current value at index %d/%d is %.4f+i*%.4f to norm\n",ind_Norm,indNn_p,creal(npcf_norm[ind_Norm]),cimag(npcf_norm[ind_Norm]));
-                    //}
-                    // Remaining cases (n=\pm 1,... \pm nmax)
-                    for (int nextn=1; nextn<=nmax; nextn++){ 
-                        indexpphi_p = (nmax+nextn)*nbinsphi+elphi;
-                        indexpphi_m = (nmax-nextn)*nbinsphi+elphi;
-                        indNn_p = nextn*ups_nshift+zcombi*ups_zshift+thetcombi;
-                        indNn_m = nextn*ups_nshift+zcombi_t*ups_zshift+thetcombi_t;
-                        npcf_norm[ind_Norm] += N_n[indNn_p]*expphis[indexpphi_p];
-                        npcf_norm[ind_Norm] += N_n[indNn_m]*expphis[indexpphi_m];
-                        npcf[0*gam_compshift+ind_Norm] += Upsilon_n[0*ups_compshift+indNn_p]*expphis[indexpphi_p];
-                        npcf[0*gam_compshift+ind_Norm] += Upsilon_n[0*ups_compshift+indNn_m]*expphis[indexpphi_m];
-                        npcf[1*gam_compshift+ind_Norm] += Upsilon_n[1*ups_compshift+indNn_p]*expphis[indexpphi_p];
-                        npcf[1*gam_compshift+ind_Norm] += Upsilon_n[1*ups_compshift+indNn_m]*expphis[indexpphi_m];
-                        npcf[2*gam_compshift+ind_Norm] += Upsilon_n[2*ups_compshift+indNn_p]*expphis[indexpphi_p];
-                        npcf[2*gam_compshift+ind_Norm] += Upsilon_n[3*ups_compshift+indNn_m]*expphis[indexpphi_m];
-                        npcf[3*gam_compshift+ind_Norm] += Upsilon_n[3*ups_compshift+indNn_p]*expphis[indexpphi_p];
-                        npcf[3*gam_compshift+ind_Norm] += Upsilon_n[2*ups_compshift+indNn_m]*expphis[indexpphi_m];
-                    }
-                    // Normalize: Gamma=Upsilon/N --> Make sure that we have counts, i.e. N >~ 1.
-                    npcf_norm[ind_Norm] *= norm_triplets;
-                    for (int elcf=0; elcf<n_cfs; elcf++){ 
-                        npcf[elcf*gam_compshift+ind_Norm] *= norm_triplets;
-                        if (cabs(npcf_norm[ind_Norm]) > 0.1){npcf[elcf*gam_compshift+ind_Norm] /= cabs(npcf_norm[ind_Norm]);}
-                        else{npcf[elcf*gam_compshift+ind_Norm] = 0;}
-                    }
-                } 
-            }
-        }
-        free(expphis);
-    }
-    
-    // Run second batch (theta1>theta2)
-    #pragma omp parallel for num_threads(nthreads)
-    for (int itheta2=0; itheta2<nbinstheta; itheta2++){
-        int z1, z2, z3, zcombi_t;
-        int thetcombi, thetcombi_t;
-        int indNn_p, indNn_m, ind_Norm;
-        int indexpphi_p, indexpphi_m;
-        int n_cfs=4;
-        int nthetcombis=nbinstheta*nbinstheta;
-        int nzcombis=nbinsz*nbinsz*nbinsz;
-        int nns=nmax+1;
-        int ups_zshift=nthetcombis;
-        int ups_nshift=nzcombis*ups_zshift;
-        int ups_compshift=nns*ups_nshift;
-        int gam_thetshift=nbinsphi;
-        int gam_zshift=nthetcombis*gam_thetshift;
-        int gam_compshift=nzcombis*gam_zshift;        
-        double norm_triplets = 1./nbinsphi;
-        // Allocate lookup table for all exponential factors appearing
-        double complex *expphis = calloc((2*nmax+1)*nbinsphi, sizeof(double complex));
-        for (int nextn=0;nextn<=nmax;nextn++){
-            for (int elphi=0;elphi<nbinsphi;elphi++){
-                expphis[(nmax+nextn)*nbinsphi+elphi] = cexp(I*nextn*phi_centers[elphi]);
-                expphis[(nmax-nextn)*nbinsphi+elphi] = conj(expphis[(nmax+nextn)*nbinsphi+elphi]);
-            }
-        }
-        // Continue with transformation 
-        for (int itheta1=itheta2+1; itheta1<nbinstheta; itheta1++){
-            thetcombi   = itheta1*nbinstheta+itheta2;
-            thetcombi_t = itheta2*nbinstheta+itheta1;
-            for (int zcombi=0;zcombi<nbinsz*nbinsz*nbinsz; zcombi++){
-                z1 = zcombi/(nbinsz*nbinsz);
-                z2 = (zcombi-z1*nbinsz*nbinsz)/nbinsz;
-                z3 = zcombi%nbinsz;
-                zcombi_t = z1*nbinsz*nbinsz+z3*nbinsz+z2;
-                for (int elphi=0; elphi<nbinsphi; elphi++){
-                    // Convert multipoles to npcf
-                    ind_Norm = zcombi*gam_zshift+thetcombi*gam_thetshift+elphi;
-                    // Base case (n=0)
-                    indNn_p = zcombi*ups_zshift+thetcombi;
-                    npcf_norm[ind_Norm] += N_n[indNn_p];
-                    npcf[0*gam_compshift+ind_Norm] += Upsilon_n[0*ups_compshift+indNn_p];
-                    npcf[1*gam_compshift+ind_Norm] += Upsilon_n[1*ups_compshift+indNn_p];
-                    npcf[2*gam_compshift+ind_Norm] += Upsilon_n[2*ups_compshift+indNn_p];
-                    npcf[3*gam_compshift+ind_Norm] += Upsilon_n[3*ups_compshift+indNn_p];
-                    // Remaining cases (n=\pm 1,... \pm nmax)
-                    for (int nextn=1; nextn<=nmax; nextn++){ 
-                        indexpphi_p = (nmax+nextn)*nbinsphi+elphi;
-                        indexpphi_m = (nmax-nextn)*nbinsphi+elphi;
-                        indNn_p = nextn*ups_nshift+zcombi*ups_zshift+thetcombi;
-                        indNn_m = nextn*ups_nshift+zcombi_t*ups_zshift+thetcombi_t;
-                        npcf_norm[ind_Norm] += N_n[indNn_p]*expphis[indexpphi_p];
-                        npcf_norm[ind_Norm] += N_n[indNn_m]*expphis[indexpphi_m];
-                        npcf[0*gam_compshift+ind_Norm] += Upsilon_n[0*ups_compshift+indNn_p]*expphis[indexpphi_p];
-                        npcf[0*gam_compshift+ind_Norm] += Upsilon_n[0*ups_compshift+indNn_m]*expphis[indexpphi_m];
-                        npcf[1*gam_compshift+ind_Norm] += Upsilon_n[1*ups_compshift+indNn_p]*expphis[indexpphi_p];
-                        npcf[1*gam_compshift+ind_Norm] += Upsilon_n[1*ups_compshift+indNn_m]*expphis[indexpphi_m];
-                        npcf[2*gam_compshift+ind_Norm] += Upsilon_n[2*ups_compshift+indNn_p]*expphis[indexpphi_p];
-                        npcf[2*gam_compshift+ind_Norm] += Upsilon_n[3*ups_compshift+indNn_m]*expphis[indexpphi_m];
-                        npcf[3*gam_compshift+ind_Norm] += Upsilon_n[3*ups_compshift+indNn_p]*expphis[indexpphi_p];
-                        npcf[3*gam_compshift+ind_Norm] += Upsilon_n[2*ups_compshift+indNn_m]*expphis[indexpphi_m];
-                    }
-                    // Normalize: Gamma=Upsilon/N --> Make sure that we have counts, i.e. N >~ 1.
-                    npcf_norm[ind_Norm] *= norm_triplets;
-                    for (int elcf=0; elcf<n_cfs; elcf++){ 
-                        npcf[elcf*gam_compshift+ind_Norm] *= norm_triplets;
-                        if (cabs(npcf_norm[ind_Norm]) > 0.1){npcf[elcf*gam_compshift+ind_Norm] /= cabs(npcf_norm[ind_Norm]);}
-                        else{npcf[elcf*gam_compshift+ind_Norm] = 0;}
-                    }
-                } 
-            }
-        }
-        free(expphis);
-    }  
-    
-    // Optionally transform to different basis
-    if (projection==1){
-        _x2centroid_ggg(npcf, nbinsz, 
-                        theta_centers, nbinstheta, phi_centers, nbinsphi,
-                        nthreads);
-    }
-}
-
 void _x2centroid_ggg(double complex *npcf, int nbinsz, 
                      double *theta_centers, int nbinstheta, double *phi_centers, int nbinsphi,
                      int nthreads){
@@ -248,97 +67,480 @@ void _x2centroid_ggg(double complex *npcf, int nbinsz,
     free(thetas_buffer);
 }
 
-void threepcf2M3correlators_singlescale(double *npcf, 
-                                        double *theta_edges, double *theta_centers, int nbinstheta, 
-                                        double *phi_centers, int nbinsphi, int nbinsz,
-                                        int nthreads,
-                                        double *mapradii, int nmapradii, double complex *M3correlators){
-    
-    double *thetas_center_buffer = calloc(nthreads*nbinstheta, sizeof(double));
-    double *thetas_edges_buffer = calloc(nthreads*(nbinstheta+1), sizeof(double));
-    for (int elthread=0;elthread<nthreads; elthread++){
-        for (int eltheta=0;eltheta<nbinstheta; eltheta++){
-            thetas_center_buffer[elthread*nbinstheta+eltheta] = theta_centers[eltheta];
-            thetas_edges_buffer[elthread*(nbinstheta+1)+eltheta] = theta_edges[eltheta];
+// Convert 3pcf from multipole-basis to real space for GGG, NGG and GNN. 
+// * Assmes that nzbins2=nzbins3 such that the n-->-n symmetries work
+// * modeweight, which is each correlator's own normalization convention
+// * store_full_range: 0 reconstructs n<0 via the z2<->z3 transpose while
+//   1 reads the full n=-nmax..nmax range directly.
+// * floor_use_abs/floor_thr[zcombi] protect against division by zero for ~empty bins
+void multipoles2npcf_third_z1z23(double complex *Upsilon_n, double complex *N_n,
+                                 int nmax, int ncomp_cf, int nbinsz1, int nbinsz23, int nbinstheta,
+                                 double *phi_centers, int nbinsphi,
+                                 int store_full_range, int *conjmap, double *modeweight,
+                                 int is_edge_corrected, int floor_use_abs, double *floor_thr,
+                                 int nthreads,
+                                 double complex *npcf, double complex *npcf_norm){
+
+    int nzcombis = nbinsz1*nbinsz23*nbinsz23;
+    int nmodes = store_full_range ? 2*nmax+1 : nmax+1;
+    int nthetcombis = nbinstheta*nbinstheta;
+    int ups_zshift = nthetcombis;
+    int ups_nshift = nzcombis*ups_zshift;
+    int ups_compshift = nmodes*ups_nshift;
+    int gam_thetshift = nbinsphi;
+    int gam_zshift = nthetcombis*gam_thetshift;
+    int gam_compshift = nzcombis*gam_zshift;
+
+    // Generate lookup table for exp s.t. we dont need it in the inner loop
+    double complex *expphis = calloc((2*nmax+1)*nbinsphi, sizeof(double complex));
+    for (int nextn=0; nextn<=nmax; nextn++){
+        for (int elphi=0; elphi<nbinsphi; elphi++){
+            expphis[(nmax+nextn)*nbinsphi+elphi] = cexp(I*nextn*phi_centers[elphi]);
+            expphis[(nmax-nextn)*nbinsphi+elphi] = conj(expphis[(nmax+nextn)*nbinsphi+elphi]);
         }
-        thetas_edges_buffer[elthread*(nbinstheta+1)+nbinstheta] = theta_edges[nbinstheta];
     }
-    double complex *M3correlators_buffer = calloc(nthreads*4*nbinsz*nbinsz*nbinsz*nmapradii, sizeof(double complex));
-    double dphi = phi_centers[1]-phi_centers[0];
-    int map3_threadshift=4*nbinsz*nbinsz*nbinsz*nmapradii;
+
     #pragma omp parallel for num_threads(nthreads)
-    for (int elphi=0; elphi<nbinsphi; elphi++){
-        int thisthread = omp_get_thread_num();
-        int nthetcombis=nbinstheta*nbinstheta;
-        int nzcombis=nbinsz*nbinsz*nbinsz;
-        int gam_thetshift=nbinsphi;
-        int gam_zshift=nthetcombis*gam_thetshift;
-        int gam_compshift=nzcombis*gam_zshift;
-        double cosphi = cos(phi_centers[elphi]);
-        double cos2phi = cos(2*phi_centers[elphi]);
-        double sinphi = sin(phi_centers[elphi]);
-        double complex expphi = cexp(I*phi_centers[elphi]);
-        double complex expphi_c = conj(expphi);
-        double complex expphi2 = expphi*expphi;
-        double complex expphi2_c = conj(expphi2);
-        int thetcombi, ind_gam, baseind_M3;
-        double y1, dy1, y2, dy2, y1_2, y1_4, y2_2, y2_4, y13y2, y12y22, y1y23;
-        double absq1s, absq2s, absq3s, absq123s, absq1q2q3_2;
-        double complex q1q2q3starsq, q2q3q1starsq, q3q1q2starsq;
-        double R_ap, R_ap_2, R_ap_4, R_ap_6, measures;
-        double complex T0, T3_123, T3_231, T3_312;
-        for (int itheta1=0; itheta1<nbinstheta; itheta1++){
-            y1 = thetas_center_buffer[thisthread*nbinstheta+itheta1];
-            dy1 = thetas_edges_buffer[thisthread*(nbinstheta+1)+itheta1+1]-thetas_edges_buffer[thisthread*(nbinstheta+1)+itheta1];
-            y1_2 = y1*y1; y1_4=y1_2*y1_2;
-            y13y2=y1_2*y1*y2; y12y22=y1_2*y2_2; y1y23=y1*y2*y2_2;
-            for (int itheta2=0; itheta2<nbinstheta; itheta2++){
-                thetcombi = itheta1*nbinstheta+itheta2;
-                y2 = thetas_center_buffer[thisthread*nbinstheta+itheta2];
-                dy2 = thetas_edges_buffer[thisthread*(nbinstheta+1)+itheta2+1]-thetas_edges_buffer[thisthread*(nbinstheta+1)+itheta1];
-                y2_2 = y2*y2; y2_4=y2_2*y2_2;
-                absq1s = 1./9.*(4*y1_2 - 4*y1*y2*cosphi + 1*y2_2);
-                absq2s = 1./9.*(1*y1_2 - 4*y1*y2*cosphi + 4*y2_2);
-                absq3s = 1./9.*(1*y1_2 + 2*y1*y2*cosphi + 1*y2_2);
-                absq123s = 2./3. * (y1_2+y2_2-y1*y2*cosphi);
-                absq1q2q3_2 = absq1s*absq2s*absq3s;
-                for (int elR=0; elR<nmapradii; elR++){
-                    R_ap = mapradii[elR];
-                    R_ap_2=R_ap*R_ap; R_ap_4=R_ap_2*R_ap_2; R_ap_6=R_ap_2*R_ap_4;
-                    q1q2q3starsq = -1./81*( 2*(y1_4 + y2_4 + y1_2*y2_2 * (2*cos2phi-5.)) - y1*y2*((y1_2+y2_2)*cosphi + 9I*(y1_2-y2_2)*sinphi));
-                    q2q3q1starsq = -1./81*(-4*y1_4 + 2*y2_4 + y13y2*8*cosphi + y12y22*(8*expphi2-4-expphi2_c) + y1y23*(expphi_c-8*expphi));
-                    q3q1q2starsq = -1./81*( 2*y1_4 - 4*y2_4 - y13y2*(8*expphi_c-expphi) - y12y22*(4+expphi2-8*expphi2_c) + 8*y1y23*cosphi);
-                    measures = y1*dy1/R_ap_2 * y2*dy2/R_ap_2 * dphi/(2*M_PI);
-                    T0 = 1./24. * measures * absq1q2q3_2/R_ap_6 * cexp(-absq123s/(2*R_ap_2));
-                    T3_123 = measures * exp(-absq123s/(2*R_ap_2)) * (
-                        1./24*absq1q2q3_2/R_ap_6 - 1./9.*q1q2q3starsq/R_ap_4 +
-                        1./27*(q1q2q3starsq*q1q2q3starsq/(absq1q2q3_2*R_ap_2) + 2*q1q2q3starsq/(absq3s*R_ap_2)));
-                    T3_231 = measures * exp(-absq123s/(2*R_ap_2)) * (
-                        1./24*absq1q2q3_2/R_ap_6 - 1./9.*q2q3q1starsq/R_ap_4 +
-                        1./27*(q2q3q1starsq*q2q3q1starsq/(absq1q2q3_2*R_ap_2) + 2*q2q3q1starsq/(absq1s*R_ap_2)));
-                    T3_312 = measures * exp(-absq123s/(2*R_ap_2)) * (
-                        1./24*absq1q2q3_2/R_ap_6 - 1./9.*q3q1q2starsq/R_ap_4 +
-                        1./27*(q3q1q2starsq*q3q1q2starsq/(absq1q2q3_2*R_ap_2) + 2*q3q1q2starsq/(absq2s*R_ap_2)));
-                    for (int zcombi=0;zcombi<nzcombis; zcombi++){
-                        ind_gam = zcombi*gam_zshift+thetcombi*gam_thetshift+elphi;
-                        baseind_M3 = thisthread*map3_threadshift + zcombi*nmapradii + elR;
-                        M3correlators_buffer[baseind_M3+0*nzcombis*nmapradii] += T0*npcf[0*gam_compshift+ind_gam];
-                        M3correlators_buffer[baseind_M3+1*nzcombis*nmapradii] += T0*npcf[1*gam_compshift+ind_gam];
-                        M3correlators_buffer[baseind_M3+2*nzcombis*nmapradii] += T0*npcf[2*gam_compshift+ind_gam];
-                        M3correlators_buffer[baseind_M3+3*nzcombis*nmapradii] += T0*npcf[3*gam_compshift+ind_gam];
-                    }                    
+    for (int itheta1=0; itheta1<nbinstheta; itheta1++){
+        for (int itheta2=0; itheta2<nbinstheta; itheta2++){
+            int thetcombi = itheta1*nbinstheta+itheta2;
+            int thetcombi_t = itheta2*nbinstheta+itheta1;
+            for (int zcombi=0; zcombi<nzcombis; zcombi++){
+                int z1 = zcombi/(nbinsz23*nbinsz23);
+                int z2 = (zcombi-z1*nbinsz23*nbinsz23)/nbinsz23;
+                int z3 = zcombi%nbinsz23;
+                int zcombi_t = z1*nbinsz23*nbinsz23+z3*nbinsz23+z2;
+
+                // Edge-corrected divisor is a single mode (n=0), phi-independent.
+                double complex N0 = 0;
+                if (is_edge_corrected){
+                    int base_ind = store_full_range ? nmax : 0;
+                    N0 = modeweight[0]*N_n[base_ind*ups_nshift+zcombi*ups_zshift+thetcombi];
+                }
+
+                for (int elphi=0; elphi<nbinsphi; elphi++){
+                    int ind_gam = zcombi*gam_zshift+thetcombi*gam_thetshift+elphi;
+                    double complex norm_acc = 0;
+                    double complex npcf_acc[ncomp_cf];
+                    for (int elcf=0; elcf<ncomp_cf; elcf++){ npcf_acc[elcf] = 0; }
+                    
+                    // Multipoles only available for n>=0 
+                    if (!store_full_range){
+                        // Base case n=0.
+                        int ind0 = zcombi*ups_zshift+thetcombi;
+                        norm_acc += modeweight[0]*N_n[ind0];
+                        for (int elcf=0; elcf<ncomp_cf; elcf++){
+                            npcf_acc[elcf] += modeweight[0]*Upsilon_n[elcf*ups_compshift+ind0];
+                        }
+                        // Reconstruct n<0 via z2<->z3, theta transpose and conjmap.
+                        for (int nextn=1; nextn<=nmax; nextn++){
+                            int indp = nextn*ups_nshift+zcombi*ups_zshift+thetcombi;
+                            int indm = nextn*ups_nshift+zcombi_t*ups_zshift+thetcombi_t;
+                            double complex ep = expphis[(nmax+nextn)*nbinsphi+elphi];
+                            double complex em = expphis[(nmax-nextn)*nbinsphi+elphi];
+                            norm_acc += modeweight[nextn]*(N_n[indp]*ep+N_n[indm]*em);
+                            for (int elcf=0; elcf<ncomp_cf; elcf++){
+                                int elcf_conj = conjmap[elcf];
+                                npcf_acc[elcf] += modeweight[nextn]*(
+                                    Upsilon_n[elcf*ups_compshift+indp]*ep +
+                                    Upsilon_n[elcf_conj*ups_compshift+indm]*em);
+                            }
+                        }
+                    } 
+                    // Multipoles available for all n
+                    else {
+                        for (int n=0; n<nmodes; n++){
+                            int order = abs(n-nmax);
+                            int ind = n*ups_nshift+zcombi*ups_zshift+thetcombi;
+                            double complex e = expphis[n*nbinsphi+elphi];
+                            norm_acc += modeweight[order]*N_n[ind]*e;
+                            for (int elcf=0; elcf<ncomp_cf; elcf++){
+                                npcf_acc[elcf] += modeweight[order]*Upsilon_n[elcf*ups_compshift+ind]*e;
+                            }
+                        }
+                    }
+
+                    npcf_norm[ind_gam] = norm_acc;
+                    // Check whether bin is ~emtpy and, if not, divide by norm
+                    double complex divisor = is_edge_corrected ? N0 : norm_acc;
+                    double cmpval = floor_use_abs ? cabs(divisor) : creal(divisor);
+                    if (cmpval > floor_thr[zcombi]){
+                        for (int elcf=0; elcf<ncomp_cf; elcf++){
+                            npcf[elcf*gam_compshift+ind_gam] = npcf_acc[elcf]/cmpval;
+                        }
+                    } else {
+                        for (int elcf=0; elcf<ncomp_cf; elcf++){
+                            npcf[elcf*gam_compshift+ind_gam] = 0;
+                        }
+                    }
                 }
             }
         }
     }
-    free(thetas_center_buffer);
-    free(thetas_edges_buffer);
-    
-    // Accumulate M3 from buffer
-    for (int elthread=0;elthread<nthreads;elthread++){
-        for (int elc=0;elc<map3_threadshift;elc++){
-            M3correlators[elc] += M3correlators_buffer[elthread*map3_threadshift+elc];
+    free(expphis);
+}
+
+
+///////////////////////////////////////
+/// THIRD-ORDER APERTURE STATISTICS ///
+///////////////////////////////////////
+
+// For all 3pcf-to-aperture-statistics-conversions we parallelize over all
+// radial bin combis for the 3pcf and then order the remaining loops as 
+// phi --> apradii_combis --> zcombi. With this we can perform the heavy step
+// i.e. the filter allocation before to the innermost loop.
+
+// Filter functions F_mu that convert between 3pcf and Map3 (single scale)
+static inline void map3_filter_singleR_ggg(double y1, double y2, double dy1, double dy2,
+    double phi, double dphi, double R_ap,
+    double complex *T0, double complex *T3_123, double complex *T3_231, double complex *T3_312){
+
+    double cphi = cos(phi);
+    double c2phi = cos(2*phi);
+    double sphi = sin(phi);
+    double complex ephi = cexp(I*phi);
+    double complex ephic = conj(ephi);
+    double complex e2phi = ephi*ephi;
+    double complex e2phic = conj(e2phi);
+
+    double R2 = R_ap*R_ap;
+    double y1_2 = y1*y1, y2_2 = y2*y2;
+    double y1_4 = y1_2*y1_2, y2_4 = y2_2*y2_2;
+    double y13y2 = y1_2*y1*y2, y12y22 = y1_2*y2_2, y1y23 = y1*y2*y2_2;
+
+    double absq1s = 1./9.*(4*y1_2 - 4*y1*y2*cphi + y2_2);
+    double absq2s = 1./9.*(y1_2 - 4*y1*y2*cphi + 4*y2_2);
+    double absq3s = 1./9.*(y1_2 + 2*y1*y2*cphi + y2_2);
+    double absq123s = 2./3.*(y1_2+y2_2-y1*y2*cphi);
+    double absq1q2q3_2 = absq1s*absq2s*absq3s;
+    double measures = y1*dy1/R2 * y2*dy2/R2 * dphi/(2.*M_PI);
+    double expfac = exp(-absq123s/(2.*R2));
+
+    double nextT0 = absq1q2q3_2/(R2*R2*R2) * expfac;
+    *T0 = 1./24. * measures * nextT0;
+
+    double complex tmp1 = y1_4+y2_4+y1_2*y2_2*(2*c2phi-5.);
+    double complex tmp2 = (y1_2+y2_2)*cphi + 9.*I*(y1_2-y2_2)*sphi;
+    double complex q1q2q3starsq = -1./81.*(2*tmp1 - y1*y2*tmp2);
+    double complex nextT3_123 = expfac * (1./24.*absq1q2q3_2/(R2*R2*R2) - 1./9.*q1q2q3starsq/(R2*R2) +
+        1./27.*(q1q2q3starsq*q1q2q3starsq/(absq1q2q3_2*R2) + 2.*q1q2q3starsq/(absq3s*R2)));
+
+    double complex inner231 = -4*y1_4 + 2*y2_4 + y13y2*8*cphi + y12y22*(8*e2phi-4-e2phic) + y1y23*(ephic-8*ephi);
+    double complex q2q3q1starsq = -1./81.*inner231;
+    double complex nextT3_231 = expfac * (1./24.*absq1q2q3_2/(R2*R2*R2) - 1./9.*q2q3q1starsq/(R2*R2) +
+        1./27.*(q2q3q1starsq*q2q3q1starsq/(absq1q2q3_2*R2) + 2.*q2q3q1starsq/(absq1s*R2)));
+
+    double complex inner312 = 2*y1_4 - 4*y2_4 - y13y2*(8*ephic-ephi) - y12y22*(4+e2phi-8*e2phic) + 8*y1y23*cphi;
+    double complex q3q1q2starsq = -1./81.*inner312;
+    double complex nextT3_312 = expfac * (1./24.*absq1q2q3_2/(R2*R2*R2) - 1./9.*q3q1q2starsq/(R2*R2) +
+        1./27.*(q3q1q2starsq*q3q1q2starsq/(absq1q2q3_2*R2) + 2.*q3q1q2starsq/(absq2s*R2)));
+
+    *T3_123 = measures * nextT3_123;
+    *T3_231 = measures * nextT3_231;
+    *T3_312 = measures * nextT3_312;
+}
+
+// Filter functions F_mu that convert between 3pcf and Map3 (multi scale)
+static inline void map3_filter_multiR_ggg(double y1, double y2, double dy1, double dy2,
+    double phi, double dphi, double R1, double R2, double R3,
+    double complex *T0, double complex *T3_123, double complex *T3_231, double complex *T3_312){
+
+    double cphi = cos(phi);
+    double c2phi = cos(2*phi);
+    double sphi = sin(phi);
+    double complex ephi = cexp(I*phi);
+    double complex ephic = conj(ephi);
+    double complex e2phi = ephi*ephi;
+    double complex e2phic = conj(e2phi);
+
+    double R1_2=R1*R1, R2_2=R2*R2, R3_2=R3*R3;
+    double Theta2 = sqrt((R1_2*R2_2+R1_2*R3_2+R2_2*R3_2)/3.);
+    double S = R1_2*R2_2*R3_2/(Theta2*Theta2*Theta2);
+
+    double y1_2=y1*y1, y2_2=y2*y2;
+    double y1_4=y1_2*y1_2, y2_4=y2_2*y2_2;
+    double y13y2=y1_2*y1*y2, y12y22=y1_2*y2_2, y1y23=y1*y2*y2_2;
+
+    double absq1s = 1./9.*(4*y1_2-4*y1*y2*cphi+y2_2);
+    double absq2s = 1./9.*(y1_2-4*y1*y2*cphi+4*y2_2);
+    double absq3s = 1./9.*(y1_2+2*y1*y2*cphi+y2_2);
+    double absq1q2q3_2 = absq1s*absq2s*absq3s;
+
+    double Z = ((-R1_2+2*R2_2+2*R3_2)*absq1s + (2*R1_2-R2_2+2*R3_2)*absq2s +
+                (2*R1_2+2*R2_2-R3_2)*absq3s)/(6.*Theta2*Theta2);
+    double complex frac231c = 1./3.*y2*(2*y1*ephi-y2)/absq1s;
+    double complex frac312c = 1./3.*y1*(y1-2*y2*ephic)/absq2s;
+    double complex frac123c = 1./3.*(y2_2-y1_2+2.*I*y1*y2*sphi)/absq3s;
+    double complex f1 = (R2_2+R3_2)/(2.*Theta2) + frac231c*(R2_2-R3_2)/(6.*Theta2);
+    double complex f2 = (R1_2+R3_2)/(2.*Theta2) + frac312c*(R3_2-R1_2)/(6.*Theta2);
+    double complex f3 = (R1_2+R2_2)/(2.*Theta2) + frac123c*(R1_2-R2_2)/(6.*Theta2);
+    double complex f1c = conj(f1), f2c = conj(f2), f3c = conj(f3);
+    double complex g1c = conj(R2_2*R3_2/(Theta2*Theta2) + R1_2*(R3_2-R2_2)/(3.*Theta2*Theta2)*frac231c);
+    double complex g2c = conj(R3_2*R1_2/(Theta2*Theta2) + R2_2*(R1_2-R3_2)/(3.*Theta2*Theta2)*frac312c);
+    double complex g3c = conj(R1_2*R2_2/(Theta2*Theta2) + R3_2*(R2_2-R1_2)/(3.*Theta2*Theta2)*frac123c);
+    double measures = y1*dy1/Theta2 * y2*dy2/Theta2 * dphi/(2.*M_PI);
+    double complex expfac = cexp(-Z);
+
+    double complex nextT0 = absq1q2q3_2/(Theta2*Theta2*Theta2) * f1c*f1c*f2c*f2c*f3c*f3c * expfac;
+    *T0 = S/24. * measures * nextT0;
+
+    double complex tmp1 = y1_4+y2_4+y1_2*y2_2*(2*c2phi-5.);
+    double complex tmp2 = (y1_2+y2_2)*cphi + 9.*I*(y1_2-y2_2)*sphi;
+    double complex q1q2q3starsq = -1./81.*(2*tmp1 - y1*y2*tmp2);
+    double complex nextT3_123 = expfac * (1./24.*absq1q2q3_2/(Theta2*Theta2*Theta2) * f1c*f1c*f2c*f2c*f3*f3 -
+        1./9.*q1q2q3starsq/(Theta2*Theta2) * f1c*f2c*f3*g3c +
+        1./27.*(q1q2q3starsq*q1q2q3starsq/(absq1q2q3_2*Theta2) * g3c*g3c +
+                2.*R1_2*R2_2/(Theta2*Theta2) * q1q2q3starsq/(absq3s*Theta2) * f1c*f2c));
+
+    double complex inner231 = -4*y1_4+2*y2_4+y13y2*8*cphi+y12y22*(8*e2phi-4-e2phic)+y1y23*(ephic-8*ephi);
+    double complex q2q3q1starsq = -1./81.*inner231;
+    double complex nextT3_231 = expfac * (1./24.*absq1q2q3_2/(Theta2*Theta2*Theta2) * f2c*f2c*f3c*f3c*f1*f1 -
+        1./9.*q2q3q1starsq/(Theta2*Theta2) * f2c*f3c*f1*g1c +
+        1./27.*(q2q3q1starsq*q2q3q1starsq/(absq1q2q3_2*Theta2) * g1c*g1c +
+                2.*R2_2*R3_2/(Theta2*Theta2) * q2q3q1starsq/(absq1s*Theta2) * f2c*f3c));
+
+    double complex inner312 = 2*y1_4-4*y2_4-y13y2*(8*ephic-ephi)-y12y22*(4+e2phi-8*e2phic)+8*y1y23*cphi;
+    double complex q3q1q2starsq = -1./81.*inner312;
+    double complex nextT3_312 = expfac * (1./24.*absq1q2q3_2/(Theta2*Theta2*Theta2) * f3c*f3c*f1c*f1c*f2*f2 -
+        1./9.*q3q1q2starsq/(Theta2*Theta2) * f3c*f1c*f2*g2c +
+        1./27.*(q3q1q2starsq*q3q1q2starsq/(absq1q2q3_2*Theta2) * g2c*g2c +
+                2.*R3_2*R1_2/(Theta2*Theta2) * q3q1q2starsq/(absq2s*Theta2) * f3c*f1c));
+
+    *T3_123 = S * measures * nextT3_123;
+    *T3_231 = S * measures * nextT3_231;
+    *T3_312 = S * measures * nextT3_312;
+}
+
+// Convert GGG to Map3
+void threepcf2M3correlators_ggg(double complex *npcf,
+                                double *theta_edges, double *theta_centers, int nbinstheta,
+                                double *phi_centers, int nbinsphi, int nzcombis,
+                                double *radii1, double *radii2, double *radii3, int nrcombis,
+                                int do_multiscale, int nthreads,
+                                double complex *M3correlators){
+
+    // If radial bins empty set them to arithmetic mean
+    double *centers = malloc(nbinstheta*sizeof(double));
+    int haszero = 0;
+    for (int i=0; i<nbinstheta; i++){ centers[i] = theta_centers[i]; if (centers[i]==0.){ haszero = 1; } }
+    if (haszero){
+        double ratiosum = 0.; int nratio = 0;
+        for (int i=0; i<nbinstheta; i++){
+            if (centers[i]!=0.){ ratiosum += centers[i]/theta_edges[i]; nratio++; }
         }
-    } 
-    free(M3correlators_buffer);
+        double avratio = nratio>0 ? ratiosum/nratio : 0.;
+        for (int i=0; i<nbinstheta; i++){
+            if (centers[i]==0.){ centers[i] = avratio*theta_edges[i]; }
+        }
+    }
+
+    int nthetcombis = nbinstheta*nbinstheta;
+    int gam_thetshift = nbinsphi;
+    int gam_zshift = nthetcombis*gam_thetshift;
+    int gam_compshift = nzcombis*gam_zshift;
+    int buf_compshift = nzcombis*nrcombis;
+    int buf_threadshift = 4*buf_compshift;
+    double complex *buf = calloc((size_t)nthreads*buf_threadshift, sizeof(double complex));
+    double dphi = phi_centers[1]-phi_centers[0];
+
+    #pragma omp parallel for num_threads(nthreads)
+    for (int thetcombi=0; thetcombi<nthetcombis; thetcombi++){
+        int thisthread = omp_get_thread_num();
+        int itheta1 = thetcombi/nbinstheta;
+        int itheta2 = thetcombi%nbinstheta;
+        double y1 = centers[itheta1];
+        double dy1 = theta_edges[itheta1+1]-theta_edges[itheta1];
+        double y2 = centers[itheta2];
+        double dy2 = theta_edges[itheta2+1]-theta_edges[itheta2];
+        for (int elphi=0; elphi<nbinsphi; elphi++){
+            double phi = phi_centers[elphi];
+            for (int elr=0; elr<nrcombis; elr++){
+                double complex T0, T3_123, T3_231, T3_312;
+                if (!do_multiscale){
+                    map3_filter_singleR_ggg(y1, y2, dy1, dy2, phi, dphi, radii1[elr], &T0, &T3_123, &T3_231, &T3_312);
+                } else {
+                    map3_filter_multiR_ggg(y1, y2, dy1, dy2, phi, dphi, radii1[elr], radii2[elr], radii3[elr],
+                                           &T0, &T3_123, &T3_231, &T3_312);
+                }
+                for (int zcombi=0; zcombi<nzcombis; zcombi++){
+                    int ind_npcf = zcombi*gam_zshift+thetcombi*gam_thetshift+elphi;
+                    int ind_buf = thisthread*buf_threadshift+zcombi*nrcombis+elr;
+                    double complex term0 = T0*npcf[0*gam_compshift+ind_npcf];
+                    double complex term1 = T3_123*npcf[1*gam_compshift+ind_npcf];
+                    double complex term2 = T3_231*npcf[2*gam_compshift+ind_npcf];
+                    double complex term3 = T3_312*npcf[3*gam_compshift+ind_npcf];
+                    if (!isnan(cabs(term0))){ buf[0*buf_compshift+ind_buf] += term0; }
+                    if (!isnan(cabs(term1))){ buf[1*buf_compshift+ind_buf] += term1; }
+                    if (!isnan(cabs(term2))){ buf[2*buf_compshift+ind_buf] += term2; }
+                    if (!isnan(cabs(term3))){ buf[3*buf_compshift+ind_buf] += term3; }
+                }
+            }
+        }
+    }
+    free(centers);
+
+    for (int elthread=0; elthread<nthreads; elthread++){
+        for (int elc=0; elc<buf_threadshift; elc++){
+            M3correlators[elc] += buf[elthread*buf_threadshift+elc];
+        }
+    }
+    free(buf);
+}
+
+// Filter functions F_mu that convert between GNN 3pcf and MapNap2 (multi scale)
+static inline double complex nnm_filter_gnn(double y1, double y2, double dy1, double dy2,
+    double phi, double dphi, double R1, double R2, double R3){
+
+    double cphi = cos(phi);
+    double complex ephi = cexp(I*phi);
+    double complex ephic = conj(ephi);
+
+    double R1_2=R1*R1, R2_2=R2*R2, R3_2=R3*R3;
+    double Theta4 = 1./3.*(R1_2*R2_2 + R1_2*R3_2 + R2_2*R3_2);
+    double a2 = 2./3.*R1_2*R2_2*R3_2/Theta4;
+
+    double b0 = y1*y1/(2*R1_2)+y2*y2/(2*R2_2) - a2/4.*(
+        y1*y1/(R1_2*R1_2) + 2*y1*y2*cphi/(R1_2*R2_2) + y2*y2/(R2_2*R2_2));
+    double complex g1 = y1 - a2/2.*(y1/R1_2 + y2*ephic/R2_2);
+    double complex g2 = y2 - a2/2.*(y2/R2_2 + y1*ephi/R1_2);
+    double complex g1c = conj(g1);
+    double complex g2c = conj(g2);
+    double complex F1 = 2*R1_2 - g1*g1c;
+    double complex F2 = 2*R2_2 - g2*g2c;
+    double pref = exp(-b0)/(72.*M_PI*Theta4*Theta4);
+    double complex sum1 = (g1-y1)*(g2-y2) * (1./a2*F1*F2 - (F1+F2) + 2*a2 + g1c*g2*ephic + g1*g2c*ephi);
+    double complex sum2 = ((g2-y2) + (g1-y1)*ephi) * (g1*(F2-2*a2) + g2*(F1-2*a2)*ephic);
+    double complex sum3 = 2*g1*g2*a2;
+    double measures = y1*dy1 * y2*dy2 * dphi;
+    return measures * pref * (sum1-sum2+sum3);
+}
+
+// Convert GNN to MapNap2
+void threepcf2NNMcorrelators_gnn(double complex *npcf,
+                                 double *theta_edges, double *theta_centers, int nbinstheta,
+                                 double *phi_centers, int nbinsphi, int nzcombis,
+                                 double *radii1, double *radii2, double *radii3, int nrcombis,
+                                 int nthreads,
+                                 double complex *NNMcorrelators){
+
+    int nthetcombis = nbinstheta*nbinstheta;
+    int gam_thetshift = nbinsphi;
+    int gam_zshift = nthetcombis*gam_thetshift;
+    int buf_compshift = nzcombis*nrcombis;
+    double complex *buf = calloc((size_t)nthreads*buf_compshift, sizeof(double complex));
+    double dphi = phi_centers[1]-phi_centers[0];
+
+    #pragma omp parallel for num_threads(nthreads)
+    for (int thetcombi=0; thetcombi<nthetcombis; thetcombi++){
+        int thisthread = omp_get_thread_num();
+        int itheta1 = thetcombi/nbinstheta;
+        int itheta2 = thetcombi%nbinstheta;
+        double y1 = theta_centers[itheta1];
+        double dy1 = theta_edges[itheta1+1]-theta_edges[itheta1];
+        double y2 = theta_centers[itheta2];
+        double dy2 = theta_edges[itheta2+1]-theta_edges[itheta2];
+        for (int elphi=0; elphi<nbinsphi; elphi++){
+            double phi = phi_centers[elphi];
+            for (int elr=0; elr<nrcombis; elr++){
+                double complex A = nnm_filter_gnn(y1, y2, dy1, dy2, phi, dphi, radii1[elr], radii2[elr], radii3[elr]);
+                for (int zcombi=0; zcombi<nzcombis; zcombi++){
+                    int ind_npcf = zcombi*gam_zshift+thetcombi*gam_thetshift+elphi;
+                    double complex term = A*npcf[ind_npcf];
+                    if (!isnan(cabs(term))){
+                        buf[thisthread*buf_compshift+zcombi*nrcombis+elr] += term;
+                    }
+                }
+            }
+        }
+    }
+
+    for (int elthread=0; elthread<nthreads; elthread++){
+        for (int elc=0; elc<buf_compshift; elc++){
+            NNMcorrelators[elc] += buf[elthread*buf_compshift+elc];
+        }
+    }
+    free(buf);
+}
+
+// Filter functions F_mu that convert between NGG 3pcf and Map2Nap (multi scale)
+static inline void nmm_filter_ngg(double y1, double y2, double dy1, double dy2,
+    double phi, double dphi, double R1, double R2, double R3,
+    double complex *A_MMN, double complex *A_MMstarN){
+
+    double cphi = cos(phi);
+    double complex ephi = cexp(I*phi);
+    double complex ephic = conj(ephi);
+
+    double R1_2=R1*R1, R2_2=R2*R2, R3_2=R3*R3;
+    double Theta4 = 1./3.*(R1_2*R2_2 + R1_2*R3_2 + R2_2*R3_2);
+    double a2 = 2./3.*R1_2*R2_2*R3_2/Theta4;
+
+    double csq = a2*a2/4.*(y1*y1/(R1_2*R1_2) + y2*y2/(R2_2*R2_2) + 2*y1*y2*cphi/(R1_2*R2_2));
+    double b0 = y1*y1/(2*R1_2)+y2*y2/(2*R2_2) - csq/a2;
+
+    double complex g1 = y1 - a2/2.*(y1/R1_2 + y2*ephic/R2_2);
+    double complex g2 = y2 - a2/2.*(y2/R2_2 + y1*ephi/R1_2);
+    double complex g2c = conj(g2);
+    double pref = exp(-b0)/(72.*M_PI*Theta4*Theta4);
+    double complex h1 = 2.*(g2c*y1+g1*y2-2.*g1*g2c)*(g1*g2c+2.*a2*ephic);
+    double complex h2 = 2.*a2*(2.*R3_2-csq-3.*a2)*ephic*ephic;
+    double complex h3 = 4.*g1*g2c*(2.*R3_2-csq-2.*a2)*ephic;
+    double complex h4 = (g1*g2c)*(g1*g2c)/a2 * (2.*R3_2-csq-a2);
+    double complex sum_MMN = pref*g1*g2 * ((R3_2/R1_2+R3_2/R2_2-csq/a2)*g1*g2 + 2.*(g2*y1+g1*y2-2.*g1*g2));
+    double complex sum_MMstarN = pref * (h1 + h2 + h3 + h4);
+    double measures = y1*dy1 * y2*dy2 * dphi;
+
+    *A_MMN = measures * sum_MMN;
+    *A_MMstarN = measures * sum_MMstarN;
+}
+
+// Convert NGG to Map2Nap
+void threepcf2NMMcorrelators_ngg(double complex *npcf,
+                                 double *theta_edges, double *theta_centers, int nbinstheta,
+                                 double *phi_centers, int nbinsphi, int nzcombis,
+                                 double *radii1, double *radii2, double *radii3, int nrcombis,
+                                 int nthreads,
+                                 double complex *NMMcorrelators){
+
+    int nthetcombis = nbinstheta*nbinstheta;
+    int gam_thetshift = nbinsphi;
+    int gam_zshift = nthetcombis*gam_thetshift;
+    int gam_compshift = nzcombis*gam_zshift;
+    int buf_compshift = nzcombis*nrcombis;
+    int buf_threadshift = 2*buf_compshift;
+    double complex *buf = calloc((size_t)nthreads*buf_threadshift, sizeof(double complex));
+    double dphi = phi_centers[1]-phi_centers[0];
+
+    #pragma omp parallel for num_threads(nthreads)
+    for (int thetcombi=0; thetcombi<nthetcombis; thetcombi++){
+        int thisthread = omp_get_thread_num();
+        int itheta1 = thetcombi/nbinstheta;
+        int itheta2 = thetcombi%nbinstheta;
+        double y1 = theta_centers[itheta1];
+        double dy1 = theta_edges[itheta1+1]-theta_edges[itheta1];
+        double y2 = theta_centers[itheta2];
+        double dy2 = theta_edges[itheta2+1]-theta_edges[itheta2];
+        for (int elphi=0; elphi<nbinsphi; elphi++){
+            double phi = phi_centers[elphi];
+            for (int elr=0; elr<nrcombis; elr++){
+                double complex A_MMN, A_MMstarN;
+                nmm_filter_ngg(y1, y2, dy1, dy2, phi, dphi, radii1[elr], radii2[elr], radii3[elr], &A_MMN, &A_MMstarN);
+                for (int zcombi=0; zcombi<nzcombis; zcombi++){
+                    int ind_npcf = zcombi*gam_zshift+thetcombi*gam_thetshift+elphi;
+                    int ind_buf = thisthread*buf_threadshift+zcombi*nrcombis+elr;
+                    double complex term0 = A_MMN*npcf[0*gam_compshift+ind_npcf];
+                    double complex term1 = A_MMstarN*npcf[1*gam_compshift+ind_npcf];
+                    if (!isnan(cabs(term0))){ buf[0*buf_compshift+ind_buf] += term0; }
+                    if (!isnan(cabs(term1))){ buf[1*buf_compshift+ind_buf] += term1; }
+                }
+            }
+        }
+    }
+
+    for (int elthread=0; elthread<nthreads; elthread++){
+        for (int elc=0; elc<buf_threadshift; elc++){
+            NMMcorrelators[elc] += buf[elthread*buf_threadshift+elc];
+        }
+    }
+    free(buf);
 }

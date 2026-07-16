@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <complex.h>
 #include <math.h>
 
 int binary_search(double *array, int len_arr, double target){
@@ -143,14 +144,6 @@ void print_progress(int nregionsdone, int nfilledregions, int verbose) {
     }
 }
 
-//////////////////////
-// Curved-sky kernels //
-//////////////////////
-// Geodesic primitives for full-sky NPCF estimation. See
-// Tutorials_private/fullsky_covariance_notes.md (sections 1.1-1.2). These are the
-// curved-sky replacements for the flat-sky `dist=sqrt(rel1^2+rel2^2)` and
-// `dphi=atan2(rel2,rel1)` kernels; the structure of the estimators is unchanged.
-
 // Geodesic angular separation (radians) between two unit position vectors.
 // Robust atan2(|n1 x n2|, n1.n2) form: accurate at small separations (where the
 // dot product alone loses precision), which is exactly the small-radial-bin regime.
@@ -163,11 +156,9 @@ double sphere_dist(double x1, double y1, double z1, double x2, double y2, double
     return atan2(cross, dot);
 }
 
-// Apex azimuth (initial geodesic bearing) at point a=(ra_a,dec_a) toward
-// b=(ra_b,dec_b), expressed in a's east-north tangent frame so that it reduces to
-// the flat-sky atan2(d_north, d_east) in the small-angle limit. Inputs are the RA
-// (radians) and the precomputed sin/cos of the declinations. 2pi-periodic, so
-// e^{i n phi} remains a complete multipole basis in T_a.
+// Bearing at point a=(ra_a,dec_a) toward b=(ra_b,dec_b), expressed in as 
+// east-north tangent frame so -->  that it reduces to the flat-sky 
+// atan2(d_north, d_east) in the small-angle limit.
 double sphere_bearing(double ra_a, double sindec_a, double cosdec_a,
                       double ra_b, double sindec_b, double cosdec_b){
     double dlam = ra_b - ra_a;

@@ -84,7 +84,7 @@ def frompatchindices_preparerot(index, patchindices, ra, dec, rotsignflip):
     return inds_extpatch, patch_isinner, rotangle, ra_rot, dec_rot, rotangle_polars
     
 def gen_cat_patchindices(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_hash=128, verbose=False, method='kmeans_healpix',
-                        kmeanshp_maxiter=1000, kmeanshp_tol=1e-10, kmeanshp_randomstate=42, healpix_nside=8, n_workers=16,):
+                        kmeanshp_maxiter=1000, kmeanshp_tol=1e-10, kmeanshp_randomstate=42, healpix_nside=8, n_workers=16):
     """
     Decomposes a spherical catalog in ~equal-area patches with a buffer region.
 

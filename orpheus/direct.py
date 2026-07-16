@@ -13,8 +13,7 @@ from .catalog import Catalog, ScalarTracerCatalog, SpinTracerCatalog
 __all__ = ["DirectEstimator", "Direct_MapnEqual", "Direct_NapnEqual", "MapCombinatorics", "Direct_Map3Unequal"]
 
 class DirectEstimator:
-    r"""
-    Class of aperture statistics up to nth order for various arbitrary tracer catalogs. 
+    r"""Class of aperture statistics up to nth order for various arbitrary tracer catalogs.
     This class contains attributes and methods that can be used across any of its children.
     
     Attributes
@@ -407,8 +406,7 @@ class Direct_Map3Unequal(DirectEstimator):
         
                 
 class Direct_MapnEqual(DirectEstimator):
-    r"""
-    Compute direct estimator for equal-scale aperture mass statistics.
+    r"""Compute direct estimator for equal-scale aperture mass statistics.
 
     Attributes
     ----------
@@ -500,8 +498,7 @@ class Direct_MapnEqual(DirectEstimator):
                
                        
     def process(self, cat, dotomo=True, Emodeonly=True, connected=True, dpix_innergrid=2.):
-        r"""
-        Computes aperture statistics on a catalog.
+        r"""Computes aperture statistics on a catalog.
 
         Parameters
         ----------
@@ -524,8 +521,10 @@ class Direct_MapnEqual(DirectEstimator):
 
         Returns
         -------
-        None
-            Currently does not return any value.
+        result_Mapn : numpy.ndarray
+            Equal-scale aperture-mass statistics, of shape ``(nbinsr, nfrac_covs, nzcombis)``.
+        result_wMapn : numpy.ndarray
+            The corresponding weighted statistics, of the same shape.
         """
         
         nbinsz = cat.nbinsz
@@ -766,8 +765,7 @@ class Direct_MapnEqual(DirectEstimator):
     
     
 class Direct_NapnEqual(DirectEstimator):
-    r"""
-    Compute direct estimator for equal-scale aperture counts statistics.
+    r"""Compute direct estimator for equal-scale aperture counts statistics.
 
     Attributes
     ----------
@@ -860,8 +858,7 @@ class Direct_NapnEqual(DirectEstimator):
             p_f64, p_f64, p_f64, p_f64]
                
     def process(self, cat, dotomo=True, Nbar_policy=1, connected=True, dpix_innergrid=2.):
-        r"""
-        Computes aperture statistics on a catalog.
+        r"""Computes aperture statistics on a catalog.
 
         Parameters
         ----------
@@ -888,8 +885,10 @@ class Direct_NapnEqual(DirectEstimator):
 
         Returns
         -------
-        None
-            Currently does not return any value.
+        result_Napn : numpy.ndarray
+            Equal-scale aperture-count statistics, of shape ``(nbinsr, nfrac_covs, nzcombis)``.
+        result_wNapn : numpy.ndarray
+            The corresponding weighted statistics, of the same shape.
         """
         
         assert(isinstance(cat, ScalarTracerCatalog))
@@ -1044,6 +1043,21 @@ class Direct_NapnEqual(DirectEstimator):
         return res
         
     def genzcombi(self, zs, nbinsz=None):
+        """ Returns index of tomographic bin combination of Nap^n output.
+
+        Parameters
+        ----------
+        zs : list of integers
+            Target combination of tomographic redshifts ([z1, ..., zk]).
+        nbinsz : int, optional
+            The number of tomographic bins in the computation of Nap^n. If not set,
+            reverts to corresponding class attribute.
+
+        Returns
+        -------
+        zind_flat: int
+            Index of flattened Nap^k(z1,...,zk) datavector in global output.
+        """
         if nbinsz is None:
             nbinsz = self.nbinsz
         if nbinsz is None:

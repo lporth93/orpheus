@@ -47,7 +47,12 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
         # flat-sky path byte-identical. See alloc_nnnn_tree_spherical /
         # Catalog.multihash_spherical and Tutorials_private/fullsky_covariance_notes.md.
         self.process_spherical = bool(process_spherical)
-        
+
+    def saveinst(self, path_save, fname, extr_pars=None):
+        extras = dict(nbinsz=self.nbinsz, nzcombis=self.nzcombis)
+        if extr_pars: extras.update(extr_pars)
+        super().saveinst(path_save, fname, extr_pars=extras)
+
     def process(self, cat, statistics="all", tofile=False, apply_edge_correction=False,
                 lowmem=True, mapradii=None, batchsize=None, custom_thetacombis=None, cutlen=2**31-1,
                 memory_bound=512.):
@@ -245,7 +250,7 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
             # Geometry-aware dispatch: cat.geometry=='spherical' routes to the
             # nested-HEALPix bundle (identical payload to multihash_spherical).
             sph = cat.multihash_bundle(reso_redges=self.tree_redges, nsides=nsides,
-                                       nside_hash=nside_hash, legacy_navcsr=True,
+                                       nside_hash=nside_hash,
                                        verbose=self._verbose_python)
             assert sph['geometry'] == 'spherical'
             args_thetas = (thetacombis_batches, nthetacombis_batches, cumnthetacombis_batches, nbatches, )
@@ -256,9 +261,10 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
                     np.int32(self.nbinsr), np.int32(self.multicountcorr),
                     _inds, np.int32(len(_inds)),
                     np.int32(self.tree_nresos), sph['reso_redges'], sph['ngal_resos'], sph['ncells_resos'],
-                    sph['leg_w'], sph['leg_vx'], sph['leg_vy'], sph['leg_vz'],
-                    sph['leg_ra'], sph['leg_sindec'], sph['leg_cosdec'], sph['rshift_leg'],
-                    sph['cen_cell'], sph['nav_off'], sph['rshift_cell'], sph['nav_legidx'], sph['rshift_nav'],
+                    sph['nside_nav'],
+                    sph['red_w'], sph['red_vx'], sph['red_vy'], sph['red_vz'],
+                    sph['red_ra'], sph['red_sindec'], sph['red_cosdec'], sph['rshift_red'],
+                    sph['cell_pix'], sph['cell_redbounds'], sph['rshift_cellpix'], sph['rshift_cellbounds'],
                     *args_thetas,
                     np.int32(self.nthreads), np.float64(memory_bound),
                     bin_centers, N_n)
@@ -499,7 +505,12 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
         # (Add here any newly implemented projections)
         self._initprojections(self)
         self.project["X"]["Centroid"] = self._x2centroid
-        
+
+    def saveinst(self, path_save, fname, extr_pars=None):
+        extras = dict(nbinsz=self.nbinsz, nzcombis=self.nzcombis)
+        if extr_pars: extras.update(extr_pars)
+        super().saveinst(path_save, fname, extr_pars=extras)
+
     def process(self, cat, statistics="all", tofile=False, apply_edge_correction=False, projection="X",
                 lowmem=None, mapradii=None, batchsize=None, custom_thetacombis=None, cutlen=2**31-1):
         r"""
@@ -1323,12 +1334,18 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
         self.nbinsz_lens = 1 # This class does not handle any tomography at the moment, so I fix it here
         self.nzcombis = 1
         self.thetabatchsize_max = thetabatchsize_max
-        
+
         # (Add here any newly implemented projections)
         self._initprojections(self)
-    
-    def process(self, cat_source, cat_lens, statistics="all", tofile=False, apply_edge_correction=False, 
-                dotomo_source=True, dotomo_lens=True, 
+
+    def saveinst(self, path_save, fname, extr_pars=None):
+        extras = dict(nbinsz_source=self.nbinsz_source, nbinsz_lens=self.nbinsz_lens,
+                      nzcombis=self.nzcombis)
+        if extr_pars: extras.update(extr_pars)
+        super().saveinst(path_save, fname, extr_pars=extras)
+
+    def process(self, cat_source, cat_lens, statistics="all", tofile=False, apply_edge_correction=False,
+                dotomo_source=True, dotomo_lens=True,
                 lowmem=None, apradii=None, batchsize=None, custom_thetacombis=None, cutlen=2**31-1):
         self._checkcats([cat_source, cat_lens, cat_lens, cat_lens], [2, 0, 0, 0])
         

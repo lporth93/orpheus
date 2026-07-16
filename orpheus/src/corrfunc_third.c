@@ -2392,7 +2392,7 @@ static void alloc_ggg_doubletree_spherical(const MultiresoCatalog *cat, const Na
                                     double dist = sphere_dist(cx, cy, cz, vx[g2], vy[g2], vz[g2]);
                                     if (dist < rmin_reso || dist >= rmax_reso){ continue; }
                                     int rbin = (int) floor((log(dist)-logrmin)/drbin) - rbinmin;
-                                    double vx2 = vx[g2], vy2 = vy[g2];
+                                    double vx2 = vx[g2], vy2 = vy[g2], vz2 = vz[g2];
                                     double sd2 = sindec[g2], cd2 = cosdec[g2];
                                     double w_gal2 = weight[g2];
                                     int z_gal2 = zbin[g2];
@@ -2412,16 +2412,29 @@ static void alloc_ggg_doubletree_spherical(const MultiresoCatalog *cat, const Na
                                     //   such that  e^{-2i*phi} = ((E12 + i N12)/sqrt(E12² + N12²) )^2 = (E12*E12 - N21*N21 + 2.*I*E12*N21)/(E12*E12 + N21*N21);
                                     //
                                     // Side note: This should be equivalent to what treecorr is doing, but here we explicitly normalise and choose bearing at g2 instead of c
-                                    double P = cx*vx2 + cy*vy2;
-                                    double E12 = cx*vy2 - cy*vx2;
-                                    double N12 = cd1*cd1*sd2 - sd1*P;
-                                    double N21 = cd2*cd2*sd1 - sd2*P;
-                                    double hyp12 = sqrt(E12*E12 + N12*N12);
-                                    double complex phirot = (E12 + I*N12)/hyp12;
-                                    double complex rc2 = (E12*E12 - N21*N21 + 2.*I*E12*N21)/(E12*E12 + N21*N21);
-                                    double complex wshape_gal2 = ((double complex) w_gal2 * (e1[g2]+I*e2[g2])) * rc2;
+                                    //double P = cx*vx2 + cy*vy2;
+                                    //double E12 = cx*vy2 - cy*vx2;
+                                    //double N12 = cd1*cd1*sd2 - sd1*P;
+                                    //double N21 = cd2*cd2*sd1 - sd2*P;
+                                    //double hyp12 = sqrt(E12*E12 + N12*N12);
+                                    //double complex phirot = (E12 + I*N12)/hyp12;
+                                    //double complex rc2 = (E12*E12 - N21*N21 + 2.*I*E12*N21)/(E12*E12 + N21*N21);
+                                    //double complex phirotc = conj(phirot);
+                                    //double complex twophirotc = phirotc*phirotc;
+                                    double complex wshape_gal2 = ((double complex) w_gal2 * (e1[g2]+I*e2[g2]));
+                                    // Spin-2 geodesic projection, consistent with GG and the flat kernel:
+                                    // phirot = e^{i*bearing(center->g2)} is g2's polar angle around the center
+                                    // (matches the flat kernel's phi = angle of (g2-center)); the g2 shear is
+                                    // projected in its OWN tangent frame by e^{-2i*bearing(g2->center)} (which
+                                    // reduces to the flat e^{-2i*phi}). bearing_AB_cart(a,b) returns the apex-a
+                                    // (a->b) bearing; both bearings are the exact-geodesic values validated by GG.
+                                    BearingAB g12 = bearing_AB_cart(cx,cy,cz, vx2,vy2,vz2);
+                                    BearingAB g21 = bearing_AB_cart(vx2,vy2,vz2, cx,cy,cz);
+                                    double complex phirot = bearing_phirot(g12);
                                     double complex phirotc = conj(phirot);
                                     double complex twophirotc = phirotc*phirotc;
+                                    wshape_gal2 *= bearing_rc(g21);
+
                                     int zrshift = z_gal2*nbinsr_reso + rbin;
                                     int ind_rbin = elthread*nbinsz*nbinsr + z_gal2*nbinsr + rbin+rbinmin;
 
