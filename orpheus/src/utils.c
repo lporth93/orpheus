@@ -122,11 +122,23 @@ void fillconstd(double *arr, int len_arr, double c){
     }
 }
 
-// Prints progress bar consisting of dots and pipes
+// Progress bar state, at file scope so it can be reset between runs
+static int _progress_last_dot = 0;
+static int _progress_last_pipe = 0;
+
+// Reset the progress bar before a new run. Call once (single-threaded) before
+// the parallel region, otherwise a second run in the same process sees the
+// statics already at 100% and prints nothing.
+void reset_progress(void) {
+    _progress_last_dot = 0;
+    _progress_last_pipe = 0;
+}
+
+// Prints progress bar consisting of dots and pipes (a . per 1%, a | per 10%).
+// Safe to call at any granularity, including once per galaxy: the unlocked
+// fast-path returns before the critical section unless a new dot/pipe is due.
 void print_progress(int nregionsdone, int nfilledregions, int verbose) {
     if (verbose <= 0) return;
-    static int last_dot = 0;
-    static int last_pipe = 0;
 
     int one_percent = nfilledregions / 100;
     if (one_percent == 0) one_percent = 1;  // ensure at least one
@@ -135,11 +147,14 @@ void print_progress(int nregionsdone, int nfilledregions, int verbose) {
     int dot_now = nregionsdone / one_percent;
     int pipe_now = nregionsdone / ten_percent;
 
+    // Relaxed unlocked read; a benign race at most repeats a cheap check
+    if (dot_now <= _progress_last_dot && pipe_now <= _progress_last_pipe) return;
+
     #pragma omp critical
     {
-        if (pipe_now > last_pipe) {printf("|");last_pipe = pipe_now;}
-        for (int i = last_dot + 1; i <= dot_now; i++) {if (i % 10 != 0) printf(".");}
-        last_dot = dot_now;
+        if (pipe_now > _progress_last_pipe) {printf("|");_progress_last_pipe = pipe_now;}
+        for (int i = _progress_last_dot + 1; i <= dot_now; i++) {if (i % 10 != 0) printf(".");}
+        _progress_last_dot = dot_now;
         fflush(stdout);
     }
 }

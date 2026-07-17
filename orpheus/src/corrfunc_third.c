@@ -800,6 +800,7 @@ void alloc_Gammans_doubletree_nnn(const MultiresoCatalog *cat, const NavHash *na
     // Helper array that checks how many regions have been already computed
     int *regionsdone = calloc(nfilledregions, sizeof(int));
     int nregionsdone = 0;
+    reset_progress();
     
     // Temporary arrays that are allocated in parallel and later reduced
     double *tmpwcounts = calloc(nthreads*nbinsz*nbinsr, sizeof(double));
@@ -1085,8 +1086,10 @@ void alloc_Gammans_discrete_ggg(const MultiresoCatalog *cat, const NavHash *nav,
     //   - In second one only consider galaxies within stripes of odd number
     // --> We avoid race conditions in calling the spatial hash arrays. - This
     //    is explicitly made sure by (re)setting nthreads in the python layer.
+    int nregionsdone = 0;
+    reset_progress();
     for (int odd=0; odd<2; odd++){
-        
+
         // Temporary arrays that are allocated in parallel and later reduced
         double *tmpwcounts = calloc(nthreads*nbinsz*nbinsr, sizeof(double));
         double *tmpwnorms = calloc(nthreads*nbinsz*nbinsr, sizeof(double));
@@ -1115,6 +1118,9 @@ void alloc_Gammans_discrete_ggg(const MultiresoCatalog *cat, const NavHash *nav,
                 int thisstripe = 2*thisthread + odd;
                 int galstripe = (int) floor((p11-pix1_start)/pix1_d * (2*nthreads)/pix1_n);
                 if (thisstripe != galstripe){continue;}
+                #pragma omp atomic
+                nregionsdone += 1;
+                print_progress(nregionsdone, ngal, verbose);
 
                 int ind_inpix, ind_gal2;
                 int lower, upper;
@@ -1334,8 +1340,9 @@ void alloc_Gammans_discrete_ggg(const MultiresoCatalog *cat, const NavHash *nav,
     free(totnorms);
     totcounts = NULL;
     totnorms = NULL;
-}        
-  
+    if (verbose>0){ printf("\n"); }
+}
+
 // GGG using the tree-based approximation //
 void alloc_Gammans_tree_ggg(const MultiresoCatalog *cat, const MultiresoCatalog *cat_field,
                             const NavHash *nav, const TreeResoParams *tree,
@@ -1375,6 +1382,8 @@ void alloc_Gammans_tree_ggg(const MultiresoCatalog *cat, const MultiresoCatalog 
     //   - In second one only consider galaxies within stripes of odd number
     // --> We avoid race conditions in calling the spatial hash arrays. - This
     //    is explicitly made sure by (re)setting nthreads in the python layer.
+    int nregionsdone = 0;
+    reset_progress();
     for (int odd=0; odd<2; odd++){
         
         
@@ -1388,7 +1397,6 @@ void alloc_Gammans_tree_ggg(const MultiresoCatalog *cat, const MultiresoCatalog 
             int gamma_zshift = nbinsr*nbinsr;
             int gamma_nshift = _gamma_zshift*nbinsz*nbinsz*nbinsz;
             int gamma_compshift = (nmax-nmin+1)*_gamma_nshift;
-            int ngalproc = 0;
             int npix_hash = pix1_n*pix2_n;
             int *rshift_index_matcher = calloc(nresos, sizeof(int));
             int *rshift_pixs_galind_bounds = calloc(nresos, sizeof(int));
@@ -1415,10 +1423,9 @@ void alloc_Gammans_tree_ggg(const MultiresoCatalog *cat, const MultiresoCatalog 
                 int galstripe = (int) floor((p11-pix1_start)/pix1_d * (2*nthreads)/pix1_n);
                 if (thisstripe != galstripe){continue;}
                 
-                if ((verbose>0) && (thisthread==nthreads/2)){
-                    printf("\rDone %.2f per cent",50*odd+50*((double) 2*nthreads*ngalproc/ngal));
-                    ngalproc += 1;
-                }
+                #pragma omp atomic
+                nregionsdone += 1;
+                print_progress(nregionsdone, ngal, verbose);
                 
                 
                 int ind_inpix, ind_gal2;
@@ -1645,6 +1652,7 @@ void alloc_Gammans_tree_ggg(const MultiresoCatalog *cat, const MultiresoCatalog 
     free(totnorms);
     totcounts = NULL;
     totnorms = NULL;
+    if (verbose>0){ printf("\n"); }
 }
 
 // GGG using the BaseTree approximation //
@@ -1682,6 +1690,8 @@ void alloc_Gammans_basetree_ggg(const MultiresoCatalog *cat, const NavHash *nav,
     double complex *tmpGamma3s = calloc(nthreads*_gamma_compshift, sizeof(double complex));
     double complex *tmpGammans_norm = calloc(nthreads*_gamma_compshift, sizeof(double complex));
     
+    int nregionsdone = 0;
+    reset_progress();
     #pragma omp parallel for num_threads(nthreads)
     for(int elthread=0;elthread<nthreads;elthread++){
         int nregions_per_thread = nregions/nthreads;
@@ -1717,9 +1727,9 @@ void alloc_Gammans_basetree_ggg(const MultiresoCatalog *cat, const NavHash *nav,
             if (nthread_target!=elthread){continue;}
             // printf("Region %d is in thread %d\n",elregion,elthread);
             if (printregdbg){printf("Region %d is in thread %d\n",elregion,elthread);}
-            if ((verbose>0) && (elthread==nthreads/2)){
-                printf("\rDone %.2f per cent",100*((double) elregion-nregions_per_thread*(int)(nthreads/2))/nregions_per_thread);
-            }
+            #pragma omp atomic
+            nregionsdone += 1;
+            print_progress(nregionsdone, nregions, verbose);
             
             // Check which sets of radii are evaluated for each resolution
             int *reso_rindedges = calloc(nresos+1, sizeof(int));
@@ -1903,6 +1913,7 @@ void alloc_Gammans_basetree_ggg(const MultiresoCatalog *cat, const NavHash *nav,
 
     ggg_reduce(nbinsz, nbinsr, nmax, nthreads, tmpGamma0s, tmpGamma1s, tmpGamma2s, tmpGamma3s,
                tmpGammans_norm, tmpwcounts, tmpwnorms, out);
+    if (verbose>0){ printf("\n"); }
 
     free(tmpwcounts);
     free(tmpwnorms);
@@ -1948,6 +1959,7 @@ static void alloc_ggg_doubletree_flat(const MultiresoCatalog *cat, const NavHash
     
     // Temporary arrays that are allocated in parallel region and later reduced
     int nregionsdone = 0;
+    reset_progress();
     double *tmpwcounts = calloc(nthreads*nbinsz*nbinsr, sizeof(double));
     double *tmpwnorms = calloc(nthreads*nbinsz*nbinsr, sizeof(double));
     double complex *tmpGamma0s = calloc(nthreads*_gamma_compshift, sizeof(double complex));
@@ -2238,6 +2250,7 @@ static void alloc_ggg_doubletree_spherical(const MultiresoCatalog *cat, const Na
     const long *region_cellpix = cell_pix + rshift_cellpix[r_region];
 
     int nregionsdone = 0;
+    reset_progress();
     double logrmin = log(rmin);
     double drbin = (log(rmax)-logrmin)/(nbinsr);
     #pragma omp parallel num_threads(nthreads)
@@ -2821,6 +2834,8 @@ void alloc_Gammans_discrete_GNN(const MultiresoCatalog *cat_source, const NavHas
     // Shape of tmpUpsilon ~ (nthreads, nnvals, nz_source, nz_lens, nz_lens, nbinsr, nbinsr)
     double complex *tmpUpsilon = calloc(nthreads*_upsilonthreadshift, sizeof(double complex));
     double complex *tmpNorm = calloc(nthreads*_upsilonthreadshift, sizeof(double complex));
+    int nregionsdone = 0;
+    reset_progress();
     #pragma omp parallel for num_threads(nthreads)
     for(int elthread=0;elthread<nthreads;elthread++){
         int nregions_per_thread = nregions/nthreads;
@@ -2851,10 +2866,9 @@ void alloc_Gammans_discrete_GNN(const MultiresoCatalog *cat_source, const NavHas
             bool printregdbg = (verbose>0) && (elregion==region_debug);
             // printf("Region %d is in thread %d\n",elregion,elthread);
             if (printregdbg){printf("Region %d is in thread %d\n",elregion,elthread);}
-            if ((verbose>0) && (elthread==nthreads/2)){
-                int elreg_inthread = elregion-nregions_per_thread*(nthreads/2);
-                printf("\rDone %.2f per cent",100*((double) elreg_inthread/nregions_per_thread));
-            }
+            #pragma omp atomic
+            nregionsdone += 1;
+            print_progress(nregionsdone, nregions, verbose);
             
             int zbin_gal1, zbin_gal2;
             double isinner_gal1, pos1_gal1, pos2_gal1, w_gal1, e1_gal1, e2_gal1;
@@ -2937,9 +2951,10 @@ void alloc_Gammans_discrete_GNN(const MultiresoCatalog *cat_source, const NavHas
             }
         }
     }
-    
+
     gnn_reduce(nbinsz_source, nbinsz_lens, nbinsr, nmax, nthreads,
                tmpUpsilon, tmpNorm, tmpwcounts, tmpwnorms, out);
+    if (verbose>0){ printf("\n"); }
     free(tmpUpsilon);
     free(tmpNorm);
     free(tmpwcounts);
@@ -3150,6 +3165,8 @@ void alloc_Gammans_slab_GNN(const MultiresoCatalog *cat_polar, const MultiresoCa
     double *tmpwnorms  = calloc((size_t)nthreads*counts_threadshift, sizeof(double));
 
     // (A) polar central -> four raw numerator components S.(D/R).(D/R) + bin centers.
+    int nregionsdone = 0;
+    reset_progress();
     #pragma omp parallel num_threads(nthreads)
     {
         int elthread = omp_get_thread_num();
@@ -3160,6 +3177,9 @@ void alloc_Gammans_slab_GNN(const MultiresoCatalog *cat_polar, const MultiresoCa
 
         #pragma omp for schedule(dynamic, 256)
         for (int ig=0; ig<ngal_shape; ig++){
+            #pragma omp atomic
+            nregionsdone += 1;
+            print_progress(nregionsdone, ngal_shape, verbose);
             double c_pos1 = pos1_shape[ig];
             double c_pos2 = pos2_shape[ig];
             double c_pos3 = pos3_shape[ig];
@@ -3322,6 +3342,7 @@ void alloc_Gammans_slab_GNN(const MultiresoCatalog *cat_polar, const MultiresoCa
         if (totnorms[i] != 0){ bin_centers[i] = totcounts[i]/totnorms[i]; }
     }
 
+    if (verbose>0){ printf("\n"); }
     free(tmpComp); free(tmpRRR); free(tmpwcounts); free(tmpwnorms);
     free(totcounts); free(totnorms);
 }
@@ -3478,6 +3499,8 @@ void alloc_Gammans_slab_NGG(const MultiresoCatalog *cat_lensD, const MultiresoCa
     double *tmpwcounts = calloc((size_t)nthreads*counts_threadshift, sizeof(double));
     double *tmpwnorms  = calloc((size_t)nthreads*counts_threadshift, sizeof(double));
 
+    int nregionsdone = 0;
+    reset_progress();
     #pragma omp parallel num_threads(nthreads)
     {
         int elthread = omp_get_thread_num();
@@ -3490,6 +3513,9 @@ void alloc_Gammans_slab_NGG(const MultiresoCatalog *cat_lensD, const MultiresoCa
         // (A) Data-lens centrals -> DSS numerator (+w) via shape-data legs; bin-centers.
         #pragma omp for schedule(dynamic, 256)
         for (int ig=0; ig<ngal_D; ig++){
+            #pragma omp atomic
+            nregionsdone += 1;
+            print_progress(nregionsdone, ngal_D, verbose);
             double c1 = pos1_D[ig], c2 = pos2_D[ig], c3 = pos3_D[ig], wc = w_D[ig];
             int zc = zbin_D[ig];
             double complex *Gn = calloc(nnvals_Gn*nbinszr_leg, sizeof(double complex));
@@ -3594,6 +3620,7 @@ void alloc_Gammans_slab_NGG(const MultiresoCatalog *cat_lensD, const MultiresoCa
         if (totnorms[i] != 0){ bin_centers[i] = totcounts[i]/totnorms[i]; }
     }
 
+    if (verbose>0){ printf("\n"); }
     free(tmpComp); free(tmpNorm); free(tmpwcounts); free(tmpwnorms);
     free(totcounts); free(totnorms);
 }
@@ -3655,6 +3682,8 @@ void alloc_Gammans_slab_GGG(const MultiresoCatalog *cat_polar, const NavHash *na
     double *tmpwnorms  = calloc((size_t)nthreads*counts_threadshift, sizeof(double));
 
     // (A) polar central -> four raw SSS natural components + bin centers.
+    int nregionsdone = 0;
+    reset_progress();
     #pragma omp parallel num_threads(nthreads)
     {
         int elthread = omp_get_thread_num();
@@ -3665,6 +3694,9 @@ void alloc_Gammans_slab_GGG(const MultiresoCatalog *cat_polar, const NavHash *na
 
         #pragma omp for schedule(dynamic, 256)
         for (int ig=0; ig<ngal_S; ig++){
+            #pragma omp atomic
+            nregionsdone += 1;
+            print_progress(nregionsdone, ngal_S, verbose);
             double c1 = pos1_S[ig], c2 = pos2_S[ig], c3 = pos3_S[ig], cw = w_S[ig];
             int zbin_c = zbin_S[ig];
             double complex wshape = cw*(e1_S[ig] + I*e2_S[ig]);
@@ -3802,6 +3834,7 @@ void alloc_Gammans_slab_GGG(const MultiresoCatalog *cat_polar, const NavHash *na
         if (totnorms[i] != 0){ bin_centers[i] = totcounts[i]/totnorms[i]; }
     }
 
+    if (verbose>0){ printf("\n"); }
     free(tmpComp); free(tmpRRR); free(tmpwcounts); free(tmpwnorms);
     free(totcounts); free(totnorms);
 }
@@ -3844,6 +3877,8 @@ void alloc_Gammans_doubletree_GNN(const MultiresoCatalog *cat_source, const NavH
     // Shape of tmpUpsilon ~ (nthreads, nnvals, nz_source, nz_lens, nz_lens, nbinsr, nbinsr)
     double complex *tmpUpsilon = calloc(nthreads*_upsilonthreadshift, sizeof(double complex));
     double complex *tmpNorm = calloc(nthreads*_upsilonthreadshift, sizeof(double complex));
+    int nregionsdone = 0;
+    reset_progress();
     #pragma omp parallel for num_threads(nthreads)
     for(int elthread=0;elthread<nthreads;elthread++){
         int nregions_per_thread = nregions/nthreads;
@@ -3925,9 +3960,9 @@ void alloc_Gammans_doubletree_GNN(const MultiresoCatalog *cat_source, const NavH
             // Check if this thread is responsible for the region
             int nthread_target = mymin(elregion/nregions_per_thread, nthreads-1);
             if (nthread_target!=elthread){continue;}
-            if ((verbose>0) && (elthread==nthreads/2)){
-                printf("\rDone %.2f per cent",100*((double) elregion-nregions_per_thread*(int)(nthreads/2))/nregions_per_thread);
-            }
+            #pragma omp atomic
+            nregionsdone += 1;
+            print_progress(nregionsdone, nregions, verbose);
             
             // Check which sets of radii are evaluated for each resolution
             int *reso_rindedges = calloc(nresos+1, sizeof(int));
@@ -4112,9 +4147,10 @@ void alloc_Gammans_doubletree_GNN(const MultiresoCatalog *cat_source, const NavH
         free(Wncache);
         free(wWncache);
     }
-    
+
     gnn_reduce(nbinsz_source, nbinsz_lens, nbinsr, nmax, nthreads,
                tmpUpsilon, tmpNorm, tmpwcounts, tmpwnorms, out);
+    if (verbose>0){ printf("\n"); }
     free(tmpUpsilon);
     free(tmpNorm);
     free(tmpwcounts);
@@ -4466,6 +4502,8 @@ void alloc_Gammans_discrete_NGG(const MultiresoCatalog *cat_source, const NavHas
     // Shape of tmpUpsilon ~ (nthreads, nnvals, nz_source, nz_lens, nz_lens, nbinsr, nbinsr)
     double complex *tmpUpsilon = calloc(nthreads*_upsilonthreadshift, sizeof(double complex));
     double complex *tmpNorm = calloc(nthreads*_normthreadshift, sizeof(double complex));
+    int nregionsdone = 0;
+    reset_progress();
     #pragma omp parallel for num_threads(nthreads)
     for(int elthread=0;elthread<nthreads;elthread++){
         int nregions_per_thread = nregions/nthreads;
@@ -4503,10 +4541,9 @@ void alloc_Gammans_discrete_NGG(const MultiresoCatalog *cat_source, const NavHas
             bool printregdbg = (verbose>0) && (elregion==region_debug);
             bool printregdbg2 = (verbose>1) && (elregion==region_debug); 
             //if (elregion==region_debug){printf("Region %d is in thread %d\n",elregion,elthread);}
-            if ((verbose>0) && (elthread==nthreads/2)){
-                int elreg_inthread = elregion-nregions_per_thread*(nthreads/2);
-                printf("\rDone %.2f per cent",100*((double) elreg_inthread)/nregions_per_thread);
-            }
+            #pragma omp atomic
+            nregionsdone += 1;
+            print_progress(nregionsdone, nregions, verbose);
             
             int zbin_gal1, zbin_gal2;
             double isinner_gal1, pos1_gal1, pos2_gal1, w_gal1;
@@ -4592,6 +4629,7 @@ void alloc_Gammans_discrete_NGG(const MultiresoCatalog *cat_source, const NavHas
     ngg_reduce(nbinsz_lens, nbinsz_source, nbinsr, nmax, nthreads,
                _upsiloncompshift, _upsilonthreadshift, _normthreadshift,
                tmpUpsilon, tmpNorm, tmpwcounts, tmpwnorms, out);
+    if (verbose>0){ printf("\n"); }
     free(tmpUpsilon);
     free(tmpNorm);
     free(tmpwcounts);
@@ -4633,6 +4671,8 @@ void alloc_Gammans_tree_NGG(const MultiresoCatalog *cat_source, const NavHash *n
     // Shape of tmpUpsilon ~ (nthreads, nnvals, nz_source, nz_lens, nz_lens, nbinsr, nbinsr)
     double complex *tmpUpsilon = calloc(nthreads*_upsilonthreadshift, sizeof(double complex));
     double complex *tmpNorm = calloc(nthreads*_normthreadshift, sizeof(double complex));
+    int nregionsdone = 0;
+    reset_progress();
     #pragma omp parallel for num_threads(nthreads)
     for(int elthread=0;elthread<nthreads;elthread++){
         int nregions_per_thread = nregions/nthreads;
@@ -4676,10 +4716,9 @@ void alloc_Gammans_tree_NGG(const MultiresoCatalog *cat_source, const NavHash *n
             bool printregdbg = (verbose>0) && (elregion==region_debug);
             bool printregdbg2 = (verbose>1) && (elregion==region_debug); 
             //if (elregion==region_debug){printf("Region %d is in thread %d\n",elregion,elthread);}
-            if ((verbose>0) && (elthread==nthreads/2)){
-                int elreg_inthread = elregion-nregions_per_thread*(nthreads/2);
-                printf("\rDone %.2f per cent",100*((double) elreg_inthread)/nregions_per_thread);
-            }
+            #pragma omp atomic
+            nregionsdone += 1;
+            print_progress(nregionsdone, nregions, verbose);
             
             int zbin_gal1, zbin_gal2;
             double isinner_gal1, pos1_gal1, pos2_gal1, w_gal1;
@@ -4775,6 +4814,7 @@ void alloc_Gammans_tree_NGG(const MultiresoCatalog *cat_source, const NavHash *n
     ngg_reduce(nbinsz_lens, nbinsz_source, nbinsr, nmax, nthreads,
                _upsiloncompshift, _upsilonthreadshift, _normthreadshift,
                tmpUpsilon, tmpNorm, tmpwcounts, tmpwnorms, out);
+    if (verbose>0){ printf("\n"); }
     free(tmpUpsilon);
     free(tmpNorm);
     free(tmpwcounts);
@@ -4820,6 +4860,7 @@ void alloc_Gammans_doubletree_NGG(const MultiresoCatalog *cat_source, const NavH
     
     int *regionsdone = calloc(nregions, sizeof(int));
     int nregionsdone = 0;
+    reset_progress();
     
     double *tmpwcounts = calloc(nthreads*nbinsz_lens*nbinsz_source*nbinsr, sizeof(double));
     double *tmpwnorms  = calloc(nthreads*nbinsz_lens*nbinsz_source*nbinsr, sizeof(double));
@@ -5069,10 +5110,11 @@ void alloc_Gammans_doubletree_NGG(const MultiresoCatalog *cat_source, const NavH
         free(Wncache);
         free(wWncache);
     }
-    
+
     ngg_reduce(nbinsz_lens, nbinsz_source, nbinsr, nmax, nthreads,
                _upsiloncompshift, _upsilonthreadshift, _normthreadshift,
                tmpUpsilon, tmpNorm, tmpwcounts, tmpwnorms, out);
+    if (verbose>0){ printf("\n"); }
     free(tmpUpsilon);
     free(tmpNorm);
     free(tmpwcounts);

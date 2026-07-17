@@ -267,6 +267,7 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
                     sph['cell_pix'], sph['cell_redbounds'], sph['rshift_cellpix'], sph['rshift_cellbounds'],
                     *args_thetas,
                     np.int32(self.nthreads), np.float64(memory_bound),
+                    np.int32(self._verbose_c+self._verbose_debug),
                     bin_centers, N_n)
             func = self.clib.alloc_nnnn_tree_spherical
         elif self.method=="Discrete" and not lowmem:
@@ -320,6 +321,7 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
                     *args_hash,
                     *args_thetas,
                     np.int32(self.nthreads),
+                    np.int32(self._verbose_c+self._verbose_debug),
                     *args_nap4,
                     *args_4pcf)
             only_multipoles = ("4pcf_multipole" in statistics and
@@ -334,6 +336,7 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
                         *args_hash,
                         *args_thetas,
                         np.int32(self.nthreads), np.float64(memory_bound),
+                        np.int32(self._verbose_c+self._verbose_debug),
                         bin_centers, N_n)
                 func = self.clib.alloc_nnnn_tree
             elif self.method=="DoubleTree" and only_multipoles:
@@ -1489,8 +1492,9 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
                     *args_pix,
                     *args_basesetup,
                     np.int32(self.nthreads),
+                    np.int32(self._verbose_c+self._verbose_debug),
                     *args_4pcf)
-            func = self.clib.alloc_notomoGammans_discrete_gnnn 
+            func = self.clib.alloc_notomoGammans_discrete_gnnn
         
         if self.method=="Tree":
         # Prepare mask for nonredundant theta- and multipole configurations
@@ -1541,6 +1545,7 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
                         *args_indsetup,
                         *args_thetas,
                         np.int32(self.nthreads),
+                        np.int32(self._verbose_c+self._verbose_debug),
                         *args_mapnap3,
                         *args_4pcf)
                 func = self.clib.alloc_notomoMapNap3_tree_gnnn

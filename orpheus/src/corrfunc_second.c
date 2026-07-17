@@ -177,8 +177,7 @@ static void _nn_flat(const MultiresoCatalog *cat, const NavHash *nav,
     int nfilledregions = nav->nfilledregions;
     int *filledregions = nav->filledregions;
     int nregionsdone = 0;
-    int progress_step = nfilledregions/100;
-    if (progress_step <= 0) progress_step = 1;
+    reset_progress();
 
     #pragma omp parallel num_threads(nthreads)
     {
@@ -255,10 +254,7 @@ static void _nn_flat(const MultiresoCatalog *cat, const NavHash *nav,
             }
             #pragma omp atomic
             nregionsdone += 1;
-            if ((verbose>0) && (nregionsdone%progress_step==0)) {
-                #pragma omp critical
-                { printf("."); }
-            }
+            print_progress(nregionsdone, nfilledregions, verbose);
         }
     }
 
@@ -266,6 +262,7 @@ static void _nn_flat(const MultiresoCatalog *cat, const NavHash *nav,
     free(rshift_index_matcher); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
 
     bin_reduce(nbinsz, nbinsz, nbinsr, nthreads, totcount, tmpnpair, tmpwcount, tmpwnorm, 0, NULL, out);
+    if (verbose>0){ printf("\n"); }
 
     free(totcount); free(tmpwcount); free(tmpnpair); free(tmpwnorm);
 }
@@ -284,6 +281,14 @@ static void _nn_spherical(const MultiresoCatalog *cat, const NavHash *nav,
     double drbin, dbin_lin_inv;
     double *binedges; int *linarr_bins; int *reso_rindedges;
     build_radial_helpers(tree, bin, &binedges, &linarr_bins, &reso_rindedges, &drbin, &dbin_lin_inv);
+
+    // Progress is tracked per central galaxy across all processed resolutions
+    int nregionsdone = 0, progtot = 0;
+    for (int elreso=0; elreso<nresos; elreso++){
+        if (reso_rindedges[elreso+1] > reso_rindedges[elreso]){ progtot += cat->ngal_resos[elreso]; }
+    }
+    if (progtot <= 0){ progtot = 1; }
+    reset_progress();
 
     for (int elreso=0; elreso<nresos; elreso++){
         int elreso_leaf = mymin(mymax(tree->minresoind_leaf, elreso+tree->resoshift_leafs), tree->maxresoind_leaf);
@@ -307,6 +312,9 @@ static void _nn_spherical(const MultiresoCatalog *cat, const NavHash *nav,
             long *ranges = malloc(2*cap*sizeof(long));
             #pragma omp for schedule(dynamic, 64)
             for (int i1=0; i1<n1; i1++){
+                #pragma omp atomic
+                nregionsdone += 1;
+                print_progress(nregionsdone, progtot, verbose);
                 long g1 = red1_off + i1;
                 if (cat->isinner_resos[g1] < 1e-5){ continue; }
                 double cx = cat->vx_resos[g1], cy = cat->vy_resos[g1], cz = cat->vz_resos[g1];
@@ -343,11 +351,11 @@ static void _nn_spherical(const MultiresoCatalog *cat, const NavHash *nav,
             }
             free(ranges);
         }
-        if (verbose>0){ printf("."); }
     }
     free(binedges); free(linarr_bins); free(reso_rindedges);
 
     bin_reduce(nbinsz, nbinsz, nbinsr, nthreads, totcount, tmpnpair, tmpwcount, tmpwnorm, 0, NULL, out);
+    if (verbose>0){ printf("\n"); }
     free(totcount); free(tmpwcount); free(tmpnpair); free(tmpwnorm);
 }
 
@@ -365,7 +373,6 @@ void alloc_nn_doubletree(const MultiresoCatalog *cat, const NavHash *nav,
             _nn_flat(cat, nav, tree, bin, nthreads, verbose, out);
             break;
     }
-    if (verbose>0){ printf("\n"); }
 }
 
 ///////////////////////////
@@ -394,8 +401,7 @@ static void _gg_flat(const MultiresoCatalog *cat, const NavHash *nav,
     int nfilledregions = nav->nfilledregions;
     int *filledregions = nav->filledregions;
     int nregionsdone = 0;
-    int progress_step = nfilledregions/100;
-    if (progress_step <= 0) progress_step = 1;
+    reset_progress();
 
     #pragma omp parallel num_threads(nthreads)
     {
@@ -474,10 +480,7 @@ static void _gg_flat(const MultiresoCatalog *cat, const NavHash *nav,
             }
             #pragma omp atomic
             nregionsdone += 1;
-            if ((verbose>0) && (nregionsdone%progress_step==0)) {
-                #pragma omp critical
-                { printf("."); }
-            }
+            print_progress(nregionsdone, nfilledregions, verbose);
         }
     }
 
@@ -485,6 +488,7 @@ static void _gg_flat(const MultiresoCatalog *cat, const NavHash *nav,
     free(rshift_index_matcher); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
 
     bin_reduce(nbinsz, nbinsz, nbinsr, nthreads, totcount, tmpnpair, tmpwcount, tmpwnorm, 2, tmpcomp, out);
+    if (verbose>0){ printf("\n"); }
     free(totcount); free(tmpwcount); free(tmpnpair); free(tmpwnorm); free(tmpcomp);
 }
 
@@ -503,6 +507,14 @@ static void _gg_spherical(const MultiresoCatalog *cat, const NavHash *nav,
     double drbin, dbin_lin_inv;
     double *binedges; int *linarr_bins; int *reso_rindedges;
     build_radial_helpers(tree, bin, &binedges, &linarr_bins, &reso_rindedges, &drbin, &dbin_lin_inv);
+
+    // Progress is tracked per central galaxy across all processed resolutions
+    int nregionsdone = 0, progtot = 0;
+    for (int elreso=0; elreso<nresos; elreso++){
+        if (reso_rindedges[elreso+1] > reso_rindedges[elreso]){ progtot += cat->ngal_resos[elreso]; }
+    }
+    if (progtot <= 0){ progtot = 1; }
+    reset_progress();
 
     for (int elreso=0; elreso<nresos; elreso++){
         int elreso_leaf = mymin(mymax(tree->minresoind_leaf, elreso+tree->resoshift_leafs), tree->maxresoind_leaf);
@@ -526,6 +538,9 @@ static void _gg_spherical(const MultiresoCatalog *cat, const NavHash *nav,
             long *ranges = malloc(2*cap*sizeof(long));
             #pragma omp for schedule(dynamic, 64)
             for (int i1=0; i1<n1; i1++){
+                #pragma omp atomic
+                nregionsdone += 1;
+                print_progress(nregionsdone, progtot, verbose);
                 long g1 = red1_off + i1;
                 if (cat->isinner_resos[g1] < 1e-5){ continue; }
                 double cx = cat->vx_resos[g1], cy = cat->vy_resos[g1], cz = cat->vz_resos[g1];
@@ -572,11 +587,11 @@ static void _gg_spherical(const MultiresoCatalog *cat, const NavHash *nav,
             }
             free(ranges);
         }
-        if (verbose>0){ printf("."); }
     }
     free(binedges); free(linarr_bins); free(reso_rindedges);
 
     bin_reduce(nbinsz, nbinsz, nbinsr, nthreads, totcount, tmpnpair, tmpwcount, tmpwnorm, 2, tmpcomp, out);
+    if (verbose>0){ printf("\n"); }
     free(totcount); free(tmpwcount); free(tmpnpair); free(tmpwnorm); free(tmpcomp);
 }
 
@@ -593,7 +608,6 @@ void alloc_gg_doubletree(const MultiresoCatalog *cat, const NavHash *nav,
             _gg_flat(cat, nav, tree, bin, nthreads, verbose, out);
             break;
     }
-    if (verbose>0){ printf("\n"); }
 }
 
 
@@ -627,6 +641,8 @@ static void _ng_flat(const MultiresoCatalog *cat_lens, const NavHash *nav_lens,
 
     int nfilledregions = nav_lens->nfilledregions;
     int *filledregions = nav_lens->filledregions;
+    int nregionsdone = 0;
+    reset_progress();
 
     #pragma omp parallel num_threads(nthreads)
     {
@@ -700,6 +716,9 @@ static void _ng_flat(const MultiresoCatalog *cat_lens, const NavHash *nav_lens,
                     }
                 }
             }
+            #pragma omp atomic
+            nregionsdone += 1;
+            print_progress(nregionsdone, nfilledregions, verbose);
         }
     }
 
@@ -708,6 +727,7 @@ static void _ng_flat(const MultiresoCatalog *cat_lens, const NavHash *nav_lens,
     free(rsim_s); free(rspgb_s); free(rspg_s);
 
     bin_reduce(nbinsz_l, nbinsz_s, nbinsr, nthreads, totcount, tmpnpair, tmpwcount, tmpwnorm, 1, tmpcomp, out);
+    if (verbose>0){ printf("\n"); }
     free(totcount); free(tmpwcount); free(tmpnpair); free(tmpwnorm); free(tmpcomp);
 }
 
@@ -718,7 +738,6 @@ void alloc_ng_doubletree(const MultiresoCatalog *cat_lens, const NavHash *nav_le
                          const TreeResoParams *tree, const BinningParams *bin,
                          int nthreads, int verbose, NPCFOutput *out){
     _ng_flat(cat_lens, nav_lens, cat_source, nav_source, tree, bin, nthreads, verbose, out);
-    if (verbose>0){ printf("\n"); }
 }
 
 
@@ -728,7 +747,7 @@ void alloc_ng_doubletree(const MultiresoCatalog *cat_lens, const NavHash *nav_le
 // Discrete estimator of a NG correlator in slabs of a 3dbox geometry
 void ng_slab(const MultiresoCatalog *cat_query, const MultiresoCatalog *cat_hash,
              const NavHash *nav_hash, const BinningParams *bin,
-             int self_pairs, int has_shapes, int nthreads, NPCFOutput *out)
+             int self_pairs, int has_shapes, int nthreads, int verbose, NPCFOutput *out)
 {
     // Hoist every struct field into a local once (the hot loop never touches a
     // struct). The query catalog is looped directly (nresos=1, no nav); the
@@ -769,6 +788,9 @@ void ng_slab(const MultiresoCatalog *cat_query, const MultiresoCatalog *cat_hash
     double *tmp_rsum  = calloc((size_t)nthreads * nout, sizeof(double));
     long   *tmp_npair = calloc((size_t)nthreads * nout, sizeof(long));
 
+    int nregionsdone = 0;
+    reset_progress();
+
     #pragma omp parallel num_threads(nthreads)
     {
         int thread = omp_get_thread_num();
@@ -776,6 +798,9 @@ void ng_slab(const MultiresoCatalog *cat_query, const MultiresoCatalog *cat_hash
 
         #pragma omp for schedule(dynamic, 256)
         for (int i=0; i<scalar_ngal; i++) {
+            #pragma omp atomic
+            nregionsdone += 1;
+            print_progress(nregionsdone, scalar_ngal, verbose);
 
             double p1 = scalar_pos1[i];
             double p2 = scalar_pos2[i];
@@ -850,6 +875,7 @@ void ng_slab(const MultiresoCatalog *cat_query, const MultiresoCatalog *cat_hash
             out_npairs[o] += tmp_npair[ind];
         }
     }
+    if (verbose>0){ printf("\n"); }
     free(tmp_xs_re);
     free(tmp_xs_im);
     free(tmp_wnorm);

@@ -965,7 +965,7 @@ class NGCorrelation(BinnedNPCF):
         self.clib.ng_slab(
             ct.byref(cat_q), ct.byref(cat_h), ct.byref(nav_h), ct.byref(bin_s),
             ct.c_int32(int(self_pairs)), ct.c_int32(int(has_shapes)), ct.c_int32(int(self.nthreads)),
-            ct.byref(out_s))
+            ct.c_int32(int(self._verbose_c)+int(self._verbose_debug)), ct.byref(out_s))
 
         shape = (nbinsz_scalar, nbinsz_polar, self.nbinsr)
         return (npcf.reshape(shape), norm.reshape(shape),

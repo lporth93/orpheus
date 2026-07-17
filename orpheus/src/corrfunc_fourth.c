@@ -49,6 +49,8 @@ void alloc_notomoGammans_discrete_gggg(
     double *totcounts = calloc(nbinsr, sizeof(double));
     double *totnorms = calloc(nbinsr, sizeof(double));
     
+    int nregionsdone = 0;
+    reset_progress();
     #pragma omp parallel for num_threads(nthreads)
     for(int elthread=0;elthread<nthreads;elthread++){
         int nregions_per_thread = nregions/nthreads;
@@ -84,12 +86,11 @@ void alloc_notomoGammans_discrete_gggg(
             if (nthread_target!=elthread){continue;}
             // printf("Region %d is in thread %d\n",elregion,elthread);
             
-            if (elregion==region_debug){printf("Region %d is in thread %d (%i regions in total)\n",
+            if ((verbose>1) && (elregion==region_debug)){printf("Region %d is in thread %d (%i regions in total)\n",
                                                elregion,elthread,nregions);}
-            if (elthread==nthreads/2){
-                printf("\rDone %.2f per cent",
-                       100*((double) elregion-nregions_per_thread*(int)(nthreads/2))/nregions_per_thread);
-            }
+            #pragma omp atomic
+            nregionsdone += 1;
+            print_progress(nregionsdone, nregions, verbose);
             int lower1 = pixs_galind_bounds[elregion];
             int upper1 = pixs_galind_bounds[elregion+1];
             for (int ind_inpix1=lower1; ind_inpix1<upper1; ind_inpix1++){
@@ -462,6 +463,7 @@ void alloc_notomoGammans_discrete_gggg(
     free(tmpwnorms);
     free(totcounts);
     free(totnorms);
+    if (verbose>0){ printf("\n"); }
 }
 
 // Non-tomo 4pcf using tree-based estimator
@@ -495,6 +497,7 @@ void alloc_notomoGammans_tree_gggg(
     // Helper array that checks how many regions have been already computed
     int *regionsdone = calloc(nregions, sizeof(int));
     int nregionsdone = 0;
+    reset_progress();
     
     #pragma omp parallel for num_threads(nthreads)
     for(int elthread=0;elthread<nthreads;elthread++){
@@ -1070,6 +1073,8 @@ void alloc_notomoMap4_disc_gggg(
     double *bin_centers, double complex *Upsilon_n, double complex *N_n, double complex *Gammas, double complex *Norms){
                
     double complex *allM4correlators = calloc(nthreads*8*1*nmapradii, sizeof(double complex));
+    int nregionsdone = 0;
+    reset_progress();
     #pragma omp parallel for num_threads(nthreads)
     for(int elthetbatch=0;elthetbatch<nthetbatches;elthetbatch++){
         int nregions_skip_print = mymax(1, nregions / 100);
@@ -1141,9 +1146,9 @@ void alloc_notomoMap4_disc_gggg(
         int offset = offset_per_thread*thisthread;
         for (int _elregion=0; _elregion<nregions; _elregion++){
             int elregion = (_elregion+offset)%nregions; // Try to evade collisions
-            if ((elregion%nregions_skip_print == 0)&&(thisthread==0)){
-                printf("Doing region %d/%d for thetabatch %d/%d\n",elregion,nregions,elthetbatch,nthetbatches);
-            }
+            #pragma omp atomic
+            nregionsdone += 1;
+            print_progress(nregionsdone, nthetbatches*nregions, verbose);
             //int region_debug = mymin(500,nregions-1);
             int lower1, upper1;
             lower1 = pixs_galind_bounds[elregion];
@@ -1307,7 +1312,7 @@ void alloc_notomoMap4_disc_gggg(
                     }
                 }
                 time2 = omp_get_wtime();
-                if ((elregion%nregions_skip_print == 0)&&(thisthread==0)&&(ind_inpix1==lower1)){
+                if ((verbose>1) && (elregion%nregions_skip_print == 0)&&(thisthread==0)&&(ind_inpix1==lower1)){
                     printf("Computed Gn for first gal in region %d/%d for thetabatch %d/%d in %.4f seconds\n",
                            elregion,nregions,elthetbatch,nthetbatches,(time2-time1));}
                 
@@ -1464,11 +1469,11 @@ void alloc_notomoMap4_disc_gggg(
                     }
                 }
                 time2 = omp_get_wtime();
-                if ((elregion%nregions_skip_print == 0)&&(thisthread==0)&&(ind_inpix1==lower1)){
+                if ((verbose>1) && (elregion%nregions_skip_print == 0)&&(thisthread==0)&&(ind_inpix1==lower1)){
                     printf("Allocated Ups for first gal in region %d/%d for thetabatch %d/%d in %.4f seconds for %d theta-combis\n",
                            elregion,nregions,elthetbatch,nthetbatches,(time2-time1),batch_nthetas);}
             }
-            if ((elregion%nregions_skip_print == 0)&&(thisthread==0)){
+            if ((verbose>1) && (elregion%nregions_skip_print == 0)&&(thisthread==0)){
                 printf("Done region %d/%d for thetabatch %d/%d\n",elregion,nregions,elthetbatch,nthetbatches);}
         }
         
@@ -1577,11 +1582,11 @@ void alloc_notomoMap4_disc_gggg(
             for (int elcomp=0;elcomp<8;elcomp++){
                 int map4ind = elcomp*nmapradii+elmapr;
                 int map4threadshift = thisthread*8*nmapradii;
-                printf("\nthread %d, elr %d, elcomp %d, allM4cont=%.20f ",
-                               thisthread, elmapr, elcomp, creal(allM4correlators[map4threadshift+map4ind]));
+                if (verbose>1){ printf("\nthread %d, elr %d, elcomp %d, allM4cont=%.20f ",
+                               thisthread, elmapr, elcomp, creal(allM4correlators[map4threadshift+map4ind])); }
             }
         }
-        if (thisthread>-1){printf("Done allocating 4pcfs for thetabatch %d/%d\n",elthetbatch,nthetbatches);}
+        if (verbose>1){printf("Done allocating 4pcfs for thetabatch %d/%d\n",elthetbatch,nthetbatches);}
             
         free(totcounts);
         free(totnorms);
@@ -1626,6 +1631,7 @@ void alloc_notomoMap4_disc_gggg(
             }
         }
     }    
+    if (verbose>0){ printf("\n"); }
     free(allM4correlators);
 }
 
@@ -1651,6 +1657,8 @@ void alloc_notomoMap4_tree_gggg(
     double *bin_centers, double complex *Upsilon_n, double complex *N_n, double complex *Gammas, double complex *Norms){
                
     double complex *allM4correlators = calloc(nthreads*8*1*nmapradii, sizeof(double complex));
+    int nregionsdone = 0;
+    reset_progress();
     #pragma omp parallel for num_threads(nthreads)
     for (int elthetbatch=0;elthetbatch<nthetbatches;elthetbatch++){
         int nregions_skip_print = mymax(1, nregions / 100);
@@ -1750,9 +1758,9 @@ void alloc_notomoMap4_tree_gggg(
         int offset = offset_per_thread*thisthread;
         for (int _elregion=0; _elregion<nregions; _elregion++){
             int elregion = (_elregion+offset)%nregions; // Try to evade collisions
-            if ((verbose>0) && (elregion%nregions_skip_print == 0)&&(thisthread==0)){
-                printf("Doing region %d/%d for thetabatch %d/%d\n",elregion,nregions,elthetbatch,nthetbatches);
-            }
+            #pragma omp atomic
+            nregionsdone += 1;
+            print_progress(nregionsdone, nthetbatches*nregions, verbose);
             //int region_debug = mymin(500,nregions-1);
             int lower1, upper1;
             lower1 = pixs_galind_bounds[elregion];
@@ -1920,7 +1928,7 @@ void alloc_notomoMap4_tree_gggg(
                     }
                 }
                 time2 = omp_get_wtime();
-                if ((verbose>0) && (elregion%nregions_skip_print == 0)&&(thisthread==0)&&(ind_inpix1==lower1)){
+                if ((verbose>1) && (elregion%nregions_skip_print == 0)&&(thisthread==0)&&(ind_inpix1==lower1)){
                     printf("Computed Gn for first gal in region %d/%d for thetabatch %d/%d in %.4f seconds\n",
                            elregion,nregions,elthetbatch,nthetbatches,(time2-time1));}                
                 
@@ -2081,11 +2089,11 @@ void alloc_notomoMap4_tree_gggg(
                     }
                 }
                 time2 = omp_get_wtime();
-                if ((verbose>0) && (elregion%nregions_skip_print == 0)&&(thisthread==0)&&(ind_inpix1==lower1)){
+                if ((verbose>1) && (elregion%nregions_skip_print == 0)&&(thisthread==0)&&(ind_inpix1==lower1)){
                     printf("Allocated Ups for first gal in region %d/%d for thetabatch %d/%d in %.4f seconds for %d theta-combis\n",
                            elregion,nregions,elthetbatch,nthetbatches,(time2-time1),batch_nthetas);}
             }
-            if ((verbose>0) && (elregion%nregions_skip_print == 0)&&(thisthread==0)){
+            if ((verbose>1) && (elregion%nregions_skip_print == 0)&&(thisthread==0)){
                 printf("Done region %d/%d for thetabatch %d/%d\n",elregion,nregions,elthetbatch,nthetbatches);}
         }
         
@@ -2224,12 +2232,12 @@ void alloc_notomoMap4_tree_gggg(
                 for (int elcomp=0;elcomp<8;elcomp++){
                     int map4ind = elcomp*nmapradii+elmapr;
                     int map4threadshift = thisthread*8*nmapradii;
-                    printf("\nthread %d, elr %d, elcomp %d, allM4cont=%.20f ",
-                                thisthread, elmapr, elcomp, creal(allM4correlators[map4threadshift+map4ind]));
+                    if (verbose>1){ printf("\nthread %d, elr %d, elcomp %d, allM4cont=%.20f ",
+                                thisthread, elmapr, elcomp, creal(allM4correlators[map4threadshift+map4ind])); }
                 }
             }
         }
-        if ((verbose>0) && (thisthread>-1)){printf("Done allocating 4pcfs for thetabatch %d/%d\n",elthetbatch,nthetbatches);}
+        if (verbose>1){printf("Done allocating 4pcfs for thetabatch %d/%d\n",elthetbatch,nthetbatches);}
             
         free(rshift_index_matcher_hash);
         free(rshift_pixs_galind_bounds);
@@ -2280,6 +2288,7 @@ void alloc_notomoMap4_tree_gggg(
             }
         }
     }    
+    if (verbose>0){ printf("\n"); }
     free(allM4correlators);
 }
 
@@ -2289,7 +2298,7 @@ void alloc_notomoGammans_discrete_gnnn(
     int *index_matcher_lens, int *pixs_galind_bounds_lens, int *pix_gals_lens, int nregions, 
     double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n,
     int nmax, double rmin, double rmax, int nbinsr, int dccorr,
-    int nthreads, double *bin_centers, double complex *Gtilde_n, double complex *N_n){
+    int nthreads, int verbose, double *bin_centers, double complex *Gtilde_n, double complex *N_n){
 
     int thistmpnshift, thisnshift, thisnrshift, thisthreadnrshift;
     int _nnvals_Upsn = 2*nmax+1;
@@ -2302,8 +2311,8 @@ void alloc_notomoGammans_discrete_gnnn(
     double *totcounts = calloc(nbinsr, sizeof(double));
     double *totnorms = calloc(nbinsr, sizeof(double));
 
-    int ndone = 0;
-    int ngal_per_update = mymax(1,ngal_source/1000);
+    int nregionsdone = 0;
+    reset_progress();
     #pragma omp parallel for num_threads(nthreads)
     for (int ind_gal=0;ind_gal<ngal_source;ind_gal++){
         int thisthread = omp_get_thread_num();
@@ -2476,13 +2485,11 @@ void alloc_notomoGammans_discrete_gnnn(
         free(nextW3ns);
 
 
-        #pragma omp critical
-        {
-            ndone += 1;
-            if (ndone%ngal_per_update == 0){printf("\nDone %.2f percent",100 * (double) (ndone)/(double)(ngal_source));}
-        }
+        #pragma omp atomic
+        nregionsdone += 1;
+        print_progress(nregionsdone, ngal_source, verbose);
     }
-    printf("\nDone parallel allocation of Gtilden \n");
+    if (verbose>0){ printf("\n"); }
     
     // Accumulate Upsilon_n and N_n
     // Given the openmp implementation this needs to be done sequentially...however,
@@ -2504,8 +2511,8 @@ void alloc_notomoGammans_discrete_gnnn(
             }
         }
     }
-    printf("\nDone parallel accumulation of Gtilden \n");
-    
+    if (verbose>1){ printf("\nDone parallel accumulation of Gtilden \n"); }
+
     // Accumulate the bin distances and weights
     for (int thisthread=0; thisthread<nthreads; thisthread++){
         for (int elbinr=0; elbinr<nbinsr; elbinr++){
@@ -2517,18 +2524,18 @@ void alloc_notomoGammans_discrete_gnnn(
     for (int elbinr=0; elbinr<nbinsr; elbinr++){
         if (totnorms[elbinr] != 0){
             bin_centers[elbinr] = totcounts[elbinr]/totnorms[elbinr];
-            printf("%.3f ",bin_centers[elbinr]);
+            if (verbose>1){ printf("%.3f ",bin_centers[elbinr]); }
         }
-        printf("-1 ");
+        if (verbose>1){ printf("-1 "); }
     }
-    printf("\nDone accumulation of bin centers \n");
+    if (verbose>1){ printf("\nDone accumulation of bin centers \n"); }
     free(allcounts);
     free(allnorms);
     free(totcounts);
     free(totnorms);
     free(allGtilden);
     free(allNormn);
-    printf("\nDone freeing stuff. \n");
+    if (verbose>1){ printf("\nDone freeing stuff. \n"); }
 }
 
 
@@ -2556,6 +2563,7 @@ void alloc_notomoGammans_tree_gnnn(
     // Helper array that checks how many regions have been already computed
     int *regionsdone = calloc(nregions, sizeof(int));
     int nregionsdone = 0;
+    reset_progress();
     
     #pragma omp parallel for num_threads(nthreads)
     for(int elthread=0;elthread<nthreads;elthread++){
@@ -2936,11 +2944,13 @@ void alloc_notomoMapNap3_tree_gnnn(
     int nmax, double rmin, double rmax, int nbinsr, int dccorr,
     int *nindices, int len_nindices, double *phibins, double *dbinsphi, int nbinsphi,
     int *thetacombis_batches, int *nthetacombis_batches, int *cumthetacombis_batches, int nthetbatches,
-    int nthreads, double *apradii, int napradii, double complex *NM3correlator, 
+    int nthreads, int verbose, double *apradii, int napradii, double complex *NM3correlator,
     int alloc_4pcfmultipoles, int alloc_4pcfreal,
     double *bin_centers, double complex *Gtilde_n, double complex *N_n, double complex *Gtilde, double complex *Norms){
                
     double complex *allNM3correlator = calloc(nthreads*1*1*napradii, sizeof(double complex));
+    int nregionsdone = 0;
+    reset_progress();
     #pragma omp parallel for num_threads(nthreads)
     for (int elthetbatch=0;elthetbatch<nthetbatches;elthetbatch++){
         int nregions_skip_print = mymax(1, nregions / 100);
@@ -3031,9 +3041,9 @@ void alloc_notomoMapNap3_tree_gnnn(
         int offset = offset_per_thread*thisthread;
         for (int _elregion=0; _elregion<nregions; _elregion++){
             int elregion = (_elregion+offset)%nregions; // Try to evade collisions
-            if ((elregion%nregions_skip_print == 0)&&(thisthread==0)){
-                printf("Doing region %d/%d for thetabatch %d/%d\n",elregion,nregions,elthetbatch,nthetbatches);
-            }
+            #pragma omp atomic
+            nregionsdone += 1;
+            print_progress(nregionsdone, nthetbatches*nregions, verbose);
             //int region_debug = mymin(500,nregions-1);
             int lower1, upper1;
             lower1 = pixs_galind_bounds_source[elregion];
@@ -3130,7 +3140,7 @@ void alloc_notomoMapNap3_tree_gnnn(
                     }
                 }
                 time2 = omp_get_wtime();
-                if ((elregion%nregions_skip_print == 0)&&(thisthread==0)&&(ind_inpix1==lower1)){
+                if ((verbose>1) && (elregion%nregions_skip_print == 0)&&(thisthread==0)&&(ind_inpix1==lower1)){
                     printf("Computed Wn for first gal in region %d/%d for thetabatch %d/%d in %.4f seconds\n",
                            elregion,nregions,elthetbatch,nthetbatches,(time2-time1));}                
                 
@@ -3199,11 +3209,11 @@ void alloc_notomoMapNap3_tree_gnnn(
                     }                             
                 }
                 time2 = omp_get_wtime();
-                if ((elregion%nregions_skip_print == 0)&&(thisthread==0)&&(ind_inpix1==lower1)){
+                if ((verbose>1) && (elregion%nregions_skip_print == 0)&&(thisthread==0)&&(ind_inpix1==lower1)){
                     printf("Allocated Gtilden for first gal in region %d/%d for thetabatch %d/%d in %.4f seconds for %d theta-combis\n",
                            elregion,nregions,elthetbatch,nthetbatches,(time2-time1),batch_nthetas);}
             }
-            if ((elregion%nregions_skip_print == 0)&&(thisthread==0)){
+            if ((verbose>1) && (elregion%nregions_skip_print == 0)&&(thisthread==0)){
                 printf("Done region %d/%d for thetabatch %d/%d\n",elregion,nregions,elthetbatch,nthetbatches);}
         }
         
@@ -3231,7 +3241,7 @@ void alloc_notomoMapNap3_tree_gnnn(
         double complex *thisnpcf = calloc(1*batchGtilde_thetshift, sizeof(double complex));
         double complex *thisnpcf_norm = calloc(batchGtilde_thetshift, sizeof(double complex));
         for (int elb=0;elb<batch_nthetas;elb++){
-            if (thisthread==0){
+            if ((verbose>1) && (thisthread==0)){
                 printf("Done %.4f per cent of multipole-to-MapNap3 conversion\r",100.* (float) elb/batch_nthetas);}
             // 1)
             int nbshift, elb1, elb2, elb3, elb1t, elb2t, elb3t;
@@ -3319,7 +3329,7 @@ void alloc_notomoMapNap3_tree_gnnn(
             }
         }
         
-        if (thisthread>-1){printf("Done allocating 4pcfs for thetabatch %d/%d\n",elthetbatch,nthetbatches);}
+        if (verbose>1){printf("Done allocating 4pcfs for thetabatch %d/%d\n",elthetbatch,nthetbatches);}
             
         free(rshift_index_matcher);
         free(rshift_pixs_galind_bounds);
@@ -3356,6 +3366,7 @@ void alloc_notomoMapNap3_tree_gnnn(
             NM3correlator[elapr] += allNM3correlator[elthread*napradii+elapr];
         }
     }    
+    if (verbose>0){ printf("\n"); }
     free(allNM3correlator);
 }
 
@@ -3386,6 +3397,7 @@ void alloc_notomoGammans_tree_nnnn(
     // Helper array that checks how many regions have been already computed
     int *regionsdone = calloc(nregions, sizeof(int));
     int nregionsdone = 0;
+    reset_progress();
     
     #pragma omp parallel for num_threads(nthreads)
     for(int elthread=0;elthread<nthreads;elthread++){
@@ -3730,11 +3742,13 @@ void alloc_notomoNap4_tree_nnnn(
     int *index_matcher_hash, int *pixs_galind_bounds, int *pix_gals, int nregions, 
     double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n, 
     int *thetacombis_batches, int *nthetacombis_batches, int *cumthetacombis_batches, int nthetbatches,
-    int nthreads, double *napradii, int nnapradii, double complex *N4correlators, 
+    int nthreads, int verbose, double *napradii, int nnapradii, double complex *N4correlators, 
     int alloc_4pcfmultipoles, int alloc_4pcfreal,
     double *bin_centers, double complex *N_n, double complex *Counts){
                
     double complex *allN4correlators = calloc(nthreads*1*nnapradii, sizeof(double complex));
+    int nregionsdone = 0;
+    reset_progress();
     #pragma omp parallel for num_threads(nthreads)
     for (int elthetbatch=0;elthetbatch<nthetbatches;elthetbatch++){
         int nregions_skip_print = mymax(1, nregions / 100);
@@ -3825,9 +3839,9 @@ void alloc_notomoNap4_tree_nnnn(
         int offset = offset_per_thread*thisthread;
         for (int _elregion=0; _elregion<nregions; _elregion++){
             int elregion = (_elregion+offset)%nregions; // Try to evade collisions
-            if ((elregion%nregions_skip_print == 0)&&(thisthread==0)){
-                printf("Doing region %d/%d for thetabatch %d/%d\n",elregion,nregions,elthetbatch,nthetbatches);
-            }
+            #pragma omp atomic
+            nregionsdone += 1;
+            print_progress(nregionsdone, nthetbatches*nregions, verbose);
             //int region_debug = mymin(500,nregions-1);
             int lower1, upper1;
             lower1 = pixs_galind_bounds[elregion];
@@ -3922,7 +3936,7 @@ void alloc_notomoNap4_tree_nnnn(
                     }
                 }
                 time2 = omp_get_wtime();
-                if ((elregion%nregions_skip_print == 0)&&(thisthread==0)&&(ind_inpix1==lower1)){
+                if ((verbose>1) && (elregion%nregions_skip_print == 0)&&(thisthread==0)&&(ind_inpix1==lower1)){
                     printf("Computed Wn for first gal in region %d/%d for thetabatch %d/%d in %.4f seconds\n",
                            elregion,nregions,elthetbatch,nthetbatches,(time2-time1));
                 } 
@@ -3983,11 +3997,11 @@ void alloc_notomoNap4_tree_nnnn(
                 }
                 
                 time2 = omp_get_wtime();
-                if ((elregion%nregions_skip_print == 0)&&(thisthread==0)&&(ind_inpix1==lower1)){
+                if ((verbose>1) && (elregion%nregions_skip_print == 0)&&(thisthread==0)&&(ind_inpix1==lower1)){
                     printf("Allocated Nns for first gal in region %d/%d for thetabatch %d/%d in %.4f seconds for %d theta-combis\n",
                            elregion,nregions,elthetbatch,nthetbatches,(time2-time1),batch_nthetas);
                 }
-                if ((elregion%nregions_skip_print == 0)&&(thisthread==0)&&(ind_inpix1==lower1)){
+                if ((verbose>1) && (elregion%nregions_skip_print == 0)&&(thisthread==0)&&(ind_inpix1==lower1)){
                     printf("Done region %d/%d for thetabatch %d/%d\n",elregion,nregions,elthetbatch,nthetbatches);
                 }
                 
@@ -4017,7 +4031,7 @@ void alloc_notomoNap4_tree_nnnn(
         double complex *thisN_n_rec = calloc(n2n3combis_rec, sizeof(double complex));
         double complex *thisnpcf = calloc(batchgamma_thetshift, sizeof(double complex));
         for (int elb=0;elb<batch_nthetas;elb++){
-            if (thisthread==0){
+            if ((verbose>1) && (thisthread==0)){
                 printf("Done %.4f per cent of multipole-to-Nap4 conversion\r",100.* (float) elb/batch_nthetas);}
             // 1)
             
@@ -4110,12 +4124,12 @@ void alloc_notomoNap4_tree_nnnn(
         for (int elnapr=0; elnapr<nnapradii; elnapr++){
             int nap4ind = elnapr;
             int nap4threadshift = thisthread*nnapradii;
-            printf("\nthread %d, elr %d, elcomp %d, allN4cont=%.20f ",
-                           thisthread, elnapr, 0, creal(allN4correlators[nap4threadshift+nap4ind]));
+            if (verbose>1){ printf("\nthread %d, elr %d, elcomp %d, allN4cont=%.20f ",
+                           thisthread, elnapr, 0, creal(allN4correlators[nap4threadshift+nap4ind])); }
         }
         
             
-        if (thisthread>-1){printf("Done allocating 4pcfs for thetabatch %d/%d\n",elthetbatch,nthetbatches);}
+        if (verbose>1){printf("Done allocating 4pcfs for thetabatch %d/%d\n",elthetbatch,nthetbatches);}
 
         free(rshift_index_matcher_hash);
         free(rshift_pixs_galind_bounds);
@@ -4153,6 +4167,7 @@ void alloc_notomoNap4_tree_nnnn(
             N4correlators[nap4ind] += allN4correlators[nap4threadshift+nap4ind];
         }
     }
+    if (verbose>0){ printf("\n"); }
     free(allN4correlators);
 }
 
@@ -4185,7 +4200,7 @@ void alloc_notomoNap4_doubletree_nnnn(
     int *index_matcher_hash, int *pixs_galind_bounds, int *pix_gals, int nregions,
     double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n,
     int *thetacombis_batches, int *nthetacombis_batches, int *cumthetacombis_batches, int nthetbatches,
-    int nthreads, double *napradii, int nnapradii, double complex *N4correlators,
+    int nthreads, int verbose, double *napradii, int nnapradii, double complex *N4correlators,
     int alloc_4pcfmultipoles, int alloc_4pcfreal,
     double *bin_centers, double complex *N_n, double complex *Counts){
 
@@ -4245,8 +4260,13 @@ void alloc_notomoNap4_doubletree_nnnn(
     double *tmp_totcounts = calloc(nthreads*nbinsr, sizeof(double));
     double *tmp_totnorms  = calloc(nthreads*nbinsr, sizeof(double));
 
+    int nregionsdone = 0;
+    reset_progress();
     #pragma omp parallel for num_threads(nthreads)
     for (long ic=0; ic<ncache; ic++){
+        #pragma omp atomic
+        nregionsdone += 1;
+        print_progress(nregionsdone, (int)ncache, verbose);
         int thisthread = omp_get_thread_num();
         int ind_inpix1 = (int) ic;
         int ind_gal = pix_gals[ind_inpix1];
@@ -4323,6 +4343,7 @@ void alloc_notomoNap4_doubletree_nnnn(
             }
         }
     }
+    if (verbose>0){ printf("\n"); }
 
     // Reduce bin centers
     double *totcounts = calloc(nbinsr, sizeof(double));
@@ -4538,7 +4559,7 @@ void alloc_nnnn_tree(
     int *index_matcher_hash, int *pixs_galind_bounds, int *pix_gals, int nregions,
     double pix1_start, double pix1_d, int pix1_n, double pix2_start, double pix2_d, int pix2_n,
     int *thetacombis_batches, int *nthetacombis_batches, int *cumthetacombis_batches, int nthetbatches,
-    int nthreads, double memory_bound, double *bin_centers, double complex *N_n){
+    int nthreads, double memory_bound, int verbose, double *bin_centers, double complex *N_n){
 
     int nmax_alloc = 2*nmax+1;
     int nbinsz = 1;
@@ -4624,8 +4645,8 @@ void alloc_nnnn_tree(
             exit(1);
         }
     }
-    printf("alloc_nnnn_tree: %ld inner / %ld total galaxies, %d block(s) of <=%ld gal (cache ~%.1f GiB), %d chunk(s)/block\n",
-           ncache, ngal_all, n_iter, gals_per_iter, gals_per_iter*bytes_per_gal/1073741824.0, nchunks);
+    if (verbose>1){ printf("alloc_nnnn_tree: %ld inner / %ld total galaxies, %d block(s) of <=%ld gal (cache ~%.1f GiB), %d chunk(s)/block\n",
+           ncache, ngal_all, n_iter, gals_per_iter, gals_per_iter*bytes_per_gal/1073741824.0, nchunks); }
 
     double *tmp_totcounts = calloc(nthreads*nbinsr, sizeof(double));
     double *tmp_totnorms  = calloc(nthreads*nbinsr, sizeof(double));
@@ -4633,6 +4654,8 @@ void alloc_nnnn_tree(
     // Outer loop over galaxy blocks. N_n is accumulated across blocks (the multipole
     // reconstruction getMultipolesFromSymm_NNNN is linear, so summing per-block
     // reconstructions equals reconstructing the full sum). N_n starts zeroed.
+    int nregionsdone = 0;
+    reset_progress();
     for (int it=0; it<n_iter; it++){
         long g0 = (long)it*gals_per_iter;
         long g1 = g0 + gals_per_iter; if (g1>ncache){ g1 = ncache; }
@@ -4643,6 +4666,9 @@ void alloc_nnnn_tree(
         //////////////////////////////
         #pragma omp parallel for num_threads(nthreads)
         for (long il=0; il<nblock; il++){
+            #pragma omp atomic
+            nregionsdone += 1;
+            print_progress(nregionsdone, (int)ncache, verbose);
             int thisthread = omp_get_thread_num();
             int ind_inpix1 = centralinds[g0 + il];
             int ind_gal = pix_gals[ind_inpix1];
@@ -4841,6 +4867,7 @@ void alloc_nnnn_tree(
     free(Wncache); free(W2ncache); free(W3ncache);
     free(tmp_totcounts); free(tmp_totnorms); free(totcounts); free(totnorms);
     free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
+    if (verbose>0){ printf("\n"); }
     free(centralinds);
 }
 
@@ -4875,7 +4902,7 @@ void alloc_nnnn_tree_spherical(
     double *red_ra, double *red_sindec, double *red_cosdec, int *rshift_red,
     long *cell_pix, int *cell_redbounds, int *rshift_cellpix, int *rshift_cellbounds,
     int *thetacombis_batches, int *nthetacombis_batches, int *cumthetacombis_batches, int nthetbatches,
-    int nthreads, double memory_bound, double *bin_centers, double complex *N_n){
+    int nthreads, double memory_bound, int verbose, double *bin_centers, double complex *N_n){
 
     int nmax_alloc = 2*nmax+1;
     int nbinsz = 1;
@@ -4940,12 +4967,14 @@ void alloc_nnnn_tree_spherical(
             exit(1);
         }
     }
-    printf("alloc_nnnn_tree_spherical: %ld inner / %d total galaxies, %d block(s) of <=%ld gal (cache ~%.1f GiB), %d chunk(s)/block\n",
-           ncache, ngal, n_iter, gals_per_iter, gals_per_iter*bytes_per_gal/1073741824.0, nchunks);
+    if (verbose>1){ printf("alloc_nnnn_tree_spherical: %ld inner / %d total galaxies, %d block(s) of <=%ld gal (cache ~%.1f GiB), %d chunk(s)/block\n",
+           ncache, ngal, n_iter, gals_per_iter, gals_per_iter*bytes_per_gal/1073741824.0, nchunks); }
 
     double *tmp_totcounts = calloc(nthreads*nbinsr, sizeof(double));
     double *tmp_totnorms  = calloc(nthreads*nbinsr, sizeof(double));
 
+    int nregionsdone = 0;
+    reset_progress();
     for (int it=0; it<n_iter; it++){
         long g0 = (long)it*gals_per_iter;
         long g1 = g0 + gals_per_iter; if (g1>ncache){ g1 = ncache; }
@@ -4956,6 +4985,9 @@ void alloc_nnnn_tree_spherical(
         //////////////////////////////
         #pragma omp parallel for num_threads(nthreads)
         for (long il=0; il<nblock; il++){
+            #pragma omp atomic
+            nregionsdone += 1;
+            print_progress(nregionsdone, (int)ncache, verbose);
             int thisthread = omp_get_thread_num();
             int ic = centralinds[g0 + il];        // central (apex) catalogue index
             double cx = cen_vx[ic], cy = cen_vy[ic], cz = cen_vz[ic];
@@ -5159,6 +5191,7 @@ void alloc_nnnn_tree_spherical(
     for (int c=0;c<nchunks;c++){ free(Wncache[c]); free(W2ncache[c]); free(W3ncache[c]); }
     free(Wncache); free(W2ncache); free(W3ncache);
     free(tmp_totcounts); free(tmp_totnorms); free(totcounts); free(totnorms);
+    if (verbose>0){ printf("\n"); }
     free(centralinds);
 }
 
@@ -5359,8 +5392,13 @@ void alloc_nnnn_doubletree(
     double *t_xband = calloc(nthreads_cross, sizeof(double));
     double t_cb_wall0 = omp_get_wtime(); clock_t t_cb_cpu0 = clock();
 
+    int nregionsdone = 0;
+    reset_progress();
     #pragma omp parallel for num_threads(nthreads_cross) schedule(dynamic)
     for (int fr=0; fr<nfilledregions; fr++){
+        #pragma omp atomic
+        nregionsdone += 1;
+        print_progress(nregionsdone, nfilledregions, verbose);
         int thisthread = omp_get_thread_num();
         int elregion = filledregions[fr];
         double complex *myN_n = tmpN_n + (long)thisthread*Nn_size;
@@ -5888,6 +5926,7 @@ void alloc_nnnn_doubletree(
         free(Wncache); free(wWncache); free(W2ncache); free(wW2ncache); free(pix2redpix);
         free(ngal_in_pix); free(matchers_resoshift); free(cumresoshift);
     }
+    if (verbose>0){ printf("\n"); }
     // Per-phase timers (CPU-s = summed over threads). Only printed at verbosity>=2;
     // the per-(thread,band) accumulators are always collected (negligible overhead).
     if (verbose){

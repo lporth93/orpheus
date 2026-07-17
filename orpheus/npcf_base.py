@@ -292,7 +292,7 @@ class BinnedNPCF:
             self.clib.ng_slab.argtypes = [
                 ct.POINTER(MultiresoCatalog), ct.POINTER(MultiresoCatalog),
                 ct.POINTER(NavHash), ct.POINTER(BinningParams),
-                ct.c_int32, ct.c_int32, ct.c_int32, ct.POINTER(NPCFOutput)]
+                ct.c_int32, ct.c_int32, ct.c_int32, ct.c_int32, ct.POINTER(NPCFOutput)]
 
             # Computation of NG using the Doubletree-approximation
             self.clib.alloc_ng_doubletree.restype = ct.c_void_p
@@ -453,16 +453,16 @@ class BinnedNPCF:
             # Tree-based estimator of non-tomographic Map^4 statistics (low-mem)
             self.clib.alloc_notomoNap4_tree_nnnn.restype = ct.c_void_p
             self.clib.alloc_notomoNap4_tree_nnnn.argtypes = [
-                p_f64, p_f64, p_f64, p_f64, ct.c_int32, 
+                p_f64, p_f64, p_f64, p_f64, ct.c_int32,
                 ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
                 p_i32, ct.c_int32, p_f64, p_f64, ct.c_int32,
                 ct.c_int32, p_f64, p_i32,
-                p_f64, p_f64, p_f64, p_f64, 
-                p_i32, p_i32, p_i32, ct.c_int32, 
-                ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, 
-                p_i32, p_i32, p_i32, ct.c_int32, 
-                ct.c_int32, p_f64, ct.c_int32, np.ctypeslib.ndpointer(dtype=np.complex128),
-                ct.c_int32, ct.c_int32, 
+                p_f64, p_f64, p_f64, p_f64,
+                p_i32, p_i32, p_i32, ct.c_int32,
+                ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32,
+                p_i32, p_i32, p_i32, ct.c_int32,
+                ct.c_int32, ct.c_int32, p_f64, ct.c_int32, np.ctypeslib.ndpointer(dtype=np.complex128),
+                ct.c_int32, ct.c_int32,
                 np.ctypeslib.ndpointer(dtype=np.float64),
                 np.ctypeslib.ndpointer(dtype=np.complex128),np.ctypeslib.ndpointer(dtype=np.complex128)]
 
@@ -477,7 +477,7 @@ class BinnedNPCF:
                 p_i32, p_i32, p_i32, ct.c_int32,
                 ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32,
                 p_i32, p_i32, p_i32, ct.c_int32,
-                ct.c_int32, p_f64, ct.c_int32, np.ctypeslib.ndpointer(dtype=np.complex128),
+                ct.c_int32, ct.c_int32, p_f64, ct.c_int32, np.ctypeslib.ndpointer(dtype=np.complex128),
                 ct.c_int32, ct.c_int32,
                 np.ctypeslib.ndpointer(dtype=np.float64),
                 np.ctypeslib.ndpointer(dtype=np.complex128),np.ctypeslib.ndpointer(dtype=np.complex128)]
@@ -493,7 +493,7 @@ class BinnedNPCF:
                 p_i32, p_i32, p_i32, ct.c_int32,
                 ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32,
                 p_i32, p_i32, p_i32, ct.c_int32,
-                ct.c_int32, ct.c_double,
+                ct.c_int32, ct.c_double, ct.c_int32,
                 np.ctypeslib.ndpointer(dtype=np.float64),
                 np.ctypeslib.ndpointer(dtype=np.complex128)]
 
@@ -511,7 +511,7 @@ class BinnedNPCF:
                 p_f64, p_f64, p_f64, p_i32,
                 p_i64, p_i32, p_i32, p_i32,
                 p_i32, p_i32, p_i32, ct.c_int32,
-                ct.c_int32, ct.c_double,
+                ct.c_int32, ct.c_double, ct.c_int32,
                 np.ctypeslib.ndpointer(dtype=np.float64),
                 np.ctypeslib.ndpointer(dtype=np.complex128)]
 
@@ -555,12 +555,12 @@ class BinnedNPCF:
             # Discrete  estimator of non-tomographic GNNN statistics
             self.clib.alloc_notomoGammans_discrete_gnnn.restype = ct.c_void_p
             self.clib.alloc_notomoGammans_discrete_gnnn.argtypes = [
-                p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, ct.c_int32, 
+                p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, ct.c_int32,
                 p_f64, p_f64, p_f64, ct.c_int32,
                 p_i32, p_i32, p_i32, ct.c_int32,
                 ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32,
                 ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
-                ct.c_int32, np.ctypeslib.ndpointer(dtype=np.float64),
+                ct.c_int32, ct.c_int32, np.ctypeslib.ndpointer(dtype=np.float64),
                 np.ctypeslib.ndpointer(dtype=np.complex128),np.ctypeslib.ndpointer(dtype=np.complex128)]
 
             # Tree-based estimator of non-tomographic GNNN statistics
@@ -587,8 +587,8 @@ class BinnedNPCF:
                 ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
                 p_i32, ct.c_int32, p_f64, p_f64, ct.c_int32,
                 p_i32, p_i32, p_i32, ct.c_int32,
-                ct.c_int32, p_f64, ct.c_int32, np.ctypeslib.ndpointer(dtype=np.complex128),
-                ct.c_int32, ct.c_int32, np.ctypeslib.ndpointer(dtype=np.float64), 
+                ct.c_int32, ct.c_int32, p_f64, ct.c_int32, np.ctypeslib.ndpointer(dtype=np.complex128),
+                ct.c_int32, ct.c_int32, np.ctypeslib.ndpointer(dtype=np.float64),
                 np.ctypeslib.ndpointer(dtype=np.complex128),np.ctypeslib.ndpointer(dtype=np.complex128),
                 np.ctypeslib.ndpointer(dtype=np.complex128),np.ctypeslib.ndpointer(dtype=np.complex128)]
             
