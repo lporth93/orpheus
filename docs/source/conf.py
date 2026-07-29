@@ -4,7 +4,7 @@
 # list see the documentation:
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 
-# -- Path setup --------------------------------------------------------------
+## Path setup ##
 
 # If extensions (or modules to document with autodoc) are in another directory,
 # add these directories to sys.path here. If the directory is relative to the
@@ -15,17 +15,17 @@ import sys
 sys.path.insert(0, os.path.abspath('../../orpheus/'))
 
 
-# -- Project information -----------------------------------------------------
+## Project information ##
 
 project = 'orpheus'
 copyright = '2026, L. Porth'
 author = 'L. Porth'
 
 # The full version, including alpha/beta/rc tags
-release = '0.1'
-version = '0.1'
+release = '0.3.0'
+version = '0.3.0'
 
-# -- General configuration ------------------------------------------------
+## General configuration ##
 
 # If your documentation needs a minimal Sphinx version, state it here.
 # needs_sphinx = '1.0'

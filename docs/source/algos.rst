@@ -18,7 +18,7 @@ In `orpheus` we make use of the multipole decomposition of the :math:`N\mathrm{P
 by Chen & Szapudi (2005, ApJ, 635, 743), Slepian & Eisenstein (2015, MNRAS, 454, 4142),
 and Philcox et al. (2022, MNRAS, 509, 2457). In particular, we also include the expressions for the 
 correlations of non-spin-0 fields as introduced in Porth et al (2024, A&A, 689, 227) and extended in
-Porth et al (2025, arXiv:xxxx.xxxx). The multipole components of some hypothetic 
+Porth et al (2025, arXiv:2509.07974). The multipole components of some hypothetic 
 *N* point correlator, :math:`\mathscr{C}`, are related to the real-space components as 
 
 .. math::

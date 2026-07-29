@@ -7,3 +7,4 @@ Tutorial for computing third-order statistics
    notebooks/GG_GGG_tutorial_advanced
    notebooks/GNN_NGG_tutorial
    notebooks/GNN_NGG_on_MICEv2
+   notebooks/IA_in_Flamingo

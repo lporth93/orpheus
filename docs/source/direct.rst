@@ -15,3 +15,4 @@ features in common about how they are constructed. The common features are docum
 
 .. autoclass:: orpheus.direct.DirectEstimator
     :members:
+    :no-index:
