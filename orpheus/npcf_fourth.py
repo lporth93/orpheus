@@ -2,13 +2,19 @@ import numpy as np
 import ctypes as ct
 from functools import reduce
 import operator
-from scipy.interpolate import interp1d
+from scipy.interpolate import interp1d, RegularGridInterpolator
 
 from .utils import flatlist, gen_thetacombis_fourthorder, gen_n2n3indices_Upsfourth
 from .npcf_base import BinnedNPCF
 from .npcf_second import GGCorrelation
+from .multires_structs import (build_flat_catalog_struct, build_flat_navhash_struct,
+                               build_catalog_struct, build_navhash_struct,
+                               build_tree_params_struct, build_binning_struct,
+                               build_gnnn_output, build_fourth_params, build_clustcorr,
+                               build_gggg_output, build_nnnn_output,
+                               build_spherical_central_catalog_struct)
 
-__all__ = ["NNNNCorrelation_NoTomo", "GGGGCorrelation_NoTomo"]
+__all__ = ["NNNNCorrelation_NoTomo", "GGGGCorrelation_NoTomo", "GNNNCorrelation_NoTomo"]
 
 class NNNNCorrelation_NoTomo(BinnedNPCF):
     r""" Class containing methods to measure and obtain statistics that are built
@@ -41,11 +47,6 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
         self.thetabatchsize_max = thetabatchsize_max
         self.nbinsz = 1
         self.nzcombis = 1
-        # Opt-in full-sky estimation: when True (and the catalog is spherical) the
-        # multipoles-only Tree path dispatches to the curved-sky C estimator
-        # (geodesic kernels + nested-HEALPix navigation). Default False keeps the
-        # flat-sky path byte-identical. See alloc_nnnn_tree_spherical /
-        # Catalog.multihash_spherical and Tutorials_private/fullsky_covariance_notes.md.
         self.process_spherical = bool(process_spherical)
 
     def saveinst(self, path_save, fname, extr_pars=None):
@@ -132,9 +133,8 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
         if hasintegratedstats:
             if lowmem in [False, None]:
                 if not lowmem:
-                    print("Low-memory computation enforced for integrated measures of the 4pcf. " +
+                    print("Warning: Lowmem computation recommended for integrated measures of the 4pcf. " +
                           "Set `lowmem` from `%s` to `True`"%str(lowmem))
-                lowmem = True
         else:
             if lowmem in [None, False]:
                 maxlen = 0
@@ -168,8 +168,6 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
         sc = (2*_nmax+1,2*_nmax+1,self.nzcombis,self.nbinsr,self.nbinsr,self.nbinsr)
         szr = (self.nbinsz, self.nbinsr)
         s4pcf = (self.nzcombis,self.nbinsr,self.nbinsr,self.nbinsr,_nphis,_nphis)
-        # Opt-in full-sky path: dispatch to the curved-sky estimator only when the
-        # flag is set AND the catalog is spherical (never mix geometries).
         use_spherical = self.process_spherical and getattr(cat, 'geometry', 'flat2d') == 'spherical'
         if self.process_spherical and not use_spherical:
             raise ValueError("process_spherical=True requires a spherical catalog "
@@ -209,13 +207,12 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
         else:
             mapradii = __fillflag*np.ones(__lenflag).astype(np.float64)
             N4correlators =  __fillflag*np.ones(__lenflag).astype(np.complex128)
+        # Zero radii tell the C kernel to skip the aperture integration and the npcf conversion
+        _nmapradii = len(mapradii) if hasintegratedstats else 0
 
         
-        # Build args based on chosen methods
+        # Build structs
         if use_spherical:
-            # Curved-sky scalar 4PCF multipoles (Tree, multipoles-only). Self-contained:
-            # geodesic kernels + nested-HEALPix navigation via Catalog.multihash_spherical.
-            # All separations passed to / returned from C are in radians.
             from healpy import nside2resol
             if self.method == "DoubleTree":
                 raise NotImplementedError(
@@ -228,7 +225,7 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
                 raise NotImplementedError(
                     "Curved-sky NNNN currently supports the multipoles-only path; request "
                     "statistics='4pcf_multipole' (no 4pcf_real / aperture statistics).")
-            # theta- and multipole-index masks (geometry-independent)
+            # Get theta- and multipole-index masks
             _resradial = gen_thetacombis_fourthorder(nbinsr=self.nbinsr, nthreads=self.nthreads,
                                                      batchsize=batchsize, batchsize_max=self.thetabatchsize_max,
                                                      ordered=True, custom=custom_thetacombis,
@@ -236,7 +233,7 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
             _, _, thetacombis_batches, cumnthetacombis_batches, nthetacombis_batches, nbatches = _resradial
             assert(self.nmaxs[0]==self.nmaxs[1])
             _shape, _inds, _n2s, _n3s = gen_n2n3indices_Upsfourth(self.nmaxs[0])
-            # HEALPix nside per radial band: band cell size tree_resos[r] -> smallest
+            # Healpix nside per radial band: band cell size tree_resos[r] -> smallest
             # nside whose pixel is no larger; tree_resos[r]==0 marks the discrete band.
             _deg2rad = np.pi/180.
             def _nside_for(target_rad):
@@ -247,149 +244,108 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
             nsides = [0 if self.tree_resos[r]==0. else _nside_for(self.tree_resos[r]*_deg2rad)
                       for r in range(self.tree_nresos)]
             nside_hash = _nside_for(max(self.min_sep, 0.5*self.tree_redges[1])*_deg2rad)
-            # Geometry-aware dispatch: cat.geometry=='spherical' routes to the
-            # nested-HEALPix bundle (identical payload to multihash_spherical).
             sph = cat.multihash_bundle(reso_redges=self.tree_redges, nsides=nsides,
                                        nside_hash=nside_hash,
                                        verbose=self._verbose_python)
             assert sph['geometry'] == 'spherical'
-            args_thetas = (thetacombis_batches, nthetacombis_batches, cumnthetacombis_batches, nbatches, )
-            args = (sph['cen_isinner'].astype(np.float64), sph['cen_w'].astype(np.float64),
-                    sph['cen_vx'], sph['cen_vy'], sph['cen_vz'],
-                    sph['cen_ra'], sph['cen_sindec'], sph['cen_cosdec'], np.int32(cat.ngal),
-                    np.int32(_nmax), np.float64(self.min_sep*_deg2rad), np.float64(self.max_sep*_deg2rad),
-                    np.int32(self.nbinsr), np.int32(self.multicountcorr),
-                    _inds, np.int32(len(_inds)),
-                    np.int32(self.tree_nresos), sph['reso_redges'], sph['ngal_resos'], sph['ncells_resos'],
-                    sph['nside_nav'],
-                    sph['red_w'], sph['red_vx'], sph['red_vy'], sph['red_vz'],
-                    sph['red_ra'], sph['red_sindec'], sph['red_cosdec'], sph['rshift_red'],
-                    sph['cell_pix'], sph['cell_redbounds'], sph['rshift_cellpix'], sph['rshift_cellbounds'],
-                    *args_thetas,
-                    np.int32(self.nthreads), np.float64(memory_bound),
-                    np.int32(self._verbose_c+self._verbose_debug),
-                    bin_centers, N_n)
-            func = self.clib.alloc_nnnn_tree_spherical
+            catc_s, keep_cc = build_spherical_central_catalog_struct(
+                sph['cen_isinner'], sph['cen_w'], sph['cen_vx'], sph['cen_vy'], sph['cen_vz'],
+                sph['cen_ra'], sph['cen_sindec'], sph['cen_cosdec'], self.nbinsz)
+            catr_s, keep_cr = build_catalog_struct(sph, self.nbinsz)
+            catr_s.nresos = int(self.tree_nresos)
+            nav_s, keep_n = build_navhash_struct(sph)
+            tree_s, keep_t = build_tree_params_struct(self, sph)
+            bin_s = build_binning_struct(self, scale=_deg2rad, nmax=int(_nmax), dccorr=int(self.multicountcorr))
+            fourth_s, keep_f = build_fourth_params(
+                nindices=_inds, len_nindices=len(_inds),
+                thetacombis_batches=thetacombis_batches, nthetacombis_batches=nthetacombis_batches,
+                cumthetacombis_batches=cumnthetacombis_batches, nthetbatches=nbatches)
+            out_s = build_nnnn_output(bin_centers, N_n)
+            _alive = keep_cc + keep_cr + keep_n + keep_t + keep_f   # noqa: F841
+            self.clib.alloc_nnnn_tree_spherical(
+                ct.byref(catc_s), ct.byref(catr_s), ct.byref(nav_s), ct.byref(tree_s),
+                ct.byref(bin_s), ct.byref(fourth_s),
+                np.float64(memory_bound), np.int32(self.nthreads),
+                np.int32(self._verbose_c+self._verbose_debug), ct.byref(out_s))
         elif self.method=="Discrete" and not lowmem:
             raise NotImplementedError
         elif self.method=="Discrete" and lowmem:
             raise NotImplementedError
-        elif self.method in ("Tree", "DoubleTree") and lowmem:
+        elif self.method in ("Tree", "DoubleTree"):
             # Prepare mask for nonredundant theta- and multipole configurations
-            _resradial = gen_thetacombis_fourthorder(nbinsr=self.nbinsr, nthreads=self.nthreads, batchsize=batchsize, 
+
+            _resradial = gen_thetacombis_fourthorder(nbinsr=self.nbinsr, nthreads=self.nthreads, batchsize=batchsize,
                                                      batchsize_max=self.thetabatchsize_max, ordered=True, custom=custom_thetacombis,
                                                      verbose=self._verbose_python)
             _, _, thetacombis_batches, cumnthetacombis_batches, nthetacombis_batches, nbatches = _resradial
             assert(self.nmaxs[0]==self.nmaxs[1])
             _resmultipoles = gen_n2n3indices_Upsfourth(self.nmaxs[0])
             _shape, _inds, _n2s, _n3s = _resmultipoles
-            
+
             # Prepare reduced catalogs
             cutfirst = np.int32(self.tree_resos[0]==0.)
             mh = cat.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1],
                                       shuffle=self.shuffle_pix, normed=False, nthreads=self.nthreads)
-            ngal_resos = mh['ngal_resos']
-            dpixs1_true, dpixs2_true = mh['dpixs1_true'], mh['dpixs2_true']
-            weight_resos = mh['weight_resos']
-            pos1_resos = mh['pos1_resos']
-            pos2_resos = mh['pos2_resos']
-            zbin_resos = mh['zbin_resos']
-            isinner_resos = mh['isinner_resos']
-            index_matcher_resos = mh['index_matcher_resos']
-            pixs_galind_bounds_resos = mh['pixs_galind_bounds_resos']
-            pix_gals_resos = mh['pix_gals_resos']
-            index_matcher_flat = np.argwhere(cat.index_matcher>-1).flatten()
-            nregions = len(index_matcher_flat)
-            # Build args
-            args_basesetup = (np.int32(_nmax), 
-                              np.float64(self.min_sep), np.float64(self.max_sep), np.int32(self.nbinsr), 
-                              np.int32(self.multicountcorr),
-                              _inds, np.int32(len(_inds)), self.phis[0].astype(np.float64), 
-                              2*np.pi/_nphis*np.ones(_nphis, dtype=np.float64), np.int32(_nphis), )
-            args_resos = (np.int32(self.tree_nresos), self.tree_redges, np.array(ngal_resos, dtype=np.int32),
-                          isinner_resos, weight_resos, pos1_resos, pos2_resos,
-                          index_matcher_resos, pixs_galind_bounds_resos, pix_gals_resos, np.int32(nregions), )
-            args_hash = (np.float64(cat.pix1_start), np.float64(cat.pix1_d), np.int32(cat.pix1_n), 
-                         np.float64(cat.pix2_start), np.float64(cat.pix2_d), np.int32(cat.pix2_n), )
-            args_thetas = (thetacombis_batches, nthetacombis_batches, cumnthetacombis_batches, nbatches, )
-            args_nap4 = (mapradii, np.int32(len(mapradii)), N4correlators)
-            args_4pcf = (np.int32(alloc_4pcfmultipoles), np.int32(alloc_4pcfreal), 
-                         bin_centers, N_n, fourpcf)
-            args = (*args_basecat,
-                    *args_basesetup,
-                    *args_resos,
-                    *args_hash,
-                    *args_thetas,
-                    np.int32(self.nthreads),
-                    np.int32(self._verbose_c+self._verbose_debug),
-                    *args_nap4,
-                    *args_4pcf)
+            _zb = np.zeros(cat.ngal, dtype=np.int32)   # notomo: zbins unused by C
+            catc_s, keep_cc = build_flat_catalog_struct(cat.pos1, cat.pos2, cat.weight, _zb,
+                                                        self.nbinsz, cat.isinner)
+            catr_s, keep_cr = build_catalog_struct(mh, self.nbinsz)
+            catr_s.nresos = int(self.tree_nresos)
+            nav_s, keep_n = build_navhash_struct(mh, cat_obj=cat)
+            tree_s, keep_t = build_tree_params_struct(self, mh)
+            bin_s = build_binning_struct(self, nmax=int(_nmax), dccorr=int(self.multicountcorr))
+            _alive = keep_cc + keep_cr + keep_n + keep_t   # noqa: F841
             only_multipoles = ("4pcf_multipole" in statistics and
                                "4pcf_real" not in statistics and
                                not hasintegratedstats)
-            if self.method=="Tree" and only_multipoles:
+            if self.method=="Tree" and only_multipoles and lowmem:
                 # Multipoles-only fast path: stops after the multipole reconstruction
                 # (no real-space transform, no Map^4 integral)
-                args = (*args_basecat,
-                        *args_basesetup[:7],
-                        *args_resos,
-                        *args_hash,
-                        *args_thetas,
-                        np.int32(self.nthreads), np.float64(memory_bound),
-                        np.int32(self._verbose_c+self._verbose_debug),
-                        bin_centers, N_n)
-                func = self.clib.alloc_nnnn_tree
-            elif self.method=="DoubleTree" and only_multipoles:
+                fourth_s, keep_f = build_fourth_params(
+                    nindices=_inds, len_nindices=len(_inds),
+                    thetacombis_batches=thetacombis_batches, nthetacombis_batches=nthetacombis_batches,
+                    cumthetacombis_batches=cumnthetacombis_batches, nthetbatches=nbatches)
+                out_s = build_nnnn_output(bin_centers, N_n)
+                self.clib.alloc_nnnn_tree(
+                    ct.byref(catc_s), ct.byref(catr_s), ct.byref(nav_s), ct.byref(tree_s),
+                    ct.byref(bin_s), ct.byref(fourth_s),
+                    np.float64(memory_bound), np.int32(self.nthreads),
+                    np.int32(self._verbose_c+self._verbose_debug), ct.byref(out_s))
+            elif self.method=="DoubleTree" and only_multipoles and lowmem:
                 # True double tree (central-vertex gridding), multipoles only.
-                filledregions = []
-                for elregion in range(nregions):
-                    _g = cat.pix_gals[cat.pixs_galind_bounds[elregion]:cat.pixs_galind_bounds[elregion+1]]
-                    if np.sum(cat.isinner[_g]) > 0:
-                        filledregions.append(elregion)
-                filledregions = np.asarray(filledregions, dtype=np.int32)
-                args = (np.int32(self.tree_nresos), np.int32(self.tree_nresos-cutfirst),
-                        dpixs1_true.astype(np.float64), dpixs2_true.astype(np.float64), self.tree_redges,
-                        np.int32(self.resoshift_leafs), np.int32(self.minresoind_leaf), np.int32(self.maxresoind_leaf),
-                        isinner_resos, weight_resos, pos1_resos, pos2_resos, np.array(ngal_resos, dtype=np.int32),
-                        np.int32(_nmax), np.float64(self.min_sep), np.float64(self.max_sep),
-                        np.int32(self.nbinsr), np.int32(self.multicountcorr),
-                        _inds, np.int32(len(_inds)),
-                        index_matcher_resos, index_matcher_flat.astype(np.int32),
-                        pixs_galind_bounds_resos, pix_gals_resos,
-                        filledregions, np.int32(len(filledregions)), np.int32(nregions),
-                        np.float64(cat.pix1_start), np.float64(cat.pix1_d), np.int32(cat.pix1_n),
-                        np.float64(cat.pix2_start), np.float64(cat.pix2_d), np.int32(cat.pix2_n),
-                        *args_thetas,
-                        np.int32(self.nthreads), np.float64(memory_bound),
-                        np.int32(self._verbose_c+self._verbose_debug),
-                        bin_centers, N_n)
-                func = self.clib.alloc_nnnn_doubletree
-            elif self.method=="DoubleTree":
-                func = self.clib.alloc_notomoNap4_doubletree_nnnn
+                tree_s.nresos_grid = int(self.tree_nresos - cutfirst)
+                fourth_s, keep_f = build_fourth_params(
+                    nindices=_inds, len_nindices=len(_inds),
+                    thetacombis_batches=thetacombis_batches, nthetacombis_batches=nthetacombis_batches,
+                    cumthetacombis_batches=cumnthetacombis_batches, nthetbatches=nbatches)
+                out_s = build_nnnn_output(bin_centers, N_n)
+                self.clib.alloc_nnnn_doubletree(
+                    ct.byref(catr_s), ct.byref(nav_s), ct.byref(tree_s),
+                    ct.byref(bin_s), ct.byref(fourth_s),
+                    np.float64(memory_bound), np.int32(self.nthreads),
+                    np.int32(self._verbose_c+self._verbose_debug), ct.byref(out_s))
             else:
-                func = self.clib.alloc_notomoNap4_tree_nnnn
-
-        # Optionally print the arguments 
-        if self._verbose_debug:
-            print("We pass the following arguments:")
-            for elarg, arg in enumerate(args):
-                toprint = (elarg, type(arg),)
-                if isinstance(arg, np.ndarray):
-                    toprint += (type(arg[0]), arg.shape)
-                try:
-                    toprint += (func.argtypes[elarg], )
-                    print(toprint)
-                    print(arg)
-                except:
-                    print("We did have a problem for arg %i"%elarg)
-        
-        ## Compute 4th order stats ##
-        func(*args)
+                # Aperture/real-space paths (Nap4): partial struct port, aperture radii and
+                # output arrays stay loose. Tree and DoubleTree share the same signature.
+                fourth_s, keep_f = build_fourth_params(
+                    nindices=_inds, len_nindices=len(_inds),
+                    phibins1=self.phis[0], dbinsphi1=2*np.pi/_nphis*np.ones(_nphis), nbinsphi1=_nphis,
+                    thetacombis_batches=thetacombis_batches, nthetacombis_batches=nthetacombis_batches,
+                    cumthetacombis_batches=cumnthetacombis_batches, nthetbatches=nbatches)
+                _nap4 = self.clib.alloc_notomoNap4_tree_nnnn_highmem if not lowmem \
+                    else self.clib.alloc_notomoNap4_tree_nnnn
+                _nap4(
+                    ct.byref(catc_s), ct.byref(catr_s), ct.byref(nav_s), ct.byref(tree_s),
+                    ct.byref(bin_s), ct.byref(fourth_s),
+                    mapradii, np.int32(_nmapradii), N4correlators,
+                    np.int32(alloc_4pcfmultipoles), np.int32(alloc_4pcfreal),
+                    np.int32(self.nthreads), np.int32(self._verbose_c+self._verbose_debug),
+                    bin_centers, N_n, fourpcf)
 
         ## Massage the output ##
         istatout = ()
         if use_spherical:
-            # The curved-sky C path works in radians; report bin centers back in
+            # The curved-sky C path works in radians; convert bin centers back in
             # the catalogue's angular unit (degrees for spherical catalogs).
             bin_centers = bin_centers * (180./np.pi)
         self.bin_centers = bin_centers.reshape(szr)
@@ -439,7 +395,7 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
         return npcf_out.reshape(( _nphis1,_nphis2))
     
     def multipoles2npcf(self):
-        r""" Converts a 4PCF from the multipole basis to the real-space basis for a fixed combination of radial bins.
+        r""" Converts a 4PCF from the multipole basis to the real-space basis for all radial bins.
 
         Returns:
         --------
@@ -458,15 +414,14 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
         
         N_in = self.npcf_multipoles.flatten()
         npcf_out = np.zeros(self.nbinsr*self.nbinsr*self.nbinsr*_nphis1*_nphis2, dtype=np.complex128)
+        bin_s = build_binning_struct(self, nmax=int(self.nmaxs[0]), dccorr=int(self.multicountcorr))
+        fourth_s, _keep_f = build_fourth_params(phibins1=_phis1, phibins2=_phis2,
+                                                nbinsphi1=_nphis1, nbinsphi2=_nphis2)
         self.clib.multipoles2npcf_nnnn(
             N_in.astype(np.complex128, copy=False),
-            np.int32(self.nmaxs[0]), np.int32(self.nmaxs[1]),
+            ct.byref(bin_s), ct.byref(fourth_s),
             self.bin_centers_mean.astype(np.float64, copy=False),
-            np.int32(len(self.bin_centers_mean)),
-            _phis1, _phis2,
-            np.int32(_nphis1), np.int32(_nphis2),
-            npcf_out,
-            np.int32(self.nthreads))
+            npcf_out, np.int32(self.nthreads))
         
         self.npcf = npcf_out.reshape((self.nbinsr, self.nbinsr, self.nbinsr, 1, _nphis1,_nphis2))
 
@@ -669,139 +624,88 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
             M4correlators = np.zeros(8*self.nzcombis*len(mapradii)).astype(np.complex128)
         else:
             mapradii = __fillflag*np.ones(__lenflag).astype(np.float64)
-            N4correlators =  __fillflag*np.ones(__lenflag).astype(np.complex128)
-        
-        # Build args based on chosen methods
+            M4correlators = __fillflag*np.ones(__lenflag).astype(np.complex128)
+        # Zero radii tell the C kernel to skip the aperture integration and the npcf conversion
+        _nmapradii = len(mapradii) if hasintegratedstats else 0
+
+        # Build structs
+        _zb = np.zeros(cat.ngal, dtype=np.int32)
         if self.method=="Discrete" and not lowmem:
-            args_basesetup = (np.int32(_nmax), np.float64(self.min_sep), 
-                              np.float64(self.max_sep), np.array([-1.]).astype(np.float64), 
-                              np.int32(self.nbinsr), np.int32(self.multicountcorr), )
-            args = (*args_basecat,
-                    *args_basesetup,
-                    *args_hash,
-                    np.int32(self.nthreads),
-                    np.int32(self._verbose_c+self._verbose_debug),
-                    bin_centers,
-                    Upsilon_n,
-                    N_n)
-            func = self.clib.alloc_notomoGammans_discrete_gggg 
+            cat_s, keep_c = build_flat_catalog_struct(cat.pos1, cat.pos2, cat.weight, _zb,
+                                                      self.nbinsz, cat.isinner,
+                                                      e1=cat.tracer_1, e2=cat.tracer_2)
+            nav_s, keep_n = build_flat_navhash_struct(cat)
+            bin_s = build_binning_struct(self, nmax=int(_nmax), dccorr=int(self.multicountcorr),
+                                         rbins=np.array([-1.]))
+            out_s = build_gggg_output(bin_centers, Upsilon_n, N_n)
+            _alive = keep_c + keep_n   # noqa: F841
+            self.clib.alloc_notomoGammans_discrete_gggg(
+                ct.byref(cat_s), ct.byref(nav_s), ct.byref(bin_s), None,
+                np.int32(self.nthreads), np.int32(self._verbose_c+self._verbose_debug), ct.byref(out_s))
         if self.method=="Discrete" and lowmem:
-            _resradial = gen_thetacombis_fourthorder(nbinsr=self.nbinsr, nthreads=self.nthreads, batchsize=batchsize, 
+            _resradial = gen_thetacombis_fourthorder(nbinsr=self.nbinsr, nthreads=self.nthreads, batchsize=batchsize,
                                                      batchsize_max=self.thetabatchsize_max, ordered=True, custom=custom_thetacombis,
                                                      verbose=self._verbose_python)
             _, _, thetacombis_batches, cumnthetacombis_batches, nthetacombis_batches, nbatches = _resradial
-            
-            args_basesetup = (np.int32(_nmax), 
-                              np.float64(self.min_sep), np.float64(self.max_sep), np.int32(self.nbinsr), 
-                              np.int32(self.multicountcorr),
-                              self.phis[0].astype(np.float64), 
-                              2*np.pi/_nphis*np.ones(_nphis, dtype=np.float64), np.int32(_nphis))
-            args_4pcf = (np.int32(alloc_4pcfmultipoles), np.int32(alloc_4pcfreal), 
-                         bin_centers, Upsilon_n, N_n, fourpcf, fourpcf_norm, )
-            args_thetas = (thetacombis_batches, nthetacombis_batches, cumnthetacombis_batches, nbatches, )
-            args_map4 = (mapradii, np.int32(len(mapradii)), M4correlators)
-            args = (*args_basecat,
-                    *args_basesetup,
-                    *args_hash,
-                    *args_thetas,
-                    np.int32(self.nthreads),
-                    np.int32(self._verbose_c+self._verbose_debug),
-                    i_projection,
-                    *args_map4,
-                    *args_4pcf)
-            func = self.clib.alloc_notomoMap4_disc_gggg  
+            cat_s, keep_c = build_flat_catalog_struct(cat.pos1, cat.pos2, cat.weight, _zb,
+                                                      self.nbinsz, cat.isinner,
+                                                      e1=cat.tracer_1, e2=cat.tracer_2)
+            nav_s, keep_n = build_flat_navhash_struct(cat)
+            bin_s = build_binning_struct(self, nmax=int(_nmax), dccorr=int(self.multicountcorr))
+            fourth_s, keep_f = build_fourth_params(
+                phibins1=self.phis[0], dbinsphi1=2*np.pi/_nphis*np.ones(_nphis), nbinsphi1=_nphis,
+                thetacombis_batches=thetacombis_batches, nthetacombis_batches=nthetacombis_batches,
+                cumthetacombis_batches=cumnthetacombis_batches, nthetbatches=nbatches)
+            _alive = keep_c + keep_n + keep_f   # noqa: F841
+            self.clib.alloc_notomoMap4_disc_gggg(
+                ct.byref(cat_s), ct.byref(nav_s), ct.byref(bin_s), ct.byref(fourth_s),
+                i_projection, mapradii, np.int32(_nmapradii), M4correlators,
+                np.int32(alloc_4pcfmultipoles), np.int32(alloc_4pcfreal),
+                np.int32(self.nthreads), np.int32(self._verbose_c+self._verbose_debug),
+                bin_centers, Upsilon_n, N_n, fourpcf, fourpcf_norm)
         if self.method=="Tree":
-            # Prepare mask for nonredundant theta- and multipole configurations
-            _resradial = gen_thetacombis_fourthorder(nbinsr=self.nbinsr, nthreads=self.nthreads, batchsize=batchsize, 
+            _resradial = gen_thetacombis_fourthorder(nbinsr=self.nbinsr, nthreads=self.nthreads, batchsize=batchsize,
                                                      batchsize_max=self.thetabatchsize_max, ordered=True, custom=custom_thetacombis,
                                                      verbose=self._verbose_python*lowmem)
             _, _, thetacombis_batches, cumnthetacombis_batches, nthetacombis_batches, nbatches = _resradial
             assert(self.nmaxs[0]==self.nmaxs[1])
-            _resmultipoles = gen_n2n3indices_Upsfourth(self.nmaxs[0])
-            _shape, _inds, _n2s, _n3s = _resmultipoles
-            
-            # Prepare reduced catalogs
+            _shape, _inds, _n2s, _n3s = gen_n2n3indices_Upsfourth(self.nmaxs[0])
             cutfirst = np.int32(self.tree_resos[0]==0.)
             mh = cat.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1],
                                       shuffle=self.shuffle_pix, w2field=True, normed=True, nthreads=self.nthreads)
-            ngal_resos = mh['ngal_resos']
-            dpixs1_true, dpixs2_true = mh['dpixs1_true'], mh['dpixs2_true']
-            weight_resos = mh['weight_resos']
-            pos1_resos = mh['pos1_resos']
-            pos2_resos = mh['pos2_resos']
-            zbin_resos = mh['zbin_resos']
-            isinner_resos = mh['isinner_resos']
             allfields = mh['allfields']
             e1_resos = np.concatenate([allfields[i][0] for i in range(len(allfields))]).astype(np.float64)
             e2_resos = np.concatenate([allfields[i][1] for i in range(len(allfields))]).astype(np.float64)
-            index_matcher_resos = mh['index_matcher_resos']
-            pixs_galind_bounds_resos = mh['pixs_galind_bounds_resos']
-            pix_gals_resos = mh['pix_gals_resos']
-            index_matcher_flat = np.argwhere(cat.index_matcher>-1).flatten()
-            nregions = len(index_matcher_flat)
+            catc_s, keep_cc = build_flat_catalog_struct(cat.pos1, cat.pos2, cat.weight, _zb,
+                                                        self.nbinsz, cat.isinner,
+                                                        e1=cat.tracer_1, e2=cat.tracer_2)
+            catr_s, keep_cr = build_catalog_struct(mh, self.nbinsz, extra={'e1_resos': e1_resos, 'e2_resos': e2_resos})
+            catr_s.nresos = int(self.tree_nresos)
+            nav_s, keep_n = build_navhash_struct(mh, cat_obj=cat)
+            tree_s, keep_t = build_tree_params_struct(self, mh)
+            bin_s = build_binning_struct(self, nmax=int(_nmax), dccorr=int(self.multicountcorr))
+            _alive = keep_cc + keep_cr + keep_n + keep_t   # noqa: F841
             if not lowmem:
-                args_basesetup = (np.int32(_nmax), 
-                                  np.float64(self.min_sep), np.float64(self.max_sep), np.int32(self.nbinsr), 
-                                  np.int32(cumnthetacombis_batches[-1]), np.int32(self.multicountcorr),
-                                  _inds, np.int32(len(_inds)),)
-                args_resos = (np.int32(self.tree_nresos), self.tree_redges, np.array(ngal_resos, dtype=np.int32),
-                            isinner_resos, weight_resos, pos1_resos, pos2_resos, e1_resos, e2_resos,
-                            index_matcher_resos, pixs_galind_bounds_resos, pix_gals_resos, np.int32(nregions), )
-                args_hash = (np.float64(cat.pix1_start), np.float64(cat.pix1_d), np.int32(cat.pix1_n), 
-                            np.float64(cat.pix2_start), np.float64(cat.pix2_d), np.int32(cat.pix2_n), )
-                args_out = ( bin_centers, Upsilon_n, N_n, )
-                args = (*args_basecat,
-                        *args_basesetup,
-                        *args_resos,
-                        *args_hash,
-                        np.int32(self.nthreads),
-                        np.int32(self._verbose_c+self._verbose_debug),
-                        *args_out)
-                func = self.clib.alloc_notomoGammans_tree_gggg  
+                fourth_s, keep_f = build_fourth_params(nindices=_inds, len_nindices=len(_inds),
+                                                       nthetacombis=int(cumnthetacombis_batches[-1]))
+                out_s = build_gggg_output(bin_centers, Upsilon_n, N_n)
+                self.clib.alloc_notomoGammans_tree_gggg(
+                    ct.byref(catc_s), ct.byref(catr_s), ct.byref(nav_s), ct.byref(tree_s),
+                    ct.byref(bin_s), ct.byref(fourth_s),
+                    np.int32(self.nthreads), np.int32(self._verbose_c+self._verbose_debug), ct.byref(out_s))
             if lowmem:
-                # Build args
-                args_basesetup = (np.int32(_nmax), 
-                                np.float64(self.min_sep), np.float64(self.max_sep), np.int32(self.nbinsr), 
-                                np.int32(self.multicountcorr),
-                                _inds, np.int32(len(_inds)), self.phis[0].astype(np.float64), 
-                                2*np.pi/_nphis*np.ones(_nphis, dtype=np.float64), np.int32(_nphis), )
-                args_resos = (np.int32(self.tree_nresos), self.tree_redges, np.array(ngal_resos, dtype=np.int32),
-                            isinner_resos, weight_resos, pos1_resos, pos2_resos, e1_resos, e2_resos,
-                            index_matcher_resos, pixs_galind_bounds_resos, pix_gals_resos, np.int32(nregions), )
-                args_hash = (np.float64(cat.pix1_start), np.float64(cat.pix1_d), np.int32(cat.pix1_n), 
-                            np.float64(cat.pix2_start), np.float64(cat.pix2_d), np.int32(cat.pix2_n), )
-                args_thetas = (thetacombis_batches, nthetacombis_batches, cumnthetacombis_batches, nbatches, )
-                args_map4 = (mapradii, np.int32(len(mapradii)), M4correlators)
-                args_4pcf = (np.int32(alloc_4pcfmultipoles), np.int32(alloc_4pcfreal), 
-                            bin_centers, Upsilon_n, N_n, fourpcf, fourpcf_norm, )
-                args = (*args_basecat,
-                        *args_basesetup,
-                        *args_resos,
-                        *args_hash,
-                        *args_thetas,
-                        np.int32(self.nthreads),
-                        np.int32(self._verbose_c+self._verbose_debug),
-                        i_projection,
-                        *args_map4,
-                        *args_4pcf)
-                func = self.clib.alloc_notomoMap4_tree_gggg  
-
-        # Optionally print the arguments 
-        if self._verbose_debug:
-            print("We pass the following arguments:")
-            for elarg, arg in enumerate(args):
-                toprint = (elarg, type(arg),)
-                if isinstance(arg, np.ndarray):
-                    toprint += (type(arg[0]), arg.shape)
-                try:
-                    toprint += (func.argtypes[elarg], )
-                    print(toprint)
-                    print(arg)
-                except:
-                    print("We did have a problem for arg %i"%elarg)
-        
-        ## Compute 4th order stats ##
-        func(*args)
+                fourth_s, keep_f = build_fourth_params(
+                    nindices=_inds, len_nindices=len(_inds),
+                    phibins1=self.phis[0], dbinsphi1=2*np.pi/_nphis*np.ones(_nphis), nbinsphi1=_nphis,
+                    thetacombis_batches=thetacombis_batches, nthetacombis_batches=nthetacombis_batches,
+                    cumthetacombis_batches=cumnthetacombis_batches, nthetbatches=nbatches)
+                self.clib.alloc_notomoMap4_tree_gggg(
+                    ct.byref(catc_s), ct.byref(catr_s), ct.byref(nav_s), ct.byref(tree_s),
+                    ct.byref(bin_s), ct.byref(fourth_s),
+                    i_projection, mapradii, np.int32(_nmapradii), M4correlators,
+                    np.int32(alloc_4pcfmultipoles), np.int32(alloc_4pcfreal),
+                    np.int32(self.nthreads), np.int32(self._verbose_c+self._verbose_debug),
+                    bin_centers, Upsilon_n, N_n, fourpcf, fourpcf_norm)
         self.projection = projection
         
         ## Massage the output ##
@@ -843,10 +747,14 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
         shape_npcf_norm = (nzcombis, nbinsr, nbinsr, nbinsr, _nphis1, _nphis2)
         self.npcf = np.zeros(self.n_cfs*nzcombis*nbinsr*nbinsr*nbinsr*_nphis1*_nphis2, dtype=np.complex128)
         self.npcf_norm = np.zeros(nzcombis*nbinsr*nbinsr*nbinsr*_nphis1*_nphis2, dtype=np.complex128)
-        self.clib.multipoles2npcf_gggg(self.npcf_multipoles.flatten(), self.npcf_multipoles_norm.flatten(), 
-                                       self.bin_centers_mean.astype(np.float64), np.int32(self.proj_dict[projection]),
-                                       8, nbinsr, self.nmaxs[0].astype(np.int32), _phis1, _nphis1, _phis2, _nphis2,
-                                       self.nthreads, self.npcf, self.npcf_norm)
+        bin_s = build_binning_struct(self, nmax=int(self.nmaxs[0]), dccorr=int(self.multicountcorr))
+        fourth_s, _keep_f = build_fourth_params(phibins1=_phis1, phibins2=_phis2,
+                                                nbinsphi1=_nphis1, nbinsphi2=_nphis2)
+        self.clib.multipoles2npcf_gggg(self.npcf_multipoles.flatten(), self.npcf_multipoles_norm.flatten(),
+                                       self.bin_centers_mean.astype(np.float64),
+                                       ct.byref(bin_s), ct.byref(fourth_s),
+                                       np.int32(self.proj_dict[projection]), np.int32(self.n_cfs),
+                                       np.int32(self.nthreads), self.npcf, self.npcf_norm)
         self.npcf = self.npcf.reshape(shape_npcf)
         self.npcf_norm = self.npcf_norm.reshape(shape_npcf_norm)
         self.projection = projection
@@ -1256,7 +1164,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
 class GNNNCorrelation_NoTomo(BinnedNPCF):
     def __init__(self, min_sep, max_sep, thetabatchsize_max=10000, **kwargs):
         r""" Class containing methods to measure and and obtain statistics that are built
-        from third-order source-lens-lens (G3L) correlation functions.
+        from fourth-order source-lens-lens-lens (G4L) correlation functions.
         
         Attributes
         ----------
@@ -1264,68 +1172,15 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
             The smallest distance of each vertex for which the NPCF is computed.
         max_sep: float
             The largest distance of each vertex for which the NPCF is computed.
-        nbinsr: int, optional
-            The number of radial bins for each vertex of the NPCF. If set to
-            ``None`` this attribute is inferred from the ``binsize`` attribute.
-        binsize: int, optional
-            The logarithmic slize of the radial bins for each vertex of the NPCF. If set to
-            ``None`` this attribute is inferred from the ``nbinsr`` attribute.
-        nbinsphi: float, optional
-            The number of angular bins for the NPCF in the real-space basis. 
-            Defaults to ``100``.
-        nmaxs: list, optional
-            The largest multipole component considered for the NPCF in the multipole basis. 
-            Defaults to ``30``.
-        method: str, optional
-            The method to be employed for the estimator. Defaults to ``DoubleTree``.
-        multicountcorr: bool, optional
-            Flag on whether to subtract of multiplets in which the same tracer appears more
-            than once. Defaults to ``True``.
-        shuffle_pix: int, optional
-            Choice of how to define centers of the cells in the spatial hash structure.
-            Defaults to ``1``, i.e. random positioning.
-        tree_resos: list, optional
-            The cell sizes of the hierarchical spatial hash structure
-        tree_edges: list, optional
-            List of radii where the tree changes resolution.
-        rmin_pixsize: int, optional
-            The limiting radial distance relative to the cell of the spatial hash
-            after which one switches to the next hash in the hierarchy. Defaults to ``20``.
-        resoshift_leafs: int, optional
-            Allows for a difference in how the hierarchical spatial hash is traversed for
-            pixels at the base of the NPCF and pixels at leafs. I.e. positive values indicate
-            that leafs will be evaluated at a courser resolutions than the base. Defaults to ``0``.
-        minresoind_leaf: int, optional
-            Sets the smallest resolution in the spatial hash hierarchy which can be used to access
-            tracers at leaf positions. If set to ``None`` uses the smallest specified cell size. 
-            Defaults to ``None``.
-        maxresoind_leaf: int, optional
-            Sets the largest resolution in the spatial hash hierarchy which can be used to access
-            tracers at leaf positions. If set to ``None`` uses the largest specified cell size. 
-            Defaults to ``None``.
-        nthreads: int, optional
-            The number of openmp threads used for the reduction procedure. Defaults to ``16``.
-        bin_centers: numpy.ndarray
-            The centers of the radial bins for each combination of tomographic redshifts.
-        bin_centers_mean: numpy.ndarray
-            The centers of the radial bins averaged over all combination of tomographic redshifts.
-        phis: list
-            The bin centers for the N-2 angles describing the NPCF 
-            in the real-space basis.
-        npcf: numpy.ndarray
-            The natural components of the NPCF in the real space basis. The different axes
-            are specified as follows: ``(component, zcombi, rbin_1, ..., rbin_N-1, phiin_1, phibin_N-2)``.
-        npcf_norm: numpy.ndarray
-            The normalization of the natural components of the NPCF in the real space basis. The different axes
-            are specified as follows: ``(zcombi, rbin_1, ..., rbin_N-1, phiin_1, phibin_N-2)``.
-        npcf_multipoles: numpy.ndarray
-            The natural components of the NPCF in the multipole basis. The different axes
-            are specified as follows: ``(component, zcombi, multipole_1, ..., multipole_N-2, rbin_1, ..., rbin_N-1)``.
-        npcf_multipoles_norm: numpy.ndarray
-            The normalization of the natural components of the NPCF in the multipole basis. The different axes
-            are specified as follows: ``(zcombi, multipole_1, ..., multipole_N-2, rbin_1, ..., rbin_N-1)``.
-        is_edge_corrected: bool, optional
-            Flag signifying on wheter the NPCF multipoles have beed edge-corrected. Defaults to ``False``.
+        thetabatchsize_max: int, optional
+            The largest number of radial bin combinations that are processed in parallel.
+            Defaults to ``10 000``.
+
+        Notes
+        -----
+        Inherits all other parameters and attributes from :class:`BinnedNPCF`.
+        Additional child-specific parameters can be passed via ``kwargs``.
+        Either ``nbinsr`` or ``binsize`` has to be provided to fix the binning scheme.
         """
         super().__init__(4, [2,0,0,0], n_cfs=1, min_sep=min_sep, max_sep=max_sep, **kwargs)
         self.nmax = self.nmaxs[0]
@@ -1333,8 +1188,8 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
         self.projection = None
         self.projections_avail = [None, "X"]
         self.proj_dict = {"X":0}
-        self.nbinsz_source = 1 # This class does not handle any tomography at the moment, so I fix it here
-        self.nbinsz_lens = 1 # This class does not handle any tomography at the moment, so I fix it here
+        self.nbinsz_source = 1
+        self.nbinsz_lens = 1
         self.nzcombis = 1
         self.thetabatchsize_max = thetabatchsize_max
 
@@ -1349,7 +1204,8 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
 
     def process(self, cat_source, cat_lens, statistics="all", tofile=False, apply_edge_correction=False,
                 dotomo_source=True, dotomo_lens=True,
-                lowmem=None, apradii=None, batchsize=None, custom_thetacombis=None, cutlen=2**31-1):
+                lowmem=None, apradii=None, xi=None, nnn=None, count_floor=0.1,
+                batchsize=None, custom_thetacombis=None, cutlen=2**31-1):
         self._checkcats([cat_source, cat_lens, cat_lens, cat_lens], [2, 0, 0, 0])
         
         # Checks for redshift binning
@@ -1458,6 +1314,8 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
         else:
             apradii = __fillflag*np.ones(__lenflag).astype(np.float64)
             MN3correlators =  __fillflag*np.ones(__lenflag).astype(np.complex128)
+        # Zero radii tell the C kernel to skip the aperture integration and the npcf conversion
+        _napradii = len(apradii) if hasintegratedstats else 0
         
         # Basic prep
         hash_dpix = max(1.,self.max_sep//10.)
@@ -1465,119 +1323,75 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
         cat_source.build_spatialhash(dpix=hash_dpix, extent=jointextent)
         cat_lens.build_spatialhash(dpix=hash_dpix, extent=jointextent)
 
-        args_sourcecat = (cat_source.isinner.astype(np.float64), cat_source.weight.astype(np.float64), 
-                          cat_source.pos1.astype(np.float64), cat_source.pos2.astype(np.float64), 
-                          cat_source.tracer_1.astype(np.float64), cat_source.tracer_2.astype(np.float64), 
-                          np.int32(cat_source.ngal), )
-        args_basesetup = (np.int32(self.nmax), np.float64(self.min_sep), np.float64(self.max_sep),
-                          np.int32(self.nbinsr), np.int32(self.multicountcorr), )
-        
-        
+        _zbz_source = np.zeros(cat_source.ngal, dtype=np.int32)   # notomo: zbins unused by C
+        _zbz_lens = np.zeros(cat_lens.ngal, dtype=np.int32)
+        out_s = build_gnnn_output(bin_centers, Upsilon_n, N_n)
+
         if self.method=="Discrete" and not lowmem:
-            hash_dpix = max(1.,self.max_sep//10.)
-            jointextent = list(cat_source._jointextent([cat_lens], extend=self.tree_resos[-1]))
-            cat_source.build_spatialhash(dpix=hash_dpix, extent=jointextent)
-            cat_lens.build_spatialhash(dpix=hash_dpix, extent=jointextent)
-            nregions = np.int32(len(np.argwhere(cat_lens.index_matcher>-1).flatten()))
-            args_lenscat = (cat_lens.weight.astype(np.float64), 
-                            cat_lens.pos1.astype(np.float64), cat_lens.pos2.astype(np.float64), np.int32(cat_lens.ngal), )
-            args_hash = (cat_lens.index_matcher, cat_lens.pixs_galind_bounds, cat_lens.pix_gals, nregions, )
-            args_pix = (np.float64(cat_lens.pix1_start), np.float64(cat_lens.pix1_d), np.int32(cat_lens.pix1_n), 
-                            np.float64(cat_lens.pix2_start), np.float64(cat_lens.pix2_d), np.int32(cat_lens.pix2_n), )
-            args_4pcf = (bin_centers, Upsilon_n, N_n, )
-            
-            args = (*args_sourcecat,
-                    *args_lenscat,
-                    *args_hash,
-                    *args_pix,
-                    *args_basesetup,
-                    np.int32(self.nthreads),
-                    np.int32(self._verbose_c+self._verbose_debug),
-                    *args_4pcf)
-            func = self.clib.alloc_notomoGammans_discrete_gnnn
-        
+            cats_s, keep_cs = build_flat_catalog_struct(
+                cat_source.pos1, cat_source.pos2, cat_source.weight, _zbz_source,
+                self.nbinsz_source, cat_source.isinner,
+                e1=cat_source.tracer_1, e2=cat_source.tracer_2)
+            navs_s, keep_ns = build_flat_navhash_struct(cat_source)
+            catl_s, keep_cl = build_flat_catalog_struct(
+                cat_lens.pos1, cat_lens.pos2, cat_lens.weight, _zbz_lens,
+                self.nbinsz_lens, cat_lens.isinner)
+            navl_s, keep_nl = build_flat_navhash_struct(cat_lens)
+            bin_s = build_binning_struct(self, nmax=int(self.nmax), dccorr=int(self.multicountcorr))
+            _alive = keep_cs + keep_ns + keep_cl + keep_nl   # noqa: F841
+            self.clib.alloc_notomoGammans_discrete_gnnn(
+                ct.byref(cats_s), ct.byref(navs_s), ct.byref(catl_s), ct.byref(navl_s),
+                ct.byref(bin_s), None,
+                int(self.nthreads), int(self._verbose_c+self._verbose_debug), ct.byref(out_s))
+
         if self.method=="Tree":
         # Prepare mask for nonredundant theta- and multipole configurations
-            _resradial = gen_thetacombis_fourthorder(nbinsr=self.nbinsr, nthreads=self.nthreads, batchsize=batchsize, 
+            _resradial = gen_thetacombis_fourthorder(nbinsr=self.nbinsr, nthreads=self.nthreads, batchsize=batchsize,
                                                      batchsize_max=self.thetabatchsize_max, ordered=True, custom=custom_thetacombis,
                                                      verbose=self._verbose_python*lowmem)
             nthetacombis_tot, _, thetacombis_batches, cumnthetacombis_batches, nthetacombis_batches, nbatches = _resradial
             assert(self.nmaxs[0]==self.nmaxs[1])
             _resmultipoles = gen_n2n3indices_Upsfourth(self.nmaxs[0])
             _shape, _inds, _n2s, _n3s = _resmultipoles
-            
-            # Prepare reduced catalogs
+
+            # Prepare reduced catalogs 
             cutfirst = np.int32(self.tree_resos[0]==0.)
             mhl = cat_lens.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1],
                                             shuffle=self.shuffle_pix, normed=True, nthreads=self.nthreads)
-            ngal_resos_lens = mhl['ngal_resos']
-            dpixs1_true_lens, dpixs2_true_lens = mhl['dpixs1_true'], mhl['dpixs2_true']
-            weight_resos_lens = mhl['weight_resos']
-            pos1_resos_lens = mhl['pos1_resos']
-            pos2_resos_lens = mhl['pos2_resos']
-            index_matcher_resos_lens = mhl['index_matcher_resos']
-            pixs_galind_bounds_resos_lens = mhl['pixs_galind_bounds_resos']
-            pix_gals_resos_lens = mhl['pix_gals_resos']
-            index_matcher_flat = np.argwhere(cat_source.index_matcher>-1).flatten()
-            nregions = len(index_matcher_flat)
-
-            args_resos = (np.int32(self.tree_nresos), self.tree_redges, )
-            args_resos_lens = (weight_resos_lens, pos1_resos_lens, pos2_resos_lens, np.asarray(ngal_resos_lens).astype(np.int32),)
-            args_hash_source = (cat_source.index_matcher, cat_source.pixs_galind_bounds, cat_source.pix_gals, )
-            args_mhash_lens = (index_matcher_resos_lens, pixs_galind_bounds_resos_lens, pix_gals_resos_lens, np.int32(nregions), )
-            args_hash = (np.float64(cat_lens.pix1_start), np.float64(cat_lens.pix1_d), np.int32(cat_lens.pix1_n), 
-                        np.float64(cat_lens.pix2_start), np.float64(cat_lens.pix2_d), np.int32(cat_lens.pix2_n), )
+            cats_s, keep_cs = build_flat_catalog_struct(
+                cat_source.pos1, cat_source.pos2, cat_source.weight, _zbz_source,
+                self.nbinsz_source, cat_source.isinner,
+                e1=cat_source.tracer_1, e2=cat_source.tracer_2)
+            navs_s, keep_ns = build_flat_navhash_struct(cat_source)
+            catl_s, keep_cl = build_catalog_struct(mhl, self.nbinsz_lens)
+            catl_s.nresos = int(self.tree_nresos)
+            navl_s, keep_nl = build_navhash_struct(mhl, cat_obj=cat_lens)
+            tree_s, keep_tree = build_tree_params_struct(self, mhl)
+            bin_s = build_binning_struct(self, nmax=int(self.nmax), dccorr=int(self.multicountcorr))
+            _alive = keep_cs + keep_ns + keep_cl + keep_nl + keep_tree   # noqa: F841
             if lowmem:
-                # Build args
-                args_indsetup = (_inds, np.int32(len(_inds)), self.phis[0].astype(np.float64), 
-                                2*np.pi/_nphis*np.ones(_nphis, dtype=np.float64), np.int32(_nphis), )
-                args_thetas = (thetacombis_batches, nthetacombis_batches, cumnthetacombis_batches, nbatches, )
-                args_mapnap3 = (apradii, np.int32(len(apradii)), MN3correlators)
-                args_4pcf = (np.int32(alloc_4pcfmultipoles), np.int32(alloc_4pcfreal), 
-                            bin_centers, Upsilon_n, N_n, fourpcf, fourpcf_norm, )
-                args = (*args_resos,
-                        *args_sourcecat,
-                        *args_resos_lens,
-                        *args_hash_source,
-                        *args_mhash_lens,
-                        *args_hash,
-                        *args_basesetup,
-                        *args_indsetup,
-                        *args_thetas,
-                        np.int32(self.nthreads),
-                        np.int32(self._verbose_c+self._verbose_debug),
-                        *args_mapnap3,
-                        *args_4pcf)
-                func = self.clib.alloc_notomoMapNap3_tree_gnnn
+                fourth_s, keep_f = build_fourth_params(
+                    nindices=_inds, len_nindices=len(_inds),
+                    phibins1=self.phis[0], dbinsphi1=2*np.pi/_nphis*np.ones(_nphis), nbinsphi1=_nphis,
+                    thetacombis_batches=thetacombis_batches, nthetacombis_batches=nthetacombis_batches,
+                    cumthetacombis_batches=cumnthetacombis_batches, nthetbatches=nbatches)
+                cc_s, keep_cc = build_clustcorr(self, xi, nnn, count_floor)
+                _alive2 = keep_f + keep_cc   # noqa: F841
+                self.clib.alloc_notomoMapNap3_tree_gnnn(
+                    ct.byref(cats_s), ct.byref(navs_s), ct.byref(catl_s), ct.byref(navl_s),
+                    ct.byref(tree_s), ct.byref(bin_s), ct.byref(fourth_s), ct.byref(cc_s),
+                    apradii, np.int32(_napradii),
+                    np.int32(alloc_4pcfmultipoles), np.int32(alloc_4pcfreal),
+                    np.int32(self.nthreads), np.int32(self._verbose_c+self._verbose_debug),
+                    bin_centers, Upsilon_n, N_n, fourpcf, fourpcf_norm, MN3correlators)
             else:
-                args_indsetup = (np.int32(nthetacombis_tot), _inds, np.int32(len(_inds)), )
-                args_4pcf = (bin_centers, Upsilon_n, N_n, )
-                args = (*args_resos,
-                        *args_sourcecat,
-                        *args_resos_lens,
-                        *args_hash_source,
-                        *args_mhash_lens,
-                        *args_hash,
-                        *args_basesetup,
-                        *args_indsetup,
-                        np.int32(self.nthreads), 
-                        np.int32(self._verbose_c),
-                        *args_4pcf)
-                func = self.clib.alloc_notomoGammans_tree_gnnn
-        
-        if self._verbose_debug:
-            for elarg, arg in enumerate(args):
-                toprint = (elarg, type(arg),)
-                if isinstance(arg, np.ndarray):
-                    toprint += (type(arg[0]), arg.shape)
-                try:
-                    toprint += (func.argtypes[elarg], )
-                except:
-                    print("Weird error for arg %i."%elarg)
-                print(toprint)
-                print(arg)
-        
-        func(*args)
+                fourth_s, keep_f = build_fourth_params(
+                    nindices=_inds, len_nindices=len(_inds), nthetacombis=nthetacombis_tot)
+                _alive2 = keep_f   # noqa: F841
+                self.clib.alloc_notomoGammans_tree_gnnn(
+                    ct.byref(cats_s), ct.byref(navs_s), ct.byref(catl_s), ct.byref(navl_s),
+                    ct.byref(tree_s), ct.byref(bin_s), ct.byref(fourth_s),
+                    np.int32(self.nthreads), np.int32(self._verbose_c), ct.byref(out_s))
 
         ## Massage the output ##
         istatout = ()
@@ -1595,11 +1409,11 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
             else:
                 if self._verbose_python:
                     print("Transforming output to real space basis")
-                self.multipoles2npcf_c()
+                self.multipoles2npcf(xi=xi, nnn=nnn, count_floor=count_floor)
         if hasintegratedstats:
             if "MN3" in statistics:
                 istatout += (MN3correlators.reshape((1,self.nzcombis,len(apradii))), )
-            # TODO allocate map4, map4c etc.
+            # TODO allocate mapnap3, mapnap3c etc.
 
         if apply_edge_correction:
             self.edge_correction()
@@ -1607,17 +1421,75 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
         return istatout
      
     # TODO: 
-    # * Include the z-weighting method
-    # * Include the 2pcf as spline --> Should we also add an option to compute it here? Might be a mess
-    #   as then we also would need methods to properly distribute randoms...
-    # * Do a voronoi-tesselation at the multipole level? Would be just 2D, but still might help? Eventually
-    #   bundle together cells s.t. tot_weight > theshold? However, this might then make the binning courser
-    #   for certain triangle configs(?)
-    def multipoles2npcf(self):
-        raise NotImplementedError
-    
-    def multipoles2npcf_singlethetcombi(self, elthet1, elthet2, elthet3, projection="X"):
+    # * Same inclusion of z-weighting etc as for g3l?
+    def multipoles2npcf(self, xi=None, nnn=None, count_floor=0.1):
+        r"""Converts the GNNN 4PCF from the multipole basis to the real-space basis for
+        every combination of radial bins (shape ``(n_cfs, nzcombis, nbinsr, nbinsr, nbinsr, nphi, nphi)``).
+
+        Parameters
+        ----------
+        xi: tuple, optional
+            Angular clustering 2PCF of the lenses as ``(thetas, omega)``. If set, enables the
+            second-order clustering correction, see :meth:`apply_clustering_correction`.
+        nnn: orpheus.NNNCorrelation or tuple, optional
+            Connected lens 3PCF for the :math:`\zeta` term. If set. enables the 
+            third-order clustering correction, see :meth:`apply_clustering_correction`.
+        count_floor: float
+            Threshold on the reconstructed triplet counts below which the 4PCF is zeroed.
+
+        Notes
+        -----
+        For an accurate computation of the connected 4PCF both, second-and third-order corrections are required.
+        In particular, the second-order corrections dominate the signal, but also the third-order corrections 
+        contribute about 10%-30% for realistic clustering strength of the lenses.
+        """
+        projection = "X"
+        assert((projection in self.proj_dict.keys()) and (projection in self.projections_avail))
+        _nphis1 = len(self.phis[0])
+        _nphis2 = len(self.phis[1])
+        _nelem = self.nbinsr*self.nbinsr*self.nbinsr*_nphis1*_nphis2
+        if _nelem > 2e9:
+            raise ValueError("Real-space 4PCF too large (%.2f x 10^9 elements); "
+                             "use computeMapNap3 for the aperture statistics instead."%(_nelem/1e9))
+
+        npcf_out = np.zeros(self.n_cfs*self.nzcombis*_nelem, dtype=np.complex128)
+        npcf_norm_out = np.zeros(self.nzcombis*_nelem, dtype=np.complex128)
+        bin_s = build_binning_struct(self, nmax=int(self.nmaxs[0]), dccorr=int(self.multicountcorr),
+                                     rbins=self.bin_edges)
+        fourth_s, _keep_f = build_fourth_params(phibins1=self.phis[0], phibins2=self.phis[1],
+                                                nbinsphi1=_nphis1, nbinsphi2=_nphis2)
+        cc_s, _keep_cc = build_clustcorr(self, xi, nnn, count_floor)
+        self.clib.multipoles2npcf_gnnn(
+            self.npcf_multipoles.flatten(), self.npcf_multipoles_norm.flatten(),
+            ct.byref(bin_s), ct.byref(fourth_s), ct.byref(cc_s),
+            np.int32(self.nthreads), npcf_out, npcf_norm_out)
+
+        self.npcf = npcf_out.reshape((self.n_cfs, self.nzcombis, self.nbinsr, self.nbinsr, self.nbinsr, _nphis1, _nphis2))
+        self.npcf_norm = npcf_norm_out.reshape((self.nzcombis, self.nbinsr, self.nbinsr, self.nbinsr, _nphis1, _nphis2))
+        self.projection = projection
+        return self.npcf, self.npcf_norm
+
+    def multipoles2npcf_singlethetcombi(self, elthet1, elthet2, elthet3, xi=None, nnn=None, count_floor=0.1):
         r""" Converts a 4PCF in the multipole basis in the real space basis for a fixed combination of radial bins.
+
+        Parameters
+        ----------
+        elthet1, elthet2, elthet3: int
+            The radial bin indices for which the 4PCF is evaluated.
+        xi: tuple, optional
+            Angular clustering 2PCF of the lenses as ``(thetas, omega)``. If set, enables the
+            second-order clustering correction, see :meth:`apply_clustering_correction`.
+        nnn: orpheus.NNNCorrelation or tuple, optional
+            Connected lens 3PCF for the :math:`\zeta` term. If set. enables the 
+            third-order clustering correction, see :meth:`apply_clustering_correction`.
+        count_floor: float
+            Threshold on the reconstructed triplet counts below which the 4PCF is zeroed.
+
+        Notes
+        -----
+        For an accurate computation of the connected 4PCF both, second-and third-order corrections are required.
+        In particular, the second-order corrections dominate the signal, but also the third-order corrections 
+        contribute about 10%-30% for realistic clustering strength of the lenses.
 
         Returns:
         --------
@@ -1626,25 +1498,30 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
         npcf_norm_out: np.ndarray
             4PCF weighted counts in the real-space bassi for all angular combinations.
         """
+        projection = "X"
         assert((projection in self.proj_dict.keys()) and (projection in self.projections_avail))
-        
+
         _phis1 = self.phis[0].astype(np.float64)
         _phis2 = self.phis[1].astype(np.float64)
         _nphis1 = len(self.phis[0])
         _nphis2 = len(self.phis[1])
         ncfs, nnvals, _, nzcombis, nbinsr, _, _ = np.shape(self.npcf_multipoles)
-        
+
         Upsilon_in = self.npcf_multipoles[...,elthet1,elthet2,elthet3].flatten()
         N_in = self.npcf_multipoles_norm[...,elthet1,elthet2,elthet3].flatten()
         npcf_out = np.zeros(self.n_cfs*nzcombis*_nphis1*_nphis2, dtype=np.complex128)
         npcf_norm_out = np.zeros(nzcombis*_nphis1*_nphis2, dtype=np.complex128)
-        
+
+        # Correction thetas: geometric bin centers, identical across all conversion routes
+        _rc = np.sqrt(self.bin_edges[:-1]*self.bin_edges[1:])
+        cc_s, _keep_cc = build_clustcorr(self, xi, nnn, count_floor)
         self.clib.multipoles2npcf_gnnn_singletheta(
             Upsilon_in, N_in, self.nmaxs[0], self.nmaxs[1],
-            self.bin_centers_mean[elthet1], self.bin_centers_mean[elthet2], self.bin_centers_mean[elthet3],
+            _rc[elthet1], _rc[elthet2], _rc[elthet3],
             _phis1, _phis2, _nphis1, _nphis2,
+            ct.byref(cc_s),
             npcf_out, npcf_norm_out)
-        
+
         return npcf_out.reshape((self.n_cfs, _nphis1,_nphis2)), npcf_norm_out.reshape((_nphis1,_nphis2))
     
     def multipoles2npcf_singletheta_nconvergence(self, elthet1, elthet2, elthet3):
@@ -1670,10 +1547,13 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
         npcf_out = np.zeros(self.n_cfs*nzcombis*(self.nmaxs[0]+1)*(self.nmaxs[1]+1)*_nphis1*_nphis2, dtype=np.complex128)
         npcf_norm_out = np.zeros(nzcombis*(self.nmaxs[0]+1)*(self.nmaxs[1]+1)*_nphis1*_nphis2, dtype=np.complex128)
         
+        _rc = np.sqrt(self.bin_edges[:-1]*self.bin_edges[1:])
+        cc_s, _keep_cc = build_clustcorr(self, None, None, 0.1)
         self.clib.multipoles2npcf_gnnn_singletheta_nconvergence(
             Upsilon_in, N_in, self.nmaxs[0], self.nmaxs[1],
-            self.bin_centers_mean[elthet1], self.bin_centers_mean[elthet2], self.bin_centers_mean[elthet3],
+            _rc[elthet1], _rc[elthet2], _rc[elthet3],
             _phis1, _phis2, _nphis1, _nphis2,
+            ct.byref(cc_s),
             npcf_out, npcf_norm_out)
                 
         npcf_out = npcf_out.reshape((self.n_cfs, self.nmaxs[0]+1, self.nmaxs[1]+1, _nphis1, _nphis2))
@@ -1682,40 +1562,156 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
         return npcf_out, npcf_norm_out
             
             
-    ## PROJECTIONS ##
-    def projectnpcf(self, projection):
-        super()._projectnpcf(self, projection)
-        
-    ## INTEGRATED MEASURES ## 
-    def computeMapNap3(self, radii, nmax_trafo=None, basis='MapMx'):
-        r"""Computes the fourth-order aperture statistcs using the polynomial filter of Crittenden 2002."""
+    ## CLUSTERING CORRECTION ##
+    def _clustcorr_args(self, xi=None, nnn=None):
+        r"""Builds argument block for the clustering correction of the fourth-order 
+        correction of the raw G4L correlator.
+
+        Parameters
+        ----------
+        xi: tuple or None
+            Angular clustering 2PCF of the lenses as ``(thetas, omega)``.
+        nnn: orpheus.NNNCorrelation or tuple or None
+            Connected angular clustering 3PCF of the lenses, either as an
+            ``NNNCorrelation`` instance or as an explicit tuple ``(r_centers, phis, zeta)``
+            with ``zeta`` of shape ``(nr, nr, nphi)``
+        """
+        # If xi is set, we resample it to finer grid that will be used for interpolation in C
+        if xi is None:
+            args_xi = (np.zeros(2, dtype=np.float64), np.float64(0.), np.float64(1.), np.float64(1.), np.int32(0), )
+        else:
+            _nfine = 4096
+            _ts = np.asarray(xi[0], dtype=np.float64)
+            _om = np.asarray(xi[1], dtype=np.float64)
+            _tsfine = np.linspace(_ts[0], _ts[-1], _nfine+1)
+            args_xi = (np.interp(_tsfine, _ts, _om), np.float64(_ts[0]), np.float64(_ts[-1]),
+                       np.float64((_ts[-1]-_ts[0])/_nfine), np.int32(1), )
+        # If zeta is set we just use what is given.
+        if nnn is None:
+            args_zeta = (np.zeros(8, dtype=np.float64), np.zeros(2, dtype=np.float64), np.int32(2),
+                         np.zeros(2, dtype=np.float64), np.int32(2), np.int32(0), )
+        else:
+            _rs, _phis, _zeta = (nnn.bin_centers_mean, nnn.phi, nnn.zeta[0]) if hasattr(nnn, "zeta") else nnn
+            args_zeta = (np.ascontiguousarray(_zeta, dtype=np.float64).flatten(),
+                         np.asarray(_rs, dtype=np.float64), np.int32(len(_rs)),
+                         np.asarray(_phis, dtype=np.float64), np.int32(len(_phis)), np.int32(1), )
+        return args_xi + args_zeta
+
+    def apply_clustering_correction(self, xi=None, nnn=None):
+        r"""Multiplies the raw real-space 4PCF by the clustering correction to unbias the G4L estimator.
+
+        Parameters
+        ----------
+        xi: tuple or None
+            Angular clustering 2PCF of the lenses as ``(thetas, omega)``.
+        nnn: orpheus.NNNCorrelation or tuple or None
+            Connected clustering 3PCF, of the lenses, either as an 
+            ``NNNCorrelation`` instance or as an explicit tuple ``(r_centers, phis, zeta)``
+            with ``zeta`` of shape ``(nr, nr, nphi)``
+
+        Notes
+        -----
+        - We correct by :math:`C = 1 + \omega(d_{12}) + \omega(d_{13}) + \omega(d_{23}) + \zeta(d_{12},d_{13},d_{23})`.
+          This is the fourth-order generalization of the :math:`(1+\omega)` correction introduced in 
+          Simon+13. The :math:`d_{ij}` are the lens-lens separations.
+        - Outside the provided ranges, the NPCFs are set to zero.
+        """
+        if xi is not None:
+            _ts = np.asarray(xi[0], dtype=np.float64)
+            _om = np.asarray(xi[1], dtype=np.float64)
+        if nnn is not None:
+            _rs, _phis_nnn, _zeta = (nnn.bin_centers_mean, nnn.phi, nnn.zeta[0]) if hasattr(nnn, "zeta") else nnn
+            _interp3 = RegularGridInterpolator((_rs, _rs, _phis_nnn), _zeta,
+                                               bounds_error=False, fill_value=0.)
+        phi12 = self.phis[0][:, None]
+        phi13 = self.phis[1][None, :]
+        cos12 = np.cos(phi12)
+        cos13 = np.cos(phi13)
+        cos23 = np.cos(phi13-phi12)
+        rc = np.sqrt(self.bin_edges[:-1]*self.bin_edges[1:])  # geometric centers, as in the C routes
+        for i1 in range(self.nbinsr):
+            for i2 in range(self.nbinsr):
+                for i3 in range(self.nbinsr):
+                    t1, t2, t3 = rc[i1], rc[i2], rc[i3]
+                    d12 = np.sqrt(np.clip(t1*t1 + t2*t2 - 2*t1*t2*cos12, 0., None))
+                    d13 = np.sqrt(np.clip(t1*t1 + t3*t3 - 2*t1*t3*cos13, 0., None))
+                    d23 = np.sqrt(np.clip(t2*t2 + t3*t3 - 2*t2*t3*cos23, 0., None))
+                    corr = np.ones_like(d23)
+                    if xi is not None:
+                        # d <= ts[0] gives 0, matching the C-level linint edge convention
+                        for d in (d12, d13, d23):
+                            corr = corr + np.where(d <= _ts[0], 0.,
+                                                   np.interp(d, _ts, _om, left=0., right=0.))
+                    if nnn is not None:
+                        d12b = np.broadcast_to(d12, d23.shape)
+                        d13b = np.broadcast_to(d13, d23.shape)
+                        cpsi = np.clip((d12b**2 + d13b**2 - d23**2)/(2*d12b*d13b), -1., 1.)
+                        psi = np.clip(np.arccos(cpsi), _phis_nnn[0], _phis_nnn[-1])
+                        corr = corr + _interp3(np.stack([d12b, d13b, psi], axis=-1))
+                    self.npcf[:, :, i1, i2, i3] *= corr
+
+    ## INTEGRATED MEASURES ##
+    def computeMapNap3(self, radii, nmax_trafo=None, basis='MapMx', radii_M=None,
+                       xi=None, nnn=None, count_floor=0.1):
+        r"""Computes the fourth-order aperture statistics
+        :math:`\langle M_\mathrm{ap}(\theta_M)\,\mathcal{N}_\mathrm{ap}^3(\theta_N)\rangle`
+        using the exponential filter of Crittenden 2002.
+
+        Parameters
+        ----------
+        radii: numpy.ndarray
+            Aperture scales :math:`\theta_N` of the three number-count filters.
+        nmax_trafo: int, optional
+            Largest multipole used in the transformation. Defaults to ``nmaxs[0]``.
+        basis: str
+            One of ``['MapMx','MM*','both']`` (equivalent for this statistic).
+        radii_M: numpy.ndarray, optional
+            Aperture scales :math:`\theta_M` of the shear filter, paired elementwise
+            with ``radii``. Defaults to ``radii`` (equal-scale statistics).
+        xi: tuple, optional
+            Angular clustering 2PCF of the lenses as ``(thetas, omega)``; enables the
+            clustering correction recovering the pure correlator, see
+            :meth:`apply_clustering_correction`.
+        nnn: orpheus.NNNCorrelation or tuple, optional
+            Connected lens 3PCF for the :math:`\zeta` term of the clustering
+            correction, see :meth:`apply_clustering_correction`.
+        count_floor: float
+            Threshold on the reconstructed multiplet counts below which the 4PCF is
+            set to zero (suppresses multipole ringing around empty configurations).
+        """
 
         assert(basis in ['MapMx','MM*','both'])
-        
+
         if nmax_trafo is None:
             nmax_trafo=self.nmaxs[0]
-            
+        if radii_M is None:
+            radii_M = radii
+        assert(len(radii_M)==len(radii))
+
         # Retrieve all the aperture measures in the MM* basis via the 5D transformation eqns
         MN3correlators = np.zeros(1*len(radii), dtype=np.complex128)
+        cc_s, _keep_cc = build_clustcorr(self, xi, nnn, count_floor)
         self.clib.fourpcfmultipoles2MN3correlators(
             np.int32(self.nmaxs[0]), np.int32(nmax_trafo),
             self.bin_edges, self.bin_centers_mean, np.int32(self.nbinsr),
-            radii.astype(np.float64), np.int32(len(radii)),
-            self.phis[0].astype(np.float64), self.phis[1].astype(np.float64), 
-            self.dphis[0].astype(np.float64), self.dphis[1].astype(np.float64), 
+            radii.astype(np.float64), radii_M.astype(np.float64), np.int32(len(radii)),
+            self.phis[0].astype(np.float64), self.phis[1].astype(np.float64),
+            self.dphis[0].astype(np.float64), self.dphis[1].astype(np.float64),
             len(self.phis[0]), len(self.phis[1]),
             np.int32(self.proj_dict[self.projection]), np.int32(self.nthreads),
+            np.int32(self._verbose_c+self._verbose_debug),
+            ct.byref(cc_s),
             self.npcf_multipoles.flatten(), self.npcf_multipoles_norm.flatten(),
             MN3correlators)
         res_MMStar = MN3correlators.reshape((1,len(radii)))
-        
+
         # Allocate result (here the bases are really equivalent...)
         res = ()
         if basis=='MM*' or basis=='both':
             res += (res_MMStar, )
         if basis=='MapMx' or basis=='both':
             res += ( res_MMStar, )
-        
+
         return res
 
     def MapNap3_corrections(self, apradii, xi_ng=None, Gtilde_third=None,
@@ -1737,7 +1733,7 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
         if xi_ng is None:
             xi_ng = np.zeros(self.nbinsr, dtype=np.float64)
         if Gtilde_third is None:
-            Gtilde_third = np.zeros(self.nbinsr*self.nbinsr*self.nbinsphi,dtype=np.complex128)
+            Gtilde_third = np.zeros(self.nbinsr*self.nbinsr*self.nbinsphi[0],dtype=np.complex128)
 
         # This block is similar to MapNap3_analytic
         self.nbinsz = 1
@@ -1804,7 +1800,7 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
         if xi_ng is None:
             xi_ng = np.zeros(self.nbinsr, dtype=np.float64)
         if Gtilde_third is None:
-            Gtilde_third = np.zeros(self.nbinsr*self.nbinsr*self.nbinsphi,dtype=np.complex128)
+            Gtilde_third = np.zeros(self.nbinsr*self.nbinsr*self.nbinsphi[0],dtype=np.complex128)
 
         corrs = np.zeros(self.n_cfs*self.nbinsphi[0]*self.nbinsphi[1],dtype=np.complex128)
         self.clib.gtilde4pcf_corrections(
@@ -1824,7 +1820,7 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
         return corrs.reshape((self.n_cfs, self.nbinsphi[0], self.nbinsphi[1]))  
 
     # Disconnected part of MapNap^3 from analytic 2pcfs
-    # thetamin_xi, thetamax_xi, ntheta_xi is the linspaced array in which the xipm are passed to the external function
+    # thetamin_xi, thetamax_xi, ntheta_xi is the linspaced array in which the xipm are passed to the C function
     def MapNap3analytic(self, mapradii, xing_spl, xinn_spl, thetamin_xi, thetamax_xi, ntheta_xi, 
                          nsubr=1, nsubsample_filter=1, batchsize=None, basis='MapMx'):
         
