@@ -25,8 +25,7 @@
 /// General helpers ///
 ///////////////////////
 
-// Build the shared, region/thread-independent radial-binning helper arrays
-// once. Caller frees the three outputs.
+// Build the shared, radial-binning helper arrays
 static void build_radial_helpers(
     const TreeResoParams *tree, const BinningParams *bin,
     double **out_binedges, int **out_linarr_bins, int **out_reso_rindedges,
@@ -100,12 +99,8 @@ static void build_flat_rshifts(
 /// CORRELATOR SPECIFIC HELPERS //
 //////////////////////////////////
 
-// Shared radial bin lookup + scatter for every 2nd-order flat/spherical kernel:
-// dist -> radial bin via the linear helper, then accumulate the tomographic pair
-// count / weighted-count / weighted-norm plus `ncomp` natural components (0 for
-// NN, 1 for NG, 2 for GG) from comps[] into the per-thread arrays. The components
-// share one (ncomp, nthreads*nzzr) buffer. Geometry-agnostic; static inline so
-// ncomp folds to a literal and the component loop unrolls at each call site.
+// Shared bin update for every 2nd-order flat/spherical kernel
+// the number of cfs to allocate is given by ncomp (0 for NN, 1 for NG, 2 for GG) 
 static inline void bin_accumulate(
     double dist, double w1, double w2, int z1, int z2,
     double rmin, double *binedges, int *linarr_bins, double dbin_lin_inv,
@@ -123,11 +118,8 @@ static inline void bin_accumulate(
     for (int c=0; c<ncomp; c++){ tmpcomp[c*nthreads*nzzr + ind] += comps[c]; }
 }
 
-// Reduce the per-thread arrays into the unified NPCFOutput and normalise. Uniform
-// over the 0/1/2-component families: bin_centers = <w*dist>/<w>, each npcf
-// component divided by the pair-weight norm. NN carries its count in npair_cell
-// (npair NULL); GG/NG in npair. The npcf components are stacked with stride nzzr,
-// matching the GG [xip, xim] layout consumed by the Python side.
+// Reduce the per-thread arrays into the unified NPCFOutput for every 2nd-order flat/spherical kernel.
+// the number of cfs to allocate is given by ncomp (0 for NN, 1 for NG, 2 for GG) 
 static void bin_reduce(int nbinsz_lens, int nbinsz_source, int nbinsr, int nthreads,
                        double *totcount, int *tmpnpair, double *tmpwcount, double *tmpwnorm,
                        int ncomp, double complex *tmpcomp, NPCFOutput *out){
@@ -731,8 +723,7 @@ static void _ng_flat(const MultiresoCatalog *cat_lens, const NavHash *nav_lens,
     free(totcount); free(tmpwcount); free(tmpnpair); free(tmpwnorm); free(tmpcomp);
 }
 
-// Public entry point for the position-shape 2PCF. Flat-sky only for now; a
-// spherical variant would mirror _gg_spherical with the single-sided projection.
+// Public entry point for the position-shape 2PCF. Flat-sky only for now...
 void alloc_ng_doubletree(const MultiresoCatalog *cat_lens, const NavHash *nav_lens,
                          const MultiresoCatalog *cat_source, const NavHash *nav_source,
                          const TreeResoParams *tree, const BinningParams *bin,
@@ -745,30 +736,23 @@ void alloc_ng_doubletree(const MultiresoCatalog *cat_lens, const NavHash *nav_le
 // Slab-hashed GN pairs //
 /////////////////////////
 // Discrete estimator of a NG correlator in slabs of a 3dbox geometry
-void ng_slab(const MultiresoCatalog *cat_query, const MultiresoCatalog *cat_hash,
+void ng_slab(const MultiresoCatalog *cat_lens, const MultiresoCatalog *cat_source,
              const NavHash *nav_hash, const BinningParams *bin,
              int self_pairs, int has_shapes, int nthreads, int verbose, NPCFOutput *out)
 {
-    // Hoist every struct field into a local once (the hot loop never touches a
-    // struct). The query catalog is looped directly (nresos=1, no nav); the
-    // hashed catalog carries the shapes (has_shapes) or the random pair counts
-    // and is navigated through nav_hash's slab grid.
-    double *scalar_pos1 = cat_query->pos1_resos, *scalar_pos2 = cat_query->pos2_resos, *scalar_pos3 = cat_query->pos3_resos;
-    double *scalar_w = cat_query->weight_resos; int *scalar_zbin = cat_query->zbin_resos;
-    int scalar_ngal = cat_query->ngal_resos[0], nbinsz_scalar = cat_query->nbinsz;
-    double *polar_pos1 = cat_hash->pos1_resos, *polar_pos2 = cat_hash->pos2_resos, *polar_pos3 = cat_hash->pos3_resos;
-    double *polar_w = cat_hash->weight_resos; int *polar_zbin = cat_hash->zbin_resos;
-    double *polar_e1 = cat_hash->e1_resos, *polar_e2 = cat_hash->e2_resos; int nbinsz_polar = cat_hash->nbinsz;
+    // Dereference input args
+    double *scalar_pos1 = cat_lens->pos1_resos, *scalar_pos2 = cat_lens->pos2_resos, *scalar_pos3 = cat_lens->pos3_resos;
+    double *scalar_w = cat_lens->weight_resos; int *scalar_zbin = cat_lens->zbin_resos;
+    int scalar_ngal = cat_lens->ngal_resos[0], nbinsz_scalar = cat_lens->nbinsz;
+    double *polar_pos1 = cat_source->pos1_resos, *polar_pos2 = cat_source->pos2_resos, *polar_pos3 = cat_source->pos3_resos;
+    double *polar_w = cat_source->weight_resos; int *polar_zbin = cat_source->zbin_resos;
+    double *polar_e1 = cat_source->e1_resos, *polar_e2 = cat_source->e2_resos; int nbinsz_polar = cat_source->nbinsz;
     int nslabs = nav_hash->nslabs; double z0 = nav_hash->z0, dpix_z = nav_hash->dpix_z;
     double pix1_start = nav_hash->pix1_start, pix1_d = nav_hash->pix1_d; int pix1_n = nav_hash->pix1_n;
     double pix2_start = nav_hash->pix2_start, pix2_d = nav_hash->pix2_d; int pix2_n = nav_hash->pix2_n;
     int *slab_offsets = nav_hash->slab_offsets, *index_matcher = nav_hash->index_matcher;
     int *pixs_galind_bounds = nav_hash->pixs_galind_bounds, *rshift_bounds = nav_hash->rshift_bounds, *pix_gals = nav_hash->pix_gals;
     double rmin = bin->rmin, rmax = bin->rmax, Pi = bin->Pi; int nbinsr = bin->nbinsr;
-    // Output buffers (NG layout): complex shape correlator -> npcf, weighted pair
-    // count -> norm, integer pair count -> npair. bin_centers carries the raw
-    // weighted radial sum (sum of w*r); the LS-like combination and the division
-    // into a mean bin center happen in Python.
     double complex *out_xs = out->npcf;
     double *out_wnorm = out->norm, *out_rsum = out->bin_centers;
     long long int *out_npairs = out->npair;

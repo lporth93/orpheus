@@ -15,6 +15,7 @@
 
 #define M_PI      3.14159265358979323846
 
+// Convert shear 3pcf from x-projection to centroid projection
 void _x2centroid_ggg(double complex *npcf, int nbinsz, 
                      double *theta_centers, int nbinstheta, double *phi_centers, int nbinsphi,
                      int nthreads){
@@ -28,7 +29,7 @@ void _x2centroid_ggg(double complex *npcf, int nbinsz,
     #pragma omp parallel for num_threads(nthreads)
     for (int elphi=0; elphi<nbinsphi; elphi++){
         double bin1, bin2;
-        double complex prod1, prod2, prod3, prod1_inv, prod2_inv, prod3_inv;
+        double complex q1, q2, q3, q1_inv, q2_inv, q3_inv;
         double complex rot0, rot1, rot2, rot3;
         int ind_gam, ithet1, ithet2;
         int nthetcombis=nbinstheta*nbinstheta;
@@ -45,16 +46,16 @@ void _x2centroid_ggg(double complex *npcf, int nbinsz,
             ithet2 = thetcombi%nbinstheta;
             bin1 = thetas_buffer[thisthread*nbinstheta+ithet1];
             bin2 = thetas_buffer[thisthread*nbinstheta+ithet2];
-            prod1 = (bin1 + bin2*phiexp_c)/(bin1 + bin2*phiexp); //q1
-            prod2 = (2*bin1 - bin2*phiexp_c)/(2*bin1 - bin2*phiexp); //q2
-            prod3 = (2*bin2*phiexp_c - bin1)/(2*bin2*phiexp - bin1); //q3
-            prod1_inv = conj(prod1)/cabs(prod1);
-            prod2_inv = conj(prod2)/cabs(prod2);
-            prod3_inv = conj(prod3)/cabs(prod3);
-            rot0 = prod1*prod2*prod3*phiexp3;
-            rot1 = prod1_inv*prod2*prod3*phiexp;
-            rot2 = prod1*prod2_inv*prod3*phiexp3;
-            rot3 = prod1*prod2*prod3_inv*phiexp_c;
+            q1 = (bin1 + bin2*phiexp_c)/(bin1 + bin2*phiexp);
+            q2 = (2*bin1 - bin2*phiexp_c)/(2*bin1 - bin2*phiexp);
+            q3 = (2*bin2*phiexp_c - bin1)/(2*bin2*phiexp - bin1);
+            q1_inv = conj(q1)/cabs(q1);
+            q2_inv = conj(q2)/cabs(q2);
+            q3_inv = conj(q3)/cabs(q3);
+            rot0 = q1*q2*q3*phiexp3;
+            rot1 = q1_inv*q2*q3*phiexp;
+            rot2 = q1*q2_inv*q3*phiexp3;
+            rot3 = q1*q2*q3_inv*phiexp_c;
             for (int zcombi=0;zcombi<nzcombis; zcombi++){
                 ind_gam = zcombi*gam_zshift+thetcombi*gam_thetshift+elphi;
                 npcf[0*gam_compshift+ind_gam] *= rot0;
@@ -339,8 +340,8 @@ void threepcf2M3correlators_ggg(double complex *npcf,
     int gam_zshift = nthetcombis*gam_thetshift;
     int gam_compshift = nzcombis*gam_zshift;
     int buf_compshift = nzcombis*nrcombis;
-    int buf_threadshift = 4*buf_compshift;
-    double complex *buf = calloc((size_t)nthreads*buf_threadshift, sizeof(double complex));
+    int gam_threadshift = 4*buf_compshift;
+    double complex *buf = calloc((size_t)nthreads*gam_threadshift, sizeof(double complex));
     double dphi = phi_centers[1]-phi_centers[0];
 
     #pragma omp parallel for num_threads(nthreads)
@@ -364,7 +365,7 @@ void threepcf2M3correlators_ggg(double complex *npcf,
                 }
                 for (int zcombi=0; zcombi<nzcombis; zcombi++){
                     int ind_npcf = zcombi*gam_zshift+thetcombi*gam_thetshift+elphi;
-                    int ind_buf = thisthread*buf_threadshift+zcombi*nrcombis+elr;
+                    int ind_buf = thisthread*gam_threadshift+zcombi*nrcombis+elr;
                     double complex term0 = T0*npcf[0*gam_compshift+ind_npcf];
                     double complex term1 = T3_123*npcf[1*gam_compshift+ind_npcf];
                     double complex term2 = T3_231*npcf[2*gam_compshift+ind_npcf];
@@ -380,8 +381,8 @@ void threepcf2M3correlators_ggg(double complex *npcf,
     free(centers);
 
     for (int elthread=0; elthread<nthreads; elthread++){
-        for (int elc=0; elc<buf_threadshift; elc++){
-            M3correlators[elc] += buf[elthread*buf_threadshift+elc];
+        for (int elc=0; elc<gam_threadshift; elc++){
+            M3correlators[elc] += buf[elthread*gam_threadshift+elc];
         }
     }
     free(buf);
@@ -426,8 +427,8 @@ void threepcf2NNMcorrelators_gnn(double complex *npcf,
     int nthetcombis = nbinstheta*nbinstheta;
     int gam_thetshift = nbinsphi;
     int gam_zshift = nthetcombis*gam_thetshift;
-    int buf_compshift = nzcombis*nrcombis;
-    double complex *buf = calloc((size_t)nthreads*buf_compshift, sizeof(double complex));
+    int gam_compshift = nzcombis*nrcombis;
+    double complex *buf = calloc((size_t)nthreads*gam_compshift, sizeof(double complex));
     double dphi = phi_centers[1]-phi_centers[0];
 
     #pragma omp parallel for num_threads(nthreads)
@@ -447,7 +448,7 @@ void threepcf2NNMcorrelators_gnn(double complex *npcf,
                     int ind_npcf = zcombi*gam_zshift+thetcombi*gam_thetshift+elphi;
                     double complex term = A*npcf[ind_npcf];
                     if (!isnan(cabs(term))){
-                        buf[thisthread*buf_compshift+zcombi*nrcombis+elr] += term;
+                        buf[thisthread*gam_compshift+zcombi*nrcombis+elr] += term;
                     }
                 }
             }
@@ -455,8 +456,8 @@ void threepcf2NNMcorrelators_gnn(double complex *npcf,
     }
 
     for (int elthread=0; elthread<nthreads; elthread++){
-        for (int elc=0; elc<buf_compshift; elc++){
-            NNMcorrelators[elc] += buf[elthread*buf_compshift+elc];
+        for (int elc=0; elc<gam_compshift; elc++){
+            NNMcorrelators[elc] += buf[elthread*gam_compshift+elc];
         }
     }
     free(buf);
@@ -507,8 +508,8 @@ void threepcf2NMMcorrelators_ngg(double complex *npcf,
     int gam_zshift = nthetcombis*gam_thetshift;
     int gam_compshift = nzcombis*gam_zshift;
     int buf_compshift = nzcombis*nrcombis;
-    int buf_threadshift = 2*buf_compshift;
-    double complex *buf = calloc((size_t)nthreads*buf_threadshift, sizeof(double complex));
+    int gam_threadshift = 2*buf_compshift;
+    double complex *buf = calloc((size_t)nthreads*gam_threadshift, sizeof(double complex));
     double dphi = phi_centers[1]-phi_centers[0];
 
     #pragma omp parallel for num_threads(nthreads)
@@ -527,7 +528,7 @@ void threepcf2NMMcorrelators_ngg(double complex *npcf,
                 nmm_filter_ngg(y1, y2, dy1, dy2, phi, dphi, radii1[elr], radii2[elr], radii3[elr], &A_MMN, &A_MMstarN);
                 for (int zcombi=0; zcombi<nzcombis; zcombi++){
                     int ind_npcf = zcombi*gam_zshift+thetcombi*gam_thetshift+elphi;
-                    int ind_buf = thisthread*buf_threadshift+zcombi*nrcombis+elr;
+                    int ind_buf = thisthread*gam_threadshift+zcombi*nrcombis+elr;
                     double complex term0 = A_MMN*npcf[0*gam_compshift+ind_npcf];
                     double complex term1 = A_MMstarN*npcf[1*gam_compshift+ind_npcf];
                     if (!isnan(cabs(term0))){ buf[0*buf_compshift+ind_buf] += term0; }
@@ -538,8 +539,8 @@ void threepcf2NMMcorrelators_ngg(double complex *npcf,
     }
 
     for (int elthread=0; elthread<nthreads; elthread++){
-        for (int elc=0; elc<buf_threadshift; elc++){
-            NMMcorrelators[elc] += buf[elthread*buf_threadshift+elc];
+        for (int elc=0; elc<gam_threadshift; elc++){
+            NMMcorrelators[elc] += buf[elthread*gam_threadshift+elc];
         }
     }
     free(buf);

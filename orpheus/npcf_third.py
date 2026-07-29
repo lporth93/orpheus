@@ -1,8 +1,5 @@
 import numpy as np
 import ctypes as ct
-from numba import jit, prange
-from numba import config as nb_config
-from numba import complex128 as nb_complex128
 from pathlib import Path
 from scipy.interpolate import interp1d
 
@@ -15,11 +12,281 @@ from .multires_structs import (build_catalog_struct, build_navhash_struct,
                                build_tree_params_struct, build_binning_struct,
                                build_npcf_output)
 
-__all__ = ["GGGCorrelation", "GNNCorrelation", "NGGCorrelation"]
+__all__ = ["GGGCorrelation", "NNNCorrelation", "GNNCorrelation", "NGGCorrelation"]
+
+class NNNCorrelation(BinnedNPCF):
+    r""" Class containing methods to measure the scalar (clustering) three-point
+    correlation function via a Landy-Szalay-like estimator.
+
+    Without a random catalog :meth:`process` yields the raw (weighted) triplet-count multipoles. 
+    With a random catalog the clustering 3PCF is estimated as
+
+    .. math::
+
+        \zeta = \frac{(D-R)^3}{RRR}
+                = \frac{DDD - DDR - DRD - RDD + DRR + RDR + RRD - RRR}{RRR},
+
+    the three-point generalization of the Landy-Szalay estimator. Eacth data contribution 
+    is rescaled by ``f = W_R/W_D`` per tomo bin so that all contributions share the random 
+    normalization.
+
+    Parameters
+    ----------
+    min_sep: float
+        The smallest distance of each vertex for which the NPCF is computed.
+    max_sep: float
+        The largest distance of each vertex for which the NPCF is computed.
+    process_spherical: bool, optional
+        Process spherical catalogs using curved-sky geometry and not via flat-sky
+        patches. Defaults to ``False``.
+
+    Notes
+    -----
+    Inherits all other parameters and attributes from :class:`BinnedNPCF`.
+    Additional child-specific parameters can be passed via ``kwargs``. 
+    Either ``nbinsr`` or ``binsize`` has to be provided to fix the binning scheme.
+    """
+
+    def __init__(self, min_sep, max_sep, process_spherical=False, **kwargs):
+
+        super().__init__(order=3, spins=np.array([0,0,0], dtype=np.int32), n_cfs=1,
+                         min_sep=min_sep, max_sep=max_sep, **kwargs)
+        self.process_spherical = bool(process_spherical)
+        self.nmax = self.nmaxs[0]
+        self.phi = self.phis[0]
+        self.projection = None
+        self.projections_avail = [None]
+        self.nbinsz = None
+        self.nzcombis = None
+        self.zeta = None
+ 
+        self._initprojections(self)
+
+    def saveinst(self, path_save, fname, extr_pars=None):
+        r"""Serialise the instance to a ``.npz`` archive."""
+        extras = dict(nbinsz=self.nbinsz, nzcombis=self.nzcombis)
+        if extr_pars: extras.update(extr_pars)
+        super().saveinst(path_save, fname, extr_pars=extras)
+
+    def process(self, cat, cat_random=None, dotomo=True, adjust_tree=False):
+        r"""Compute the raw triplet-count multipoles, and optionally the clustering 3PCF ``zeta``.
+
+        Without a random catalog this stores the raw (weighted) triplet-count multipoles, 
+        otherwise it computes the full ``zeta``.
+
+        Parameters
+        ----------
+        cat: orpheus.ScalarTracerCatalog
+            The (clustered) catalog.
+        cat_random: orpheus.ScalarTracerCatalog, optional
+            A random catalog. If set, the clustering correlation function ``zeta`` is computed.
+        dotomo: bool
+            Whether to use the tomographic information in the catalog. Defaults to ``True``.
+        adjust_tree: bool
+            Currently unused.
+        """
+        # If a random catalog is present, estimate zeta via the LS-like estimator.
+        if cat_random is not None:
+            assert(isinstance(cat_random, ScalarTracerCatalog))
+            return self.__compute_zeta(cat, cat_random, dotomo=dotomo, adjust_tree=adjust_tree)
+
+        if self.method != "DoubleTree":
+            raise NotImplementedError("NNNCorrelation currently supports only the 'DoubleTree' method.")
+
+        native_spherical = self.process_spherical and cat.geometry == 'spherical'
+        if cat.geometry == 'spherical' and not native_spherical:
+            raise ValueError('Error: Spherical NNN requires process_spherical=True; '
+                             'flat-sky patch decomposition is not supported.')
+
+        ## Tomography setup ##
+        self._checkcats(cat, self.spins)
+        old_zbins = None
+        if not dotomo:
+            self.nbinsz = 1
+            old_zbins = cat.zbins[:]
+            cat.zbins = np.zeros(cat.ngal, dtype=np.int32)
+            self.nzcombis = 1
+        else:
+            self.nbinsz = cat.nbinsz
+            self.nzcombis = self.nbinsz*self.nbinsz*self.nbinsz
+        nbinsz = self.nbinsz
+
+        ## Build the multihash bundle ##
+        if native_spherical:
+            sep2deg = convertunits(self.sep_units, 'deg')
+            nsides, nside_hash = self.tree_resos_to_nsides()
+            mh = cat.multihash_bundle(reso_redges=self.tree_redges*sep2deg, nsides=nsides,
+                                      nside_hash=nside_hash, shuffle=self.shuffle_pix,
+                                      verbose=self._verbose_python)
+            assert not mh['nav_coarsened'], (
+                "nav_coarsen is incompatible with the NNN doubletree: it reuses "
+                "nside_nav for the cross-reso reduction hierarchy, which requires "
+                "nside_nav == the reduction nside.")
+        else:
+            cutfirst = np.int32(self.tree_resos[0]==0.)
+            mh = cat.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1],
+                                      shuffle=self.shuffle_pix, normed=True, nthreads=self.nthreads)
+
+        ## Build the four input structs + output arrays ##
+        cat_s, keep_cat = build_catalog_struct(mh, nbinsz)
+        cat_s.nresos = int(self.tree_nresos)
+        nav_s, keep_nav = build_navhash_struct(mh, cat_obj=cat)
+        tree_s, keep_tree = build_tree_params_struct(self, mh)
+        cutfirst = np.int32(self.tree_resos[0]==0.)
+        tree_s.nresos_grid = int(self.tree_nresos - cutfirst)
+        maxleaf = max(0, self.tree_nresos-1)
+        tree_s.minresoind_leaf = min(int(self.minresoind_leaf), maxleaf)
+        tree_s.maxresoind_leaf = min(int(self.maxresoind_leaf), maxleaf)
+        scale = convertunits(self.sep_units, 'rad') if native_spherical else None
+        bin_s = build_binning_struct(self, scale=scale, nmax=int(self.nmax),
+                                     dccorr=int(self.multicountcorr))
+        out_s, bin_centers, triplets_n, _, triplets_norm_n, _, _ = build_npcf_output(
+            'NNN', self.nbinsr, nmax=self.nmax, nbinsz=nbinsz)
+
+        # Keep numpy arrays backing ctypes pointer fields alive during the C call.
+        _alive = keep_cat + keep_nav + keep_tree   # noqa: F841
+
+        self.clib.alloc_nnn_doubletree(
+            ct.byref(cat_s), ct.byref(nav_s), ct.byref(tree_s), ct.byref(bin_s),
+            int(self.nthreads), int(self._verbose_c)+int(self._verbose_debug),
+            ct.byref(out_s))
+
+        if native_spherical:
+            bin_centers = bin_centers / convertunits(self.sep_units, 'rad')
+
+        sc = (1, self.nmax+1, self.nzcombis, self.nbinsr, self.nbinsr)
+        sn = (self.nmax+1, self.nzcombis, self.nbinsr, self.nbinsr)
+        szr = (self.nbinsz, self.nbinsr)
+        self.bin_centers = bin_centers.reshape(szr)
+        self.bin_centers_mean = np.mean(self.bin_centers, axis=0)
+        self.npcf_multipoles = triplets_n.reshape(sc)
+        self.npcf_multipoles_norm = triplets_norm_n.reshape(sn)
+        self.projection = "X"
+
+        if not dotomo:
+            cat.zbins = old_zbins
+
+
+    # Just a helper to make the zeta computation less awkward
+    def _inverse_transform(self, correlator_n, nbinsz1, nbinsz23):
+        nzcombis = nbinsz1*nbinsz23*nbinsz23
+        rbins = self.nbinsr
+        nbinsphi = len(self.phi)
+        correlator_f = np.ascontiguousarray(correlator_n).flatten()
+        dummy = np.zeros(self.n_cfs*nzcombis*rbins*rbins*nbinsphi, dtype=np.complex128)
+        correlator_real = np.zeros(nzcombis*rbins*rbins*nbinsphi, dtype=np.complex128)
+        conjmap = np.array([0], dtype=np.int32)
+        modeweight = np.full(self.nmax+1, 1./nbinsphi, dtype=np.float64)
+        self.clib.multipoles2npcf_third_z1z23(
+            correlator_f, correlator_f,
+            np.int32(self.nmax), np.int32(self.n_cfs), np.int32(nbinsz1), np.int32(nbinsz23),
+            np.int32(rbins),
+            self.phi.astype(np.float64), np.int32(nbinsphi),
+            np.int32(0), conjmap, modeweight,
+            np.int32(0), np.int32(0), np.zeros(nzcombis, dtype=np.float64),
+            np.int32(self.nthreads),
+            dummy, correlator_real)
+        return correlator_real.reshape((nzcombis, rbins, rbins, nbinsphi)).real
+
+    def multipoles2npcf(self):
+        r"""Transform triplets from multipole-basis to the real-space basis.
+        """
+        ntriplet = self._inverse_transform(self.npcf_multipoles_norm, self.nbinsz, self.nbinsz)
+        self.npcf = ntriplet[None]
+        self.npcf_norm = ntriplet
+        self.projection = "X"
+
+    def __compute_zeta(self, cat_data, cat_rand, dotomo=True, adjust_tree=False, count_floor_rtol=None):
+        r"""Estimate the clustering 3PCF via LS-like estimator: ``zeta = (D-R)^3 / RRR``.
+        """
+        nz = cat_data.nbinsz if dotomo else 1
+
+        # Add data and random to a 2*nbinsz joint catalog and process this
+        zbins = np.zeros(cat_data.ngal + cat_rand.ngal, dtype=int)
+        zbins[:cat_data.ngal] += cat_data.zbins
+        zbins[cat_data.ngal:] += cat_data.nbinsz + cat_rand.zbins
+        if not dotomo:
+            zbins[:cat_data.ngal] = 0
+            zbins[cat_data.ngal:] = 1
+
+        joint_cat = ScalarTracerCatalog(
+            pos1=np.append(cat_data.pos1, cat_rand.pos1),
+            pos2=np.append(cat_data.pos2, cat_rand.pos2),
+            tracer=np.ones(cat_data.ngal + cat_rand.ngal),
+            weight=np.append(cat_data.weight, cat_rand.weight),
+            geometry=cat_data.geometry,
+            units_pos1=cat_data.units_pos1,
+            units_pos2=cat_data.units_pos1,
+            zbins=zbins)
+
+        if cat_data.geometry == "spherical" and not self.process_spherical:
+            raise ValueError('Error: Spherical NNN requires process_spherical=True.')
+
+        self.process(cat=joint_cat, cat_random=None, dotomo=True, adjust_tree=adjust_tree)
+
+        # Reconstruct all triplet D/R combinations
+        counts = self.npcf_multipoles_norm.reshape(
+            self.nmax+1, 2*nz, 2*nz, 2*nz, self.nbinsr, self.nbinsr)
+        D = slice(0, nz); R = slice(nz, 2*nz)
+        DDD = counts[:, D, D, D]; DDR = counts[:, D, D, R]; DRD = counts[:, D, R, D]; RDD = counts[:, R, D, D]
+        DRR = counts[:, D, R, R]; RDR = counts[:, R, D, R]; RRD = counts[:, R, R, D]; RRR = counts[:, R, R, R]
+
+        # Get data/random normalisation
+        if dotomo:
+            WD = np.array([cat_data.weight[cat_data.zbins == z].sum() for z in range(nz)])
+            WR = np.array([cat_rand.weight[cat_rand.zbins == z].sum() for z in range(nz)])
+        else:
+            WD = np.array([cat_data.weight.sum()])
+            WR = np.array([cat_rand.weight.sum()])
+        f = self.save_divide_npcf(WR, WD, fill=1.).astype(np.float64)
+        fa = f[None, :, None, None, None, None]
+        fb = f[None, None, :, None, None, None]
+        fc = f[None, None, None, :, None, None]
+
+        # Build estimator numerator and norm in multiple space
+        nzc = nz*nz*nz
+        numerator = (fa*fb*fc*DDD - fa*fb*DDR - fa*fc*DRD - fb*fc*RDD
+                     + fa*DRR + fb*RDR + fc*RRD - RRR)
+        numerator = numerator.reshape(self.nmax+1, nzc, self.nbinsr, self.nbinsr)
+        RRR = RRR.reshape(self.nmax+1, nzc, self.nbinsr, self.nbinsr)
+
+        # Transform to real space and filter out ~empty bins
+        num_real = self._inverse_transform(numerator, nz, nz)
+        rrr_real = self._inverse_transform(RRR, nz, nz)
+        rtol = self.norm_divisionmask if count_floor_rtol is None else count_floor_rtol
+        floor = rtol * np.abs(rrr_real).mean(axis=-1, keepdims=True)
+        zeta = np.divide(num_real, rrr_real, out=np.zeros_like(num_real), where=rrr_real > floor)
+
+        self.nbinsz = nz
+        self.nzcombis = nzc
+        self.zeta = zeta
+        self.npcf = zeta[None]
+        self.npcf_norm = rrr_real
+        self.projection = "X"
+
+    ## PROJECTIONS ##
+    def projectnpcf(self, projection):
+        r"""Re-project the real-space NPCF into the given ``projection``."""
+        super()._projectnpcf(self, projection)
+
 
 class GGGCorrelation(BinnedNPCF):
     r""" Class containing methods to measure and obtain statistics that are built
     from third-order shear correlation functions.
+
+    Note that the different components of the GGG correlator are ordered as
+    
+    .. math::
+
+        \Gamma_\mu \sim \left[
+        \langle \gamma \gamma \gamma \rangle,\,
+        \langle \gamma^* \gamma \gamma \rangle,\,
+        \langle \gamma \gamma^* \gamma \rangle,\,
+        \langle \gamma \gamma \gamma^* \rangle
+        \right].
+
+    which is different to some conventions, but matches orpheus' conventions to
+    have the complex conjugations in the correlators move from left to right.
 
     Parameters
     ----------
@@ -32,28 +299,12 @@ class GGGCorrelation(BinnedNPCF):
     process_spherical: bool, optional
         Process spherical catalogs using curved-sky geometry and not via flat-sky
         patches. Defaults to ``False``.
-    **kwargs
-        Passed to :class:`~orpheus.npcf_base.BinnedNPCF`.
 
     Notes
     -----
     Inherits all other parameters and attributes from :class:`BinnedNPCF`.
     Additional child-specific parameters can be passed via ``kwargs``.
     Either ``nbinsr`` or ``binsize`` has to be provided to fix the binning scheme.
-
-    Note that the different components of the GGG correlator are ordered as
-
-    .. math::
-
-        \Gamma_\mu \sim \left[
-        \langle \gamma \gamma \gamma \rangle,\,
-        \langle \gamma^* \gamma \gamma \rangle,\,
-        \langle \gamma \gamma^* \gamma \rangle,\,
-        \langle \gamma \gamma \gamma^* \rangle
-        \right].
-
-    which is different to some conventions, but matches orpheus' conventions to
-    have the complex conjugations in the correlators move from left to right.
     """
     
     def __init__(self, n_cfs, min_sep, max_sep, process_spherical=False, **kwargs):
@@ -79,8 +330,6 @@ class GGGCorrelation(BinnedNPCF):
 
     def __process_patches(self, cat, dotomo=True, rotsignflip=False, apply_edge_correction=False, adjust_tree=False, 
                         save_patchres=False, save_filebase="", keep_patchres=False):
-        """Processes individual overlapping patches and combines the result with the appropriate weighting.
-        """
 
         if save_patchres:
             if not Path(save_patchres).is_dir():
@@ -124,7 +373,7 @@ class GGGCorrelation(BinnedNPCF):
                     npcf_multipoles_patches = np.zeros((cat.npatches, *pcorr.npcf_multipoles.shape), dtype=pcorr.npcf_multipoles.dtype)
                     npcf_multipoles_norm_patches = np.zeros((cat.npatches, *pcorr.npcf_multipoles_norm.shape), dtype=pcorr.npcf_multipoles_norm.dtype)
             _shelltriplets = np.array([[pcorr.npcf_multipoles_norm[0,z*self.nbinsz*self.nbinsz+z*self.nbinsz+z,i,i].real 
-                                        for i in range(pcorr.nbinsr)] for z in range(self.nbinsz)]) # Rough estimate of scaling of pair counts based on zeroth multipole of triplets
+                                        for i in range(pcorr.nbinsr)] for z in range(self.nbinsz)]) 
             # Rough estimate of scaling of pair counts based on zeroth multipole of triplets. Note that we might get nans here due to numerical
             # inaccuracies in the multiple counting corrections for bins with zero triplets, so we force those values to be zero.
             _patchnorm = np.nan_to_num(np.sqrt(_shelltriplets)) 
@@ -186,14 +435,6 @@ class GGGCorrelation(BinnedNPCF):
             Only has an effect if the shape catalog consists of multiple patches and ``save_patchres`` is not ``False``.
         keep_patchres: bool
             If the catalog consists of multiple patches, returns all measurements on the patches. Defaults to ``False``.
-
-        Returns
-        -------
-        None
-            Results are stored on the instance in the multipole basis (``npcf_multipoles``,
-            ``npcf_multipoles_norm``, ``bin_centers``); call :meth:`multipoles2npcf` to obtain the
-            real-space basis. If the catalog is decomposed into patches and ``keep_patchres=True``,
-            the per-patch measurements are returned instead.
         """
 
         # The processing of the slabs in a 3dbox is quite different from the rest so it is outsourced for now
@@ -247,9 +488,7 @@ class GGGCorrelation(BinnedNPCF):
                                               w2field=True,
                                               verbose=self._verbose_python)
                     assert not mh['nav_coarsened'], (
-                        "nav_coarsen is incompatible with the GGG doubletree: it reuses "
-                        "nside_nav for the cross-reso reduction hierarchy, which requires "
-                        "nside_nav == the reduction nside. Only single-tree navigation "
+                        "nav_coarsen is incompatible with the GGG doubletree. Only single-tree navigation "
                         "(NN, GG, NNNN) may coarsen the navigation.")
                     extra = {'e1_resos': mh['red_e1'], 'e2_resos': mh['red_e2'],
                              'weightsq_resos': mh['red_weightsq']}
@@ -278,7 +517,7 @@ class GGGCorrelation(BinnedNPCF):
                 bin_s = build_binning_struct(self, scale=scale, nmax=int(self.nmax),
                                              dccorr=int(self.multicountcorr))
                 out_s, bin_centers, threepcfs_n, _, threepcfsnorm_n, _, _ = build_npcf_output(
-                    'ggg', self.nbinsr, nmax=self.nmax, nbinsz=nbinsz)
+                    'GGG', self.nbinsr, nmax=self.nmax, nbinsz=nbinsz)
 
                 # Keep numpy arrays referenced only through struct fields alive.
                 _alive = keep_cat + keep_nav + keep_tree   # noqa: F841
@@ -294,7 +533,7 @@ class GGGCorrelation(BinnedNPCF):
 
             else:
                 out_s, bin_centers, threepcfs_n, _, threepcfsnorm_n, _, _ = build_npcf_output(
-                    'ggg', self.nbinsr, nmax=self.nmax, nbinsz=self.nbinsz)
+                    'GGG', self.nbinsr, nmax=self.nmax, nbinsz=self.nbinsz)
                 bin_s = build_binning_struct(self, nmax=int(self.nmax), nmin=0,
                                              dccorr=int(self.multicountcorr),
                                              rbins=np.array([-1.]))
@@ -391,13 +630,13 @@ class GGGCorrelation(BinnedNPCF):
         sn = (self.nmax+1, self.nzcombis, self.nbinsr, self.nbinsr)
         szr = (nz, nz, self.nbinsr)
         out_s, bin_centers, Comp_n, _, RRR_n, _, _ = build_npcf_output(
-            'ggg', self.nbinsr, nmax=self.nmax, nbinsz=nz, estimator_type='lslike_slab')
+            'GGG', self.nbinsr, nmax=self.nmax, nbinsz=nz, estimator_type='lslike_slab')
         bin_s = build_binning_struct(self, nmax=self.nmax, dccorr=self.multicountcorr, Pi=self._Pi)
-        cat_c, kc1 = build_slab_catalog_struct(mh_source, nz, e1e2=mh_source['fields'])
-        nav_c, kn1 = build_slab_navhash_struct(mh_source)
-        cat_R, kc2 = build_slab_catalog_struct(mh_rand, nz)
-        nav_R, kn2 = build_slab_navhash_struct(mh_rand)
-        _alive = kc1 + kn1 + kc2 + kn2
+        cat_c, keep_cc = build_slab_catalog_struct(mh_source, nz, e1e2=mh_source['fields'])
+        nav_c, keep_nc = build_slab_navhash_struct(mh_source)
+        cat_R, keep_cr = build_slab_catalog_struct(mh_rand, nz)
+        nav_R, keep_nr = build_slab_navhash_struct(mh_rand)
+        _alive = keep_cc + keep_nc + keep_cr + keep_nr
 
         self.clib.alloc_Gammans_slab_GGG(
             ct.byref(cat_c), ct.byref(nav_c), ct.byref(cat_R), ct.byref(nav_R),
@@ -531,6 +770,19 @@ class GGGCorrelation(BinnedNPCF):
     def computeMap3(self, radii, do_multiscale=False, basis="MapMx", tofile=False):
         """Compute third-order aperture statistics using the polynomial filter.
 
+        Parameters
+        ----------
+        radii: numpy.ndarray
+            Aperture scales to be considered.
+        do_multiscale: bool
+            If set to true, compute the statistics on all combinations of aperture radii.
+            Defaults to ``False``.
+        basis: str, one of ``['MapMx','MM*','both']``.
+            Decide in which output basis the aperture-statistics should be returend. Defaults
+            to ``MapMx`` which is the common E/B-separating basis.
+        tofile: bool
+            No effect at the moment.
+
         Returns
         -------
         numpy.ndarray
@@ -591,8 +843,8 @@ class GGGCorrelation(BinnedNPCF):
             pass
 
         return map3s
-    
-    
+
+
 class GNNCorrelation(BinnedNPCF):
     r""" Class containing methods to measure and obtain statistics that are built
     from third-order source-lens-lens (G3L) correlation functions.
@@ -607,8 +859,6 @@ class GNNCorrelation(BinnedNPCF):
         Has no effect at the moment.
     zweighting_sigma: float or None
         Has no effect at the moment.
-    **kwargs
-        Passed to :class:`~orpheus.npcf_base.BinnedNPCF`.
 
     Notes
     -----
@@ -760,14 +1010,6 @@ class GNNCorrelation(BinnedNPCF):
             Only has an effect if the shape catalog consists of multiple patches and ``save_patchres`` is not ``False``.
         keep_patchres: bool
             If the catalog consists of multiple patches, returns all measurements on the patches. Defaults to ``False``.
-
-        Returns
-        -------
-        None
-            Results are stored on the instance in the multipole basis (``npcf_multipoles``,
-            ``npcf_multipoles_norm``, ``bin_centers``); call :meth:`multipoles2npcf` to obtain the
-            real-space basis. If the catalog is decomposed into patches and ``keep_patchres=True``,
-            the per-patch measurements are returned instead.
         """
         # For '3dbox' slab geometries the process function is quite different so we outsource it for now.
         if cat_source.geometry == '3dbox':
@@ -833,7 +1075,7 @@ class GNNCorrelation(BinnedNPCF):
             sn = (self.nmax+1, _z3combis, self.nbinsr,self.nbinsr)
             szr = (self.nbinsz_source, self.nbinsz_lens, self.nbinsr)
             out_s, bin_centers, Upsilon_n, _, Norm_n, _, _ = build_npcf_output(
-                'gnn', self.nbinsr, nmax=self.nmax,
+                'GNN', self.nbinsr, nmax=self.nmax,
                 nbinsz_lens=self.nbinsz_lens, nbinsz_source=self.nbinsz_source)
             bin_s = build_binning_struct(self, nmax=int(self.nmax),
                                          dccorr=int(self.multicountcorr))
@@ -939,8 +1181,6 @@ class GNNCorrelation(BinnedNPCF):
         WR = np.array([cat_random.weight[cat_random.zbins == z].sum() for z in range(nzd)])
         f = self.save_divide_npcf(WD, WR, fill=1.).astype(np.float64)
 
-        # RRR central is a random position tomographically aligned with the
-        # shape central, so the source/lens tomographies must match (positions=shapes).
         assert nzs == nzd, "'3dbox' requires matching source/lens tomographic bins."
 
         # Build functino arguments. The correlators are sorted as [SDD, SDR, SRD, SRR]
@@ -950,7 +1190,7 @@ class GNNCorrelation(BinnedNPCF):
         sn = (self.nmax+1, _z3combis, self.nbinsr, self.nbinsr)
         szr = (nzs, nzd, self.nbinsr)
         out_s, bin_centers, Comp_n, _, RRR_n, _, _ = build_npcf_output(
-            'gnn', self.nbinsr, nmax=self.nmax, nbinsz_lens=nzd, nbinsz_source=nzs,
+            'GNN', self.nbinsr, nmax=self.nmax, nbinsz_lens=nzd, nbinsz_source=nzs,
             estimator_type='lslike_slab')
 
         # Build all catalog-based args
@@ -982,7 +1222,6 @@ class GNNCorrelation(BinnedNPCF):
         f3 = f[z3_i].reshape(1, _z3combis, 1, 1)
         self.npcf_multipoles = (self._SDD - f3*self._SDR - f2*self._SRD + f2*f3*self._SRR)[None]
         self.npcf_multipoles_norm = fc*f2*f3*self._RRR
-        # Little helper that helps us to identify near-empty bins in the 3pcf for f!=1.
         self._normcountscale = np.mean(cat_random.weight)**3 * (fc*f2*f3).reshape(_z3combis)
 
         self.bin_centers = bin_centers.reshape(szr)
@@ -1038,22 +1277,15 @@ class GNNCorrelation(BinnedNPCF):
         
         if ret_matrices:
             return threepcf_n_corr[:,nmax:], mats
-     
-    # TODO: 
-    # * Include the z-weighting method
-    # * Include the 2pcf as spline --> Should we also add an option to compute it here? Might be a mess
-    #   as then we also would need methods to properly distribute randoms...
-    # * Do a voronoi-tesselation at the multipole level? Would be just 2D, but still might help? Eventually
-    #   bundle together cells s.t. tot_weight > theshold? However, this might then make the binning courser
-    #   for certain triangle configs(?)
 
     def multipoles2npcf(self, xi=None, count_floor_rtol=None):
         r"""Transforms the 3PCF from the multipole-basis to the real-space-basis.
 
-        Notes
-        -----
-        Similar to GGG The n<0 multipoles are recovered from the stored n>0 range via
-        z2<->z3 + theta transpose symmetry relations which are applied at the C level.
+        Parameters
+        ----------
+        xi: tuple, optional
+            Angular clustering 2PCF of the lenses as ``(thetas, omega)``; enables the
+            clustering correction recovering the pure correlator as in Simon+ 2013.
         """
         _, nzcombis, rbins, rbins = np.shape(self.npcf_multipoles[0])
         nbinsphi = len(self.phi)
@@ -1107,6 +1339,19 @@ class GNNCorrelation(BinnedNPCF):
     def computeNNM(self, radii, do_multiscale=False, xi=None, tofile=False):
         """Compute third-order aperture statistics using the polyonomial filter of Crittenden 2002.
 
+         Parameters
+        ----------
+        radii: numpy.ndarray
+            Aperture scales to be considered.
+        do_multiscale: bool
+            If set to true, compute the statistics on all combinations of aperture radii.
+            Defaults to ``False``.
+        xi: tuple, optional
+            Angular clustering 2PCF of the lenses as ``(thetas, omega)``; enables the
+            clustering correction recovering the pure correlator as in Simon+ 2013.
+        tofile: bool
+            No effect at the moment.
+
         Returns
         -------
         numpy.ndarray
@@ -1150,21 +1395,6 @@ class NGGCorrelation(BinnedNPCF):
     r""" Class containing methods to measure and obtain statistics that are built
     from third-order lens-shear-shear correlation functions.
 
-    Parameters
-    ----------
-    min_sep: float
-        The smallest distance of each vertex for which the NPCF is computed.
-    max_sep: float
-        The largest distance of each vertex for which the NPCF is computed.
-    **kwargs
-        Passed to :class:`~orpheus.npcf_base.BinnedNPCF`.
-
-    Notes
-    -----
-    Inherits all other parameters and attributes from :class:`BinnedNPCF`.
-    Additional child-specific parameters can be passed via ``kwargs``.
-    Either ``nbinsr`` or ``binsize`` has to be provided to fix the binning scheme.
-
     Note that the different components of the NGG correlator are ordered as
 
     .. math::
@@ -1173,6 +1403,19 @@ class NGGCorrelation(BinnedNPCF):
 
     which is different to the usual conventions, but matches orpheus' conventions to
     always start with a correlator in which no polar field is complex conjugated.
+
+    Parameters
+    ----------
+    min_sep: float
+        The smallest distance of each vertex for which the NPCF is computed.
+    max_sep: float
+        The largest distance of each vertex for which the NPCF is computed.
+
+    Notes
+    -----
+    Inherits all other parameters and attributes from :class:`BinnedNPCF`.
+    Additional child-specific parameters can be passed via ``kwargs``.
+    Either ``nbinsr`` or ``binsize`` has to be provided to fix the binning scheme.
     """
     def __init__(self, min_sep, max_sep, **kwargs):
         
@@ -1286,8 +1529,7 @@ class NGGCorrelation(BinnedNPCF):
         else:
             self.nbinsz_lens = max(cat_lens.nbinsz, cat_random.nbinsz)
         nzs, nzl = self.nbinsz_source, self.nbinsz_lens
-        # RRR legs are the lens random, tomographically aligned with the shape
-        # legs, so source/lens tomos should match.
+        
         assert nzs == nzl, "'3dbox' requires matching source/lens tomographic bins."
 
         # Build slab hash on joint extent
@@ -1311,7 +1553,7 @@ class NGGCorrelation(BinnedNPCF):
         sn = (nmp, _z3combis, self.nbinsr, self.nbinsr)
         szr = (nzl, nzs, self.nbinsr)
         out_s, bin_centers, Comp_n, _, RRR_n, _, _ = build_npcf_output(
-            'ngg', self.nbinsr, nmax=self.nmax, nbinsz_lens=nzl, nbinsz_source=nzs,
+            'NGG', self.nbinsr, nmax=self.nmax, nbinsz_lens=nzl, nbinsz_source=nzs,
             estimator_type='lslike_slab')
         bin_s = build_binning_struct(self, nmax=int(self.nmax), dccorr=int(self.multicountcorr), Pi=self._Pi)
 
@@ -1319,12 +1561,12 @@ class NGGCorrelation(BinnedNPCF):
         # The lens catalog dos not require a hash, so we need to emulate its dict 
         mhemu_lens = {'pos1': cat_lens.pos1, 'pos2': cat_lens.pos2, 'pos3': cat_lens.pos3, 
                       'weight': cat_lens.weight, 'zbins': cat_lens.zbins}
-        catlD, kc1 = build_slab_catalog_struct(mhemu_lens, nzl)
-        catlR, kc2 = build_slab_catalog_struct(mh_rand, nzl)
-        navlR, kn2 = build_slab_navhash_struct(mh_rand)
-        catsD, kc3 = build_slab_catalog_struct(mh_source, nzs, e1e2=mh_source['fields'])
-        navsD, kn3 = build_slab_navhash_struct(mh_source)
-        _alive = kc1 + kc2 + kn2 + kc3 + kn3
+        catlD, keep_cl = build_slab_catalog_struct(mhemu_lens, nzl)
+        catlR, keep_cr = build_slab_catalog_struct(mh_rand, nzl)
+        navlR, keep_nr = build_slab_navhash_struct(mh_rand)
+        catsD, keep_cs = build_slab_catalog_struct(mh_source, nzs, e1e2=mh_source['fields'])
+        navsD, keep_ns = build_slab_navhash_struct(mh_source)
+        _alive = keep_cl + keep_cr + keep_nr + keep_cs + keep_ns
 
         self.clib.alloc_Gammans_slab_NGG(
             ct.byref(catlD), ct.byref(catlR), ct.byref(catsD), ct.byref(navsD),
@@ -1336,8 +1578,7 @@ class NGGCorrelation(BinnedNPCF):
         self._DSS, self._RSS = _DSS, _RSS
         self._RRR = np.nan_to_num(RRR_n.reshape(sn))
 
-        # Recombine with f = W_D/W_R: D~.S.S = DSS - f[zc].RSS (f on the density
-        # central); RRR rescaled by f at each of the three vertices.
+        # Recombine with f = W_D/W_R
         zc_i, z2_i, z3_i = np.unravel_index(np.arange(_z3combis), (nzl, nzs, nzs))
         fc = f[zc_i]; f2 = f[z2_i]; f3 = f[z3_i]
         self.npcf_multipoles = _DSS - fc.reshape(1, 1, _z3combis, 1, 1)*_RSS
@@ -1453,7 +1694,7 @@ class NGGCorrelation(BinnedNPCF):
             szr = (self.nbinsz_lens, self.nbinsz_source, self.nbinsr)
             # Build output arrays
             out_s, bin_centers, Upsilon_n, _, Norm_n, _, _ = build_npcf_output(
-                'ngg', self.nbinsr, nmax=self.nmax,
+                'NGG', self.nbinsr, nmax=self.nmax,
                 nbinsz_lens=self.nbinsz_lens, nbinsz_source=self.nbinsz_source)
             bin_s = build_binning_struct(self, nmax=int(self.nmax),
                                          dccorr=int(self.multicountcorr))

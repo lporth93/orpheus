@@ -32,24 +32,13 @@ class NNCorrelation(BinnedNPCF):
     shuffle_pix: int, optional
         Choice of how to define centers of the cells in the spatial hash structure.
         Defaults to ``1``, i.e. random positioning.
-        
-    **kwargs
-        Passed to :class:`~orpheus.npcf_base.BinnedNPCF`.
 
-
-    Attributes
-    ----------
-    npair: numpy.ndarray
-        The number of unweighted pairs.
-    npair_cell: numpy.ndarray
-        The number cell-pairs.
-    xi: numpy.ndarray
-        The scalar two-point correlation function.
 
     Notes
     -----
     - Inherits all other parameters and attributes from :class:`BinnedNPCF`.
-    - Additional child-specific parameters can be passed via ``kwargs``.
+      Additional child-specific parameters can be passed via ``kwargs``. 
+      Either ``nbinsr`` or ``binsize`` has to be provided to fix the binning scheme.
     - We default to ``shuffle_pix=1``, i.e. random cell centers. This makes
       sure to reduce any geometric artifacts near the bin boundaries.
     """
@@ -234,7 +223,7 @@ class NNCorrelation(BinnedNPCF):
         scale = convertunits(self.sep_units, 'rad') if native_spherical else None
         bin_s = build_binning_struct(self, do_dc=do_dc, scale=scale)
         out_s, bin_centers, _, npair, _, _, npair_cell = build_npcf_output(
-            'nn', self.nbinsr, nbinsz=nbinsz)
+            'NN', self.nbinsr, nbinsz=nbinsz)
 
         # Keep numpy arrays backing ctypes pointer fields alive during the C call.
         # ctypes does not maintain Python references for raw pointers stored in structs.
@@ -354,17 +343,6 @@ class GGCorrelation(BinnedNPCF):
         The smallest distance of each vertex for which the NPCF is computed.
     max_sep: float
         The largest distance of each vertex for which the NPCF is computed.
-
-    Attributes
-    ----------
-    xip: numpy.ndarray
-        The ξ₊ correlation function.
-    xim: numpy.ndarray
-        The ξ₋ correlation function.
-    norm: numpy.ndarray
-        The number of weighted pairs.
-    npair: numpy.ndarray
-        The number of unweighted pairs.
 
     Notes
     -----
@@ -552,7 +530,7 @@ class GGCorrelation(BinnedNPCF):
         scale = convertunits(self.sep_units, 'rad') if native_spherical else None
         bin_s = build_binning_struct(self, do_dc=do_dc, scale=scale)
         out_s, bin_centers, _npcf, norm, _, npair, _ = build_npcf_output(
-            'gg', self.nbinsr, nbinsz=nbinsz)
+            'GG', self.nbinsr, nbinsz=nbinsz)
         _z2r = nbinsz*nbinsz*self.nbinsr
         xip, xim = _npcf[:_z2r], _npcf[_z2r:] # Define xip/xim from the output array
 
@@ -627,8 +605,6 @@ class GGCorrelation(BinnedNPCF):
             axis, :math:`E_n`, :math:`E_n^\times`, :math:`B_n`, and :math:`B_n^\times`.
         """
 
-        ### HELPER FUNCTIONS ###
-        # TODO MAYBE PUT IN A SEPARATE FILE
         def _log_cosebi_weights(theta_min, theta_max, Nmax, dps=100):
             r"""Compute roots and norms for log-COSEBI using SEK2010 formalism.
 
@@ -767,8 +743,6 @@ class GGCorrelation(BinnedNPCF):
 
             return Tp_out + 4.*np.exp(-2.*z_out)*I2_out - 12.*np.exp(-4.*z_out)*I4_out
         
-        ### END OF HELPER FUNCTIONS ###
-
         if self.xip is None or self.xim is None or self.bin_centers_mean is None:
             raise RuntimeError(
                 "GGCorrelation has not been populated yet. Call `process` "
@@ -907,21 +881,12 @@ class NGCorrelation(BinnedNPCF):
         The smallest distance of each vertex for which the NPCF is computed.
     max_sep: float
         The largest distance of each vertex for which the NPCF is computed.
-    **kwargs
-        Passed to :class:`~orpheus.npcf_base.BinnedNPCF`.
-
-    Attributes
-    ----------
-    xi: numpy.ndarray
-        The position-shape correlation function.
-    norm: numpy.ndarray
-        The number of weighted pairs.
-    npair: numpy.ndarray
-        The number of unweighted pairs.
-
 
     Notes
     -----
+    - Inherits all other parameters and attributes from :class:`BinnedNPCF`.
+      Additional child-specific parameters can be passed via ``kwargs``. 
+      Either ``nbinsr`` or ``binsize`` has to be provided to fix the binning scheme.
     - In case of a three-dimensional box we define the projection direction along the z-axis
       and we allocate some additional private attributes ``_DS``, ``_RS` and ``_RR``.
     """
@@ -943,13 +908,11 @@ class NGCorrelation(BinnedNPCF):
         self._initprojections(self)
 
     def __call_ng_slab(self, scalar_cat_arrays, polar_bundle, has_shapes, self_pairs, nbinsz_scalar):
-        """Run one ng_slab pass. Returns (xs, wnorm, rsum, npairs) reshaped to
-        (nbinsz_scalar, nbinsz_polar, nbinsr) with xs complex."""
+        """Run one ng_slab pass."""
         scalar_pos1, scalar_pos2, scalar_pos3, scalar_w, scalar_zbin = scalar_cat_arrays
         nbinsz_polar = self.nbinsz_shape if has_shapes else self.nbinsz_pos
 
-        # Query catalog (looped directly, no nav) + the slab-hashed catalog that
-        # carries either the shapes (has_shapes) or the random pair counts.
+        # Query catalog + the slab-hashed catalog that carries either the shapes or the random pair counts.
         query = {'pos1': scalar_pos1, 'pos2': scalar_pos2, 'pos3': scalar_pos3,
                  'weight': scalar_w, 'zbins': scalar_zbin}
         cat_q, keep_q = build_slab_catalog_struct(query, nbinsz_scalar)
@@ -960,7 +923,7 @@ class NGCorrelation(BinnedNPCF):
         _alive = keep_q + keep_h + keep_nh   # noqa: F841
 
         out_s, bin_centers, npcf, norm, _, npair, _ = build_npcf_output(
-            'ng', self.nbinsr, nbinsz_lens=nbinsz_scalar, nbinsz_source=nbinsz_polar)
+            'NG', self.nbinsr, nbinsz_lens=nbinsz_scalar, nbinsz_source=nbinsz_polar)
 
         self.clib.ng_slab(
             ct.byref(cat_q), ct.byref(cat_h), ct.byref(nav_h), ct.byref(bin_s),
@@ -1152,7 +1115,7 @@ class NGCorrelation(BinnedNPCF):
         tree_s.maxresoind_leaf = min(int(self.maxresoind_leaf), maxleaf)
         bin_s = build_binning_struct(self, do_dc=1)
         out_s, bin_centers, xi, norm, _, npair, _ = build_npcf_output(
-            'ng', self.nbinsr, nbinsz_lens=nzl, nbinsz_source=nzs)
+            'NG', self.nbinsr, nbinsz_lens=nzl, nbinsz_source=nzs)
 
         # Keep numpy arrays backing ctypes pointer fields alive during the C call.
         # ctypes does not maintain Python references for raw pointers stored in structs.
