@@ -8,23 +8,16 @@ Orpheus is python package for the calculation of second- third- and fourth-order
 Installation steps, documentation and examples are provided at [orpheus.readthedocs.io](https://orpheus.readthedocs.io/).
 
 ### Installation
-orpheus is on pypi, and the wheels ship with `healpix_cxx` bundled:
+orpheus is on pypi:
 ```shell
 pip install orpheus-npcf
 ```
 
 Building from source instead compiles a parallelised C/C++ extension at install
-time. Besides the python requirements you therefore need
-
-* a C compiler with OpenMP support (GCC, or Clang together with `libomp`), and
-* the **healpix_cxx** C++ library, **including its development headers**, the `healpy` python package is not sufficient.
-
-You can install healpix_cxx via
-
-| Platform | Command |
-| --- | --- |
-| conda / mamba (Linux, macOS) | `conda install -c conda-forge healpix_cxx pkg-config` |
-| Debian / Ubuntu | `sudo apt install libhealpix-cxx-dev pkg-config` |
+time. Besides the python requirements you therefore need a C compiler with
+OpenMP support (GCC, or Clang together with `libomp`). No external C libraries
+are needed: the small HEALPix subset used by the curved-sky estimators is
+shipped with orpheus, in `orpheus/src/healpix/`.
 
 Then clone the repository via
 ```shell

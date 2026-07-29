@@ -38,48 +38,6 @@ def try_compile(code, compiler, cflags=None, lflags=None, include_dirs=None, lib
             if os.path.exists(fname):
                 os.remove(fname)
 
-HEALPIX_CXX_MISSING = """
-%(rule)s
-orpheus needs the healpix_cxx C++ library (headers *and* shared library) to
-build orpheus/src/healpix_utils.cpp.
-
-Install healpix_cxx with one of
-
-    conda install -c conda-forge healpix_cxx pkg-config
-    sudo apt install libhealpix-cxx-dev pkg-config
-
-If it lives in a prefix that pkg-config cannot see, point at it explicitly:
-
-    export HEALPIX_CXX_DIR=/path/to/prefix
-
-Flag combinations tried (compiler %(cxx)s):
-%(tried)s
-%(rule)s
-"""
-
-# Candidate compiler/linker flags for healpix_cxx, try a few specific first:
-def healpix_cxx_candidates():
-    def from_prefix(prefix):
-        return (["-I" + os.path.join(prefix, "include", "healpix_cxx")],
-                ["-L" + os.path.join(prefix, "lib"), "-lhealpix_cxx"])
-
-    candidates = []
-    if os.environ.get("HEALPIX_CXX_DIR"):
-        candidates.append(from_prefix(os.environ["HEALPIX_CXX_DIR"]))
-    try:
-        cflags = subprocess.check_output(["pkg-config", "--cflags", "healpix_cxx"],
-                                         stderr=subprocess.DEVNULL).decode().split()
-        libs = subprocess.check_output(["pkg-config", "--libs", "healpix_cxx"],
-                                       stderr=subprocess.DEVNULL).decode().split()
-        candidates.append((cflags, libs))
-    except Exception:
-        pass
-    if os.environ.get("CONDA_PREFIX"):
-        candidates.append(from_prefix(os.environ["CONDA_PREFIX"]))
-    candidates.append((["-I/usr/include/healpix_cxx"], ["-lhealpix_cxx"]))
-    return candidates
-
-
 CXX_MISSING = """
 %(rule)s
 orpheus needs a C++ compiler to build orpheus/src/healpix_utils.cpp. None of the
@@ -115,25 +73,12 @@ def detect_cxx(cc_path=None):
                                       "tried": "\n".join("    " + t for t in tried) or "    (none found)"})
 
 
-# Pick the first candidate that compiles and links against healpix_cxx.
-def healpix_cxx_flags(cxx):
-    probe = ('#include "healpix_base.h"\n'
-             '#include "rangeset.h"\n'
-             '#include "pointing.h"\n'
-             '#include "vec3.h"\n'
-             '#include "datatypes.h"\n'
-             'int main(){ T_Healpix_Base<int64> base(64, NEST, SET_NSIDE); return (int)base.Nside(); }\n')
-    tried = []
-    for cflags, libs in healpix_cxx_candidates():
-        if try_compile(probe, cxx, cflags=["-std=c++14"] + cflags, lflags=libs, suffix=".cpp"):
-            return cflags, libs
-        tried.append("    " + " ".join(cflags + libs))
-    raise RuntimeError(HEALPIX_CXX_MISSING % {"rule": "=" * 78, "cxx": cxx,
-                                              "tried": "\n".join(tried)})
-
-
 # Find first available compiler
 def detect_compiler(preferred=("gcc-15", "gcc-14", "gcc-13", "gcc-12", "gcc-11", "gcc", "icc")):
+    # On macOS the whole toolchain must be clang: the SDK and the extension link
+    # flags both assume it. OpenMP comes from libomp.
+    if sys.platform == "darwin":
+        preferred = ("clang",)
     for cc in preferred:
         path = shutil.which(cc)
         if not path:
@@ -201,8 +146,11 @@ class BuildExtWithDetect(build_ext):
                     pass
 
         # Check whether the selected compiler supports OpenMP.
+        # macOS links extensions as bundles, and setuptools passes -bundle itself;
+        # adding -shared there means -dynamiclib, which conflicts with it.
+        link_shared = [] if sys.platform == "darwin" else ["-shared"]
         omp_cflags = ["-fopenmp", "-O3", "-ffast-math", "-std=c99", "-fPIC"]
-        omp_lflags = ["-shared", "-fopenmp", "-lm"]
+        omp_lflags = link_shared + ["-fopenmp", "-lm"]
         use_openmp = False
         applied_alternative_clang_flags = False
 
@@ -231,15 +179,14 @@ class BuildExtWithDetect(build_ext):
                             break
 
                 if libomp_include and libomp_lib:
-                    clang_alt_cflags = ["-Xpreprocessor", "-fopenmp", "-O0", "-ffast-math", "-std=c99", "-fPIC"]
+                    clang_alt_cflags = ["-Xpreprocessor", "-fopenmp", "-O3", "-ffast-math", "-std=c99", "-fPIC"]
                     clang_alt_lflags = ["-lomp", "-lm"]
                     if try_compile(omp_test_code, cc_path, cflags=clang_alt_cflags, lflags=clang_alt_lflags,
                                    include_dirs=[libomp_include], library_dirs=[libomp_lib]):
                         use_openmp = True
                         applied_alternative_clang_flags = True
                         omp_cflags = clang_alt_cflags
-                        # macOS: link as a Python extension bundle and link libomp
-                        omp_lflags = ["-bundle", "-undefined", "dynamic_lookup", "-L" + libomp_lib, "-lomp", "-lm"]
+                        omp_lflags = ["-L" + libomp_lib, "-lomp", "-lm"]
                     else:
                         use_openmp = False
                 else:
@@ -263,18 +210,14 @@ class BuildExtWithDetect(build_ext):
                             break
             else:
                 ext.extra_compile_args = ["-O3", "-ffast-math", "-std=c99", "-fPIC"]
-                ext.extra_link_args = ["-shared", "-lm"]
+                ext.extra_link_args = link_shared + ["-lm"]
 
-        # Most files are C, but healpix_utils.cpp needs C++ flags instead.
-        # Replace the C standard flag for C++ sources and add the healpix_cxx
-        # include/library flags without affecting the C files.
+        # Most files are C; healpix_utils.cpp and the vendored HEALPix sources need
+        # C++ flags instead. setuptools compiles those with its own driver, which need
+        # not be the OpenMP-capable compiler picked for the C sources, and Apple clang
+        # rejects -fopenmp outright. No C++ source here uses OpenMP, so the flag is
+        # simply dropped for them.
         cxx_path = detect_cxx(cc_path)
-        cxx_cflags, cxx_libs = healpix_cxx_flags(cxx_path)
-        # setuptools compiles C++ sources with its own driver, which need not be the
-        # OpenMP-capable compiler picked for the C sources, and Apple clang rejects
-        # -fopenmp outright. healpix_utils.cpp has no OpenMP directives, so the flag
-        # is simply dropped for C++.
-        cxx_cflags = [a for a in cxx_cflags if a not in ("-fopenmp", "-Xpreprocessor")]
         orig_compile = self.compiler._compile
 
         # The C++ sources are compiled with the C++ driver rather than with the
@@ -283,7 +226,7 @@ class BuildExtWithDetect(build_ext):
             if os.path.splitext(src)[1] in (".cpp", ".cc", ".cxx"):
                 postargs = [a for a in extra_postargs
                             if a not in ("-std=c99", "-fopenmp", "-Xpreprocessor")]
-                postargs = postargs + ["-std=c++14"] + cxx_cflags
+                postargs = postargs + ["-std=c++14"]
                 saved_cc = self.compiler.compiler_so
                 self.compiler.compiler_so = [cxx_path] + list(saved_cc[1:])
                 try:
@@ -297,7 +240,7 @@ class BuildExtWithDetect(build_ext):
         # longer ship libstdc++ at all.
         cxx_runtime = "-lc++" if sys.platform == "darwin" else "-lstdc++"
         for ext in self.extensions:
-            ext.extra_link_args = list(ext.extra_link_args or []) + cxx_libs + [cxx_runtime]
+            ext.extra_link_args = list(ext.extra_link_args or []) + [cxx_runtime]
 
         super().build_extensions()
 
@@ -316,7 +259,16 @@ clib_sources = [
     "orpheus/src/corrfunc_fourth.c",
     "orpheus/src/corrfunc_fourth_derived.c",]
 
-# The covariance kernels are not part of the distribution
+# Vendored HEALPix subset backing healpix_utils.cpp, see orpheus/src/healpix/README.md
+clib_sources += [
+    "orpheus/src/healpix/healpix_base.cc",
+    "orpheus/src/healpix/healpix_tables.cc",
+    "orpheus/src/healpix/error_handling.cc",
+    "orpheus/src/healpix/geom_utils.cc",
+    "orpheus/src/healpix/pointing.cc",
+    "orpheus/src/healpix/string_utils.cc",]
+
+# The covariance kernels are not part of the distribution for now
 if os.path.exists("orpheus/src/cov_postq.c"):
     clib_sources.append("orpheus/src/cov_postq.c")
 
@@ -324,7 +276,7 @@ ext_modules = [
     Extension(
         "orpheus.orpheus_clib",
         sources=clib_sources,
-        include_dirs=["orpheus/src"],
+        include_dirs=["orpheus/src", "orpheus/src/healpix"],
     ),
 ]
 

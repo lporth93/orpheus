@@ -40,27 +40,10 @@ jobs:
         env:
           # build valid cp3xx wheels
           CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-*"
-          # musl (Alpine) would need its own cfitsio/healpix_cxx build; sdist covers it
+          # musl (Alpine) is served by the sdist
           CIBW_SKIP: "*-musllinux_*"
-          # The manylinux container has no apt and no healpix_cxx, so build it
-          # and its cfitsio dependency from source once per container.
-          CIBW_BEFORE_ALL_LINUX: >
-            cd /tmp &&
-            curl -sSL https://heasarc.gsfc.nasa.gov/FTP/software/fitsio/c/cfitsio-4.5.0.tar.gz | tar xz &&
-            cd cfitsio-4.5.0 && ./configure --prefix=/usr/local && make -j4 && make install && cd .. &&
-            curl -sSL -o healpix_cxx.tar.gz "https://sourceforge.net/projects/healpix/files/Healpix_3.83/healpix_cxx-3.83.0.tar.gz/download" &&
-            tar xzf healpix_cxx.tar.gz && cd healpix_cxx-3.83.0 &&
-            PKG_CONFIG_PATH=/usr/local/lib/pkgconfig ./configure --prefix=/usr/local &&
-            make -j4 && make install && cd .. &&
-            echo /usr/local/lib > /etc/ld.so.conf.d/healpix_cxx.conf && ldconfig
-          # LD_LIBRARY_PATH lets auditwheel vendor libhealpix_cxx.so into the wheel.
-          CIBW_ENVIRONMENT_LINUX: >
-            HEALPIX_CXX_DIR=/usr/local
-            PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
-            LD_LIBRARY_PATH=/usr/local/lib
-          # macOS wheels build natively on the runner, so homebrew suffices.
-          CIBW_BEFORE_ALL_MACOS: brew install healpix
-          CIBW_ENVIRONMENT_MACOS: HEALPIX_CXX_DIR=/opt/homebrew
+          # HEALPix is vendored, so only clang's OpenMP runtime is still external
+          CIBW_BEFORE_ALL_MACOS: brew install libomp
         run: |
           # For macOS builds set deployment target to match libgomp dependency seen earlier
           if [ "$(uname -s)" = "Darwin" ]; then
