@@ -7,14 +7,7 @@
 // Geometry tag, shared across all correlators.
 #define METRIC_FLAT      0   // 2D flat geometry
 #define METRIC_SPHERICAL 1   // spherical geometry
-#define METRIC_3DBOX     2   // 3D flat + line-of-sight slabs
-
-// ---------------------------------------------------------------------------
-// Per-galaxy multi-resolution data. Geometry- and order-agnostic: unused
-// fields are NULL. Core fields (isinner/weight/zbin) are used by every order;
-// pos1/pos2 vs vx/vy/vz are geometry-exclusive; e1/e2/weightsq are shear-only
-// (NULL for NN, populated for GGG/GGL).
-// ---------------------------------------------------------------------------
+#define METRIC_3DBOX     2   // 3D box + line-of-sight slabs
 
 // Structure related to tracer catalogs and their reductions. Unused fields are set to NULL
 typedef struct {
@@ -84,7 +77,7 @@ typedef struct {
     int maxresoind_leaf;
 } TreeResoParams;
 
-// NPCF binning in real space (N=2) and multipole space (N>3).
+// NPCF binning in real space (N=2) and multipole space (N=3).
 typedef struct {
     double rmin, rmax;
     int nbinsr;
@@ -108,5 +101,21 @@ typedef struct {
     int ncomp;
     int nmax;
 } NPCFOutput;
+
+// NPCF binning parameters used for the various fourth-order correlators
+typedef struct {
+    int nbinsphi1, nbinsphi2;
+    double *phibins1, *phibins2, *dbinsphi1, *dbinsphi2;
+    int *nindices; int len_nindices;
+    int nthetacombis, nthetbatches;
+    int *thetacombis_batches, *nthetacombis_batches, *cumthetacombis_batches;
+} FourthParams;
+
+// Pars related to the clustering-correction of GNL-correlators
+typedef struct {
+    double count_floor;
+    double *xi_nn; double thetamin_xi, thetamax_xi, dtheta_xi; int has_xi;
+    double *zeta, *zeta_rbins; int zeta_nr; double *zeta_phis; int zeta_nphi; int has_zeta;
+} ClustCorr;
 
 #endif // MULTIRES_STRUCTS_H

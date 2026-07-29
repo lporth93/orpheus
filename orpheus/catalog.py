@@ -214,7 +214,7 @@ class Catalog:
             ct.c_double, ct.c_double, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, ct.c_int32,
             p_f64_nof, p_f64_nof, p_f64_nof, p_f64_nof, p_f64_nof,ct.c_int32]
 
-        # Tomographic + OpenMP reduction: the zbin loop lives in C (see reducecat_tomo).
+        # Construct reduced catalog
         self.clib.reducecat_tomo.restype = ct.c_void_p
         self.clib.reducecat_tomo.argtypes = [
             p_f64, p_f64, p_f64, p_f64, p_f64, p_i32,
@@ -226,7 +226,8 @@ class Catalog:
     ### PATCH DECOMPOSITION RELATED METHODS ###
     def topatches(self, npatches, patchextend_deg=2.,other_cats=None,
                   nside_hash=128, verbose=False, method='kmeans_healpix', n_workers=16,
-                  kmeanshp_maxiter=1000, kmeanshp_tol=1e-10, kmeanshp_randomstate=42,healpix_nside=8):
+                  kmeanshp_maxiter=1000, kmeanshp_tol=1e-10, kmeanshp_randomstate=42,
+                  nside_kmeans=1024,healpix_nside=8):
         r""" Decomposes a full-sky catalog into patches.
 
         Parameters
@@ -244,7 +245,7 @@ class Catalog:
             Flag setting on whether output is printed to the console.
         method: {'kmeans_healpix', 'kmeans_treecorr', 'healpix'}
             Patch-assignment algorithm. See the notes for additional details.
-         n_workers: int or None
+        n_workers: int or None
             Number of parallel worker processes for buffer construction.
             Follows joblib convention: None/-1 --> all CPUs, 1-->sequential.
             Defaults to 16 as I found that this does not produce huge memory overhead
@@ -255,6 +256,10 @@ class Catalog:
             KMeans convergence tolerance (kmeans_healpix method only).
         kmeanshp_randomstate: int
             KMeans random seed (kmeans_healpix method only).
+        nside_kmeans: int
+            Healpix nside for on which the footprint is painted before running 
+            the kmeans algorithm. A coarse value will result in a faster runtime
+            but less accurate patches.
         healpix_nside: int
             Healpix nside for patch assignment (healpix method only).
        
@@ -265,7 +270,7 @@ class Catalog:
             be fairly time consuming. If your primary concern is speed, choosing
             ``method='healpix'`` is most suited as there the patches are predefined
             as healpix pixels. While this choice is optimal for unmasked full-sky
-            catalogs it might yield largely discrepant areas for complex survey 
+            catalogs it might yield pretty discrepant areas for complex survey 
             geometries.
 
         .. note::
@@ -289,6 +294,7 @@ class Catalog:
                                                   kmeanshp_tol=kmeanshp_tol,
                                                   kmeanshp_randomstate=kmeanshp_randomstate,
                                                   healpix_nside=healpix_nside,
+                                                  nside_kmeans=nside_kmeans,
                                                   n_workers=n_workers)
             
             # When forcing the patches to be healpix pixels the number of non-empty pixels depends on the survey footprint and
@@ -500,19 +506,18 @@ class Catalog:
         shuffle : int, default ``0``
             How to choose the position of each per-pixel reduced galaxies:
 
-            * 0: weighted centroid of the galaxies in the pixel (original
-            behaviour).
+            * 0: weighted centroid of the galaxies in the pixel 
             * 1: a uniformly random position drawn from within the pixel
-            * 2: the pixel center.
+            * 2: the pixel center
             * 3: the position of one galaxy chosen uniformly at random from
-            the galaxies occupying that pixel.
+              the galaxies occupying that pixel
 
             In all cases the reduced-galaxy weight (sum) and isinner flag (any)
             are unchanged; only the position assignment differs.
         extent: list, optional
             Sets custom boundaries ``[xmin, xmax, ymin, ymax]`` for the grid (``flat2d`` only).
             Each element defaults to ``None``. Each element equal to ``None`` sets the grid
-            boundary as the smallest value fully containing the discrete field tracers.
+            boundary using the smallest bounding box of the discrete field tracers.
         forcedivide: int, optional, default ``1``
             Forces the number of cells in each dimensions to be divisible by some number
             Considered for ``flat2d`` geometry.
@@ -530,11 +535,11 @@ class Catalog:
             If set, navigate each reduced band on a coarser nested grid whose pixel size
             stays below ``rmax_band/nav_coarsen``. The reduction stays at
             ``nsides[r]``; only the ``query_disc`` navigation coarsens, keeping it cheap at
-            large separations. Results are unchanged (inclusive query + per-pair distance cut).
+            large separations..
         verbose: bool, optional, default ``False``
             Flag setting on whether output is printed to the console (``spherical``).
         dpix_z: float, optional, default ``None``
-            Slab width along the line of sight (``3dbox``).
+            Slab width along the line of sight. Required for ``3dbox``.
         extent_z: list, optional, default ``[None, None]``
             Sets custom boundaries for line-of-sight ``[zmin, zmax]``. ``None`` entries
             default to the catalog extent.
@@ -573,7 +578,7 @@ class Catalog:
 
         Notes
         -----
-        The parameters are as documented in :meth:`Catalog.multihash_bundle` (flat path).
+        The parameters are as documented in :meth:`Catalog.multihash_bundle`.
         """
         
         dpixs = sorted(dpixs)
@@ -634,12 +639,10 @@ class Catalog:
             ngal=np.int32(ngals[0]),
             nresos=np.int32(len(ngals)-1),
             ngal_resos=np.asarray(ngals, dtype=np.int32),
-            # per-level lists (lossless; index 0 is the full-resolution base)
             pos1s=pos1s, pos2s=pos2s, weights=weights, zbins=zbins, isinners=isinners,
             allfields=allfields, index_matchers=index_matchers,
             pixs_galind_bounds=pixs_galind_bounds, pix_gals=pix_gals,
             dpixs1_true=dpixs1_true, dpixs2_true=dpixs2_true,
-            # concatenated over levels (the args the flat C estimators consume)
             isinner_resos=np.concatenate(isinners).astype(np.float64),
             weight_resos=np.concatenate(weights).astype(np.float64),
             pos1_resos=np.concatenate(pos1s).astype(np.float64),
@@ -662,7 +665,7 @@ class Catalog:
 
         Notes
         -----
-        The parameters are as documented in :meth:`Catalog.multihash_bundle` (flat path).
+        The parameters are as documented in :meth:`Catalog.multihash_bundle`.
         """
         assert self.geometry == '3dbox'
         assert self.pos3 is not None
@@ -728,7 +731,6 @@ class Catalog:
                                         pix1_n, pix2_n, result)
             index_matcher[s*npix:(s+1)*npix] = result[ngal_s:ngal_s+npix]
             bounds_list.append(result[ngal_s+npix:ngal_s+npix+ngal_s+1].copy())
-            # Store global reordered galaxy index (block starts at lo).
             pix_gals[lo:hi] = result[ngal_s+npix+ngal_s+1:ngal_s+npix+2*ngal_s+1] + lo
             cum_bounds += ngal_s + 1
         pixs_galind_bounds = np.concatenate(bounds_list).astype(np.int32)
@@ -758,7 +760,7 @@ class Catalog:
 
         Notes
         -----
-        The parameters are as documented in :meth:`Catalog.multihash_bundle` (flat path).
+        The parameters are as documented in :meth:`Catalog.multihash_bundle`.
         """
         from healpy import ang2pix, pix2ang, pix2vec, query_disc, nside2resol
 
@@ -774,15 +776,15 @@ class Catalog:
         assert len(reso_redges) == nresos + 1
 
         # Some helpers
-        deg2rad = np.pi / 180.
-        ra = self.pos1 * deg2rad
-        dec = self.pos2 * deg2rad
-        theta = 0.5 * np.pi - dec
-        phi = ra % (2. * np.pi)
+        deg2rad = np.pi/180.
+        ra = self.pos1*deg2rad
+        dec = self.pos2*deg2rad
+        theta = 0.5*np.pi - dec
+        phi = ra%(2.*np.pi)
         cosdec = np.cos(dec)
         sindec = np.sin(dec)
-        gvx = cosdec * np.cos(ra)
-        gvy = cosdec * np.sin(ra)
+        gvx = cosdec*np.cos(ra)
+        gvy = cosdec*np.sin(ra)
         gvz = sindec
         w = self.weight.astype(np.float64)
         isinner = self.isinner.astype(np.float64)
@@ -820,14 +822,13 @@ class Catalog:
                 rw, ris, rz = w, isinner, zbins
                 red_navpix = ang2pix(ns_nav, theta, phi, nest=True)
                 if do_shear:
-                    # No aggregation -> no transport, thus keep real shears.
                     re1, re2 = e1_full, e2_full
                     if w2field:
-                        rwsq = w * w
+                        rwsq = w*w
             else:
                 # Paint galaxies to grid and get unique filled indices (one per z-bin)
                 gpix = ang2pix(ns_red, theta, phi, nest=True)
-                key = gpix * nz + zbins
+                key = gpix*nz + zbins
                 occ_key, inv = np.unique(key, return_inverse=True)
                 nocc = len(occ_key)
                 sw = np.bincount(inv, weights=w, minlength=nocc)
@@ -835,18 +836,18 @@ class Catalog:
                 pix_for_group = occ_key // nz
                 # Now do aggregation based on shuffle convention
                 if shuffle == 0:
-                    sx = np.bincount(inv, weights=w * gvx, minlength=nocc)
-                    sy = np.bincount(inv, weights=w * gvy, minlength=nocc)
-                    sz = np.bincount(inv, weights=w * gvz, minlength=nocc)
-                    norm = np.sqrt(sx * sx + sy * sy + sz * sz)
+                    sx = np.bincount(inv, weights=w*gvx, minlength=nocc)
+                    sy = np.bincount(inv, weights=w*gvy, minlength=nocc)
+                    sz = np.bincount(inv, weights=w*gvz, minlength=nocc)
+                    norm = np.sqrt(sx*sx + sy*sy + sz*sz)
                     norm[norm == 0] = 1.
-                    rvx, rvy, rvz = sx / norm, sy / norm, sz / norm
+                    rvx, rvy, rvz = sx/norm, sy/norm, sz/norm
                     rsdec = rvz
-                    rcdec = np.sqrt(np.maximum(0., 1. - rvz * rvz))
-                    rra = np.arctan2(rvy, rvx) % (2. * np.pi)
+                    rcdec = np.sqrt(np.maximum(0., 1.-rvz*rvz))
+                    rra = np.arctan2(rvy, rvx)%(2.*np.pi)
                 elif shuffle == 1:
                     theta_s, phi_s = _randomhealpixshift(ns_red, pix_for_group, rng)
-                    dec_s = 0.5 * np.pi - theta_s
+                    dec_s = 0.5*np.pi - theta_s
                     rra = phi_s
                     rcdec = np.cos(dec_s)
                     rsdec = np.sin(dec_s)
@@ -855,7 +856,7 @@ class Catalog:
                     rvz = rsdec
                 elif shuffle == 2:
                     theta_c, phi_c = pix2ang(ns_red, pix_for_group, nest=True)
-                    dec_c = 0.5 * np.pi - theta_c
+                    dec_c = 0.5*np.pi - theta_c
                     rra = phi_c
                     rcdec = np.cos(dec_c)
                     rsdec = np.sin(dec_c)
@@ -876,22 +877,17 @@ class Catalog:
                 rw = sw
                 ris = (sis > 0).astype(np.float64)
                 red_navpix = pix_for_group
-                rz = (occ_key % nz).astype(np.int64)
+                rz = (occ_key%nz).astype(np.int64)
 
-                # If there are shapes present, parallel transport each galaxies (at position j) 
-                # shear to the position C of the reduced galaxy C along the connecting geodesic.
-                # We have e^{2i*Delta} with Delta=(phi_{C->j}+pi)-phi_{j->C}, see C code for more
-                # details.
+                # Parallel transport the shapes to position of reduced galaxy
                 if do_shear:
                     tra = rra[inv]; tsd = rsdec[inv]; tcd = rcdec[inv]
                     dlam = ra - tra
-                    phi_cj = np.arctan2(tcd*sindec - tsd*cosdec*np.cos(dlam),
-                                        cosdec*np.sin(dlam))
+                    phi_cj = np.arctan2(tcd*sindec - tsd*cosdec*np.cos(dlam),  cosdec*np.sin(dlam))
                     dlam_r = tra - ra
-                    phi_jc = np.arctan2(cosdec*tsd - sindec*tcd*np.cos(dlam_r),
-                                        tcd*np.sin(dlam_r))
+                    phi_jc = np.arctan2(cosdec*tsd - sindec*tcd*np.cos(dlam_r), tcd*np.sin(dlam_r))
                     gshear = w * (e1_full + 1j*e2_full) * np.exp(2j*((phi_cj+np.pi) - phi_jc))
-                    sw_safe = np.where(sw == 0., 1., sw)
+                    sw_safe = np.where(sw==0., 1., sw)
                     re1 = np.bincount(inv, weights=gshear.real, minlength=nocc) / sw_safe
                     re2 = np.bincount(inv, weights=gshear.imag, minlength=nocc) / sw_safe
                     if w2field:
@@ -905,20 +901,19 @@ class Catalog:
             red_navpix = np.asarray(red_navpix)
             # Optionally navigate reduced bands on a coarser nested grid than the reduction,
             # so query_disc stays cheap at large separations. The reduced galaxies keep their
-            # ns_red positions; the nav cell is just their nested parent pixel (results are
-            # unchanged downstream: inclusive query_disc + per-pair distance cut).
+            # ns_red positions; the nav cell is just their nested parent pixel.
             if ns_red != 0 and nav_coarsen is not None:
                 rmax_rad = reso_redges[r+1] * deg2rad
                 ns_c = ns_red
-                while ns_c > 1 and nside2resol(ns_c//2) <= rmax_rad/nav_coarsen:
-                    ns_c //= 2
+                while ns_c>1 and nside2resol(ns_c//2) <= rmax_rad/nav_coarsen:
+                    ns_c//= 2
                 if ns_c < ns_red:
                     red_navpix = red_navpix >> (2*(int(ns_red).bit_length() - int(ns_c).bit_length()))
                     nside_nav[r] = ns_c
             order = np.argsort(red_navpix, kind='stable')
             cell_pix, cell_counts = np.unique(red_navpix[order], return_counts=True)
             ncells = len(cell_pix)
-            cell_redbounds = np.zeros(ncells + 1, dtype=np.int64)
+            cell_redbounds = np.zeros(ncells+1, dtype=np.int64)
             np.cumsum(cell_counts, out=cell_redbounds[1:])
             rvx, rvy, rvz = rvx[order], rvy[order], rvz[order]
             rra, rsdec, rcdec = rra[order], rsdec[order], rcdec[order]
@@ -944,18 +939,18 @@ class Catalog:
 
         # Concatenate with per-band rshift offsets
         def _cat(arrs, dtype):
-            return (np.concatenate(arrs).astype(dtype) if arrs
-                    else np.empty(0, dtype=dtype))
-        rshift_red = np.zeros(nresos + 1, dtype=np.int64)
-        np.cumsum(ngal_resos, out=rshift_red[1:])
-        rshift_cellpix = np.zeros(nresos + 1, dtype=np.int64)
-        np.cumsum(ncells_resos, out=rshift_cellpix[1:])
-        rshift_cellbounds = np.zeros(nresos + 1, dtype=np.int64)
-        np.cumsum(ncells_resos + 1, out=rshift_cellbounds[1:])
+            return np.concatenate(arrs).astype(dtype) if arrs else np.empty(0, dtype=dtype)
         
-        # Flag reduced bands whose navigation was coarsened below the reduction. Consumers
-        # that reuse nside_nav for a cross-reso reduction hierarchy (the GGG/GGGG doubletree)
-        # must reject such a bundle -- they assert on this flag (see the estimator guard).
+        rshift_red = np.zeros(nresos+1, dtype=np.int64)
+        np.cumsum(ngal_resos, out=rshift_red[1:])
+        rshift_cellpix = np.zeros(nresos+1, dtype=np.int64)
+        np.cumsum(ncells_resos, out=rshift_cellpix[1:])
+        rshift_cellbounds = np.zeros(nresos+1, dtype=np.int64)
+        np.cumsum(ncells_resos+1, out=rshift_cellbounds[1:])
+        
+        # Flag reduced bands whose navigation was coarsened below the reduction. 
+        # Some functions reusenside_nav for cross-reso reduction hierarchy so they
+        # complain early on by asserting on this flag
         nav_coarsened = bool(np.any((nsides > 0) & (nside_nav < nsides)))
 
         # Allocate result in standard output structure
@@ -1285,10 +1280,6 @@ class Catalog:
                                              nthreads, pixinds, pixweights)
         return pixinds, pixweights
         
-    
-
-
-    
 
     def _multihash_fields(self, geometry, w2field):
         r"""Tracer fields this catalog contributes to its multihash reduction.
@@ -1298,8 +1289,6 @@ class Catalog:
         field arrays in the layout the given ``geometry`` expects.
         """
         return None
-
-    
 
     def _gengridprops(self, dpix, dpix2=None, forcedivide=1, extent=[None,None,None,None]):
         r"""Gives some basic properties of grids created from the discrete tracers.
@@ -1321,14 +1310,10 @@ class Catalog:
             
         Returns
         -------
-        start1: float
-            The :math:`x`-position of the first column.
-        start2: float
-            The :math:`y`-position of the first row.
-        n1: int
-            The number of pixels in the :math:`x`-position.
-        n2: int
-            The number of pixels in the :math:`y`-position.
+        start1, start2: float
+            The :math:`x`/:math:`y`-position of the first column.
+        n1, n2: int
+            The number of pixels in the :math:`x`/:math:`y`-position.
         """
         
         # Define inner extent of the grid

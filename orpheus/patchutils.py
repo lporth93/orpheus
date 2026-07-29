@@ -1,5 +1,5 @@
 # Here we collect some utils for mapping the a full-sky survey to a set of overlapping patches
-# In the middle term much of this functionality should be included in the orpheus code
+# TODO: Decide on whether to merge this code with utils or whether it is ok to stay as such
 
 import os
 import sys
@@ -69,7 +69,7 @@ def frompatchindices_preparerot(index, patchindices, ra, dec, rotsignflip):
     # Note that we fix the rotangle at this instance as this is required when computing patches
     # across multiple catalogs. In that case the patchcenters are by definition the com of the
     # joint catalog. For a single catalog this does not matter. The signs match the (theta,phi)
-    # conventions in healpy -- see the toorigin function for details.
+    # conventions in healpy; see the toorigin function for details.
     rotangle = [+patchindices['info']['patchcenters'][index][0]*np.pi/180.,
                 -patchindices['info']['patchcenters'][index][1]*np.pi/180.]
     nextrotres = toorigin(ra[inds_extpatch], 
@@ -84,7 +84,8 @@ def frompatchindices_preparerot(index, patchindices, ra, dec, rotsignflip):
     return inds_extpatch, patch_isinner, rotangle, ra_rot, dec_rot, rotangle_polars
     
 def gen_cat_patchindices(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_hash=128, verbose=False, method='kmeans_healpix',
-                        kmeanshp_maxiter=1000, kmeanshp_tol=1e-10, kmeanshp_randomstate=42, healpix_nside=8, n_workers=16):
+                         nside_kmeans=2048, kmeanshp_maxiter=1000, kmeanshp_tol=1e-10, kmeanshp_randomstate=42, healpix_nside=8, 
+                         n_workers=16):
     """
     Decomposes a spherical catalog in ~equal-area patches with a buffer region.
 
@@ -129,8 +130,7 @@ def gen_cat_patchindices(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_ha
     * Uses joblib with the loky backend, which is safe with JAX and any other multithreaded library
     * Large read-only arrays (theta, phi, ...) are placed in POSIX SharedMemory segments so
       physically the same RAM pages are mapped into all worker proecsses with zero copies.
-    * Using too many workers can cause significant time spent to start the workers, which is done
-      sequentially by loky. 
+    * Using too many workers can cause significant time spent to start the workers
     * Choosing a small value of nside_hash will result in a larger extension of 
       the patches than necessary while choosing a large value increases the 
       runtime. A good compromise is to choose nside_hash such that its resolution 
@@ -142,14 +142,14 @@ def gen_cat_patchindices(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_ha
     if verbose:
         print("Computing sky coordinates")
         t1 = time()
-    eq    = SkyCoord(ra_deg, dec_deg, frame='galactic', unit='deg')
-    l, b  = eq.galactic.l.value, eq.galactic.b.value
+    eq = SkyCoord(ra_deg, dec_deg, frame='galactic', unit='deg')
+    l, b = eq.galactic.l.value, eq.galactic.b.value
     theta = np.radians(90. - b).astype(np.float64)
-    phi   = np.radians(l).astype(np.float64)
+    phi = np.radians(l).astype(np.float64)
     if verbose:
         print("Took %.3f seconds" % (time() - t1))
 
-    ## Step2: Define inner region of patches ##
+    ## Step 2: Define inner region of patches ##
     # Run treecorrs k-means implementation
     if method == 'kmeans_treecorr':
         try:
@@ -157,7 +157,7 @@ def gen_cat_patchindices(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_ha
             if verbose:
                 print("Computing patch assignment via treecorr KMeans")
                 t1 = time()
-            cat       = treecorr.Catalog(
+            cat = treecorr.Catalog(
                 ra=ra_deg, dec=dec_deg,
                 ra_units='deg', dec_units='deg',
                 npatch=npatches,
@@ -174,9 +174,8 @@ def gen_cat_patchindices(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_ha
             print("Computing patch assignment via KMeans on HEALPix pixels")
             t1 = time()
         # Step A: Reduce discrete theta/phi to unique healpix pixels and transform those to to 3D positions
-        nside_kmeans = 2048
-        hpx_inds     = ang2pix(nside_kmeans, theta, phi)
-        hpx_uinds    = np.unique(hpx_inds)
+        hpx_inds = ang2pix(nside_kmeans, theta, phi)
+        hpx_uinds = np.unique(hpx_inds)
         X = np.array(pix2vec(nside=nside_kmeans, ipix=hpx_uinds, nest=False)).T
         # Step B: Run standard kmeans algorithm on the healpix pixels
         # Note that each pixel carries the same (unity) weight. This implies
@@ -205,7 +204,7 @@ def gen_cat_patchindices(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_ha
         with threadpool_limits(limits=32, user_api='openmp'):
             clustinds = clust.fit_predict(X, y=None, sample_weight=None)
         # Step C: Map the pixel centers back to the galaxy indices
-        hashmap   = np.vectorize({u: c for u, c in zip(hpx_uinds, clustinds)}.get)
+        hashmap = np.vectorize({u: c for u, c in zip(hpx_uinds, clustinds)}.get)
         patchinds = hashmap(hpx_inds)
         if verbose:
             print("Took %.3f seconds"%(time()-t1))
@@ -214,7 +213,7 @@ def gen_cat_patchindices(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_ha
         if verbose:
             print("Computing patch assignment via HEALPix pixel assignment")
             t1 = time()
-        # Filter out empty patches -- this happens if the catalog does not cover the full sphere.
+        # Filter out empty patches - this happens if the catalog does not cover the full sphere.
         _, patchinds = np.unique(ang2pix(healpix_nside, theta, phi), return_inverse=True)
         npatches = int(patchinds.max()) + 1
         if verbose:
@@ -243,9 +242,9 @@ def gen_cat_patchindices(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_ha
         print("Mapping catalogue to HEALPix hash grid (nside=%d)" % nside_hash)
         t1 = time()
     cat_indices = ang2pix(nside_hash, theta, phi)
-    _pixarea    = nside2pixarea(nside_hash, degrees=True)
-    _pixreso    = nside2resol(nside_hash, arcmin=True)
-    ext_buffer  = (patchextend_arcmin + _pixreso) * np.pi / 180.0 / 60.0
+    _pixarea = nside2pixarea(nside_hash, degrees=True)
+    _pixreso = nside2resol(nside_hash, arcmin=True)
+    ext_buffer = (patchextend_arcmin + _pixreso) * np.pi / 180.0 / 60.0
     if verbose:
         print("Took %.3f seconds" % (time() - t1))
 
@@ -256,10 +255,10 @@ def gen_cat_patchindices(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_ha
         print("Building index hash")
         t1 = time()
     sort_hash = np.argsort(cat_indices, kind='stable')
-    csr_unique_pix, _, pix_counts = np.unique(cat_indices[sort_hash], return_index=True, return_counts=True)
-    csr_offsets = np.zeros(len(csr_unique_pix) + 1, dtype=np.int64)
-    np.cumsum(pix_counts, out=csr_offsets[1:])
-    csr_galinds = sort_hash.astype(np.int64)
+    hash_unique_pix, _, pix_counts = np.unique(cat_indices[sort_hash], return_index=True, return_counts=True)
+    hash_offsets = np.zeros(len(hash_unique_pix) + 1, dtype=np.int64)
+    np.cumsum(pix_counts, out=hash_offsets[1:])
+    hash_galinds = sort_hash.astype(np.int64)
     if verbose:
         print("Took %.3f seconds" % (time() - t1))
 
@@ -277,7 +276,7 @@ def gen_cat_patchindices(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_ha
     if verbose:
         print("Took %.3f seconds" % (time() - t1))
 
-    ## Step 7: Put large read-obly arrays in shared memory ##
+    ## Step 7: Put large read-only arrays in shared memory ##
     # Layout as such because workers attach to the same physical RAM pages via named segments.
     if verbose:
         print("Creating shared memory segments")
@@ -287,9 +286,9 @@ def gen_cat_patchindices(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_ha
     for key, arr in {
         'theta': theta,
         'phi': phi,
-        'csr_unique_pix': csr_unique_pix.astype(np.int64),
-        'csr_offsets': csr_offsets,
-        'csr_galinds': csr_galinds,
+        'hash_unique_pix': hash_unique_pix.astype(np.int64),
+        'hash_offsets': hash_offsets,
+        'hash_galinds': hash_galinds,
         'galinds_inner_flat': galinds_inner_flat}.items():
         shm, spec  = _shm_create(arr)
         shm_objects[key] = shm
@@ -300,7 +299,7 @@ def gen_cat_patchindices(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_ha
     ## Step 7: Define structure for results ##
     cat_patchindices = {
         "info": {
-            "patchextend_deg": patchextend_arcmin / 60.0,
+            "patchextend_deg": patchextend_arcmin/60.0,
             "nside_hash": nside_hash,
             "method" : method,
             "kmeanshp_maxiter": kmeanshp_maxiter,
@@ -314,8 +313,6 @@ def gen_cat_patchindices(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_ha
         "patches": {p: {} for p in range(npatches)}}
 
     ## Step 8: Create buffer in parallel ##
-    # joblib/loky: cloudpickle serialisation, clean worker processes,
-    # safe with JAX and any multithreaded library.
     if verbose:
         print("Building buffer around patches")
         t1 = time()
@@ -421,15 +418,15 @@ def _process_patch(elpatch, shm_specs, galinds_inner_offsets,
         for pix in patch_hpx:
             ext_pixels.update(query_disc(nside=nside_hash, vec=pix2vec(nside_hash, pix), radius=ext_buffer))
 
-        # Collect galaxies in extended pixels via CSR binary search
-        unique_pix  = arrs['csr_unique_pix']
-        csr_offsets = arrs['csr_offsets']
-        csr_galinds = arrs['csr_galinds']
+        # Collect galaxies in extended pixels via binary search
+        unique_pix  = arrs['hash_unique_pix']
+        hash_offsets = arrs['hash_offsets']
+        hash_galinds = arrs['hash_galinds']
         parts = []
         for pix in ext_pixels:
             idx = int(np.searchsorted(unique_pix, pix))
             if idx < len(unique_pix) and unique_pix[idx] == pix:
-                parts.append(csr_galinds[csr_offsets[idx]:csr_offsets[idx + 1]])
+                parts.append(hash_galinds[hash_offsets[idx]:hash_offsets[idx + 1]])
 
         if parts:
             # Make sure that galaxies already appearing as inner are excluded from outer
@@ -447,235 +444,6 @@ def _process_patch(elpatch, shm_specs, galinds_inner_offsets,
         for shm in shm_handles:
             shm.close()
 
-def gen_cat_patchindices_old(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_hash=128, verbose=False, method='kmeans_healpix',
-                         kmeanshp_maxiter=1000, kmeanshp_tol=1e-10, kmeanshp_randomstate=42, healpix_nside=8):
-    """ Decomposes a spherical catalog in ~equal-area patches with a buffer region
-    
-    Parameters
-    ----------
-    ra_deg: numpy.ndarray
-        The ra of the catalog, given in units of degree.
-    dec_deg: numpy.ndarray
-        The dec of the catalog, given in units of degree.
-    npatches: int
-        The number of patches in which the catalog shall be decomposed.
-    patchextend_arcmin: float
-        The buffer region that extends around each patch, given in units of arcmin.
-    nside_hash: int
-        The healpix resolution used for hashing subareas of the patches.
-    verbose: bool
-        Flag setting on whether output is printed to the console.
-        
-    Returns
-    -------
-    cat_patchindices: dict
-        A dictionary containing information about the individual patches,
-        as well as the galaxy indices that are assigned to the inner region
-        and to the buffer region of each individual patch
-    
-    Notes
-    -----
-    Choosing a small value of nside_hash will result in a larger extension of 
-    the patches than necessary while choosing a large value increases the 
-    runtime. A good compromise is to choose nside_hash such that its resolution 
-    is a few times smaller than the buffer region of the patches    
-    """
-    
-    def build_indexhash(arr):
-        """Returns a hash for indices of repeated values in a 1D array"""
-        sort_indices = np.argsort(arr)
-        arr = np.asarray(arr)[sort_indices]
-        vals, first_indices = np.unique(arr, return_index=True)
-        indices = np.split(sort_indices, first_indices[1:])
-        indhash = {}
-        for elval,val in enumerate(vals):
-            indhash[val] = indices[elval]
-        return indhash    
-    
-    if verbose:
-        print("Computing inner region of patches")
-        t1 = time()
-    
-    # Run treecorrs k-means implementation
-    if method=='kmeans_treecorr':
-        try:
-            import treecorr
-            cat = treecorr.Catalog(ra=ra_deg, dec=dec_deg, 
-                               ra_units="deg", dec_units="deg", 
-                               npatch=npatches)
-            patchinds = cat.patch
-        except ImportError:
-            if method=='kmeans_treecorr':
-                print('Treecorr not availbale...switching to patch creation via KMeans')
-                method = 'kmeans_healpix'
-        
-    # Run standard k-means on catalog reduced to healpix pixels
-    elif method=='kmeans_healpix':
-        # Step 1: Reduce discrete ra/dec to unique healpix pixels and transform those to to 3D positions
-        nside_kmeans = 2048 # I keep this fixed for now as it will most likely work well for all reasonable cases.
-        eq = SkyCoord(ra_deg, dec_deg, frame='galactic', unit='deg')
-        l, b = eq.galactic.l.value, eq.galactic.b.value
-        theta = np.radians(90. - b)
-        phi = np.radians(l)
-        hpx_inds = ang2pix(nside_kmeans, theta, phi)
-        hpx_uinds = np.unique(hpx_inds)
-        # Step 2: Run standard kmeans algorithm on the healpix pixels
-        # Note that each pixel carries the same (unity) weight. This implies
-        # that we make the patches have approximately equal area, but neglect
-        # depth variations on a patch sized scale. To me this seems to be a
-        # sensible choice as the flat-sky approximation only cares about the
-        # extent of the patches. If one wants to use the patches as Jackknife
-        # samples for an internal covariance matrix estimate this choice might
-        # need to be revisited (but as of now I do not see a clear point against
-        # continuing to use the current setup as long as the patchsize is in a
-        # domain where the contributions to the covariance that are containing 
-        # shapenoise are expected to be subdominant).
-        clust = KMeans(n_clusters=npatches,
-                init='k-means++', 
-                n_init='auto', 
-                max_iter=kmeanshp_maxiter, 
-                tol=kmeanshp_tol,
-                verbose=0, 
-                random_state=kmeanshp_randomstate, 
-                copy_x=True, 
-                algorithm='lloyd')
-        X = np.array(pix2vec(nside=nside_kmeans,ipix=hpx_uinds,nest=False)).T
-        # Temorarily limit max number of OMP here as KMeans per default chooses all available
-        # cores and might crash in case scipy has not been compiled to handle this.
-        # Also I observed that KMeans becomes fairly inefficient for this many cores anyways.
-        with threadpool_limits(limits=32, user_api="openmp"):   
-            clustinds = clust.fit_predict(X, y=None, sample_weight=None)
-        # Step 3: Map the pixel centers back to the galaxy indices
-        hashmap = np.vectorize({upix: center for upix, center in zip(hpx_uinds, clustinds)}.get)
-        patchinds = hashmap(hpx_inds)
-    # Simply assign to healpix pixel. Fast and stable, but patchareas might strongly vary in size.
-    elif method == "healpix":
-        eq = SkyCoord(ra_deg, dec_deg, frame='galactic', unit='deg')
-        l, b = eq.galactic.l.value, eq.galactic.b.value
-        theta = np.radians(90. - b)
-        phi = np.radians(l)
-        patchinds = ang2pix(healpix_nside, theta, phi).astype(int)
-        npatches = len(np.unique(patchinds).flatten())
-    else:
-        raise NotImplementedError
-        
-    if verbose:
-        t2=time()
-        print("Took %.3f seconds"%(t2-t1))
-    
-    # Assign galaxy positions to healpix pixels
-    if verbose:
-        print("Mapping catalog to healpix grid")
-        t1=time()
-    eq = SkyCoord(ra_deg, dec_deg, frame='galactic', unit='deg')
-    l, b = eq.galactic.l.value, eq.galactic.b.value
-    theta = np.radians(90. - b)
-    phi = np.radians(l)
-    cat_indices = ang2pix(nside_hash, theta, phi)
-    if verbose:
-        t2=time()
-        print("Took %.3f seconds"%(t2-t1))
-    
-    # Build a hash connecting the galaxies residing in each healpix pixel
-    if verbose:
-        t1=time()
-        print("Building index hash")
-    cat_indhash = build_indexhash(cat_indices)
-    if verbose:
-        t2=time()
-        print("Took %.3f seconds"%(t2-t1))
-    
-    # Construct buffer region around patches
-    if verbose:
-        print("Building buffer around patches")
-        t1=time()
-    _pixarea = nside2pixarea(nside_hash,degrees=True)
-    _pixreso = nside2resol(nside_hash,arcmin=True)
-    if method == 'kmeans_treecorr':
-        _patchcenters = cat.patch_centers
-    elif method == 'kmeans_healpix' or method=='healpix':
-        counts = np.bincount(patchinds, minlength=npatches).astype(float)
-        ra_sum  = np.bincount(patchinds, weights=ra_deg,  minlength=npatches)
-        dec_sum = np.bincount(patchinds, weights=dec_deg, minlength=npatches)
-        ra_mean  = np.divide(ra_sum,  counts, out=np.full(npatches, np.nan), where=counts > 0)
-        dec_mean = np.divide(dec_sum, counts, out=np.full(npatches, np.nan), where=counts > 0)
-        _patchcenters = np.column_stack((ra_mean, dec_mean))
-        #_patchcenters = np.array([[np.mean(ra_deg[ patchinds==patchind]), np.mean(dec_deg[ patchinds==patchind])] for patchind in range(npatches)])
-    else:
-        raise NotImplementedError
-    
-    cat_patchindices = {}
-    cat_patchindices["info"] = {}
-    cat_patchindices["info"]["patchextend_deg"] = patchextend_arcmin/60.
-    cat_patchindices["info"]["nside_hash"] = nside_hash
-    cat_patchindices["info"]["method"] = method
-    cat_patchindices["info"]["kmeanshp_maxiter"] = kmeanshp_maxiter
-    cat_patchindices["info"]["kmeanshp_tol"] = kmeanshp_tol
-    cat_patchindices["info"]["kmeanshp_randomstate"] = kmeanshp_randomstate
-    cat_patchindices["info"]["healpix_nside"] = healpix_nside
-    cat_patchindices["info"]["patchcenters"] = _patchcenters
-    cat_patchindices["info"]["patchareas"] = np.zeros(npatches,dtype=float)
-    cat_patchindices["info"]["patch_ngalsinner"] = np.zeros(npatches,dtype=int)
-    cat_patchindices["info"]["patch_ngalsouter"] = np.zeros(npatches,dtype=int)
-    cat_patchindices["patches"] = {}
-    ext_buffer = (patchextend_arcmin+_pixreso)*np.pi/180./60.
-    for elpatch in range(npatches):
-        if verbose:
-            sys.stdout.write("\r%i/%i"%(elpatch+1,npatches))
-        patchsel = patchinds==elpatch
-        cat_patchindices["patches"][elpatch] = {}
-
-        # Get indices of gals within inner patch
-        galinds_inner = np.argwhere(patchsel).flatten().astype(int)
-
-        # Find healpix pixels in extended patch
-        patch_indices = np.unique(ang2pix(nside_hash, theta[patchsel], phi[patchsel]))
-        extpatch_indices = set()
-        for pix in patch_indices:
-            nextset = set(query_disc(nside=nside_hash, 
-                                        vec=pix2vec(nside_hash,pix),
-                                        radius=ext_buffer))
-            extpatch_indices.update(nextset)
-
-        # Assign galaxies to extended patch
-        galinds_ext = set()
-        for pix in extpatch_indices:
-            try:
-                galinds_ext.update(set(cat_indhash[pix]))
-            except:
-                pass
-        galinds_outer = np.array(list(galinds_ext-set(galinds_inner)),dtype=int)
-        cat_patchindices["info"]["patchareas"][elpatch] = _pixarea*len(patch_indices)
-        cat_patchindices["info"]["patch_ngalsinner"][elpatch] = len(galinds_inner)
-        cat_patchindices["info"]["patch_ngalsouter"][elpatch] = len(galinds_outer)
-        cat_patchindices["patches"][elpatch]["inner"] = galinds_inner
-        cat_patchindices["patches"][elpatch]["outer"] = galinds_outer
-    if verbose:
-        t2=time()
-        print("Took %.3f seconds"%(t2-t1))
-
-    # If method=="healpix" we might get empty patches. Here we filter those out
-    if method=='healpix':
-        print("Masking out empty patches")
-        t1=time()
-        sel_nonemptypatches = np.argwhere(cat_patchindices["info"]["patch_ngalsinner"]>0).flatten()
-        n_nonemptypatches = len(sel_nonemptypatches)
-        inds_nonemptypatches = {}
-        for elpatch in range(n_nonemptypatches):
-            inds_nonemptypatches[elpatch] = {}
-            inds_nonemptypatches[elpatch]['inner'] = cat_patchindices["patches"][sel_nonemptypatches[elpatch]]["inner"][:]
-            inds_nonemptypatches[elpatch]['outer'] = cat_patchindices["patches"][sel_nonemptypatches[elpatch]]["outer"][:]
-        cat_patchindices["info"]["patchcenters"] = _patchcenters[sel_nonemptypatches]
-        cat_patchindices["info"]["patchareas"] =  cat_patchindices["info"]["patchareas"][sel_nonemptypatches]
-        cat_patchindices["info"]["patch_ngalsinner"] =cat_patchindices["info"]["patch_ngalsinner"][sel_nonemptypatches]
-        cat_patchindices["info"]["patch_ngalsouter"] = cat_patchindices["info"]["patch_ngalsouter"][sel_nonemptypatches]
-        cat_patchindices["patches"] = inds_nonemptypatches
-        if verbose:
-            t2=time()
-            print("Took %.3f seconds"%(t2-t1))
-        
-    
-    return cat_patchindices
 
 def toorigin(ras, decs, isinner=None, rotangle=None, inv=False, rotsignflip=False, radec_units="deg"):
     """ Rotates survey patch s.t. its center of mass lies in the origin. """

@@ -14,7 +14,6 @@ __all__ = ["DirectEstimator", "Direct_MapnEqual", "Direct_NapnEqual", "MapCombin
 
 class DirectEstimator:
     r"""Class of aperture statistics up to nth order for various arbitrary tracer catalogs.
-    This class contains attributes and methods that can be used across any of its children.
     
     Attributes
     ----------
@@ -359,7 +358,7 @@ class Direct_Map3Unequal(DirectEstimator):
         # This will be used to preselelct aperture centers
         args_innergrid = cat.togrid(fields=[cat.isinner], dpix=dpix_innergrid, method="NGP", normed=True, tomo=False)
 
-        ### Build args
+        ## Build args
         len_out = self.nfrac_covs, nzrcombis
         centers_1, centers_2 = self.get_pixelization(cat, self.radii[0], self.accuracies[0], R_crop=0., mgrid=True)
         _f, _s1, _s2, _dpixi, _, _, = args_innergrid
@@ -1121,6 +1120,7 @@ class MapCombinatorics:
         >>> print(res)
 
         Notes:
+
         * The recursion reads as follows:
           s(m,0) = 1
           s(m,n) = sum_{i=1}^{m-1} s(m-1,n-1)

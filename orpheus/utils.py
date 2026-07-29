@@ -224,7 +224,7 @@ def map_ztuples(ntomobins, order):
     sorted_tuples_indices = {t: r for r, t in enumerate(sorted_tuples)}
 
     # Map index of sorted tuples to unsorted tuples indices
-    index_mapper = np.zeros(ntomobins ** order, dtype=int)
+    index_mapper = np.zeros(ntomobins**order, dtype=int)
     for idx, t in enumerate(product(range(ntomobins), repeat=order)):
         sorted_tuple = tuple(sorted(t))
         index_mapper[idx] = sorted_tuples_indices[sorted_tuple]

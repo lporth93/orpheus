@@ -35,29 +35,29 @@ class MultiresoCatalog(ctypes.Structure):
     """
     _fields_ = [
         # general content
-        ("metric",          ctypes.c_int32),
-        ("nresos",          ctypes.c_int32),
-        ("ngal_resos",      _p_i32),
-        ("nbinsz",          ctypes.c_int32),
-        ("isinner_resos",   _p_f64),
-        ("weight_resos",    _p_f64),
-        ("zbin_resos",      _p_i32),
+        ("metric", ctypes.c_int32),
+        ("nresos", ctypes.c_int32),
+        ("ngal_resos", _p_i32),
+        ("nbinsz", ctypes.c_int32),
+        ("isinner_resos", _p_f64),
+        ("weight_resos", _p_f64),
+        ("zbin_resos", _p_i32),
         # Cartesian position coordinate (used for 2d and 3d flat methods)
-        ("pos1_resos",      _p_f64),
-        ("pos2_resos",      _p_f64),
-        ("pos3_resos",      _p_f64),
+        ("pos1_resos", _p_f64),
+        ("pos2_resos",  _p_f64),
+        ("pos3_resos", _p_f64),
         # 3D-vectors used for spherical ra/dec coordinates (used for sphierical geometries)
-        ("vx_resos",        _p_f64),
-        ("vy_resos",        _p_f64),
-        ("vz_resos",        _p_f64),
+        ("vx_resos", _p_f64),
+        ("vy_resos", _p_f64),
+        ("vz_resos", _p_f64),
         # Helper quantities for the spin-2 geodesic bearing (used for sphierical geometries)
-        ("ra_resos",        _p_f64),
-        ("sindec_resos",    _p_f64),
-        ("cosdec_resos",    _p_f64),
+        ("ra_resos", _p_f64),
+        ("sindec_resos", _p_f64),
+        ("cosdec_resos", _p_f64),
         # Spin-2 tracer quantities (Used for SpinTracerCatalogs)
-        ("e1_resos",        _p_f64),
-        ("e2_resos",        _p_f64),
-        ("weightsq_resos",  _p_f64),
+        ("e1_resos", _p_f64),
+        ("e2_resos", _p_f64),
+        ("weightsq_resos", _p_f64),
     ]
 
 
@@ -65,35 +65,35 @@ class NavHash(ctypes.Structure):
     """Quantities neccessary to navigate through a multihash nested spatial hashing structure
     """
     _fields_ = [
-        ("metric",              ctypes.c_int32),
+        ("metric", ctypes.c_int32),
         # Relevant for flat2d metric
-        ("index_matcher",       _p_i32),
+        ("index_matcher", _p_i32),
         ("pixs_galind_bounds",  _p_i32),
-        ("pix_gals",            _p_i32),
-        ("pix1_start",          ctypes.c_double),
-        ("pix1_d",              ctypes.c_double),
-        ("pix1_n",              ctypes.c_int32),
-        ("pix2_start",          ctypes.c_double),
-        ("pix2_d",              ctypes.c_double),
-        ("pix2_n",              ctypes.c_int32),
-        ("nregions",            ctypes.c_int32),
-        ("index_matcher_hash",  _p_i32),
-        ("filledregions",       _p_i32),
-        ("nfilledregions",      ctypes.c_int32),
+        ("pix_gals", _p_i32),
+        ("pix1_start", ctypes.c_double),
+        ("pix1_d", ctypes.c_double),
+        ("pix1_n", ctypes.c_int32),
+        ("pix2_start", ctypes.c_double),
+        ("pix2_d", ctypes.c_double),
+        ("pix2_n", ctypes.c_int32),
+        ("nregions", ctypes.c_int32),
+        ("index_matcher_hash", _p_i32),
+        ("filledregions", _p_i32),
+        ("nfilledregions", ctypes.c_int32),
         # Additionally relevant for 3dbox ensemble of multihashes
-        ("slab_offsets",        _p_i32),
-        ("rshift_bounds",       _p_i32),
-        ("nslabs",              ctypes.c_int32),
-        ("z0",                  ctypes.c_double),
-        ("dpix_z",              ctypes.c_double),
+        ("slab_offsets", _p_i32),
+        ("rshift_bounds", _p_i32),
+        ("nslabs", ctypes.c_int32),
+        ("z0", ctypes.c_double),
+        ("dpix_z", ctypes.c_double),
         # Relevant for spherical metric
-        ("ncells_resos",        _p_i32),
-        ("nside_nav",           _p_long),
-        ("cell_pix",            _p_long),
-        ("cell_redbounds",      _p_i32),
-        ("rshift_red",          _p_i32),
-        ("rshift_cellpix",      _p_i32),
-        ("rshift_cellbounds",   _p_i32),
+        ("ncells_resos", _p_i32),
+        ("nside_nav", _p_long),
+        ("cell_pix", _p_long),
+        ("cell_redbounds", _p_i32),
+        ("rshift_red", _p_i32),
+        ("rshift_cellpix", _p_i32),
+        ("rshift_cellbounds", _p_i32),
     ]
 
 
@@ -101,14 +101,14 @@ class TreeResoParams(ctypes.Structure):
     """Quantities neccessary to describe the resolution levels of the multihashes
     """
     _fields_ = [
-        ("nresos",           ctypes.c_int32),
-        ("nresos_grid",      ctypes.c_int32),
-        ("dpix1_resos",      _p_f64),
-        ("dpix2_resos",      _p_f64),
-        ("reso_redges",      _p_f64),
-        ("resoshift_leafs",  ctypes.c_int32),
-        ("minresoind_leaf",  ctypes.c_int32),
-        ("maxresoind_leaf",  ctypes.c_int32),
+        ("nresos", ctypes.c_int32),
+        ("nresos_grid", ctypes.c_int32),
+        ("dpix1_resos", _p_f64),
+        ("dpix2_resos", _p_f64),
+        ("reso_redges", _p_f64),
+        ("resoshift_leafs", ctypes.c_int32),
+        ("minresoind_leaf", ctypes.c_int32),
+        ("maxresoind_leaf", ctypes.c_int32),
     ]
 
 
@@ -116,15 +116,53 @@ class BinningParams(ctypes.Structure):
     """NPCF binning in real space (N=2) and multipole space (N>3).
     """
     _fields_ = [
-        ("rmin",    ctypes.c_double),
-        ("rmax",    ctypes.c_double),
-        ("nbinsr",  ctypes.c_int32),
-        ("do_dc",   ctypes.c_int32),
-        ("nmax",    ctypes.c_int32),
-        ("nmin",    ctypes.c_int32),
-        ("dccorr",  ctypes.c_int32),
-        ("Pi",      ctypes.c_double),
-        ("rbins",   _p_f64),
+        ("rmin", ctypes.c_double),
+        ("rmax", ctypes.c_double),
+        ("nbinsr", ctypes.c_int32),
+        ("do_dc", ctypes.c_int32),
+        ("nmax", ctypes.c_int32),
+        ("nmin", ctypes.c_int32),
+        ("dccorr", ctypes.c_int32),
+        ("Pi", ctypes.c_double),
+        ("rbins", _p_f64),
+    ]
+
+class FourthParams(ctypes.Structure):
+    """NPCF binning for fourth-order stats.
+    """
+    _fields_ = [
+        ("nbinsphi1", ctypes.c_int32),
+        ("nbinsphi2", ctypes.c_int32),
+        ("phibins1", _p_f64),
+        ("phibins2", _p_f64),
+        ("dbinsphi1", _p_f64),
+        ("dbinsphi2", _p_f64),
+        ("nindices", _p_i32),
+        ("len_nindices", ctypes.c_int32),
+        ("nthetacombis", ctypes.c_int32),
+        ("nthetbatches", ctypes.c_int32),
+        ("thetacombis_batches", _p_i32),
+        ("nthetacombis_batches", _p_i32),
+        ("cumthetacombis_batches",_p_i32),
+    ]
+
+
+class ClustCorr(ctypes.Structure):
+    """Multiplicative clustering correction bundle for GNL.
+    """
+    _fields_ = [
+        ("count_floor", ctypes.c_double),
+        ("xi_nn", _p_f64),
+        ("thetamin_xi", ctypes.c_double),
+        ("thetamax_xi", ctypes.c_double),
+        ("dtheta_xi", ctypes.c_double),
+        ("has_xi", ctypes.c_int32),
+        ("zeta", _p_f64),
+        ("zeta_rbins", _p_f64),
+        ("zeta_nr", ctypes.c_int32),
+        ("zeta_phis", _p_f64),
+        ("zeta_nphi", ctypes.c_int32),
+        ("has_zeta", ctypes.c_int32),
     ]
 
 
@@ -146,14 +184,14 @@ class NPCFOutput(ctypes.Structure):
     ======  =====================================  =========================
     """
     _fields_ = [
-        ("bin_centers",  _p_f64),
-        ("npcf",         _p_c128),
-        ("norm",         _p_f64),
-        ("norm_mp",      _p_c128),
-        ("npair",        _p_i64),
-        ("npair_cell",   _p_i64),
-        ("ncomp",        ctypes.c_int32),
-        ("nmax",         ctypes.c_int32),
+        ("bin_centers", _p_f64),
+        ("npcf", _p_c128),
+        ("norm", _p_f64),
+        ("norm_mp", _p_c128),
+        ("npair", _p_i64),
+        ("npair_cell", _p_i64),
+        ("ncomp", ctypes.c_int32),
+        ("nmax", ctypes.c_int32),
     ]
 
 
@@ -194,25 +232,25 @@ def build_catalog_struct(mh, nbinsz, extra=None):
     # (they act as the per-reduction galaxies for the C catalog struct).
     if geometry == 'spherical':
         isinner = np.ascontiguousarray(mh['red_isinner'], dtype=np.float64)
-        weight  = np.ascontiguousarray(mh['red_w'],       dtype=np.float64)
-        zbin    = np.ascontiguousarray(mh['red_zbin'],    dtype=np.int32)
+        weight  = np.ascontiguousarray(mh['red_w'], dtype=np.float64)
+        zbin    = np.ascontiguousarray(mh['red_zbin'], dtype=np.int32)
     else:
         isinner = np.ascontiguousarray(mh['isinner_resos'], dtype=np.float64)
-        weight  = np.ascontiguousarray(mh['weight_resos'],  dtype=np.float64)
-        zbin    = np.ascontiguousarray(mh['zbin_resos'],    dtype=np.int32)
+        weight  = np.ascontiguousarray(mh['weight_resos'], dtype=np.float64)
+        zbin    = np.ascontiguousarray(mh['zbin_resos'], dtype=np.int32)
     ngal = np.ascontiguousarray(mh['ngal_resos'], dtype=np.int32)
     keepers = [isinner, weight, zbin, ngal]
 
     s = MultiresoCatalog()
-    s.metric     = metric
-    s.nresos     = int(len(ngal))
-    s.nbinsz     = int(nbinsz)
+    s.metric = metric
+    s.nresos = int(len(ngal)) # This will be overridden when allocating tree parameters
+    s.nbinsz = int(nbinsz)
     s.ngal_resos = _ptr_i32(ngal)
     s.isinner_resos = _ptr_f64(isinner)
-    s.weight_resos  = _ptr_f64(weight)
-    s.zbin_resos    = _ptr_i32(zbin)
+    s.weight_resos = _ptr_f64(weight)
+    s.zbin_resos = _ptr_i32(zbin)
 
-    # Flat / 3dbox transverse positional arrays (pos3 is the LOS coord, set by
+    # Flat/3dbox transverse positional arrays (pos3 is the los coord, set by
     # the 3dbox slab builder only).
     s.pos1_resos = _null(_p_f64)
     s.pos2_resos = _null(_p_f64)
@@ -239,7 +277,7 @@ def build_catalog_struct(mh, nbinsz, extra=None):
 
     # Spherical-only bearing coordinates (ra, sin dec, cos dec); the spin-2
     # kernels feed these to sphere_bearing. Scalar NN leaves them NULL.
-    s.ra_resos     = _null(_p_f64)
+    s.ra_resos = _null(_p_f64)
     s.sindec_resos = _null(_p_f64)
     s.cosdec_resos = _null(_p_f64)
     if geometry == 'spherical' and 'red_ra' in mh:
@@ -247,7 +285,7 @@ def build_catalog_struct(mh, nbinsz, extra=None):
         sd  = np.ascontiguousarray(mh['red_sindec'], dtype=np.float64)
         cd  = np.ascontiguousarray(mh['red_cosdec'], dtype=np.float64)
         keepers += [ra, sd, cd]
-        s.ra_resos     = _ptr_f64(ra)
+        s.ra_resos = _ptr_f64(ra)
         s.sindec_resos = _ptr_f64(sd)
         s.cosdec_resos = _ptr_f64(cd)
 
@@ -284,15 +322,15 @@ def build_flat_catalog_struct(pos1, pos2, weight, zbin, nbinsz, isinner,
     keepers = [p1, p2, w, zb, ii, ngal]
 
     s = MultiresoCatalog()
-    s.metric        = 0
-    s.nresos        = 1
-    s.nbinsz        = int(nbinsz)
-    s.ngal_resos    = _ptr_i32(ngal)
+    s.metric = 0
+    s.nresos = 1
+    s.nbinsz = int(nbinsz)
+    s.ngal_resos = _ptr_i32(ngal)
     s.isinner_resos = _ptr_f64(ii)
-    s.weight_resos  = _ptr_f64(w)
-    s.zbin_resos    = _ptr_i32(zb)
-    s.pos1_resos    = _ptr_f64(p1)
-    s.pos2_resos    = _ptr_f64(p2)
+    s.weight_resos = _ptr_f64(w)
+    s.zbin_resos = _ptr_i32(zb)
+    s.pos1_resos = _ptr_f64(p1)
+    s.pos2_resos = _ptr_f64(p2)
     for name, arr in (('e1_resos', e1), ('e2_resos', e2), ('weightsq_resos', weightsq)):
         if arr is not None:
             a = np.ascontiguousarray(arr, dtype=np.float64)
@@ -316,23 +354,23 @@ def build_slab_catalog_struct(mhs, nbinsz, e1e2=None):
     p1 = np.ascontiguousarray(mhs['pos1'], dtype=np.float64)
     p2 = np.ascontiguousarray(mhs['pos2'], dtype=np.float64)
     p3 = np.ascontiguousarray(mhs['pos3'], dtype=np.float64)
-    w  = np.ascontiguousarray(mhs['weight'], dtype=np.float64)
+    w = np.ascontiguousarray(mhs['weight'], dtype=np.float64)
     zb = np.ascontiguousarray(mhs['zbins'], dtype=np.int32)
     ii = np.ones(len(p1), dtype=np.float64)   # box has no buffer galaxies
     ngal = np.array([len(p1)], dtype=np.int32)
     keepers = [p1, p2, p3, w, zb, ii, ngal]
 
     s = MultiresoCatalog()
-    s.metric        = 2
-    s.nresos        = 1
-    s.nbinsz        = int(nbinsz)
-    s.ngal_resos    = _ptr_i32(ngal)
+    s.metric = 2
+    s.nresos = 1
+    s.nbinsz = int(nbinsz)
+    s.ngal_resos = _ptr_i32(ngal)
     s.isinner_resos = _ptr_f64(ii)
-    s.weight_resos  = _ptr_f64(w)
-    s.zbin_resos    = _ptr_i32(zb)
-    s.pos1_resos    = _ptr_f64(p1)
-    s.pos2_resos    = _ptr_f64(p2)
-    s.pos3_resos    = _ptr_f64(p3)
+    s.weight_resos = _ptr_f64(w)
+    s.zbin_resos = _ptr_i32(zb)
+    s.pos1_resos = _ptr_f64(p1)
+    s.pos2_resos = _ptr_f64(p2)
+    s.pos3_resos = _ptr_f64(p3)
     if e1e2 is not None:
         e1 = np.ascontiguousarray(e1e2[0], dtype=np.float64)
         e2 = np.ascontiguousarray(e1e2[1], dtype=np.float64)
@@ -365,18 +403,18 @@ def build_navhash_struct(mh, cat_obj=None):
     s.metric = metric
 
     # 2dflat geometry
-    s.index_matcher      = _null(_p_i32)
+    s.index_matcher = _null(_p_i32)
     s.pixs_galind_bounds = _null(_p_i32)
-    s.pix_gals           = _null(_p_i32)
+    s.pix_gals = _null(_p_i32)
     s.index_matcher_hash = _null(_p_i32)
-    s.filledregions      = _null(_p_i32)
-    s.nfilledregions     = 0
+    s.filledregions = _null(_p_i32)
+    s.nfilledregions = 0
 
     # 3dbox slab geometry (this feeds into build_slab_navhash_struct)
-    s.slab_offsets  = _null(_p_i32)
+    s.slab_offsets = _null(_p_i32)
     s.rshift_bounds = _null(_p_i32)
     s.nslabs = 0
-    s.z0     = 0.
+    s.z0 = 0.
     s.dpix_z = 0.
 
     if geometry == 'flat2d':
@@ -397,45 +435,44 @@ def build_navhash_struct(mh, cat_obj=None):
         filled = np.ascontiguousarray(np.nonzero(inner_per_cell > 0)[0].astype(np.int32))
         keepers += [im, pgb, pg, imh, filled]
 
-        s.index_matcher      = _ptr_i32(im)
+        s.index_matcher = _ptr_i32(im)
         s.pixs_galind_bounds = _ptr_i32(pgb)
-        s.pix_gals           = _ptr_i32(pg)
+        s.pix_gals = _ptr_i32(pg)
         s.pix1_start = float(cat_obj.pix1_start)
-        s.pix1_d     = float(cat_obj.pix1_d)
-        s.pix1_n     = int(cat_obj.pix1_n)
+        s.pix1_d = float(cat_obj.pix1_d)
+        s.pix1_n = int(cat_obj.pix1_n)
         s.pix2_start = float(cat_obj.pix2_start)
-        s.pix2_d     = float(cat_obj.pix2_d)
-        s.pix2_n     = int(cat_obj.pix2_n)
-        s.nregions   = nregions
+        s.pix2_d = float(cat_obj.pix2_d)
+        s.pix2_n = int(cat_obj.pix2_n)
+        s.nregions = nregions
         s.index_matcher_hash = _ptr_i32(imh)
-        s.filledregions  = _ptr_i32(filled)
+        s.filledregions = _ptr_i32(filled)
         s.nfilledregions = len(filled)
 
     # Spherical geometry
-    s.ncells_resos   = _null(_p_i32)
-    s.nside_nav      = _null(_p_long)
-    s.cell_pix       = _null(_p_long)
+    s.ncells_resos = _null(_p_i32)
+    s.nside_nav = _null(_p_long)
+    s.cell_pix = _null(_p_long)
     s.cell_redbounds = _null(_p_i32)
-    s.rshift_red     = _null(_p_i32)
+    s.rshift_red = _null(_p_i32)
     s.rshift_cellpix = _null(_p_i32)
     s.rshift_cellbounds = _null(_p_i32)
 
     if geometry == 'spherical':
-        ncr  = np.ascontiguousarray(mh['ncells_resos'],      dtype=np.int32)
-        nsn  = np.ascontiguousarray(mh['nside_nav'],         dtype=np.int64)
-        cp   = np.ascontiguousarray(mh['cell_pix'],          dtype=np.int64)
-        clb  = np.ascontiguousarray(mh['cell_redbounds'],    dtype=np.int32)
-        rsl  = np.ascontiguousarray(mh['rshift_red'],        dtype=np.int32)
-        rscp = np.ascontiguousarray(mh['rshift_cellpix'],    dtype=np.int32)
+        ncr  = np.ascontiguousarray(mh['ncells_resos'], dtype=np.int32)
+        nsn  = np.ascontiguousarray(mh['nside_nav'], dtype=np.int64)
+        cp   = np.ascontiguousarray(mh['cell_pix'], dtype=np.int64)
+        clb  = np.ascontiguousarray(mh['cell_redbounds'], dtype=np.int32)
+        rsl  = np.ascontiguousarray(mh['rshift_red'], dtype=np.int32)
+        rscp = np.ascontiguousarray(mh['rshift_cellpix'], dtype=np.int32)
         rscb = np.ascontiguousarray(mh['rshift_cellbounds'], dtype=np.int32)
         keepers += [ncr, nsn, cp, clb, rsl, rscp, rscb]
 
-        # C long and int64 are both 64-bit on the target platforms.
-        s.ncells_resos   = _ptr_i32(ncr)
-        s.nside_nav      = _ptr_long(nsn)
-        s.cell_pix       = _ptr_long(cp)
+        s.ncells_resos = _ptr_i32(ncr)
+        s.nside_nav = _ptr_long(nsn)
+        s.cell_pix = _ptr_long(cp)
         s.cell_redbounds = _ptr_i32(clb)
-        s.rshift_red     = _ptr_i32(rsl)
+        s.rshift_red = _ptr_i32(rsl)
         s.rshift_cellpix = _ptr_i32(rscp)
         s.rshift_cellbounds = _ptr_i32(rscb)
 
@@ -456,23 +493,23 @@ def build_flat_navhash_struct(cat_obj):
     -------
     (NavHash, list)
     """
-    im  = np.ascontiguousarray(cat_obj.index_matcher,      dtype=np.int32)
+    im  = np.ascontiguousarray(cat_obj.index_matcher, dtype=np.int32)
     pgb = np.ascontiguousarray(cat_obj.pixs_galind_bounds, dtype=np.int32)
-    pg  = np.ascontiguousarray(cat_obj.pix_gals,           dtype=np.int32)
+    pg  = np.ascontiguousarray(cat_obj.pix_gals, dtype=np.int32)
     keepers = [im, pgb, pg]
 
     s = NavHash()
-    s.metric             = 0
-    s.index_matcher      = _ptr_i32(im)
+    s.metric = 0
+    s.index_matcher = _ptr_i32(im)
     s.pixs_galind_bounds = _ptr_i32(pgb)
-    s.pix_gals           = _ptr_i32(pg)
+    s.pix_gals = _ptr_i32(pg)
     s.pix1_start = float(cat_obj.pix1_start)
-    s.pix1_d     = float(cat_obj.pix1_d)
-    s.pix1_n     = int(cat_obj.pix1_n)
+    s.pix1_d = float(cat_obj.pix1_d)
+    s.pix1_n = int(cat_obj.pix1_n)
     s.pix2_start = float(cat_obj.pix2_start)
-    s.pix2_d     = float(cat_obj.pix2_d)
-    s.pix2_n     = int(cat_obj.pix2_n)
-    s.nregions   = int(len(np.argwhere(im > -1)))
+    s.pix2_d = float(cat_obj.pix2_d)
+    s.pix2_n = int(cat_obj.pix2_n)
+    s.nregions = int(len(np.argwhere(im > -1)))
 
     return s, keepers
 
@@ -489,28 +526,28 @@ def build_slab_navhash_struct(mhs):
     -------
     (NavHash, list)
     """
-    im  = np.ascontiguousarray(mhs['index_matcher'],      dtype=np.int32)
+    im  = np.ascontiguousarray(mhs['index_matcher'], dtype=np.int32)
     pgb = np.ascontiguousarray(mhs['pixs_galind_bounds'], dtype=np.int32)
-    pg  = np.ascontiguousarray(mhs['pix_gals'],           dtype=np.int32)
-    so  = np.ascontiguousarray(mhs['slab_offsets'],       dtype=np.int32)
-    rsb = np.ascontiguousarray(mhs['rshift_bounds'],      dtype=np.int32)
+    pg  = np.ascontiguousarray(mhs['pix_gals'], dtype=np.int32)
+    so  = np.ascontiguousarray(mhs['slab_offsets'], dtype=np.int32)
+    rsb = np.ascontiguousarray(mhs['rshift_bounds'], dtype=np.int32)
     keepers = [im, pgb, pg, so, rsb]
 
     s = NavHash()
-    s.metric             = 2                   # METRIC_3DBOX
-    s.index_matcher      = _ptr_i32(im)
+    s.metric = 2
+    s.index_matcher = _ptr_i32(im)
     s.pixs_galind_bounds = _ptr_i32(pgb)
-    s.pix_gals           = _ptr_i32(pg)
+    s.pix_gals = _ptr_i32(pg)
     s.pix1_start = float(mhs['pix1_start'])
-    s.pix1_d     = float(mhs['pix1_d'])
-    s.pix1_n     = int(mhs['pix1_n'])
+    s.pix1_d = float(mhs['pix1_d'])
+    s.pix1_n = int(mhs['pix1_n'])
     s.pix2_start = float(mhs['pix2_start'])
-    s.pix2_d     = float(mhs['pix2_d'])
-    s.pix2_n     = int(mhs['pix2_n'])
-    s.slab_offsets  = _ptr_i32(so)
+    s.pix2_d = float(mhs['pix2_d'])
+    s.pix2_n = int(mhs['pix2_n'])
+    s.slab_offsets = _ptr_i32(so)
     s.rshift_bounds = _ptr_i32(rsb)
     s.nslabs = int(mhs['nslabs'])
-    s.z0     = float(mhs['z0'])
+    s.z0 = float(mhs['z0'])
     s.dpix_z = float(mhs['dpix_z'])
 
     return s, keepers
@@ -541,15 +578,15 @@ def build_tree_params_struct(corr, mh):
     else:
         dp1 = np.zeros(0, dtype=np.float64)
         dp2 = np.zeros(0, dtype=np.float64)
-        re  = np.ascontiguousarray(mh['reso_redges'], dtype=np.float64)  # radians
+        re  = np.ascontiguousarray(mh['reso_redges'], dtype=np.float64)
     keepers += [dp1, dp2, re]
 
     s = TreeResoParams()
-    s.nresos          = int(corr.tree_nresos)
-    s.nresos_grid     = int(corr.tree_nresos)   # NN ignores this; GGG caller adjusts
-    s.dpix1_resos     = _ptr_f64(dp1)
-    s.dpix2_resos     = _ptr_f64(dp2)
-    s.reso_redges     = _ptr_f64(re)
+    s.nresos = int(corr.tree_nresos)
+    s.nresos_grid = int(corr.tree_nresos)
+    s.dpix1_resos = _ptr_f64(dp1)
+    s.dpix2_resos = _ptr_f64(dp2)
+    s.reso_redges = _ptr_f64(re)
     s.resoshift_leafs = int(corr.resoshift_leafs)
     s.minresoind_leaf = int(corr.minresoind_leaf)
     s.maxresoind_leaf = int(corr.maxresoind_leaf)
@@ -588,14 +625,14 @@ def build_binning_struct(corr, scale=None, do_dc=None, nmax=0, nmin=0, dccorr=0,
     """
     s = BinningParams()
     f = scale if scale is not None else 1.0
-    s.rmin   = float(corr.min_sep) * f
-    s.rmax   = float(corr.max_sep) * f
+    s.rmin = float(corr.min_sep) * f
+    s.rmax = float(corr.max_sep) * f
     s.nbinsr = int(corr.nbinsr)
-    s.do_dc  = int(1) if do_dc is None else int(do_dc)
-    s.nmax   = int(nmax)
-    s.nmin   = int(nmin)
+    s.do_dc = int(1) if do_dc is None else int(do_dc)
+    s.nmax = int(nmax)
+    s.nmin = int(nmin)
     s.dccorr = int(dccorr)
-    s.Pi     = float(Pi)
+    s.Pi = float(Pi)
     s.rbins  = _null(_p_f64)
     if rbins is not None:
         rb = np.ascontiguousarray(rbins, dtype=np.float64)
@@ -608,19 +645,16 @@ def build_npcf_output(kind, nbinsr, nmax=0, nbinsz=None, nbinsz_lens=None,
                       nbinsz_source=None, estimator_type='standard'):
     """Initialise output arrays and wrap them in a unified NPCFOutput.
 
-    Only the arrays live for ``kind`` are allocated; the rest of the returned tuple
-    is ``None`` and thus the matching struct fields stay NULL.
-
     Parameters
     ----------
-    kind : {'nn', 'gg', 'ng', 'ggg', 'gnn', 'ngg'}
+    kind : {'NN', 'GG', 'NG', 'GGG', 'NNN', 'GNN', 'NGG'}
         Type of correlator family.
     nbinsr : int
         The number of radial bins
     nmax : int
         Multipole order (only relevant for orders >2).
     nbinsz, nbinsz_lens, nbinsz_source : int
-        Tomographic bin counts (per kind: nn/gg/ggg use ``nbinsz``; ng uses
+        Tomographic bin counts (per kind: NN/GG/GGG use ``nbinsz``; NG uses
         lens+source).
     estimator_type : {'standard', 'lslike_slab'}
         Output parametrisation for the 3pt families. ``'standard'`` emits the
@@ -636,25 +670,25 @@ def build_npcf_output(kind, nbinsr, nmax=0, nbinsz=None, nbinsz_lens=None,
     s.nmax = int(nmax)
     bin_centers = npcf = norm = norm_mp = npair = npair_cell = None
 
-    if kind == 'nn':
+    if kind == 'NN':
         s.ncomp = 0
         z2r = nbinsz*nbinsz*nbinsr
         bin_centers = np.zeros(z2r, dtype=np.float64)
-        norm = np.zeros(z2r, dtype=np.float64)   # weighted pair count
+        norm = np.zeros(z2r, dtype=np.float64)
         npair_cell = np.zeros(z2r, dtype=np.int64)
         s.norm = _ptr_f64(norm)
         s.npair_cell = _ptr_i64(npair_cell)
-    elif kind == 'gg':
+    elif kind == 'GG':
         s.ncomp = 2
         z2r = nbinsz*nbinsz*nbinsr
         bin_centers = np.zeros(z2r, dtype=np.float64)
-        npcf = np.zeros(s.ncomp*z2r, dtype=np.complex128)   # [xip, xim] stacked
+        npcf = np.zeros(s.ncomp*z2r, dtype=np.complex128)
         norm = np.zeros(z2r, dtype=np.float64)
         npair = np.zeros(z2r, dtype=np.int64)
         s.npcf = npcf.ctypes.data_as(_p_c128)
         s.norm = _ptr_f64(norm)
         s.npair = _ptr_i64(npair)
-    elif kind == 'ng':
+    elif kind == 'NG':
         s.ncomp = 1
         z2r = nbinsz_lens*nbinsz_source*nbinsr
         bin_centers = np.zeros(z2r, dtype=np.float64)
@@ -664,31 +698,40 @@ def build_npcf_output(kind, nbinsr, nmax=0, nbinsz=None, nbinsz_lens=None,
         s.npcf = npcf.ctypes.data_as(_p_c128)
         s.norm = _ptr_f64(norm)
         s.npair = _ptr_i64(npair)
-    elif kind == 'ggg':
+    elif kind == 'GGG':
         s.ncomp = 4
         nzc = nbinsz*nbinsz*nbinsz
         comp = (nmax+1)*nzc*nbinsr*nbinsr
         nbc = nbinsz*nbinsz if estimator_type == 'lslike_slab' else nbinsz
         bin_centers = np.zeros(nbc*nbinsr, dtype=np.float64)
-        npcf = np.zeros(s.ncomp*comp, dtype=np.complex128)   # ndens=0, no LS factor
+        npcf = np.zeros(s.ncomp*comp, dtype=np.complex128)
         norm_mp = np.zeros(comp, dtype=np.complex128)
         s.npcf = npcf.ctypes.data_as(_p_c128)
         s.norm_mp = norm_mp.ctypes.data_as(_p_c128)
-    elif kind == 'gnn':
+    elif kind == 'NNN':
+        s.ncomp = 1
+        nzc = nbinsz*nbinsz*nbinsz
+        comp = (nmax+1)*nzc*nbinsr*nbinsr
+        bin_centers = np.zeros(nbinsz*nbinsr, dtype=np.float64)
+        npcf = np.zeros(s.ncomp*comp, dtype=np.complex128)
+        norm_mp = np.zeros(comp, dtype=np.complex128)
+        s.npcf = npcf.ctypes.data_as(_p_c128)
+        s.norm_mp = norm_mp.ctypes.data_as(_p_c128)
+    elif kind == 'GNN':
         s.ncomp = 1
         nzc = nbinsz_source*nbinsz_lens*nbinsz_lens
         comp = (nmax+1)*nzc*nbinsr*nbinsr
-        stack = 4 if estimator_type == 'lslike_slab' else 1   # 2**2 density legs
+        stack = 4 if estimator_type == 'lslike_slab' else 1 
         bin_centers = np.zeros(nbinsz_lens*nbinsz_source*nbinsr, dtype=np.float64)
         npcf = np.zeros(stack*s.ncomp*comp, dtype=np.complex128)
         norm_mp = np.zeros(comp, dtype=np.complex128)
         s.npcf = npcf.ctypes.data_as(_p_c128)
         s.norm_mp = norm_mp.ctypes.data_as(_p_c128)
-    elif kind == 'ngg':
+    elif kind == 'NGG':
         s.ncomp = 2
         nzc = nbinsz_lens*nbinsz_source*nbinsz_source
         comp = (2*nmax+1)*nzc*nbinsr*nbinsr
-        stack = 2 if estimator_type == 'lslike_slab' else 1   # 2**1 density legs
+        stack = 2 if estimator_type == 'lslike_slab' else 1
         bin_centers = np.zeros(nbinsz_lens*nbinsz_source*nbinsr, dtype=np.float64)
         npcf = np.zeros(stack*s.ncomp*comp, dtype=np.complex128)
         norm_mp = np.zeros(comp, dtype=np.complex128)
@@ -699,3 +742,143 @@ def build_npcf_output(kind, nbinsr, nmax=0, nbinsz=None, nbinsz_lens=None,
 
     s.bin_centers = _ptr_f64(bin_centers)
     return s, bin_centers, npcf, norm, norm_mp, npair, npair_cell
+
+
+## (D) Fourth-order structs ##
+def build_gnnn_output(bin_centers, Gtilde_n, N_n):
+    """NPCFOutput wrapping pre-allocated GNNN 4pcf-multipole arrays.
+    """
+    s = NPCFOutput()
+    s.ncomp = 1
+    s.bin_centers = _ptr_f64(bin_centers)
+    s.npcf = Gtilde_n.ctypes.data_as(_p_c128)
+    s.norm_mp = N_n.ctypes.data_as(_p_c128)
+    return s
+
+
+def build_gggg_output(bin_centers, Upsilon_n, N_n):
+    """NPCFOutput wrapping pre-allocated GGGG 4pcf-multipole arrays (8 components
+    packed in the flat npcf buffer).
+    """
+    s = NPCFOutput()
+    s.ncomp = 8
+    s.bin_centers = _ptr_f64(bin_centers)
+    s.npcf = Upsilon_n.ctypes.data_as(_p_c128)
+    s.norm_mp = N_n.ctypes.data_as(_p_c128)
+    return s
+
+
+def build_nnnn_output(bin_centers, N_n):
+    """NPCFOutput wrapping the pre-allocated NNNN 4pcf-count multipoles.
+    """
+    s = NPCFOutput()
+    s.ncomp = 1
+    s.bin_centers = _ptr_f64(bin_centers)
+    s.npcf = N_n.ctypes.data_as(_p_c128)
+    return s
+
+
+def build_spherical_central_catalog_struct(isinner, weight, vx, vy, vz, ra, sindec, cosdec, nbinsz):
+    """Single-resolution spherical MultiresoCatalog holding the full-resolution
+    central (query) galaxies of the curved-sky NNNN estimator.
+    """
+    ii = np.ascontiguousarray(isinner, dtype=np.float64)
+    w  = np.ascontiguousarray(weight, dtype=np.float64)
+    vx = np.ascontiguousarray(vx, dtype=np.float64)
+    vy = np.ascontiguousarray(vy, dtype=np.float64)
+    vz = np.ascontiguousarray(vz, dtype=np.float64)
+    ra = np.ascontiguousarray(ra, dtype=np.float64)
+    sd = np.ascontiguousarray(sindec, dtype=np.float64)
+    cd = np.ascontiguousarray(cosdec, dtype=np.float64)
+    ngal = np.array([len(ii)], dtype=np.int32)
+    keepers = [ii, w, vx, vy, vz, ra, sd, cd, ngal]
+
+    s = MultiresoCatalog()
+    s.metric = 1
+    s.nresos = 1
+    s.nbinsz = int(nbinsz)
+    s.ngal_resos = _ptr_i32(ngal)
+    s.isinner_resos = _ptr_f64(ii)
+    s.weight_resos = _ptr_f64(w)
+    s.vx_resos = _ptr_f64(vx)
+    s.vy_resos = _ptr_f64(vy)
+    s.vz_resos = _ptr_f64(vz)
+    s.ra_resos = _ptr_f64(ra)
+    s.sindec_resos = _ptr_f64(sd)
+    s.cosdec_resos = _ptr_f64(cd)
+    return s, keepers
+
+
+def build_fourth_params(nindices=None, len_nindices=0, nthetacombis=0, nthetbatches=0,
+                        phibins1=None, phibins2=None, dbinsphi1=None, dbinsphi2=None,
+                        nbinsphi1=0, nbinsphi2=0,
+                        thetacombis_batches=None, nthetacombis_batches=None,
+                        cumthetacombis_batches=None):
+    """Populate a FourthParams struct. 
+
+    Returns
+    -------
+    (FourthParams, list)
+    """
+    keepers = []
+    s = FourthParams()
+    s.nbinsphi1 = int(nbinsphi1)
+    s.nbinsphi2 = int(nbinsphi2)
+    s.len_nindices = int(len_nindices)
+    s.nthetacombis = int(nthetacombis)
+    s.nthetbatches = int(nthetbatches)
+    for name, arr, dt in (('phibins1', phibins1, np.float64), ('phibins2', phibins2, np.float64),
+                          ('dbinsphi1', dbinsphi1, np.float64), ('dbinsphi2', dbinsphi2, np.float64),
+                          ('nindices', nindices, np.int32),
+                          ('thetacombis_batches', thetacombis_batches, np.int32),
+                          ('nthetacombis_batches', nthetacombis_batches, np.int32),
+                          ('cumthetacombis_batches', cumthetacombis_batches, np.int32)):
+        if arr is None:
+            setattr(s, name, _null(_p_i32 if dt is np.int32 else _p_f64))
+        else:
+            a = np.ascontiguousarray(arr, dtype=dt)
+            keepers.append(a)
+            setattr(s, name, (_ptr_i32 if dt is np.int32 else _ptr_f64)(a))
+    return s, keepers
+
+
+def build_clustcorr(corr, xi, nnn, count_floor):
+    """Populate a ClustCorr from the correlator's ``_clustcorr_args`` block.
+
+    Parameters
+    ----------
+    corr : GNNNCorrelation_NoTomo
+        Provides ``_clustcorr_args(xi, nnn)`` (the omega/zeta resampling logic).
+    xi : tuple or None
+        Angular clustering 2PCF ``(thetas, omega)`` of the lenses.
+    nnn : orpheus.NNNCorrelation or tuple or None
+        Connected lens 3PCF for the zeta term.
+    count_floor : float
+        Threshold on the reconstructed triplet counts below which the 4PCF is zeroed.
+
+    Returns
+    -------
+    (ClustCorr, list)
+    """
+    (xi_nn, thetamin_xi, thetamax_xi, dtheta_xi, has_xi,
+     zeta, zeta_rbins, zeta_nr, zeta_phis, zeta_nphi, has_zeta) = corr._clustcorr_args(xi, nnn)
+    xi_nn = np.ascontiguousarray(xi_nn, dtype=np.float64)
+    zeta = np.ascontiguousarray(zeta, dtype=np.float64)
+    zeta_rbins = np.ascontiguousarray(zeta_rbins, dtype=np.float64)
+    zeta_phis = np.ascontiguousarray(zeta_phis, dtype=np.float64)
+    keepers = [xi_nn, zeta, zeta_rbins, zeta_phis]
+
+    s = ClustCorr()
+    s.count_floor = float(count_floor)
+    s.xi_nn = _ptr_f64(xi_nn)
+    s.thetamin_xi = float(thetamin_xi)
+    s.thetamax_xi = float(thetamax_xi)
+    s.dtheta_xi = float(dtheta_xi)
+    s.has_xi = int(has_xi)
+    s.zeta = _ptr_f64(zeta)
+    s.zeta_rbins = _ptr_f64(zeta_rbins)
+    s.zeta_nr = int(zeta_nr)
+    s.zeta_phis = _ptr_f64(zeta_phis)
+    s.zeta_nphi = int(zeta_nphi)
+    s.has_zeta = int(has_zeta)
+    return s, keepers

@@ -7,7 +7,7 @@ from pathlib import Path
 from .catalog import Catalog
 from .utils import convertunits
 from .multires_structs import (MultiresoCatalog, NavHash, TreeResoParams,
-                               BinningParams, NPCFOutput)
+                               BinningParams, NPCFOutput, FourthParams, ClustCorr)
 
 __all__ = ["BinnedNPCF"]
         
@@ -94,16 +94,16 @@ class BinnedNPCF:
         in the real-space basis.
     npcf: numpy.ndarray
         The natural components of the NPCF in the real space basis. The different axes
-        are specified as follows: ``(component, zcombi, rbin_1, ..., rbin_N-1, phibin_1, phibin_N-2)``.
+        are specified as: ``(component, zcombi, rbin_1, ..., rbin_N-1, phibin_1, phibin_N-2)``.
     npcf_norm: numpy.ndarray
         The normalization of the natural components of the NPCF in the real space basis. The different axes
-        are specified as follows: ``(zcombi, rbin_1, ..., rbin_N-1, phiin_1, phibin_N-2)``.
+        are specified as: ``(zcombi, rbin_1, ..., rbin_N-1, phibin_1, phibin_N-2)``.
     npcf_multipoles: numpy.ndarray
         The natural components of the NPCF in the multipole basis. The different axes
-        are specified as follows: ``(component, zcombi, multipole_1, ..., multipole_N-2, rbin_1, ..., rbin_N-1)``.
+        are specified as: ``(component, zcombi, multipole_1, ..., multipole_N-2, rbin_1, ..., rbin_N-1)``.
     npcf_multipoles_norm: numpy.ndarray
         The normalization of the natural components of the NPCF in the multipole basis. The different axes
-        are specified as follows: ``(zcombi, multipole_1, ..., multipole_N-2, rbin_1, ..., rbin_N-1)``.
+        are specified as: ``(zcombi, multipole_1, ..., multipole_N-2, rbin_1, ..., rbin_N-1)``.
     is_edge_corrected: bool
         Flag signifying on whether the NPCF multipoles have been edge-corrected. Defaults to ``False``.
     norm_divisionmask: float
@@ -285,7 +285,7 @@ class BinnedNPCF:
                 ct.POINTER(TreeResoParams), ct.POINTER(BinningParams),
                 ct.c_int32, ct.c_int32, ct.POINTER(NPCFOutput)]
             
-         ## Second order position-shear (GGL) statistics ##
+        ## Second order position-shear (GGL) statistics ##
         if self.order==2 and np.array_equal(self.spins, np.array([0, 2], dtype=np.int32)):
             # Computation of discrete NG in slabs of 3dbox geometry
             self.clib.ng_slab.restype = ct.c_void_p
@@ -302,7 +302,7 @@ class BinnedNPCF:
                 ct.POINTER(TreeResoParams), ct.POINTER(BinningParams),
                 ct.c_int32, ct.c_int32, ct.POINTER(NPCFOutput)]
                 
-        ## Third-order multipole to npcf conversion used by GGG, GNN and NGG
+        ## Third-order multipole to npcf conversion used by GGG, GNN and NGG ##
         if self.order==3:
             # Conversion of multipole-space-basis 3pcf to real-space basis, assuming cat2==cat3.
             self.clib.multipoles2npcf_third_z1z23.restype = ct.c_void_p
@@ -314,6 +314,15 @@ class BinnedNPCF:
                 ct.c_int32,
                 np.ctypeslib.ndpointer(dtype=np.complex128),
                 np.ctypeslib.ndpointer(dtype=np.complex128)]
+
+        ## Third order density-density-density (clustering) statistics ##
+        if self.order==3 and np.array_equal(self.spins, np.array([0, 0, 0], dtype=np.int32)):
+            # Doubletree-based estimator of NNN (scalar triplet counts).
+            self.clib.alloc_nnn_doubletree.restype = ct.c_void_p
+            self.clib.alloc_nnn_doubletree.argtypes = [
+                ct.POINTER(MultiresoCatalog), ct.POINTER(NavHash),
+                ct.POINTER(TreeResoParams), ct.POINTER(BinningParams),
+                ct.c_int32, ct.c_int32, ct.POINTER(NPCFOutput)]
 
         ## Third order shear-shear-shear statistics ##
         if self.order==3 and np.array_equal(self.spins, np.array([2, 2, 2], dtype=np.int32)):
@@ -437,108 +446,51 @@ class BinnedNPCF:
         ## Fourth-order counts-counts-counts-counts statistics ##
         if self.order==4 and np.array_equal(self.spins, np.array([0, 0, 0, 0], dtype=np.int32)):
 
-            # Tree estimator of non-tomographic fourth-order counts correlation function
-            self.clib.alloc_notomoGammans_tree_nnnn.restype = ct.c_void_p
-            self.clib.alloc_notomoGammans_tree_nnnn.argtypes = [
-                p_f64, p_f64, p_f64, p_f64, ct.c_int32, 
-                ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, ct.c_int32, 
-                p_i32,  ct.c_int32, 
-                ct.c_int32, p_f64, p_i32,
-                p_f64, p_f64, p_f64, p_f64,
-                p_i32, p_i32, p_i32, ct.c_int32, 
-                ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,  ct.c_int32, 
-                np.ctypeslib.ndpointer(dtype=np.float64), 
-                np.ctypeslib.ndpointer(dtype=np.complex128)] 
-
             # Tree-based estimator of non-tomographic Map^4 statistics (low-mem)
             self.clib.alloc_notomoNap4_tree_nnnn.restype = ct.c_void_p
             self.clib.alloc_notomoNap4_tree_nnnn.argtypes = [
-                p_f64, p_f64, p_f64, p_f64, ct.c_int32,
-                ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
-                p_i32, ct.c_int32, p_f64, p_f64, ct.c_int32,
-                ct.c_int32, p_f64, p_i32,
-                p_f64, p_f64, p_f64, p_f64,
-                p_i32, p_i32, p_i32, ct.c_int32,
-                ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32,
-                p_i32, p_i32, p_i32, ct.c_int32,
-                ct.c_int32, ct.c_int32, p_f64, ct.c_int32, np.ctypeslib.ndpointer(dtype=np.complex128),
+                ct.POINTER(MultiresoCatalog), ct.POINTER(MultiresoCatalog), ct.POINTER(NavHash), 
+                ct.POINTER(TreeResoParams), ct.POINTER(BinningParams), ct.POINTER(FourthParams),
+                p_f64, ct.c_int32, p_c128, ct.c_int32, ct.c_int32,
                 ct.c_int32, ct.c_int32,
-                np.ctypeslib.ndpointer(dtype=np.float64),
-                np.ctypeslib.ndpointer(dtype=np.complex128),np.ctypeslib.ndpointer(dtype=np.complex128)]
+                p_f64, p_c128, p_c128]
 
-            # DoubleTree estimator of non-tomographic NNNN statistics.
-            self.clib.alloc_notomoNap4_doubletree_nnnn.restype = ct.c_void_p
-            self.clib.alloc_notomoNap4_doubletree_nnnn.argtypes = [
-                p_f64, p_f64, p_f64, p_f64, ct.c_int32,
-                ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
-                p_i32, ct.c_int32, p_f64, p_f64, ct.c_int32,
-                ct.c_int32, p_f64, p_i32,
-                p_f64, p_f64, p_f64, p_f64,
-                p_i32, p_i32, p_i32, ct.c_int32,
-                ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32,
-                p_i32, p_i32, p_i32, ct.c_int32,
-                ct.c_int32, ct.c_int32, p_f64, ct.c_int32, np.ctypeslib.ndpointer(dtype=np.complex128),
+            # Runtime.optimised estimator of non-tomographic NNNN statistics.
+            self.clib.alloc_notomoNap4_tree_nnnn_highmem.restype = ct.c_void_p
+            self.clib.alloc_notomoNap4_tree_nnnn_highmem.argtypes = [
+                ct.POINTER(MultiresoCatalog), ct.POINTER(MultiresoCatalog), ct.POINTER(NavHash), 
+                ct.POINTER(TreeResoParams), ct.POINTER(BinningParams), ct.POINTER(FourthParams),
+                p_f64, ct.c_int32, p_c128, ct.c_int32, ct.c_int32,
                 ct.c_int32, ct.c_int32,
-                np.ctypeslib.ndpointer(dtype=np.float64),
-                np.ctypeslib.ndpointer(dtype=np.complex128),np.ctypeslib.ndpointer(dtype=np.complex128)]
+                p_f64, p_c128, p_c128]
 
             # Tree-based estimator of the fourth-order count multipoles
             self.clib.alloc_nnnn_tree.restype = ct.c_void_p
             self.clib.alloc_nnnn_tree.argtypes = [
-                p_f64, p_f64, p_f64, p_f64, ct.c_int32,
-                ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
-                p_i32, ct.c_int32,
-                ct.c_int32, p_f64, p_i32,
-                p_f64, p_f64, p_f64, p_f64,
-                p_i32, p_i32, p_i32, ct.c_int32,
-                ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32,
-                p_i32, p_i32, p_i32, ct.c_int32,
-                ct.c_int32, ct.c_double, ct.c_int32,
-                np.ctypeslib.ndpointer(dtype=np.float64),
-                np.ctypeslib.ndpointer(dtype=np.complex128)]
+                ct.POINTER(MultiresoCatalog), ct.POINTER(MultiresoCatalog), ct.POINTER(NavHash), 
+                ct.POINTER(TreeResoParams), ct.POINTER(BinningParams), ct.POINTER(FourthParams),
+                ct.c_double, ct.c_int32, ct.c_int32, ct.POINTER(NPCFOutput)]
 
             # Tree-based estimator of the fourth-order count multipoles in spherical geometry
             self.clib.alloc_nnnn_tree_spherical.restype = ct.c_void_p
             self.clib.alloc_nnnn_tree_spherical.argtypes = [
-                p_f64, p_f64,
-                p_f64, p_f64, p_f64,
-                p_f64, p_f64, p_f64, ct.c_int32,
-                ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
-                p_i32, ct.c_int32,
-                ct.c_int32, p_f64, p_i32, p_i32,
-                p_i64,
-                p_f64, p_f64, p_f64, p_f64,
-                p_f64, p_f64, p_f64, p_i32,
-                p_i64, p_i32, p_i32, p_i32,
-                p_i32, p_i32, p_i32, ct.c_int32,
-                ct.c_int32, ct.c_double, ct.c_int32,
-                np.ctypeslib.ndpointer(dtype=np.float64),
-                np.ctypeslib.ndpointer(dtype=np.complex128)]
+                ct.POINTER(MultiresoCatalog), ct.POINTER(MultiresoCatalog), ct.POINTER(NavHash), 
+                ct.POINTER(TreeResoParams), ct.POINTER(BinningParams), ct.POINTER(FourthParams),
+                ct.c_double, ct.c_int32, ct.c_int32, ct.POINTER(NPCFOutput)]
 
             # Doubletree-based estimator of the fourth-order count multipoles
             self.clib.alloc_nnnn_doubletree.restype = ct.c_void_p
             self.clib.alloc_nnnn_doubletree.argtypes = [
-                ct.c_int32, ct.c_int32, p_f64, p_f64, p_f64,
-                ct.c_int32, ct.c_int32, ct.c_int32,
-                p_f64, p_f64, p_f64, p_f64, p_i32,
-                ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
-                p_i32, ct.c_int32,
-                p_i32, p_i32, p_i32, p_i32,
-                p_i32, ct.c_int32, ct.c_int32,
-                ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32,
-                p_i32, p_i32, p_i32, ct.c_int32,
-                ct.c_int32, ct.c_double, ct.c_int32,
-                np.ctypeslib.ndpointer(dtype=np.float64),
-                np.ctypeslib.ndpointer(dtype=np.complex128)]
+                ct.POINTER(MultiresoCatalog), ct.POINTER(NavHash), ct.POINTER(TreeResoParams), 
+                ct.POINTER(BinningParams), ct.POINTER(FourthParams),
+                ct.c_double, ct.c_int32, ct.c_int32, ct.POINTER(NPCFOutput)]
 
             # Transformation between 4PCF from multipole-basis tp real-space basis for all
             # combination of radial bins
             self.clib.multipoles2npcf_nnnn.restype = ct.c_void_p
             self.clib.multipoles2npcf_nnnn.argtypes = [
-                p_c128, ct.c_int32, ct.c_int32, 
-                p_f64, ct.c_int32, 
-                p_f64, p_f64, ct.c_int32, ct.c_int32, 
-                np.ctypeslib.ndpointer(dtype=np.complex128), ct.c_int32]
+                p_c128, ct.POINTER(BinningParams), ct.POINTER(FourthParams),
+                p_f64, np.ctypeslib.ndpointer(dtype=np.complex128), ct.c_int32]
 
             # Transformation between 4PCF from multipole-basis tp real-space basis for a fixed
             # combination of radial bins
@@ -555,67 +507,64 @@ class BinnedNPCF:
             # Discrete  estimator of non-tomographic GNNN statistics
             self.clib.alloc_notomoGammans_discrete_gnnn.restype = ct.c_void_p
             self.clib.alloc_notomoGammans_discrete_gnnn.argtypes = [
-                p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, ct.c_int32,
-                p_f64, p_f64, p_f64, ct.c_int32,
-                p_i32, p_i32, p_i32, ct.c_int32,
-                ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32,
-                ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
-                ct.c_int32, ct.c_int32, np.ctypeslib.ndpointer(dtype=np.float64),
-                np.ctypeslib.ndpointer(dtype=np.complex128),np.ctypeslib.ndpointer(dtype=np.complex128)]
+                ct.POINTER(MultiresoCatalog), ct.POINTER(NavHash),
+                ct.POINTER(MultiresoCatalog), ct.POINTER(NavHash),
+                ct.POINTER(BinningParams), ct.POINTER(FourthParams),
+                ct.c_int32, ct.c_int32, ct.POINTER(NPCFOutput)]
 
             # Tree-based estimator of non-tomographic GNNN statistics
             self.clib.alloc_notomoGammans_tree_gnnn.restype = ct.c_void_p
             self.clib.alloc_notomoGammans_tree_gnnn.argtypes = [
-                ct.c_int32, p_f64,
-                p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, ct.c_int32, 
-                p_f64, p_f64, p_f64, p_i32,
-                p_i32, p_i32, p_i32, p_i32, p_i32, p_i32, ct.c_int32, 
-                ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32,
-                ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, ct.c_int32,
-                p_i32, ct.c_int32,
-                ct.c_int32, ct.c_int32, np.ctypeslib.ndpointer(dtype=np.float64), 
-                np.ctypeslib.ndpointer(dtype=np.complex128),np.ctypeslib.ndpointer(dtype=np.complex128)]
+                ct.POINTER(MultiresoCatalog), ct.POINTER(NavHash),
+                ct.POINTER(MultiresoCatalog), ct.POINTER(NavHash),
+                ct.POINTER(TreeResoParams), ct.POINTER(BinningParams),
+                ct.POINTER(FourthParams), ct.c_int32, ct.c_int32, ct.POINTER(NPCFOutput)]
 
             # Tree-based estimator of non-tomographic MapNap^3 statistics (low-mem)
             self.clib.alloc_notomoMapNap3_tree_gnnn.restype = ct.c_void_p
             self.clib.alloc_notomoMapNap3_tree_gnnn.argtypes = [
-                ct.c_int32, p_f64,
-                p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, ct.c_int32, 
-                p_f64, p_f64, p_f64, p_i32,
-                p_i32, p_i32, p_i32, p_i32, p_i32, p_i32, ct.c_int32, 
-                ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32,
-                ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
-                p_i32, ct.c_int32, p_f64, p_f64, ct.c_int32,
-                p_i32, p_i32, p_i32, ct.c_int32,
-                ct.c_int32, ct.c_int32, p_f64, ct.c_int32, np.ctypeslib.ndpointer(dtype=np.complex128),
-                ct.c_int32, ct.c_int32, np.ctypeslib.ndpointer(dtype=np.float64),
-                np.ctypeslib.ndpointer(dtype=np.complex128),np.ctypeslib.ndpointer(dtype=np.complex128),
-                np.ctypeslib.ndpointer(dtype=np.complex128),np.ctypeslib.ndpointer(dtype=np.complex128)]
-            
+                ct.POINTER(MultiresoCatalog), ct.POINTER(NavHash),
+                ct.POINTER(MultiresoCatalog), ct.POINTER(NavHash),
+                ct.POINTER(TreeResoParams), ct.POINTER(BinningParams), ct.POINTER(FourthParams),
+                ct.POINTER(ClustCorr),
+                p_f64, ct.c_int32, ct.c_int32, ct.c_int32, ct.c_int32, ct.c_int32,
+                p_f64, p_c128, p_c128, p_c128, p_c128, p_c128]
+
             # Transformaton between 4pcf multipoles and MN3 correlators of MapNap3 statistics
             self.clib.fourpcfmultipoles2MN3correlators.restype = ct.c_void_p
             self.clib.fourpcfmultipoles2MN3correlators.argtypes = [
                 ct.c_int32, ct.c_int32,
                 p_f64, p_f64, ct.c_int32,
-                p_f64, ct.c_int32,
-                p_f64, p_f64, p_f64, p_f64, ct.c_int32, ct.c_int32, 
-                ct.c_int32, ct.c_int32, 
+                p_f64, p_f64, ct.c_int32,
+                p_f64, p_f64, p_f64, p_f64, ct.c_int32, ct.c_int32,
+                ct.c_int32, ct.c_int32, ct.c_int32,
+                ct.POINTER(ClustCorr),
                 p_c128, p_c128, np.ctypeslib.ndpointer(dtype=np.complex128)]
 
-            # Transformation between G4L from multipole-basis tp real-space basis for a fixed
+            # Transformation between G4L from multipole-basis to real-space basis for a fixed
             # combination of radial bins
             self.clib.multipoles2npcf_gnnn_singletheta.restype = ct.c_void_p
             self.clib.multipoles2npcf_gnnn_singletheta.argtypes = [
-                p_c128, p_c128, ct.c_int32, ct.c_int32, 
-                ct.c_double, ct.c_double, ct.c_double, 
-                p_f64, p_f64, ct.c_int32, ct.c_int32, 
+                p_c128, p_c128, ct.c_int32, ct.c_int32,
+                ct.c_double, ct.c_double, ct.c_double,
+                p_f64, p_f64, ct.c_int32, ct.c_int32,
+                ct.POINTER(ClustCorr),
                 np.ctypeslib.ndpointer(dtype=np.complex128),np.ctypeslib.ndpointer(dtype=np.complex128)]
 
             self.clib.multipoles2npcf_gnnn_singletheta_nconvergence.restype = ct.c_void_p
             self.clib.multipoles2npcf_gnnn_singletheta_nconvergence.argtypes = [
-                p_c128, p_c128, ct.c_int32, ct.c_int32, 
-                ct.c_double, ct.c_double, ct.c_double, 
-                p_f64, p_f64, ct.c_int32, ct.c_int32, 
+                p_c128, p_c128, ct.c_int32, ct.c_int32,
+                ct.c_double, ct.c_double, ct.c_double,
+                p_f64, p_f64, ct.c_int32, ct.c_int32,
+                ct.POINTER(ClustCorr),
+                np.ctypeslib.ndpointer(dtype=np.complex128),np.ctypeslib.ndpointer(dtype=np.complex128)]
+
+            # Full multipole-basis to real-space basis conversion over all theta triples
+            self.clib.multipoles2npcf_gnnn.restype = ct.c_void_p
+            self.clib.multipoles2npcf_gnnn.argtypes = [
+                p_c128, p_c128,
+                ct.POINTER(BinningParams), ct.POINTER(FourthParams), ct.POINTER(ClustCorr),
+                ct.c_int32,
                 np.ctypeslib.ndpointer(dtype=np.complex128),np.ctypeslib.ndpointer(dtype=np.complex128)]
 
             self.clib.alloc_notomoMapNap3_corrections.restype = ct.c_void_p
@@ -652,62 +601,38 @@ class BinnedNPCF:
             # Discrete estimator of non-tomographic fourth-order shear correlation function
             self.clib.alloc_notomoGammans_discrete_gggg.restype = ct.c_void_p
             self.clib.alloc_notomoGammans_discrete_gggg.argtypes = [
-                p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, ct.c_int32, 
-                ct.c_int32, ct.c_double, ct.c_double, p_f64, ct.c_int32, ct.c_int32, 
-                p_i32, p_i32, p_i32, ct.c_int32, 
-                ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,  ct.c_int32, 
-                np.ctypeslib.ndpointer(dtype=np.float64), 
-                np.ctypeslib.ndpointer(dtype=np.complex128),
-                np.ctypeslib.ndpointer(dtype=np.complex128)] 
+                ct.POINTER(MultiresoCatalog), ct.POINTER(NavHash), ct.POINTER(BinningParams), ct.POINTER(FourthParams),
+                ct.c_int32, ct.c_int32, ct.POINTER(NPCFOutput)] 
 
             # Tree estimator of non-tomographic fourth-order shear correlation function
             self.clib.alloc_notomoGammans_tree_gggg.restype = ct.c_void_p
             self.clib.alloc_notomoGammans_tree_gggg.argtypes = [
-                p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, ct.c_int32, 
-                ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, ct.c_int32, 
-                p_i32,  ct.c_int32, 
-                ct.c_int32, p_f64, p_i32,
-                p_f64, p_f64, p_f64, p_f64, p_f64, p_f64,
-                p_i32, p_i32, p_i32, ct.c_int32, 
-                ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,  ct.c_int32, 
-                np.ctypeslib.ndpointer(dtype=np.float64), 
-                np.ctypeslib.ndpointer(dtype=np.complex128),
-                np.ctypeslib.ndpointer(dtype=np.complex128)] 
+                ct.POINTER(MultiresoCatalog), ct.POINTER(MultiresoCatalog), ct.POINTER(NavHash), 
+                ct.POINTER(TreeResoParams), ct.POINTER(BinningParams), ct.POINTER(FourthParams),
+                ct.c_int32, ct.c_int32, ct.POINTER(NPCFOutput)] 
             
             # Discrete estimator of non-tomographic Map^4 statistics (low-mem)
             self.clib.alloc_notomoMap4_disc_gggg.restype = ct.c_void_p
             self.clib.alloc_notomoMap4_disc_gggg.argtypes = [
-                p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, ct.c_int32, 
-                ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, p_f64, p_f64, ct.c_int32,
-                p_i32, p_i32, p_i32, ct.c_int32, 
-                ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, 
-                p_i32, p_i32, p_i32, ct.c_int32, 
-                ct.c_int32, ct.c_int32, ct.c_int32, p_f64, ct.c_int32, np.ctypeslib.ndpointer(dtype=np.complex128),
-                ct.c_int32, ct.c_int32, np.ctypeslib.ndpointer(dtype=np.float64), 
-                np.ctypeslib.ndpointer(dtype=np.complex128),np.ctypeslib.ndpointer(dtype=np.complex128),
-                np.ctypeslib.ndpointer(dtype=np.complex128),np.ctypeslib.ndpointer(dtype=np.complex128)]
+                ct.POINTER(MultiresoCatalog), ct.POINTER(NavHash), ct.POINTER(BinningParams), ct.POINTER(FourthParams),
+                ct.c_int32, p_f64, ct.c_int32, p_c128, ct.c_int32, ct.c_int32,
+                ct.c_int32, ct.c_int32,
+                p_f64, p_c128, p_c128, p_c128, p_c128]
             
             # Tree-based estimator of non-tomographic Map^4 statistics (low-mem)
             self.clib.alloc_notomoMap4_tree_gggg.restype = ct.c_void_p
             self.clib.alloc_notomoMap4_tree_gggg.argtypes = [
-                p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, ct.c_int32, 
-                ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
-                p_i32, ct.c_int32, p_f64, p_f64, ct.c_int32,
-                ct.c_int32, p_f64, p_i32,
-                p_f64, p_f64, p_f64, p_f64, p_f64, p_f64,
-                p_i32, p_i32, p_i32, ct.c_int32, 
-                ct.c_double, ct.c_double, ct.c_int32, ct.c_double, ct.c_double, ct.c_int32, 
-                p_i32, p_i32, p_i32, ct.c_int32, 
-                ct.c_int32, ct.c_int32, ct.c_int32, p_f64, ct.c_int32, np.ctypeslib.ndpointer(dtype=np.complex128),
-                ct.c_int32, ct.c_int32, np.ctypeslib.ndpointer(dtype=np.float64), 
-                np.ctypeslib.ndpointer(dtype=np.complex128),np.ctypeslib.ndpointer(dtype=np.complex128),
-                np.ctypeslib.ndpointer(dtype=np.complex128),np.ctypeslib.ndpointer(dtype=np.complex128)]
+                ct.POINTER(MultiresoCatalog), ct.POINTER(MultiresoCatalog), ct.POINTER(NavHash), 
+                ct.POINTER(TreeResoParams), ct.POINTER(BinningParams), ct.POINTER(FourthParams),
+                ct.c_int32, p_f64, ct.c_int32, p_c128, ct.c_int32, ct.c_int32,
+                ct.c_int32, ct.c_int32,
+                p_f64, p_c128, p_c128, p_c128, p_c128]
          
             self.clib.multipoles2npcf_gggg.restype = ct.c_void_p
             self.clib.multipoles2npcf_gggg.argtypes = [
-                p_c128, p_c128, p_f64, ct.c_int32, 
-                ct.c_int32, ct.c_int32, ct.c_int32, p_f64, ct.c_int32, p_f64, ct.c_int32, 
-                ct.c_int32, p_c128, p_c128]
+                p_c128, p_c128, p_f64, ct.POINTER(BinningParams), ct.POINTER(FourthParams),
+                ct.c_int32, ct.c_int32, ct.c_int32, np.ctypeslib.ndpointer(dtype=np.complex128), 
+                np.ctypeslib.ndpointer(dtype=np.complex128)]
                         
             # Transformation between 4PCF from multipole-basis tp real-space basis for a fixed
             # combination of radial bins
@@ -771,21 +696,6 @@ class BinnedNPCF:
                 p_f64, p_f64, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, 
                 np.ctypeslib.ndpointer(dtype=np.complex128)]
             
-            # [DEBUG]: Map4 filter function for single combination
-            self.clib.filter_Map4.restype = ct.c_void_p
-            self.clib.filter_Map4.argtypes = [
-                ct.c_double, ct.c_double, ct.c_double, ct.c_double, ct.c_double, 
-                np.ctypeslib.ndpointer(dtype=np.complex128)] 
-            
-            # [DEBUG]: Conversion between 4pcf and Map4 for (theta1,theta2,theta3) subset
-            self.clib.fourpcf2M4correlators_parallel.restype = ct.c_void_p
-            self.clib.fourpcf2M4correlators_parallel.argtypes = [
-                ct.c_int32,
-                ct.c_double, ct.c_double, ct.c_double, ct.c_double, ct.c_double, ct.c_double, 
-                p_f64, p_f64, p_f64, p_f64, ct.c_int32, ct.c_int32, 
-                ct.c_int32,
-                np.ctypeslib.ndpointer(dtype=np.complex128), np.ctypeslib.ndpointer(dtype=np.complex128)] 
-    
 
     def autoset_tree(self, cat, dpix_grid=2., nside_grid=2048, max_increase=0.1, set_resoshiftleafs=True, set_maxresoindleaf=True):
         """Sets the pixel-sizes for the (multi)hashes given a catalog.
@@ -920,7 +830,7 @@ class BinnedNPCF:
 
             
     def save_divide_npcf(self, npcf, npcf_norm, fill=0., thr=None, use_abs=False):
-        """Masked division for obtaining the npcf.
+        """Masked division for obtaining the npcf. 
 
         All NPCF bins for which the normalisation is smaller than ``thr`` are
         set to ``fill``.
@@ -938,11 +848,10 @@ class BinnedNPCF:
         return np.divide(rsum, norm, out=out, where=np.abs(norm) > self.norm_divisionmask)
 
     def saveinst(self, path_save, fname, extr_pars=None):
-        """Serialise the instance to a ``.npz`` archive under ``path_save+fname``.
+        """Save an instance as a ``.npz`` archive.
 
-        The shared reconstruction/binning state and any allocated generic npcf
-        arrays are written here. Children pass their  derived data arrays through 
-        an optional ``extr_pars`` dict.
+        The arrays that are shared for any instance are given here explicitly. 
+        Children pass their derived data arrays through the optional ``extr_pars`` dict.
         """
         if not Path(path_save).is_dir():
             raise ValueError('Path to directory does not exist.')
@@ -972,10 +881,6 @@ class BinnedNPCF:
     @classmethod
     def loadinst(cls, path_save, fname):
         """Reconstruct an instance from an archive written by ``saveinst``.
-
-        The binning/tree state is rebuilt through ``__init__``; the saved measured arrays, 
-        tomographic bin counts and projection are then restored on top. The result is ready 
-        for the post-processing methods.
         """
         import inspect
         fn = path_save + fname
