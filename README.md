@@ -39,7 +39,10 @@ In the [documentation](https://orpheus.readthedocs.io/) you find more informatio
 ## Using the code
 As at this moment there is no dedicated orpheus paper, please cite the paper that introduced the functionality implemented in orpheus:
  * If you use the three-point functionality, please cite [Porth+2024](https://doi.org/10.1051/0004-6361/202347987)
- * If you use the four-point functionality, please cite [Porth+2025](https://arxiv.org/abs/2509.07974)
+ * If you use the four-point functionality, please cite [Porth+2025](https://arxiv.org/abs/2509.07974) and [Silvestre-Rosello+2025](https://doi.org/10.1051/0004-6361/202557147)
  * If you use the direct estimator functionality, please cite [Porth & Smith 2022](https://doi.org/10.1093/mnras/stab2819)
+ * If you use the two-point functionality, please provide a [reference](https://github.com/lporth93/orpheus) to the official GitHub repository in a footnote
+ * If you use the fully spherical estimators, please also cite the original  HEALPix paper: [Gorski+2005](https://doi.org/10.1086/427976)
+
 
 In each of the papers, you can find the main equations implemented in orpheus.

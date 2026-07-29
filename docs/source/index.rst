@@ -42,6 +42,7 @@ As there is currently no dedicated orpheus paper, please cite the paper that int
 * If you use the direct estimator functionality, please cite 
   `Porth & Smith 2022 <https://doi.org/10.1093/mnras/stab2819>`_
 * If you use the two-point functionality, please provide a `reference <https://github.com/lporth93/orpheus>`_ to the official GitHub repository in a footnote.
+* If you use the fully spherical estimators, please also cite the original  HEALPix paper: `Gorski+2005 <https://doi.org/10.1086/427976>`.
 
 In each of the papers, you can find the main equations implemented in orpheus.
 
