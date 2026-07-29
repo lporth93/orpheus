@@ -270,10 +270,13 @@ class BuildExtWithDetect(build_ext):
         # include/library flags without affecting the C files.
         cxx_path = detect_cxx(cc_path)
         cxx_cflags, cxx_libs = healpix_cxx_flags(cxx_path)
-        # Debian's healpix_cxx.pc carries -fopenmp in Cflags, which Apple clang
-        # rejects; drop it where the OpenMP probe already needed -Xpreprocessor.
-        if applied_alternative_clang_flags:
-            cxx_cflags = [a for a in cxx_cflags if a != "-fopenmp"]
+        # The C++ driver need not be the OpenMP-capable compiler picked for the C
+        # sources, and Apple clang rejects -fopenmp outright. healpix_utils.cpp has
+        # no OpenMP directives, so dropping the flag for C++ is safe.
+        cxx_openmp = try_compile("int main(){ return 0; }", cxx_path,
+                                 cflags=["-fopenmp"], lflags=["-fopenmp"], suffix=".cpp")
+        if not cxx_openmp:
+            cxx_cflags = [a for a in cxx_cflags if a not in ("-fopenmp", "-Xpreprocessor")]
         orig_compile = self.compiler._compile
 
         # The C++ sources are compiled with the C++ driver rather than with the
@@ -281,6 +284,8 @@ class BuildExtWithDetect(build_ext):
         def _compile_per_lang(obj, src, ext, cc_args, extra_postargs, pp_opts):
             if os.path.splitext(src)[1] in (".cpp", ".cc", ".cxx"):
                 postargs = [a for a in extra_postargs if a != "-std=c99"]
+                if not cxx_openmp:
+                    postargs = [a for a in postargs if a not in ("-fopenmp", "-Xpreprocessor")]
                 postargs = postargs + ["-std=c++14"] + cxx_cflags
                 saved_cc = self.compiler.compiler_so
                 self.compiler.compiler_so = [cxx_path] + list(saved_cc[1:])
@@ -291,8 +296,11 @@ class BuildExtWithDetect(build_ext):
             return orig_compile(obj, src, ext, cc_args, extra_postargs, pp_opts)
 
         self.compiler._compile = _compile_per_lang
+        # clang++ builds against libc++, which on recent macOS SDKs is the only
+        # C++ runtime still shipped; gcc's C++ frontend wants libstdc++.
+        cxx_runtime = "-lc++" if "clang" in os.path.basename(cxx_path) else "-lstdc++"
         for ext in self.extensions:
-            ext.extra_link_args = list(ext.extra_link_args or []) + cxx_libs + ["-lstdc++"]
+            ext.extra_link_args = list(ext.extra_link_args or []) + cxx_libs + [cxx_runtime]
 
         super().build_extensions()
 
