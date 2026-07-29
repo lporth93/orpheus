@@ -36,9 +36,28 @@ jobs:
 
       - name: Build wheels
         env:
-          # build cp39..cp312 wheels (adjust as needed)
-          CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-* cp313-* cp314-*"
+          # build valid cp3xx wheels
+          CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-*"
           CIBW_SKIP: "pp*"
+          # The manylinux container has no apt and no healpix_cxx, so build it
+          # and its cfitsio dependency from source once per container.
+          CIBW_BEFORE_ALL_LINUX: >
+            cd /tmp &&
+            curl -sSL https://heasarc.gsfc.nasa.gov/FTP/software/fitsio/c/cfitsio-4.5.0.tar.gz | tar xz &&
+            cd cfitsio-4.5.0 && ./configure --prefix=/usr/local && make -j4 && make install && cd .. &&
+            curl -sSL -o healpix_cxx.tar.gz "https://sourceforge.net/projects/healpix/files/Healpix_3.83/healpix_cxx-3.83.0.tar.gz/download" &&
+            tar xzf healpix_cxx.tar.gz && cd healpix_cxx-3.83.0 &&
+            PKG_CONFIG_PATH=/usr/local/lib/pkgconfig ./configure --prefix=/usr/local &&
+            make -j4 && make install && cd .. &&
+            echo /usr/local/lib > /etc/ld.so.conf.d/healpix_cxx.conf && ldconfig
+          # LD_LIBRARY_PATH lets auditwheel vendor libhealpix_cxx.so into the wheel.
+          CIBW_ENVIRONMENT_LINUX: >
+            HEALPIX_CXX_DIR=/usr/local
+            PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
+            LD_LIBRARY_PATH=/usr/local/lib
+          # macOS wheels build natively on the runner, so homebrew suffices.
+          CIBW_BEFORE_ALL_MACOS: brew install healpix
+          CIBW_ENVIRONMENT_MACOS: HEALPIX_CXX_DIR=/opt/homebrew
         run: |
           # For macOS builds set deployment target to match libgomp dependency seen earlier
           if [ "$(uname -s)" = "Darwin" ]; then
@@ -60,8 +79,32 @@ jobs:
           name: wheelhouse-${{ matrix.os }}
           path: wheelhouse/*.whl
 
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref || github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build sdist
+        run: python -m pip install --upgrade pip build && python -m build --sdist --outdir wheelhouse
+
+      - name: Upload sdist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheelhouse-sdist
+          path: wheelhouse/*.tar.gz
+
   publish:
-    needs: build
+    needs: [build, sdist]
+    # workflow_dispatch is then a build-only dry run
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - name: Download Linux wheelhouse
@@ -82,19 +125,21 @@ jobs:
           name: wheelhouse-macos-latest
           path: wheelhouse/macos/latest
 
+      - name: Download sdist
+        uses: actions/download-artifact@v4
+        with:
+          name: wheelhouse-sdist
+          path: wheelhouse/sdist
+
       - name: List wheels (before)
         run: ls -R wheelhouse || true
 
       - name: Gather wheels into a single directory
         run: |
           mkdir -p wheelhouse_all
-          # move/copy any .whl or .tar.gz from the downloaded artifact dirs
-          shopt -s globstar || true
-          for f in wheelhouse/**/**/*.whl wheelhouse/**/*.whl wheelhouse/*.whl; do
-            if [ -f "$f" ]; then
-              cp -v "$f" wheelhouse_all/ || true
-            fi
-          done
+          # copy any .whl or .tar.gz from the downloaded artifact dirs
+          find wheelhouse -type f \( -name '*.whl' -o -name '*.tar.gz' \) \
+            -exec cp -v {} wheelhouse_all/ \;
           echo "Contents of wheelhouse_all:"
           ls -la wheelhouse_all || true
 
@@ -111,5 +156,5 @@ jobs:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
         run: |
-          python -m twine upload wheelhouse_all/* --non-interactive
+          python -m twine upload wheelhouse_all/* --non-interactive --skip-existing
 

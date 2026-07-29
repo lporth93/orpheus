@@ -8,19 +8,35 @@ Orpheus is python package for the calculation of second- third- and fourth-order
 Installation steps, documentation and examples are provided at [orpheus.readthedocs.io](https://orpheus.readthedocs.io/).
 
 ### Installation
- First clone the directory via:
+orpheus is on pypi, and the wheels ship with `healpix_cxx` bundled:
+```shell
+pip install orpheus-npcf
+```
+
+Building from source instead compiles a parallelised C/C++ extension at install
+time. Besides the python requirements you therefore need
+
+* a C compiler with OpenMP support (GCC, or Clang together with `libomp`), and
+* the **healpix_cxx** C++ library, **including its development headers**, the `healpy` python package is not sufficient.
+
+You can install healpix_cxx via
+
+| Platform | Command |
+| --- | --- |
+| conda / mamba (Linux, macOS) | `conda install -c conda-forge healpix_cxx pkg-config` |
+| Debian / Ubuntu | `sudo apt install libhealpix-cxx-dev pkg-config` |
+
+Then clone the repository via
 ```shell
 git clone git@github.com:lporth93/orpheus.git
 ```
 or
 ```shell
-git clone https://github.com/lporth/orpheus.git
+git clone https://github.com/lporth93/orpheus.git
 ```
-Then navigate to the cloned directory
+navigate to the cloned directory and install:
 ```shell
 cd orpheus
-conda env create -f orpheus_env.yaml
-conda activate orpheus_env
 pip install .
 ```
 

@@ -6,18 +6,19 @@ from setuptools import setup, Extension
 from setuptools.command.build_ext import build_ext
 
 # Helper to see if some compiler setup works (small test compile+link)
-def try_compile(code, compiler, cflags=None, lflags=None, include_dirs=None, library_dirs=None):
+def try_compile(code, compiler, cflags=None, lflags=None, include_dirs=None, library_dirs=None,
+                suffix=".c"):
     import tempfile
     cflags = cflags or []
     lflags = lflags or []
     include_dirs = include_dirs or []
     library_dirs = library_dirs or []
 
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".c", delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=suffix, delete=False) as f:
         f.write(code)
         src_name = f.name
-    obj_name = src_name.replace(".c", ".o")
-    exe_name = src_name.replace(".c", "")
+    obj_name = src_name.replace(suffix, ".o")
+    exe_name = src_name.replace(suffix, "")
 
     try:
         compile_cmd = [compiler] + cflags + ["-c", src_name, "-o", obj_name]
@@ -37,16 +38,98 @@ def try_compile(code, compiler, cflags=None, lflags=None, include_dirs=None, lib
             if os.path.exists(fname):
                 os.remove(fname)
 
-# Compile/link flags for healpix_cxx (used by the one C++ TU, healpix_utils.cpp,
-# which exposes query_disc to the C estimators). Prefer pkg-config; fall back to
-# the conventional system layout.
-def healpix_cxx_flags():
+HEALPIX_CXX_MISSING = """
+%(rule)s
+orpheus needs the healpix_cxx C++ library (headers *and* shared library) to
+build orpheus/src/healpix_utils.cpp.
+
+Install healpix_cxx with one of
+
+    conda install -c conda-forge healpix_cxx pkg-config
+    sudo apt install libhealpix-cxx-dev pkg-config
+
+If it lives in a prefix that pkg-config cannot see, point at it explicitly:
+
+    export HEALPIX_CXX_DIR=/path/to/prefix
+
+Flag combinations tried (compiler %(cxx)s):
+%(tried)s
+%(rule)s
+"""
+
+# Candidate compiler/linker flags for healpix_cxx, try a few specific first:
+def healpix_cxx_candidates():
+    def from_prefix(prefix):
+        return (["-I" + os.path.join(prefix, "include", "healpix_cxx")],
+                ["-L" + os.path.join(prefix, "lib"), "-lhealpix_cxx"])
+
+    candidates = []
+    if os.environ.get("HEALPIX_CXX_DIR"):
+        candidates.append(from_prefix(os.environ["HEALPIX_CXX_DIR"]))
     try:
-        cflags = subprocess.check_output(["pkg-config", "--cflags", "healpix_cxx"]).decode().split()
-        libs = subprocess.check_output(["pkg-config", "--libs", "healpix_cxx"]).decode().split()
-        return cflags, libs
+        cflags = subprocess.check_output(["pkg-config", "--cflags", "healpix_cxx"],
+                                         stderr=subprocess.DEVNULL).decode().split()
+        libs = subprocess.check_output(["pkg-config", "--libs", "healpix_cxx"],
+                                       stderr=subprocess.DEVNULL).decode().split()
+        candidates.append((cflags, libs))
     except Exception:
-        return ["-I/usr/include/healpix_cxx"], ["-lhealpix_cxx"]
+        pass
+    if os.environ.get("CONDA_PREFIX"):
+        candidates.append(from_prefix(os.environ["CONDA_PREFIX"]))
+    candidates.append((["-I/usr/include/healpix_cxx"], ["-lhealpix_cxx"]))
+    return candidates
+
+
+CXX_MISSING = """
+%(rule)s
+orpheus needs a C++ compiler to build orpheus/src/healpix_utils.cpp. None of the
+following could compile a trivial C++ program:
+
+%(tried)s
+
+%(rule)s
+"""
+
+# Find the C++ driver needed for for healpix_utils.cpp
+def detect_cxx(cc_path=None):
+    candidates = []
+    if os.environ.get("CXX"):
+        candidates.append(os.environ["CXX"])
+    if cc_path:
+        name = os.path.basename(cc_path)
+        for c_name, cxx_name in (("gcc", "g++"), ("clang", "clang++"), ("icc", "icpc")):
+            if name.startswith(c_name):
+                candidates.append(os.path.join(os.path.dirname(cc_path),
+                                               name.replace(c_name, cxx_name, 1)))
+    candidates += ["c++", "g++", "clang++"]
+
+    probe = "#include <vector>\nint main(){ std::vector<int> v(1); return (int)v.size()-1; }\n"
+    tried = []
+    for cxx in candidates:
+        path = shutil.which(cxx)
+        if path and path not in tried:
+            if try_compile(probe, path, cflags=["-std=c++14"], suffix=".cpp"):
+                return path
+            tried.append(path)
+    raise RuntimeError(CXX_MISSING % {"rule": "=" * 78,
+                                      "tried": "\n".join("    " + t for t in tried) or "    (none found)"})
+
+
+# Pick the first candidate that compiles and links against healpix_cxx.
+def healpix_cxx_flags(cxx):
+    probe = ('#include "healpix_base.h"\n'
+             '#include "rangeset.h"\n'
+             '#include "pointing.h"\n'
+             '#include "vec3.h"\n'
+             '#include "datatypes.h"\n'
+             'int main(){ T_Healpix_Base<int64> base(64, NEST, SET_NSIDE); return (int)base.Nside(); }\n')
+    tried = []
+    for cflags, libs in healpix_cxx_candidates():
+        if try_compile(probe, cxx, cflags=["-std=c++14"] + cflags, lflags=libs, suffix=".cpp"):
+            return cflags, libs
+        tried.append("    " + " ".join(cflags + libs))
+    raise RuntimeError(HEALPIX_CXX_MISSING % {"rule": "=" * 78, "cxx": cxx,
+                                              "tried": "\n".join(tried)})
 
 
 # Find first available compiler
@@ -117,7 +200,7 @@ class BuildExtWithDetect(build_ext):
                 except Exception:
                     pass
 
-        # Determine OpenMP support and appropriate flags
+        # Check whether the selected compiler supports OpenMP.
         omp_cflags = ["-fopenmp", "-O3", "-ffast-math", "-std=c99", "-fPIC"]
         omp_lflags = ["-shared", "-fopenmp", "-lm"]
         use_openmp = False
@@ -165,7 +248,7 @@ class BuildExtWithDetect(build_ext):
         if not use_openmp:
             print("WARNING: OpenMP support not detected for the selected compiler.")
 
-        # Apply compile/link args per-extension
+        # Configure the build flags for each extension.
         for ext in self.extensions:
             if use_openmp:
                 ext.extra_compile_args = omp_cflags
@@ -182,18 +265,29 @@ class BuildExtWithDetect(build_ext):
                 ext.extra_compile_args = ["-O3", "-ffast-math", "-std=c99", "-fPIC"]
                 ext.extra_link_args = ["-shared", "-lm"]
 
-        # C++ TU (healpix_utils.cpp): the global flags above are tuned for C
-        # (notably -std=c99, invalid for C++). Patch the compiler so .cpp sources
-        # build as C++ with the healpix_cxx include path, and link the C++ runtime
-        # + healpix_cxx into the shared library. C sources are untouched.
-        cxx_cflags, cxx_libs = healpix_cxx_flags()
+        # Most files are C, but healpix_utils.cpp needs C++ flags instead.
+        # Replace the C standard flag for C++ sources and add the healpix_cxx
+        # include/library flags without affecting the C files.
+        cxx_path = detect_cxx(cc_path)
+        cxx_cflags, cxx_libs = healpix_cxx_flags(cxx_path)
+        # Debian's healpix_cxx.pc carries -fopenmp in Cflags, which Apple clang
+        # rejects; drop it where the OpenMP probe already needed -Xpreprocessor.
+        if applied_alternative_clang_flags:
+            cxx_cflags = [a for a in cxx_cflags if a != "-fopenmp"]
         orig_compile = self.compiler._compile
 
+        # The C++ sources are compiled with the C++ driver rather than with the
+        # compiler_so set above, which may be a gcc without a C++ frontend.
         def _compile_per_lang(obj, src, ext, cc_args, extra_postargs, pp_opts):
             if os.path.splitext(src)[1] in (".cpp", ".cc", ".cxx"):
                 postargs = [a for a in extra_postargs if a != "-std=c99"]
                 postargs = postargs + ["-std=c++14"] + cxx_cflags
-                return orig_compile(obj, src, ext, cc_args, postargs, pp_opts)
+                saved_cc = self.compiler.compiler_so
+                self.compiler.compiler_so = [cxx_path] + list(saved_cc[1:])
+                try:
+                    return orig_compile(obj, src, ext, cc_args, postargs, pp_opts)
+                finally:
+                    self.compiler.compiler_so = saved_cc
             return orig_compile(obj, src, ext, cc_args, extra_postargs, pp_opts)
 
         self.compiler._compile = _compile_per_lang
@@ -204,22 +298,27 @@ class BuildExtWithDetect(build_ext):
 
 
 # All external modules from orpheus
+clib_sources = [
+    "orpheus/src/utils.c",
+    "orpheus/src/assign.c",
+    "orpheus/src/healpix_utils.cpp",
+    "orpheus/src/spatialhash.c",
+    "orpheus/src/combinatorics.c",
+    "orpheus/src/directestimator.c",
+    "orpheus/src/corrfunc_second.c",
+    "orpheus/src/corrfunc_third.c",
+    "orpheus/src/corrfunc_third_derived.c",
+    "orpheus/src/corrfunc_fourth.c",
+    "orpheus/src/corrfunc_fourth_derived.c",]
+
+# The covariance kernels are not part of the distribution
+if os.path.exists("orpheus/src/cov_postq.c"):
+    clib_sources.append("orpheus/src/cov_postq.c")
+
 ext_modules = [
     Extension(
         "orpheus.orpheus_clib",
-        sources=[
-            "orpheus/src/utils.c",
-            "orpheus/src/assign.c",
-            "orpheus/src/healpix_utils.cpp",
-            "orpheus/src/spatialhash.c",
-            "orpheus/src/combinatorics.c",
-            "orpheus/src/directestimator.c",
-            "orpheus/src/corrfunc_second.c",
-            "orpheus/src/corrfunc_third.c",
-            "orpheus/src/corrfunc_third_derived.c",
-            "orpheus/src/corrfunc_fourth.c",
-            "orpheus/src/corrfunc_fourth_derived.c",
-            "orpheus/src/cov_postq.c",],
+        sources=clib_sources,
         include_dirs=["orpheus/src"],
     ),
 ]
@@ -231,21 +330,20 @@ with open(os.path.join(thisfile, "README.md"), encoding="utf-8") as f:
 
 setup(
     name="orpheus-npcf",
-    version="0.2.2",
+    version="0.3.0",
     description="Compute N-point correlation functions of spin-s fields.",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    license="MIT",
+    license="GPL-3.0-or-later",
     url="https://github.com/lporth93/orpheus",
     author="Lucas Porth",
     packages=["orpheus"],
-    python_requires=">=3.9",
+    python_requires=">=3.10",
     install_requires=[
         "astropy>=6",
-        "healpy>=1.17",
-        "coverage>=7.6.1",
-        "numba>=0.58,<=0.62.1",
-        "numpy>=1.22,<1.27",
+        "healpy>=1.18",
+        "numba>=0.61,<=0.62.1",
+        "numpy>=1.24",
         "scipy>=1.15",
         "scikit-learn",],
     ext_modules=ext_modules,
@@ -255,6 +353,6 @@ setup(
     classifiers=[
         "Development Status :: 4 - Beta",
         "Programming Language :: Python :: 3",
-        "License :: OSI Approved :: MIT License",
+        "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     ],
 )

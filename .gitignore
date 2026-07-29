@@ -6,6 +6,11 @@ data/
 Tutorials_private/
 scripts/
 
+# Covariance code, kept local and out of the distribution
+orpheus/covariance.py
+orpheus/covariance_old.py
+orpheus/src/cov_postq.c
+
 #################################################################################
 ############################ GENERIC GITIGNORE ##################################
 ##(stolen from https://github.com/github/gitignore/blob/main/Python.gitignore) ## 

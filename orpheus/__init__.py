@@ -1,5 +1,9 @@
 from .catalog import *
-from .covariance import *
+# The covariance module is not part of the distribution
+try:
+    from .covariance import *
+except ModuleNotFoundError:
+    pass
 from .npcf_base import *
 from .npcf_second import *
 from .npcf_third import *
