@@ -1,8 +1,17 @@
 // Helpers for computation of tomographic xipm covariance
 
+#include <stdio.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
+#include "utils.h"
+#include "cov_postq.h"
+
+#define M_PI      3.14159265358979323846
 
 static inline double interp1d_eval(
     const double *x, const double *y, int n,
@@ -133,7 +142,11 @@ void postq_accumulate_tomo(
                               + sin4v2[iv2] * sin4vb[idx]);
         }
 
-    /* Main callback loop */
+    /* Main callback loop.  The callback-outer order matters: wid is then
+       invariant over the whole (ir1, ir2, iv1, iv2) nest, so the compiler
+       unswitches the weight branch and vectorises the inner loop.  Hoisting
+       the weight into per-tile tables with the tile loops outside measures
+       2x slower, so the redundant trig is left in place deliberately. */
     for (int k = 0; k < n_cb; k++) {
         int wid = w_ids[k];
         const double *xia = xi_a_tab + (long)xi_a_idx[k] * n_a;
@@ -195,16 +208,15 @@ void postq_accumulate_tomo(
 }
 
 
-/* ================================================================== */
-/* Continuous q-term (triplet) for one xi function.                   */
-/*                                                                     */
-/* Computes the bin-averaged integral:                                 */
-/*   sum_k weight(T1,T2,phi_k,r_jk) * xi(r_jk)                      */
-/* on a fine (alpha*n_r) grid, then sums sub-bins back to (n_r,n_r).  */
-/*                                                                     */
-/* w_type: 0 = qpp (weight=1), 1 = qmm (cos(4*PHI)),                */
-/*         2 = qpm (cos(4*(PHI - atan2(jk_y, jk_x))))               */
-/* ================================================================== */
+/////////////////////////////////
+// Continuous-limit estimators //
+/////////////////////////////////
+
+// Continuous q-term (triplet) for one xi function.  Computes the bin-averaged
+// integral sum_k weight(T1,T2,phi_k,r_jk) * xi(r_jk) on a fine (alpha*n_r)
+// grid, then sums sub-bins back to (n_r, n_r).
+// w_type: 0 = qpp (weight=1), 1 = qmm (cos(4*PHI)),
+//         2 = qpm (cos(4*(PHI - atan2(jk_y, jk_x))))
 void continuous_q_single(
     int n_r, int alpha,
     const double *fine_centers,
@@ -273,9 +285,7 @@ void continuous_q_single(
 }
 
 
-////////////////////////////////////////////////////////////////////
-// Build q-terms for all tomo combos, in continuous approximation // 
-// /////////////////////////////////////////////////////////////////
+// Build q-terms for all tomo combos, in continuous approximation
 void continuous_q_tomo(
     int n_r, int alpha,
     const double *fine_centers, const double *fine_weights,
@@ -293,9 +303,12 @@ void continuous_q_tomo(
     const double *call_factor,
     int n_out,
     double *results,
-    int nthreads)
+    int nthreads,
+    int verbose)
 {
     long block_size = (long)n_r * n_r;
+    reset_progress();
+    int ndone = 0;
 
     #pragma omp parallel for schedule(dynamic) num_threads(nthreads)
     for (int k = 0; k < n_calls; k++) {
@@ -317,14 +330,17 @@ void continuous_q_tomo(
                 dst[j] += fac * block[j];
         }
         free(block);
+        #pragma omp atomic
+        ndone += 1;
+        print_progress(ndone, n_calls, verbose);
     }
+    if (verbose > 0) { printf("\n"); fflush(stdout); }
 }
 
 
-////////////////////////////////////////////////////////////////////
-// Build r-terms for all tomo combos, in continuous approximation // 
-// /////////////////////////////////////////////////////////////////
-// We parallelise over (combo, wick_pairing)
+// Build r-terms for all tomo combos, in continuous approximation.  The side
+// integrals are shared across work units; the outer products parallelise over
+// (combo, wick_pairing).
 void continuous_rterms_tomo(
     int n_r,
     const double *theta_centers,
@@ -349,19 +365,165 @@ void continuous_rterms_tomo(
     const int *work_out_idx,
     int n_out,
     double *results,
-    int nthreads)
+    int nthreads,
+    int verbose)
 {
     long bs = (long)n_r * n_r;
-    double inv_2piA = 1. / (2. * 3.14159265358979323846 * area);
-    double inv_piA_times2 = 2. / (3.14159265358979323846 * area);
+    double inv_2piA = 1. / (2. * M_PI * area);
+    double inv_piA_times2 = 2. / (M_PI * area);
 
+    // Distinct xi table pairs per side
+    /* Every output is an outer product Ia[.] (x) Ib[.], and each side depends
+       only on its own (xi_p, xi_m) table pair.  The same pair recurs across
+       O(n_bp) work units, so the pairs are collected here and each side
+       integral is evaluated exactly once below. */
+    int *a_p = (int *)malloc((size_t)n_work * sizeof(int));
+    int *a_m = (int *)malloc((size_t)n_work * sizeof(int));
+    int *b_p = (int *)malloc((size_t)n_work * sizeof(int));
+    int *b_m = (int *)malloc((size_t)n_work * sizeof(int));
+    int *a_of = (int *)malloc((size_t)n_work * sizeof(int));
+    int *b_of = (int *)malloc((size_t)n_work * sizeof(int));
+    int n_a = 0, n_b = 0;
+    for (int wk = 0; wk < n_work; wk++) {
+        int p = work_xi_a_p[wk], m = work_xi_a_m[wk], f = -1;
+        for (int u = 0; u < n_a; u++)
+            if (a_p[u] == p && a_m[u] == m) { f = u; break; }
+        if (f < 0) { f = n_a; a_p[n_a] = p; a_m[n_a] = m; n_a++; }
+        a_of[wk] = f;
+
+        p = work_xi_b_p[wk]; m = work_xi_b_m[wk]; f = -1;
+        for (int u = 0; u < n_b; u++)
+            if (b_p[u] == p && b_m[u] == m) { f = u; break; }
+        if (f < 0) { f = n_b; b_p[n_b] = p; b_m[n_b] = m; n_b++; }
+        b_of[wk] = f;
+    }
+
+    // Side integrals, one pass over (phi, distinct table pair)
+    /* Layout: I[(kp * n_side + u) * n_r + ir]. */
+    long a_stride = (long)n_a * n_r, b_stride = (long)n_b * n_r;
+    long a_len = (long)n_phi * a_stride, b_len = (long)n_phi * b_stride;
+    double *Ia_rp0   = (double *)malloc(a_len * sizeof(double));
+    double *Ia_rp1_c = (double *)malloc(a_len * sizeof(double));
+    double *Ia_rp1_s = (double *)malloc(a_len * sizeof(double));
+    double *Ia_rm0   = (double *)malloc(a_len * sizeof(double));
+    double *Ia_rm1   = (double *)malloc(a_len * sizeof(double));
+    double *Ia_rpm   = (double *)malloc(a_len * sizeof(double));
+    double *Ib_rp0   = (double *)malloc(b_len * sizeof(double));
+    double *Ib_rp1_c = (double *)malloc(b_len * sizeof(double));
+    double *Ib_rp1_s = (double *)malloc(b_len * sizeof(double));
+    double *Ib_rm0   = (double *)malloc(b_len * sizeof(double));
+    double *Ib_rm1   = (double *)malloc(b_len * sizeof(double));
+    double *Ib_rpm   = (double *)malloc(b_len * sizeof(double));
+
+    if (verbose > 0) printf("  side integrals ");
+    reset_progress();
+    int nsidedone = 0;
+    int sidetot = n_phi * (n_a + n_b);
+
+    #pragma omp parallel for schedule(dynamic) collapse(2) num_threads(nthreads)
+    for (int kp = 0; kp < n_phi; kp++) {
+        for (int u = 0; u < n_a; u++) {
+            double phi = phi_grid[kp];
+            const double *xip = xi_y_tables + (long)a_p[u] * xi_n;
+            const double *xim = xi_y_tables + (long)a_m[u] * xi_n;
+            long off = ((long)kp * n_a + u) * n_r;
+
+            for (int ir = 0; ir < n_r; ir++) {
+                double T = theta_centers[ir];
+
+                // rp0: V in [0, pi]
+                double s_rp0 = 0.;
+                for (int iv = 0; iv < n_vh; iv++) {
+                    double abs_a = sqrt(phi*phi + T*T
+                                        - 2.*phi*T*cos(v_half[iv]));
+                    s_rp0 += interp1d_eval(xi_x, xip, xi_n, xi_logx0,
+                                           xi_inv_dlogx, abs_a) * v_half_w[iv];
+                }
+                Ia_rp0[off + ir] = s_rp0;
+
+                // rp1, rm0, rm1, rpm: V in [0, 2*pi]
+                double s_c = 0., s_s = 0., s_rm0 = 0., s_rm1 = 0., s_rpm = 0.;
+                for (int iv = 0; iv < n_v; iv++) {
+                    double V = v_grid[iv];
+                    double pax = phi - T*cos(V), pay = -T*sin(V);
+                    double abs_a = hypot(pax, pay);
+                    double va = atan2(pay, pax);
+                    double xim_val = interp1d_eval(xi_x, xim, xi_n,
+                                                   xi_logx0, xi_inv_dlogx, abs_a);
+                    double xip_val = interp1d_eval(xi_x, xip, xi_n,
+                                                   xi_logx0, xi_inv_dlogx, abs_a);
+                    s_c   += xim_val * cos(4.*va) * v_w[iv];
+                    s_s   += xim_val * sin(4.*va) * v_w[iv];
+                    s_rm0 += xim_val * cos(4.*(V - va)) * v_w[iv];
+                    s_rm1 += xip_val * cos(4.*V) * v_w[iv];
+                    s_rpm += xip_val * v_w[iv];
+                }
+                Ia_rp1_c[off + ir] = s_c;
+                Ia_rp1_s[off + ir] = s_s;
+                Ia_rm0[off + ir]   = s_rm0;
+                Ia_rm1[off + ir]   = s_rm1;
+                Ia_rpm[off + ir]   = s_rpm;
+            }
+            #pragma omp atomic
+            nsidedone += 1;
+            print_progress(nsidedone, sidetot, verbose);
+        }
+    }
+
+    #pragma omp parallel for schedule(dynamic) collapse(2) num_threads(nthreads)
+    for (int kp = 0; kp < n_phi; kp++) {
+        for (int u = 0; u < n_b; u++) {
+            double phi = phi_grid[kp];
+            const double *xip = xi_y_tables + (long)b_p[u] * xi_n;
+            const double *xim = xi_y_tables + (long)b_m[u] * xi_n;
+            long off = ((long)kp * n_b + u) * n_r;
+
+            for (int ir = 0; ir < n_r; ir++) {
+                double T = theta_centers[ir];
+
+                double s_rp0 = 0.;
+                for (int iv = 0; iv < n_vh; iv++) {
+                    double abs_b = sqrt(phi*phi + T*T
+                                        + 2.*phi*T*cos(v_half[iv]));
+                    s_rp0 += interp1d_eval(xi_x, xip, xi_n, xi_logx0,
+                                           xi_inv_dlogx, abs_b) * v_half_w[iv];
+                }
+                Ib_rp0[off + ir] = s_rp0;
+
+                double s_c = 0., s_s = 0., s_rm0 = 0., s_rm1 = 0., s_rpm = 0.;
+                for (int iv = 0; iv < n_v; iv++) {
+                    double V = v_grid[iv];
+                    double pbx = phi + T*cos(V), pby = T*sin(V);
+                    double abs_b = hypot(pbx, pby);
+                    double vb = atan2(pby, pbx);
+                    double xim_val = interp1d_eval(xi_x, xim, xi_n,
+                                                   xi_logx0, xi_inv_dlogx, abs_b);
+                    double xip_val = interp1d_eval(xi_x, xip, xi_n,
+                                                   xi_logx0, xi_inv_dlogx, abs_b);
+                    s_c   += xim_val * cos(4.*vb) * v_w[iv];
+                    s_s   += xim_val * sin(4.*vb) * v_w[iv];
+                    s_rm0 += xim_val * cos(4.*(V - vb)) * v_w[iv];
+                    s_rm1 += xip_val * cos(4.*V) * v_w[iv];
+                    s_rpm += 2.*xim_val * cos(4.*(V - vb)) * v_w[iv];
+                }
+                Ib_rp1_c[off + ir] = s_c;
+                Ib_rp1_s[off + ir] = s_s;
+                Ib_rm0[off + ir]   = s_rm0;
+                Ib_rm1[off + ir]   = s_rm1;
+                Ib_rpm[off + ir]   = s_rpm;
+            }
+            #pragma omp atomic
+            nsidedone += 1;
+            print_progress(nsidedone, sidetot, verbose);
+        }
+    }
+    if (verbose > 0) { printf("\n  outer products "); fflush(stdout); }
+    reset_progress();
+    int nworkdone = 0;
+
+    // Outer products
     #pragma omp parallel for schedule(dynamic) num_threads(nthreads)
     for (int wk = 0; wk < n_work; wk++) {
-        const double *xip_a = xi_y_tables + (long)work_xi_a_p[wk] * xi_n;
-        const double *xip_b = xi_y_tables + (long)work_xi_b_p[wk] * xi_n;
-        const double *xim_a = xi_y_tables + (long)work_xi_a_m[wk] * xi_n;
-        const double *xim_b = xi_y_tables + (long)work_xi_b_m[wk] * xi_n;
-
         double *rp0 = (double *)calloc(bs, sizeof(double));
         double *rp1 = (double *)calloc(bs, sizeof(double));
         double *rm0 = (double *)calloc(bs, sizeof(double));
@@ -369,105 +531,21 @@ void continuous_rterms_tomo(
         double *rpm_b = (double *)calloc(bs, sizeof(double));
 
         for (int kp = 0; kp < n_phi; kp++) {
-            double phi = phi_grid[kp];
-            double pw = phi_w[kp];
+            double pwphi = phi_w[kp] * phi_grid[kp];
+            long ao = ((long)kp * n_a + a_of[wk]) * n_r;
+            long bo = ((long)kp * n_b + b_of[wk]) * n_r;
 
-            // Do rp0: V in [0, pi]
-            for (int ir1 = 0; ir1 < n_r; ir1++) {
-                double Ia = 0.;
-                for (int iv = 0; iv < n_vh; iv++) {
-                    double cosV = cos(v_half[iv]);
-                    double abs_a = sqrt(phi*phi + theta_centers[ir1]*theta_centers[ir1]
-                                        - 2.*phi*theta_centers[ir1]*cosV);
-                    Ia += interp1d_eval(xi_x, xip_a, xi_n, xi_logx0, xi_inv_dlogx, abs_a)
-                          * v_half_w[iv];
-                }
-                for (int ir2 = 0; ir2 < n_r; ir2++) {
-                    double Ib = 0.;
-                    for (int iv = 0; iv < n_vh; iv++) {
-                        double cosV = cos(v_half[iv]);
-                        double abs_b = sqrt(phi*phi + theta_centers[ir2]*theta_centers[ir2]
-                                            + 2.*phi*theta_centers[ir2]*cosV);
-                        Ib += interp1d_eval(xi_x, xip_b, xi_n, xi_logx0, xi_inv_dlogx, abs_b)
-                              * v_half_w[iv];
-                    }
-                    rp0[ir1*n_r + ir2] += pw * phi * Ia * Ib;
-                }
-            }
-
-            // Do rp1, rm0, rm1, rpm: V in [0, 2*pi]
-            double *Ia_rp1_c = (double *)calloc(n_r, sizeof(double));
-            double *Ia_rp1_s = (double *)calloc(n_r, sizeof(double));
-            double *Ia_rm0   = (double *)calloc(n_r, sizeof(double));
-            double *Ia_rm1   = (double *)calloc(n_r, sizeof(double));
-            double *Ia_rpm   = (double *)calloc(n_r, sizeof(double));
-
-            for (int ir = 0; ir < n_r; ir++) {
-                double T = theta_centers[ir];
-                for (int iv = 0; iv < n_v; iv++) {
-                    double V = v_grid[iv];
-                    double cV = cos(V), sV = sin(V);
-                    double pax = phi - T*cV, pay = -T*sV;
-                    double abs_a = hypot(pax, pay);
-                    double va = atan2(pay, pax);
-
-                    double xim_val = interp1d_eval(xi_x, xim_a, xi_n,
-                                                   xi_logx0, xi_inv_dlogx, abs_a);
-                    double xip_val = interp1d_eval(xi_x, xip_a, xi_n,
-                                                   xi_logx0, xi_inv_dlogx, abs_a);
-
-                    double c4a = cos(4.*va), s4a = sin(4.*va);
-                    Ia_rp1_c[ir] += xim_val * c4a * v_w[iv];
-                    Ia_rp1_s[ir] += xim_val * s4a * v_w[iv];
-                    Ia_rm0[ir]   += xim_val * cos(4.*(V - va)) * v_w[iv];
-                    Ia_rm1[ir]   += xip_val * cos(4.*V) * v_w[iv];
-                    Ia_rpm[ir]   += xip_val * v_w[iv];
-                }
-            }
-
-            double *Ib_rp1_c = (double *)calloc(n_r, sizeof(double));
-            double *Ib_rp1_s = (double *)calloc(n_r, sizeof(double));
-            double *Ib_rm0   = (double *)calloc(n_r, sizeof(double));
-            double *Ib_rm1   = (double *)calloc(n_r, sizeof(double));
-            double *Ib_rpm   = (double *)calloc(n_r, sizeof(double));
-
-            for (int ir = 0; ir < n_r; ir++) {
-                double T = theta_centers[ir];
-                for (int iv = 0; iv < n_v; iv++) {
-                    double V = v_grid[iv];
-                    double cV = cos(V), sV = sin(V);
-                    double pbx = phi + T*cV, pby = T*sV;
-                    double abs_b = hypot(pbx, pby);
-                    double vb = atan2(pby, pbx);
-
-                    double xim_val = interp1d_eval(xi_x, xim_b, xi_n,
-                                                   xi_logx0, xi_inv_dlogx, abs_b);
-                    double xip_val = interp1d_eval(xi_x, xip_b, xi_n,
-                                                   xi_logx0, xi_inv_dlogx, abs_b);
-
-                    double c4b = cos(4.*vb), s4b = sin(4.*vb);
-                    Ib_rp1_c[ir] += xim_val * c4b * v_w[iv];
-                    Ib_rp1_s[ir] += xim_val * s4b * v_w[iv];
-                    Ib_rm0[ir]   += xim_val * cos(4.*(V - vb)) * v_w[iv];
-                    Ib_rm1[ir]   += xip_val * cos(4.*V) * v_w[iv];
-                    Ib_rpm[ir]   += 2.*xim_val * cos(4.*(V - vb)) * v_w[iv];
-                }
-            }
-
-            // Form outer products and accumulate
             for (int i1 = 0; i1 < n_r; i1++) {
                 for (int i2 = 0; i2 < n_r; i2++) {
-                    long idx = i1*n_r + i2;
-                    rp1[idx]  += pw * phi * (Ia_rp1_c[i1]*Ib_rp1_c[i2]
-                                           + Ia_rp1_s[i1]*Ib_rp1_s[i2]);
-                    rm0[idx]  += pw * phi * Ia_rm0[i1] * Ib_rm0[i2];
-                    rm1[idx]  += pw * phi * Ia_rm1[i1] * Ib_rm1[i2];
-                    rpm_b[idx] += pw * phi * Ia_rpm[i1] * Ib_rpm[i2];
+                    long idx = (long)i1*n_r + i2;
+                    rp0[idx]   += pwphi * Ia_rp0[ao+i1] * Ib_rp0[bo+i2];
+                    rp1[idx]   += pwphi * (Ia_rp1_c[ao+i1]*Ib_rp1_c[bo+i2]
+                                         + Ia_rp1_s[ao+i1]*Ib_rp1_s[bo+i2]);
+                    rm0[idx]   += pwphi * Ia_rm0[ao+i1] * Ib_rm0[bo+i2];
+                    rm1[idx]   += pwphi * Ia_rm1[ao+i1] * Ib_rm1[bo+i2];
+                    rpm_b[idx] += pwphi * Ia_rpm[ao+i1] * Ib_rpm[bo+i2];
                 }
             }
-
-            free(Ia_rp1_c); free(Ia_rp1_s); free(Ia_rm0); free(Ia_rm1); free(Ia_rpm);
-            free(Ib_rp1_c); free(Ib_rp1_s); free(Ib_rm0); free(Ib_rm1); free(Ib_rpm);
         }
 
         // Apply prefactors and accumulate into output
@@ -488,7 +566,17 @@ void continuous_rterms_tomo(
         }
 
         free(rp0); free(rp1); free(rm0); free(rm1); free(rpm_b);
+        #pragma omp atomic
+        nworkdone += 1;
+        print_progress(nworkdone, n_work, verbose);
     }
+    if (verbose > 0) { printf("\n"); fflush(stdout); }
+
+    free(a_p); free(a_m); free(b_p); free(b_m); free(a_of); free(b_of);
+    free(Ia_rp0); free(Ia_rp1_c); free(Ia_rp1_s);
+    free(Ia_rm0); free(Ia_rm1); free(Ia_rpm);
+    free(Ib_rp0); free(Ib_rp1_c); free(Ib_rp1_s);
+    free(Ib_rm0); free(Ib_rm1); free(Ib_rpm);
 }
 
 
@@ -505,7 +593,8 @@ void triplet_term_reduce(
     double xi_logx0, double xi_inv_dlogx,
     const double *xi_y,
     double *out,
-    int nthreads)
+    int nthreads,
+    int verbose)
 {
     double *cosphi  = (double *)malloc((size_t)nphi * sizeof(double));
     double *sinphi  = (double *)malloc((size_t)nphi * sizeof(double));
@@ -515,6 +604,8 @@ void triplet_term_reduce(
         sinphi[k]  = sin(phic[k]);
         cos4phi[k] = cos(4. * phic[k]);
     }
+    reset_progress();
+    int ndone = 0;
 
     #pragma omp parallel for schedule(dynamic) num_threads(nthreads)
     for (int i = 0; i < nr; i++) {
@@ -544,7 +635,11 @@ void triplet_term_reduce(
             }
             out[(size_t)i * nr + j] = acc;
         }
+        #pragma omp atomic
+        ndone += 1;
+        print_progress(ndone, nr, verbose);
     }
+    if (verbose > 0) { printf("\n"); fflush(stdout); }
 
     free(cosphi); free(sinphi); free(cos4phi);
 }

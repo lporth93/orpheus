@@ -21,7 +21,7 @@ Each is split into:
 
 The `method_*` switches choose between the analytic (Poisson, ideal-counts)
 prediction and the discrete (mock-based) realisation, independently for
-each multiplet.  Mock counts are obtained from orpheus via
+each multiplet. Mock counts are obtained from orpheus via
 ``computeDiscrete``.
 
 Quadruplet density convention (matching orpheus' 4PCF binning):
@@ -37,40 +37,40 @@ along +x).
 
 Binning conventions
 -------------------
-* ``theta_centers`` / ``theta_edges`` : the 2PCF radial bins.  These define
+* ``theta_centers`` / ``theta_edges`` : the 2PCF radial bins. These define
   the size of the output covariance matrix and are used for the pair counts
-  and the quadruplet integrator.  NOT used as the q-tensor grid (see below).
+  and the quadruplet integrator. NOT used as the q-tensor grid (see below).
 
 * ``phi_centers`` / ``phi_edges`` : angular bins for the triplet and
-  quadruplet tensors.  Passed independently because ξ_± carry no angular
+  quadruplet tensors. Passed independently because ξ_± carry no angular
   bin information.
 
 * ``q_theta_centers`` / ``q_theta_edges`` : radial grid on which the
-  quadruplet density q is sampled (orpheus 4PCF binning).  This typically
+  quadruplet density q is sampled (orpheus 4PCF binning). This typically
   extends well beyond the ξ_± range, e.g. from ~0.25' to the survey
-  diameter.  Defaults to the 2PCF grid for backward compatibility, but
+  diameter. Defaults to the 2PCF grid for backward compatibility, but
   should always be set explicitly when using discrete q tensors.
 
 * Triplet oversampling (``triplet_oversample`` = α ≥ 1): each coarse
   2PCF radial bin is subdivided into α equal sub-bins for the triplet
-  computation.  Both the analytic triplet tensor and the discrete triplet
+  computation. Both the analytic triplet tensor and the discrete triplet
   tensor (loaded/measured from orpheus) live on the fine grid
-  (n_r * α, n_r * α, n_phi).  Sub-bin results are summed back to the
+  (n_r * α, n_r * α, n_phi). Sub-bin results are summed back to the
   coarse (n_r, n_r) covariance grid before dividing by Np².
 
 All angles in radians; all separations in arcmin.
 """
 
 import ctypes
+import gc
+import glob
+import math
 import os
 import sys
 import time
 import warnings
 from pathlib import Path
-import gc
-import glob
 
-import math
 import numpy as np
 from scipy.interpolate import RegularGridInterpolator, interp1d
 from scipy.ndimage import gaussian_filter, uniform_filter
@@ -98,6 +98,15 @@ def _fmt_hms(seconds):
     return f"{h:d}:{m:02d}:{s:02d}" if h else f"{m:d}:{s:02d}"
 
 
+def _print_phi_eta(done, total, t0):
+    """One-line progress for the phi loop of the quadruplet integral."""
+    el = time.perf_counter() - t0
+    eta = el / done * (total - done) if done else float('inf')
+    sys.stdout.write(f'\r phi {done}/{total} elapsed {_fmt_hms(el)} '
+                     f'eta {_fmt_hms(eta)} ')
+    sys.stdout.flush()
+
+
 def _trapz_weights(x):
     """Trapezoidal weights for a 1D non-uniform open-interval integral."""
     x = np.asarray(x, dtype=float)
@@ -117,7 +126,7 @@ def _auto_reduce_tiles(nr_block_base, v2_block_base, n_v2):
 
     Reduces ``nr_block`` by a factor ``f`` (target ``f=4``) and scales
     ``v2_block`` by ``f²`` to keep ``nr_block² · v2_block`` (peak memory)
-    constant.  ``f`` is first capped by how much ``v2_block`` can grow
+    constant. ``f`` is first capped by how much ``v2_block`` can grow
     before hitting ``n_v2`` (the total number of φ₂ integration points),
     then applied.
 
@@ -125,10 +134,10 @@ def _auto_reduce_tiles(nr_block_base, v2_block_base, n_v2):
     :meth:`GGCovarianceNoTomo._subbin_dry_run`, which must agree on the
     tile size the banded quadruplet integrator will actually use.
     """
-    f_max = max(1, n_v2 // v2_block_base)   # largest f before v2 cap
-    f = min(4, f_max)                    # target ÷4, bounded
+    f_max = max(1, n_v2 // v2_block_base) # largest f before v2 cap
+    f = min(4, f_max) # target ÷4, bounded
     nrb = max(4, nr_block_base // f)
-    f_act = max(1, nr_block_base // nrb)     # actual factor (int div)
+    f_act = max(1, nr_block_base // nrb) # actual factor (int div)
     return nrb, min(v2_block_base * f_act * f_act, n_v2)
 
 
@@ -137,7 +146,7 @@ def _build_q_func(q_array, r_centers, phi_centers,
     """Wrap a 5-D quadruplet-density array into a callable q(t1,t2,t3,a12,a13)."""
     # Interpolation: linear inside the radial grid; nearest-neighbour below r_min
     # (so compact configurations don't silently evaluate to zero); hard zero above
-    # r_max.  Both interpolators alias the q_array buffer (no copy).
+    # r_max. Both interpolators alias the q_array buffer (no copy).
     grid = (r_centers, r_centers, r_centers, phi_centers, phi_centers)
     lin_interp = RegularGridInterpolator(
         grid, q_array, method=method, bounds_error=False, fill_value=None)
@@ -206,67 +215,71 @@ if _HAVE_NUMBA:
             ## Get indices
             # radial indices (log-uniform) --> i2/i3 = floor(log(t/r0)/dlogr)
             i2 = int((math.log(t2) - logr0) * inv_dlogr)
-            if i2 < 0:        i2 = 0
+            if i2 < 0: i2 = 0
             elif i2 > nr - 2: i2 = nr - 2
             # correct any boundary rounding so r_centers[i2] <= t2 < r_centers[i2+1]
-            if i2 < nr - 2 and r_centers[i2 + 1] <= t2:   i2 += 1
-            elif i2 > 0      and r_centers[i2]     >  t2:  i2 -= 1
+            if i2 < nr - 2 and r_centers[i2 + 1] <= t2: i2 += 1
+            elif i2 > 0 and r_centers[i2] > t2: i2 -= 1
 
             i3 = int((math.log(t3) - logr0) * inv_dlogr)
-            if i3 < 0:        i3 = 0
+            if i3 < 0: i3 = 0
             elif i3 > nr - 2: i3 = nr - 2
-            if i3 < nr - 2 and r_centers[i3 + 1] <= t3:   i3 += 1
-            elif i3 > 0      and r_centers[i3]     >  t3:  i3 -= 1
+            if i3 < nr - 2 and r_centers[i3 + 1] <= t3: i3 += 1
+            elif i3 > 0 and r_centers[i3] > t3: i3 -= 1
 
-            # angular indices (uniform) --Y i = floor((a-phi0)/dphi)
+            # angular indices (uniform) --> i = floor((a-phi0)/dphi)
             i12 = int((a12 - phi0) * inv_dphi)
-            if i12 < 0:         i12 = 0
+            if i12 < 0: i12 = 0
             elif i12 > np_ - 2: i12 = np_ - 2
-            if i12 < np_ - 2 and phi_centers[i12 + 1] <= a12:  i12 += 1
-            elif i12 > 0      and phi_centers[i12]     >  a12: i12 -= 1
+            if i12 < np_ - 2 and phi_centers[i12 + 1] <= a12: i12 += 1
+            elif i12 > 0 and phi_centers[i12] > a12: i12 -= 1
 
             i13 = int((a13 - phi0) * inv_dphi)
-            if i13 < 0:         i13 = 0
+            if i13 < 0: i13 = 0
             elif i13 > np_ - 2: i13 = np_ - 2
-            if i13 < np_ - 2 and phi_centers[i13 + 1] <= a13:  i13 += 1
-            elif i13 > 0      and phi_centers[i13]     >  a13: i13 -= 1
+            if i13 < np_ - 2 and phi_centers[i13 + 1] <= a13: i13 += 1
+            elif i13 > 0 and phi_centers[i13] > a13: i13 -= 1
 
             ## Get weights
-            w2 = (t2  - r_centers[i2])   / (r_centers[i2  + 1] - r_centers[i2])
-            w3 = (t3  - r_centers[i3])   / (r_centers[i3  + 1] - r_centers[i3])
+            w2 = (t2 - r_centers[i2]) / (r_centers[i2 + 1] - r_centers[i2])
+            w3 = (t3 - r_centers[i3]) / (r_centers[i3 + 1] - r_centers[i3])
             w12 = (a12 - phi_centers[i12]) / (phi_centers[i12 + 1] - phi_centers[i12])
             w13 = (a13 - phi_centers[i13]) / (phi_centers[i13 + 1] - phi_centers[i13])
 
             ## Additional safeguards
             # Clamping for out-of-bounds r
             if t2 < r_min:
-                i2 = 0; w2 = 0.
+                i2 = 0
+                w2 = 0.
             if t3 < r_min:
-                i3 = 0; w3 = 0.
+                i3 = 0
+                w3 = 0.
             # Periodic wrap for phi indices
             i12p = (i12 + 1) % np_
             i13p = (i13 + 1) % np_
 
             ## Get interpolated value
-            mw2 = 1. - w2;  mw3 = 1. - w3
-            mw12 = 1. - w12; mw13 = 1. - w13
+            mw2 = 1. - w2
+            mw3 = 1. - w3
+            mw12 = 1. - w12
+            mw13 = 1. - w13
             out[idx] = (
-                mw2 * mw3 * mw12 * mw13 * q_slice[i2,   i3,   i12,  i13 ]
-              + mw2 * mw3 * mw12 *  w13  * q_slice[i2,   i3,   i12,  i13p]
-              + mw2 * mw3 *  w12  * mw13 * q_slice[i2,   i3,   i12p, i13 ]
-              + mw2 * mw3 *  w12  *  w13  * q_slice[i2,   i3,   i12p, i13p]
-              +  w2  * mw3 * mw12 * mw13 * q_slice[i2+1, i3,   i12,  i13 ]
-              +  w2  * mw3 * mw12 *  w13  * q_slice[i2+1, i3,   i12,  i13p]
-              +  w2  * mw3 *  w12  * mw13 * q_slice[i2+1, i3,   i12p, i13 ]
-              +  w2  * mw3 *  w12  *  w13  * q_slice[i2+1, i3,   i12p, i13p]
-              + mw2 *  w3  * mw12 * mw13 * q_slice[i2,   i3+1, i12,  i13 ]
-              + mw2 *  w3  * mw12 *  w13  * q_slice[i2,   i3+1, i12,  i13p]
-              + mw2 *  w3  *  w12  * mw13 * q_slice[i2,   i3+1, i12p, i13 ]
-              + mw2 *  w3  *  w12  *  w13  * q_slice[i2,   i3+1, i12p, i13p]
-              +  w2  *  w3  * mw12 * mw13 * q_slice[i2+1, i3+1, i12,  i13 ]
-              +  w2  *  w3  * mw12 *  w13  * q_slice[i2+1, i3+1, i12,  i13p]
-              +  w2  *  w3  *  w12  * mw13 * q_slice[i2+1, i3+1, i12p, i13 ]
-              +  w2  *  w3  *  w12  *  w13  * q_slice[i2+1, i3+1, i12p, i13p]
+                mw2 * mw3 * mw12 * mw13 * q_slice[i2, i3, i12, i13]
+              + mw2 * mw3 * mw12 * w13 * q_slice[i2, i3, i12, i13p]
+              + mw2 * mw3 * w12 * mw13 * q_slice[i2, i3, i12p, i13]
+              + mw2 * mw3 * w12 * w13 * q_slice[i2, i3, i12p, i13p]
+              + w2 * mw3 * mw12 * mw13 * q_slice[i2+1, i3, i12, i13]
+              + w2 * mw3 * mw12 * w13 * q_slice[i2+1, i3, i12, i13p]
+              + w2 * mw3 * w12 * mw13 * q_slice[i2+1, i3, i12p, i13]
+              + w2 * mw3 * w12 * w13 * q_slice[i2+1, i3, i12p, i13p]
+              + mw2 * w3 * mw12 * mw13 * q_slice[i2, i3+1, i12, i13]
+              + mw2 * w3 * mw12 * w13 * q_slice[i2, i3+1, i12, i13p]
+              + mw2 * w3 * w12 * mw13 * q_slice[i2, i3+1, i12p, i13]
+              + mw2 * w3 * w12 * w13 * q_slice[i2, i3+1, i12p, i13p]
+              + w2 * w3 * mw12 * mw13 * q_slice[i2+1, i3+1, i12, i13]
+              + w2 * w3 * mw12 * w13 * q_slice[i2+1, i3+1, i12, i13p]
+              + w2 * w3 * w12 * mw13 * q_slice[i2+1, i3+1, i12p, i13]
+              + w2 * w3 * w12 * w13 * q_slice[i2+1, i3+1, i12p, i13p]
             )
 
 
@@ -275,13 +288,13 @@ def _build_q4d_at_phi(q_array, r_centers, phi_centers, phi):
 
     Pre-interpolates the 5-D q-tensor along its first (r1=phi) axis so the
     inner integration loop only needs a 4-D evaluation over the smaller
-    (q_n_r, q_n_r, q_n_phi, q_n_phi) slice.  Boundary conventions mirror
+    (q_n_r, q_n_r, q_n_phi, q_n_phi) slice. Boundary conventions mirror
     ``_build_q_func``: phi < r_min uses the r1=0 slice (NN), phi > r_max
     gives a hard zero, otherwise linear interpolation between bracketing
     slices; t2/t3 are clamped (NN) below r_min and zeroed above r_max.
 
     The returned callable caches its (4, N) pts / (N,) out buffers and
-    reuses them across calls with the same N.  The returned array is a VIEW
+    reuses them across calls with the same N. The returned array is a VIEW
     into that output buffer — callers must not hold it past the next call.
     """
     r_min = float(r_centers[0])
@@ -298,7 +311,7 @@ def _build_q4d_at_phi(q_array, r_centers, phi_centers, phi):
         w = (phi - r_centers[i]) / (r_centers[i + 1] - r_centers[i])
         q_slice = (1. - w) * q_array[i] + w * q_array[i + 1]
 
-    q_c = np.ascontiguousarray(q_slice,   dtype=np.float64)
+    q_c = np.ascontiguousarray(q_slice, dtype=np.float64)
     r_c = np.ascontiguousarray(r_centers, dtype=np.float64)
     phi_c = np.ascontiguousarray(phi_centers, dtype=np.float64)
 
@@ -366,9 +379,9 @@ def _build_q4d_at_phi(q_array, r_centers, phi_centers, phi):
 #####################################################
 # Fork-safe worker for quadruplet density integrals #
 #####################################################
-# Shared state populated by the parent before forking.  Workers inherit it
+# Shared state populated by the parent before forking. Workers inherit it
 # via copy-on-write (COW) — large objects (q_func, grids) never cross the process
-# boundary as pickle bytes.  The q tensor itself lives in a SharedMemory
+# boundary as pickle bytes. The q tensor itself lives in a SharedMemory
 # block (see GGCovarianceNoTomo._ensure_q_shared) so it is not COW-duplicated.
 _WORKER_STATE: dict = {}
 
@@ -385,35 +398,20 @@ def _worker_init():
         numba.set_num_threads(1)
 
 
-## Memory model (parallel quadruplet integral)
-#
-# _quadruplet_density_terms is the only memory-heavy stage.  Two things dominate:
-#
-# 1. The q tensor self.quadruplets, shape (q_n_r, q_n_r, q_n_r, q_n_phi, q_n_phi)
-#    — a single multi-GB array, independent of worker count.  Moved once into a
-#    SharedMemory block (_ensure_q_shared) so forked workers read the same physical
-#    pages instead of each copy-on-write duplicating it.
-#
-# 2. Per-worker scratch inside _quadruplet_phi_worker, shape
-#    (n_r, n_sub1, n_r, n_sub2, n_v1, n_v2_block) — scales with worker count and
-#    dominates RAM at high worker counts.  The varphi2 axis is processed in blocks
-#    of v2_block and the (t1, t2) axes are tiled in blocks of nr_block, bounding
-#    the scratch to roughly nr_block^2 * n_v1 * v2_block * 8 bytes per array
-#    (~20-25 such arrays).
-#
-# Sizing rule:
+# Peak memory of the quadruplet integral, the only memory-heavy stage:
 #    PEAK ~ M_inst * q_tensor + n_workers * C * nr_block^2 * n_v1 * v2_block * 8B
-#    with C ~ 22.  nr_block is the strong (quadratic) knob, v2_block the linear
-#    one; both leave results bit-identical.  M_inst is the number of instances
-#    simultaneously holding a private q tensor before sharing collapses to one
-#    block (typically 1-2).
+# with C ~ 22 scratch arrays and M_inst the number of instances still holding a
+# private q tensor (typically 1-2) before _ensure_q_shared collapses them onto
+# one SharedMemory block that forked workers map instead of duplicating.
+# nr_block is the strong (quadratic) knob, v2_block the linear one; both leave
+# results bit-identical.
 
 def _quadruplet_phi_worker(kphi: int):
     """Compute the contribution of ``phi_grid[kphi]`` to the SVA accumulator.
 
     All large state is inherited from the parent via ``fork``; the q_array buffer lives
-    in a ``SharedMemory`` block.  The varphi2 axis is accumulated in blocks of
-    ``v2_block``, and the v1-dependent pieces (psi_a, abs_a, varphi_a, xi_a) 
+    in a ``SharedMemory`` block. The varphi2 axis is accumulated in blocks of
+    ``v2_block``, and the v1-dependent pieces (psi_a, abs_a, varphi_a, xi_a)
     are computed once per theta1 tile and reused across all v2 blocks.
 
     Returns
@@ -453,7 +451,8 @@ def _quadruplet_phi_worker(kphi: int):
     # Analytic q --> We can just call the q-function at a fixed phi
     else:
         _q5d = q_func
-        q_func_local = lambda t2, t3, a12, a13: _q5d(phi, t2, t3, a12, a13)
+        def q_func_local(t2, t3, a12, a13):
+            return _q5d(phi, t2, t3, a12, a13)
 
     nr1, ns1 = phi1_nodes.shape
     nr2, ns2 = phi2_nodes.shape
@@ -461,7 +460,7 @@ def _quadruplet_phi_worker(kphi: int):
     sub_accum = [np.zeros((nr1, ns1, nr2, ns2)) for _ in w_cbs]
 
     # Iterate only the planned tiles (the near-diagonal band when masking,
-    # else every tile).  Same nr_block tile size in both cases.
+    # else every tile). Same nr_block tile size in both cases.
     row_iter = (tile_rows if tile_rows is not None
                 else [(i1, range(0, nr2, nrb)) for i1 in range(0, nr1, nrb)])
 
@@ -478,7 +477,8 @@ def _quadruplet_phi_worker(kphi: int):
         s1 = slice(i1, i1 + nrb)
         P1 = phi1_nodes[s1][:, :, None, None, None, None]
 
-        psi_a_x = phi - P1 * CV1;  psi_a_y = -P1 * SV1
+        psi_a_x = phi - P1 * CV1
+        psi_a_y = -P1 * SV1
         abs_a = np.hypot(psi_a_x, psi_a_y)
         varphi_a = np.arctan2(psi_a_y, psi_a_x)
         xi_a_cache = [xi_a_cb(abs_a) for (xi_a_cb, _) in xi_cbs]
@@ -497,23 +497,28 @@ def _quadruplet_phi_worker(kphi: int):
                 SV2 = np.sin(v2c)[None, None, None, None, None, :]
                 V2 = v2c[None, None, None, None, None, :]
 
-                psi_b_x = phi + P2 * CV2;  psi_b_y = P2 * SV2
+                psi_b_x = phi + P2 * CV2
+                psi_b_y = P2 * SV2
                 abs_b = np.hypot(psi_b_x, psi_b_y)
                 varphi_b = np.arctan2(psi_b_y, psi_b_x)
 
                 full_shape = np.broadcast_shapes(
                     P1.shape, abs_b.shape, V1.shape, V2.shape)
                 q_vals = q_func_local(
-                    np.broadcast_to(P1,       full_shape),
-                    np.broadcast_to(abs_b,    full_shape),
-                    np.broadcast_to(V1,       full_shape),
+                    np.broadcast_to(P1, full_shape),
+                    np.broadcast_to(abs_b, full_shape),
+                    np.broadcast_to(V1, full_shape),
                     np.broadcast_to(varphi_b, full_shape),
                 )
 
                 wgrid = v1_gw[:, None] * v2wc[None, :]
+                xi_b_cache = {}
                 for k, (w_cb, (_, xi_b_cb)) in enumerate(zip(w_cbs, xi_cbs)):
+                    xi_b = xi_b_cache.get(id(xi_b_cb))
+                    if xi_b is None:
+                        xi_b = xi_b_cache[id(xi_b_cb)] = xi_b_cb(abs_b)
                     I = (q_vals
-                         * xi_a_cache[k] * xi_b_cb(abs_b)
+                         * xi_a_cache[k] * xi_b
                          * w_cb(V1, V2, varphi_a, varphi_b))
                     sub_accum[k][s1, :, s2, :] += np.sum(I * wgrid, axis=(-2, -1))
 
@@ -535,7 +540,7 @@ def _quadruplet_phi_worker(kphi: int):
 def _quadruplet_phi_worker_tomo(kphi: int):
     """Tomogaphic extension of :func:`_quadruplet_phi_worker`.
 
-    Computes q_vals via numba, then accumulates all tomo bin 
+    Computes q_vals via numba, then accumulates all tomo bin
     combinations in C kernel.
 
     Returns list[ndarray] — one (n_r, n_r) array per output block.
@@ -585,15 +590,22 @@ def _quadruplet_phi_worker_tomo(kphi: int):
         q_func_local = _build_q4d_at_phi(q_array, q_r_centers, q_phi_centers, phi)
     else:
         _q5d = q_func
-        q_func_local = lambda t2, t3, a12, a13: _q5d(phi, t2, t3, a12, a13)
+        def q_func_local(t2, t3, a12, a13):
+            return _q5d(phi, t2, t3, a12, a13)
 
     nr1, ns1 = phi1_nodes.shape
     nr2, ns2 = phi2_nodes.shape
     nrb = s.get('nr_block') or nr1
     nv1 = len(v1_g)
 
+    # The kernel has no notion of phi subgrid nodes, so the (n_r, n_sub) node
+    # axes are flattened into its radial axis (m = ir*ns + is) and the subgrid
+    # is contracted away with phi{1,2}_weights after the call. Tiles therefore
+    # slice the flattened axis in multiples of ns.
+    phi1_flat = np.ascontiguousarray(phi1_nodes.ravel(), dtype=np.float64)
+    phi2_flat = np.ascontiguousarray(phi2_nodes.ravel(), dtype=np.float64)
+
     # Output: one (nr1, nr2) accumulator per output block (NOT per-subgrid).
-    # With ns1=ns2=1 (no subgrid) this is the final shape.
     sub_accum = [np.zeros((nr1, nr2)) for _ in range(n_out)]
     row_iter = (tile_rows if tile_rows is not None
                 else [(i1, range(0, nr2, nrb)) for i1 in range(0, nr1, nrb)])
@@ -602,16 +614,22 @@ def _quadruplet_phi_worker_tomo(kphi: int):
     SV1 = np.sin(v1_g)[None, None, None, None, :, None]
     v1_grid_c = np.ascontiguousarray(v1_g, dtype=np.float64)
     v1_w_c = np.ascontiguousarray(v1_gw, dtype=np.float64)
+    # One accumulation buffer for every tile; the trailing tiles use a
+    # contiguous prefix of it, so the C kernel can write into it directly.
+    c_buf = np.zeros(n_out * (nrb * ns1) * (nrb * ns2), dtype=np.float64)
 
     for i1, i2s in row_iter:
         s1 = slice(i1, i1 + nrb)
         nrb1_actual = min(nrb, nr1 - i1)
-        P1 = phi1_nodes[s1][:, :, None, None, None, None]
+        m1 = nrb1_actual * ns1
+        P1 = phi1_flat[i1 * ns1:(i1 + nrb1_actual) * ns1][
+            :, None, None, None, None, None]
 
-        psi_a_x = phi - P1 * CV1;  psi_a_y = -P1 * SV1
+        psi_a_x = phi - P1 * CV1
+        psi_a_y = -P1 * SV1
         abs_a = np.hypot(psi_a_x, psi_a_y)
         varphi_a = np.arctan2(psi_a_y, psi_a_x)
-        p1w = phi1_weights[s1][:, 0]   # (nrb1,) for ns1=1
+        p1w = phi1_weights[s1] # (nrb1, ns1)
 
         abs_a_flat = np.ascontiguousarray(
             abs_a[:, 0, 0, 0, :, 0], dtype=np.float64)
@@ -621,6 +639,7 @@ def _quadruplet_phi_worker_tomo(kphi: int):
         for i2 in i2s:
             s2 = slice(i2, i2 + nrb)
             nrb2_actual = min(nrb, nr2 - i2)
+            m2 = nrb2_actual * ns2
 
             for j0 in range(0, len(v2_g), blk):
 
@@ -629,10 +648,12 @@ def _quadruplet_phi_worker_tomo(kphi: int):
                 v2c = v2_g[sl]
                 v2wc = v2_gw[sl]
                 nv2c = len(v2c)
-                P2 = phi2_nodes[s2][None, None, :, :, None, None]
+                P2 = phi2_flat[i2 * ns2:(i2 + nrb2_actual) * ns2][
+                    None, None, :, None, None, None]
                 CV2 = np.cos(v2c)[None, None, None, None, None, :]
                 SV2 = np.sin(v2c)[None, None, None, None, None, :]
-                psi_b_x = phi + P2 * CV2;  psi_b_y = P2 * SV2
+                psi_b_x = phi + P2 * CV2
+                psi_b_y = P2 * SV2
                 abs_b = np.hypot(psi_b_x, psi_b_y)
                 varphi_b = np.arctan2(psi_b_y, psi_b_x)
 
@@ -642,16 +663,15 @@ def _quadruplet_phi_worker_tomo(kphi: int):
                     (1, 1, 1, 1, nv1, 1),
                     (1, 1, 1, 1, 1, nv2c))
                 q_vals = q_func_local(
-                    np.broadcast_to(P1,       full_shape),
-                    np.broadcast_to(abs_b,    full_shape),
+                    np.broadcast_to(P1, full_shape),
+                    np.broadcast_to(abs_b, full_shape),
                     np.broadcast_to(v1_g[None, None, None, None, :, None], full_shape),
                     np.broadcast_to(varphi_b, full_shape))
                 q_vals = np.broadcast_to(np.asarray(q_vals), full_shape)
 
                 # Prepare input to accumulation function
                 q_flat = np.ascontiguousarray(
-                    q_vals[:, 0, :, 0, :, :].reshape(
-                        nrb1_actual, nrb2_actual, nv1, nv2c),
+                    q_vals[:, 0, :, 0, :, :].reshape(m1, m2, nv1, nv2c),
                     dtype=np.float64)
                 abs_b_flat = np.ascontiguousarray(
                     abs_b[0, 0, :, 0, 0, :], dtype=np.float64)
@@ -659,13 +679,13 @@ def _quadruplet_phi_worker_tomo(kphi: int):
                     varphi_b[0, 0, :, 0, 0, :], dtype=np.float64)
                 v2c_c = np.ascontiguousarray(v2c, dtype=np.float64)
                 v2wc_c = np.ascontiguousarray(v2wc, dtype=np.float64)
-                c_accum = np.zeros(n_out * nrb1_actual * nrb2_actual,
-                                   dtype=np.float64)
+                c_accum = c_buf[:n_out * m1 * m2]
+                c_accum[:] = 0.
 
                 # Run accumulation function
                 postq_fn(
                     _ptr(q_flat),
-                    nrb1_actual, nrb2_actual, nv1, nv2c,
+                    m1, m2, nv1, nv2c,
                     _ptr(abs_a_flat), _ptr(va_flat),
                     _ptr(abs_b_flat), _ptr(vb_flat),
                     _ptr(v1_grid_c), _ptr(v2c_c),
@@ -679,14 +699,15 @@ def _quadruplet_phi_worker_tomo(kphi: int):
                     _ptr(wick_fac_c),
                     n_out,
                     _ptr(c_accum))
-                c_accum = c_accum.reshape(n_out, nrb1_actual, nrb2_actual)
+                c_accum = c_accum.reshape(
+                    n_out, nrb1_actual, ns1, nrb2_actual, ns2)
 
-                # Finalise the accumulation
-                p2w = phi2_weights[s2][:, 0]   # (nrb2,) for ns2=1
+                # Contract the subgrid nodes back onto the coarse theta bins
+                p2w = phi2_weights[s2] # (nrb2, ns2)
                 for oi in range(n_out):
                     sub_accum[oi][s1, s2] += (
-                        c_accum[oi] * p1w[:nrb1_actual, None]
-                        * p2w[None, :nrb2_actual])
+                        c_accum[oi] * p1w[:, :, None, None]
+                        * p2w[None, None, :, :]).sum(axis=(1, 3))
 
     common = phi * phi_w
     contribs = []
@@ -716,26 +737,26 @@ class GGCovarianceNoTomo:
         Edges of the ξ_± radial bins, in arcmin.
     phi_centers : (n_phi,) array_like, optional
         Centers of the azimuthal bins for triplet / quadruplet counts,
-        spanning [0, 2π).  Defaults to 128 uniform bins.
+        spanning [0, 2π). Defaults to 128 uniform bins.
     phi_edges : (n_phi + 1,) array_like, optional
-        Edges of the azimuthal bins.  Inferred from ``phi_centers`` if absent.
+        Edges of the azimuthal bins. Inferred from ``phi_centers`` if absent.
     q_theta_centers : (n_qr,) array_like, optional
         Centers of the radial bins on which the quadruplet density tensor
-        q lives.  Typically the orpheus 4PCF binning, which may extend well
-        beyond the ξ_± range.  Defaults to ``theta_centers``.
+        q lives. Typically the orpheus 4PCF binning, which may extend well
+        beyond the ξ_± range. Defaults to ``theta_centers``.
     q_theta_edges : (n_qr + 1,) array_like, optional
-        Edges of the q radial bins.  Defaults to ``theta_edges``.
+        Edges of the q radial bins. Defaults to ``theta_edges``.
     q_phi_centers : (n_qphi,) array_like, optional
-        Centers of the azimuthal bins for the q tensor.  Defaults to
+        Centers of the azimuthal bins for the q tensor. Defaults to
         ``phi_centers``.
     q_phi_edges : (n_qphi + 1,) array_like, optional
-        Edges of the q azimuthal bins.  Defaults to ``phi_edges``.
+        Edges of the q azimuthal bins. Defaults to ``phi_edges``.
     triplet_oversample : int, optional
-        Oversampling factor alpha ≥ 1 for the triplet radial bins.  Each
+        Oversampling factor alpha ≥ 1 for the triplet radial bins. Each
         coarse ξ_± bin is subdivided into alpha equal sub-bins when evaluating
-        the triplet integral.  Triplet tensors (analytic or discrete) must
+        the triplet integral. Triplet tensors (analytic or discrete) must
         live on the resulting fine grid of shape
-        (n_r * alpha, n_r * alpha, n_phi).  Default: 1 (no oversampling).
+        (n_r * alpha, n_r * alpha, n_phi). Default: 1 (no oversampling).
     method_pairs, method_triplets, method_quadruplets : str
         ``'analytic'``, ``'discrete'`` or ``'continuous'``
         (``method_quadruplets`` additionally accepts ``'frompairs'``).
@@ -751,16 +772,16 @@ class GGCovarianceNoTomo:
           continuum (n_r -> infinity) ensemble-averaged expressions by direct
           integration over ``spline_xip`` / ``spline_xim``
           (:meth:`getD_continuous`, :meth:`getqpp_continuous`,
-          :meth:`getrp0_continuous`, ...).  ``triplets``/``quadruplets`` stay
+          :meth:`getrp0_continuous`, ...). ``triplets``/``quadruplets`` stay
           ``None``; ``pairs`` is still populated via :meth:`pairs_analytic`
           to normalise the shape-noise term.
         * ``'frompairs'`` (``method_quadruplets`` only) -- "pair-informed"
           reconstruction via :meth:`quadruplets_analytic`'s suppressed branch
           (n̄⁴⟨w⟩⁴ · ``spl_suppression_ww``, factorised across the three
-          quadruplet separations).  ``spl_suppression_ww`` is then mandatory,
+          quadruplet separations). ``spl_suppression_ww`` is then mandatory,
           and is expected to be calibrated against the measured pair-count
           suppression ŝ(θ) = N_p^measured(θ) / N_p^ideal(θ) as a cheap proxy
-          for the boundary/masking suppression.  A ``RuntimeWarning`` is
+          for the boundary/masking suppression. A ``RuntimeWarning`` is
           raised if the spline's tabulated domain does not cover
           ``q_theta_centers``.
     spline_xip, spline_xim : callable
@@ -774,56 +795,56 @@ class GGCovarianceNoTomo:
     weights_mean, weights_std : float
         Mean and standard deviation of the per-galaxy weights w_i (1 and 0
         for unit weights).  ⟨w²⟩ = weights_mean² + weights_std² is exact for
-        any weight distribution.  ``weights_std`` is the standard deviation,
+        any weight distribution. ``weights_std`` is the standard deviation,
         not the variance.
     spl_suppression_ww : callable or None
-        Optional s(θ) modulating the analytic Poisson counts.  None = 1.
+        Optional s(θ) modulating the analytic Poisson counts. None = 1.
     pairs, triplets, quadruplets : ndarray, str, or None
-        Pre-computed count tensors, file paths, or None.  When a method is
+        Pre-computed count tensors, file paths, or None. When a method is
         ``'discrete'`` and the corresponding tensor is None, it is measured
         from ``catalog`` via :meth:`computeDiscrete`.
     catalog : dict or None
         Inputs for the catalog-driven discrete measurement (used only for the
-        ``'discrete'`` methods whose tensor is None).  Keys:
+        ``'discrete'`` methods whose tensor is None). Keys:
         ``ra``, ``dec`` (deg, required), ``weight`` (optional, default unit
         weights), ``path_save`` (required directory for cached files),
         ``rmin_pixsize`` (default 40), ``tree_resos`` (default
         ``[0, 0.5, 1, 2, 4]``), ``npatches`` and ``nmaxs`` (required for the
         4PCF), plus optional ``method`` (4PCF tree method, default
-        ``'DoubleTree'``), ``verbosity`` and ``memory_bound``.  The
+        ``'DoubleTree'``), ``verbosity`` and ``memory_bound``. The
         measurement binning is derived from the covariance grids
         (``theta_edges`` for pairs, the oversampled triplet θ grid +
         ``phi_centers`` for triplets, ``q_theta`` / ``q_phi`` for
-        quadruplets), so those θ grids must be log-uniform (geomspace).  Patch
+        quadruplets), so those θ grids must be log-uniform (geomspace). Patch
         parallelism reuses ``n_workers``.
     store_multiplets : bool, optional
-        File retention after each measured tensor is loaded.  ``False``
+        File retention after each measured tensor is loaded. ``False``
         (default) deletes all cached multiplet files; ``True`` keeps the
         combined pair/triplet/quadruplet tensors but deletes the
         per-footprint 4PCF patch files.
     v2_block : int, optional
         Block size for the varphi2 accumulation inside the parallel
         quadruplet worker; bounds per-worker scratch memory (see module
-        docstring).  Default 16; valid range 1 <= v2_block <= len(varphi2_grid).
+        docstring). Default 16; valid range 1 <= v2_block <= len(varphi2_grid).
     nr_block : int or None, optional
         Tile size for the (θ₁, θ₂) axes inside the quadruplet integrator;
         shrinks per-worker scratch quadratically with bit-identical results
-        (see module docstring).  ``None`` (default) = whole grid in one tile.
-
-    Expected shapes
-    ---------------
-    pairs           : (n_r,)
-    triplets        : (n_r * triplet_oversample,
-                       n_r * triplet_oversample, n_phi)
-    quadruplets     : (n_qr, n_qr, n_qr, n_qphi, n_qphi)   [density q]
+        (see module docstring). ``None`` (default) = whole grid in one tile.
 
     Notes
     -----
     All angles in radians; all separations in arcmin.
 
+    Expected count-tensor shapes::
+
+        pairs       : (n_r,)
+        triplets    : (n_r * triplet_oversample,
+                       n_r * triplet_oversample, n_phi)
+        quadruplets : (n_qr, n_qr, n_qr, n_qphi, n_qphi)   [density q]
+
     For the parallel quadruplet integral, call :meth:`close` (or use the
     instance as a context manager) when finished, to release the shared
-    quadruplet memory block.  Failing to do so leaks the block until the
+    quadruplet memory block. Failing to do so leaks the block until the
     process exits.
     """
 
@@ -876,7 +897,7 @@ class GGCovarianceNoTomo:
 
         ## 2PCF radial bins
         self.theta_centers = np.asarray(theta_centers, dtype=float)
-        self.theta_edges = np.asarray(theta_edges,   dtype=float)
+        self.theta_edges = np.asarray(theta_edges, dtype=float)
         if len(self.theta_edges) != len(self.theta_centers) + 1:
             raise ValueError(
                 "theta_edges must have exactly one more entry than theta_centers")
@@ -908,9 +929,9 @@ class GGCovarianceNoTomo:
                 and not callable(quadruplets):
             warnings.warn(
                 "method_quadruplets='discrete' but q_theta_centers / "
-                "q_theta_edges were not provided.  The q-tensor will be "
+                "q_theta_edges were not provided. The q-tensor will be "
                 "assumed to live on the ξ_± radial grid; queries outside "
-                "that range will silently return q=0.  Pass q_theta_centers "
+                "that range will silently return q=0. Pass q_theta_centers "
                 "/ q_theta_edges matching the orpheus 4PCF binning if your "
                 "q array extends further radially.",
                 RuntimeWarning, stacklevel=2)
@@ -939,8 +960,8 @@ class GGCovarianceNoTomo:
         if alpha > 1:
             # Build fine radial grid by subdividing each coarse bin into equal sub-bins.
             sub_edges = (
-                self.theta_edges[:-1, None] + 
-                np.arange(alpha + 1)[None, :]  * self.dtheta[:, None] / alpha)
+                self.theta_edges[:-1, None] +
+                np.arange(alpha + 1)[None, :] * self.dtheta[:, None] / alpha)
             fine_edges = np.concatenate(
                 [sub_edges[:, :-1].ravel(), [self.theta_edges[-1]]])
             self.triplet_theta_edges = fine_edges
@@ -989,13 +1010,14 @@ class GGCovarianceNoTomo:
         if self.v2_block < 1:
             raise ValueError("v2_block must be >= 1")
         # Tile size for the (theta1, theta2) radial axes inside the
-        # quadruplet integrator. 
+        # quadruplet integrator.
         #  * None --> whole grid in one tile
-        #  * Smaller values reduce per-worker scratch quadratically at cost of more serial sub-tiles per phi node.
+        #  * Smaller values reduce per-worker scratch quadratically, at the
+        #    cost of more serial sub-tiles per phi node.
         self.nr_block = None if nr_block is None else int(nr_block)
         if self.nr_block is not None and self.nr_block < 1:
             raise ValueError("nr_block must be >= 1 (or None for no tiling)")
-        # Default worker count for the quadruplet (5-D) integrals.  Used by
+        # Default worker count for the quadruplet (5-D) integrals. Used by
         # getr*/get_cov_*/subbin methods whenever n_workers is left as None.
         self.n_workers = int(n_workers)
         if self.n_workers < 1:
@@ -1119,7 +1141,7 @@ class GGCovarianceNoTomo:
             raise ValueError(
                 f"Unknown method_quadruplets='{self.method_quadruplets}'")
 
-        # Build callable wrapper around the quadruplet density.  The
+        # Build callable wrapper around the quadruplet density. The
         # continuum limit needs no q tensor at all -- _q_func stays unused.
         if self.method_quadruplets == 'continuous':
             self._q_func = None
@@ -1139,7 +1161,7 @@ class GGCovarianceNoTomo:
 
         After this call ``self.quadruplets`` is a view onto the shared block
         and the private heap copy has been dropped, so the parent holds only
-        one physical copy.  Forked workers inherit the mmap (MAP_SHARED) and
+        one physical copy. Forked workers inherit the mmap (MAP_SHARED) and
         read the same pages.
 
         Analytic (callable) quadruplets are left untouched — there is no
@@ -1160,7 +1182,7 @@ class GGCovarianceNoTomo:
         np.copyto(buf, arr)
 
         self._shm = shm
-        self.quadruplets = buf  # view onto shared memory
+        self.quadruplets = buf # view onto shared memory
         self._q_func = _build_q_func(
             buf, self.q_theta_centers, self.q_phi_centers)
 
@@ -1171,7 +1193,7 @@ class GGCovarianceNoTomo:
     def close(self):
         """Release the shared quadruplet memory block, if any.
 
-        Safe to call multiple times.  After ``close`` the quadruplet density
+        Safe to call multiple times. After ``close`` the quadruplet density
         is no longer available (``self.quadruplets`` / ``self._q_func`` are
         cleared); the covariance components already computed remain intact.
         """
@@ -1193,10 +1215,12 @@ class GGCovarianceNoTomo:
         return False
 
     def __del__(self):
-        # Best-effort cleanup; explicit close() is strongly preferred.
+        # Best-effort cleanup; explicit close() is strongly preferred. The
+        # block may already be gone (another process unlinked it, or
+        # interpreter teardown cleared the attributes).
         try:
             self.close()
-        except Exception:
+        except (AttributeError, FileNotFoundError, ImportError):
             pass
 
     ####################
@@ -1213,7 +1237,7 @@ class GGCovarianceNoTomo:
         expect = (self.triplet_n_r, self.triplet_n_r, self.n_phi)
         if arr.shape != expect:
             raise ValueError(
-                f"triplets shape {arr.shape} != expected {expect}  "
+                f"triplets shape {arr.shape} != expected {expect} "
                 f"(triplet_oversample={self.triplet_oversample})")
 
     def _check_quadruplets_shape(self, arr):
@@ -1238,6 +1262,43 @@ class GGCovarianceNoTomo:
         """
         ww_factor = self._w2**2 / self._w1**2 if self._w1 != 0 else 0.
         return self.sigma_eps**4 * ww_factor / self.pairs
+
+    def _triplet_term_continuous_c(self, w_type, xi_func,
+                                   nr_target=1024, nphi_target=1024):
+        """Continuum-limit q term via the C kernel, or None if unavailable.
+
+        ``w_type``: 0 = q_++ (w=1), 1 = q_-- (cos 4φ), 2 = q_+- (cos 4(φ−φ_jk)),
+        matching :meth:`_triplet_phi_reduce`. Equivalent to
+        :meth:`_triplet_term_continuous` but without its (α·n_r)²·n_phi
+        temporaries, which reach ~64 GB at the default 1024×1024 grids.
+        """
+        fn, _ = self._continuous_kernel()
+        if not fn:
+            return None
+        tables = self._xi_tables_from_splines([xi_func])
+        if tables is None:
+            return None
+        xi_x, xi_y_tables, xi_logx0, xi_inv_dlogx, xi_n = tables
+
+        alpha = int(nr_target // self.n_r)
+        n_fine = alpha * self.n_r
+        _edges = np.geomspace(self.theta_edges[0], self.theta_edges[-1], n_fine + 1)
+        thetas = .5 * (_edges[1:] + _edges[:-1])
+        phis = np.linspace(0., np.pi, nphi_target, endpoint=False)
+
+        out = np.zeros(self.n_r * self.n_r, dtype=np.float64)
+        fn(self.n_r, alpha,
+           np.ascontiguousarray(thetas, dtype=np.float64),
+           np.ascontiguousarray(thetas * np.diff(_edges), dtype=np.float64),
+           np.ascontiguousarray(phis, dtype=np.float64),
+           np.ascontiguousarray(_trapz_weights(phis), dtype=np.float64),
+           n_fine, nphi_target,
+           xi_x, xi_n, xi_logx0, xi_inv_dlogx,
+           np.ascontiguousarray(xi_y_tables[0]),
+           int(w_type),
+           float(self.sigma_eps**2), float(self.area), float(self.nbar),
+           np.ones(self.n_r, dtype=np.float64), out)
+        return out.reshape(self.n_r, self.n_r)
 
     def _triplet_term_continuous(self, weight_func, xi_func,
                                  nr_target=1024, nphi_target=1024):
@@ -1282,18 +1343,29 @@ class GGCovarianceNoTomo:
 
     def getqpp_continuous(self, nr_target=1024, nphi_target=1024):
         """Continuous q_++. L25 Eq. 3.13 / S+02 Eq. 32."""
-        w = lambda T1, T2, PHI, r_jk, jk_x, jk_y: np.ones_like(PHI)
+        c = self._triplet_term_continuous_c(0, self.xip, nr_target, nphi_target)
+        if c is not None:
+            return c
+        def w(T1, T2, PHI, r_jk, jk_x, jk_y):
+            return np.ones_like(PHI)
         return self._triplet_term_continuous(w, self.xip,
                                               nr_target=nr_target, nphi_target=nphi_target)
 
     def getqmm_continuous(self, nr_target=1024, nphi_target=1024):
         """Continuous q_--. L25 Eq. 3.18 / S+02 Eq. 36."""
-        w = lambda T1, T2, PHI, r_jk, jk_x, jk_y: np.cos(4. * PHI)
+        c = self._triplet_term_continuous_c(1, self.xip, nr_target, nphi_target)
+        if c is not None:
+            return c
+        def w(T1, T2, PHI, r_jk, jk_x, jk_y):
+            return np.cos(4. * PHI)
         return self._triplet_term_continuous(w, self.xip,
                                               nr_target=nr_target, nphi_target=nphi_target)
 
     def getqpm_continuous(self, nr_target=1024, nphi_target=1024):
         """Continuous q_+-. L25 Eq. 3.22 / S+02 Eq. 38."""
+        c = self._triplet_term_continuous_c(2, self.xim, nr_target, nphi_target)
+        if c is not None:
+            return c
         def w(T1, T2, PHI, r_jk, jk_x, jk_y):
             phi_jk = np.arctan2(jk_y, jk_x)
             return np.cos(4. * (PHI - phi_jk))
@@ -1302,6 +1374,9 @@ class GGCovarianceNoTomo:
 
     def getrp0_continuous(self):
         """Continuous r_+0. L25 Eq. (3.14) / S+02 Eq. (34)."""
+        c = self._rterms_continuous_c()
+        if c is not None:
+            return c[0]
         v = np.asarray(self.varphi1_grid)
         v = v[v <= np.pi]
         cosV = np.cos(v)
@@ -1321,6 +1396,9 @@ class GGCovarianceNoTomo:
 
     def getrp1_continuous(self):
         """Continuous r_+1. L25 Eq. (3.15) / S+02 Eq. (34)."""
+        c = self._rterms_continuous_c()
+        if c is not None:
+            return c[1]
         v = np.asarray(self.varphi1_grid)
         pw = _trapz_weights(self.phi_grid)
         vw = _periodic_weights(v)
@@ -1330,15 +1408,18 @@ class GGCovarianceNoTomo:
         n = self.n_r
         out = np.zeros((n, n))
         for kphi, phi in enumerate(self.phi_grid):
-            psi_a_x = phi - T * cV;  psi_a_y = -T * sV
-            psi_b_x = phi + T * cV;  psi_b_y = T * sV
+            psi_a_x = phi - T * cV
+            psi_a_y = -T * sV
+            psi_b_x = phi + T * cV
+            psi_b_y = T * sV
             abs_a = np.hypot(psi_a_x, psi_a_y)
             abs_b = np.hypot(psi_b_x, psi_b_y)
             c4a = np.cos(4. * np.arctan2(psi_a_y, psi_a_x))
             s4a = np.sin(4. * np.arctan2(psi_a_y, psi_a_x))
             c4b = np.cos(4. * np.arctan2(psi_b_y, psi_b_x))
             s4b = np.sin(4. * np.arctan2(psi_b_y, psi_b_x))
-            xi_a = self.xim(abs_a);  xi_b = self.xim(abs_b)
+            xi_a = self.xim(abs_a)
+            xi_b = self.xim(abs_b)
             I_Ac = np.sum(xi_a * c4a * vw[None, :], axis=-1)
             I_As = np.sum(xi_a * s4a * vw[None, :], axis=-1)
             I_Bc = np.sum(xi_b * c4b * vw[None, :], axis=-1)
@@ -1352,20 +1433,24 @@ class GGCovarianceNoTomo:
         Weight w = cos(4*(V1+V2-va-vb)) = cos(4*(V1-va))*cos(4*(V2-vb))
                                         - sin(4*(V1-va))*sin(4*(V2-vb)).
         The sine integrals vanish by the antisymmetry of sin(4*(V-va)) under
-        V -> 2pi-V.  Moreover, the substitution V -> V+pi maps psi_b -> psi_a,
+        V -> 2pi-V. Moreover, the substitution V -> V+pi maps psi_b -> psi_a,
         so the b-side integral I_Bc equals I_Ac element-wise, giving a
         manifestly symmetric outer product.
         """
+        c = self._rterms_continuous_c()
+        if c is not None:
+            return c[2]
         v = np.asarray(self.varphi1_grid)
         pw = _trapz_weights(self.phi_grid)
         vw = _periodic_weights(v)
-        T = self.theta_centers[:, None]   # (n, 1)
-        cV = np.cos(v)[None, :]            # (1, nv)
-        sV = np.sin(v)[None, :]            # (1, nv)
+        T = self.theta_centers[:, None] # (n, 1)
+        cV = np.cos(v)[None, :] # (1, nv)
+        sV = np.sin(v)[None, :] # (1, nv)
         n = self.n_r
         out = np.zeros((n, n))
         for kphi, phi in enumerate(self.phi_grid):
-            psi_a_x = phi - T * cV;  psi_a_y = -T * sV
+            psi_a_x = phi - T * cV
+            psi_a_y = -T * sV
             abs_a = np.hypot(psi_a_x, psi_a_y)
             va = np.arctan2(psi_a_y, psi_a_x)
             xi_a = self.xim(abs_a)
@@ -1378,21 +1463,25 @@ class GGCovarianceNoTomo:
 
         Weight w = cos(4*(V1-V2)) = cos(4*V1)*cos(4*V2) + sin(4*V1)*sin(4*V2).
         The sine integrals vanish by the antisymmetry of sin(4*V) under V -> 2pi-V
-        (combined with the symmetry of xip(|psi_a|) in V).  The V -> V+pi
+        (combined with the symmetry of xip(|psi_a|) in V). The V -> V+pi
         substitution maps psi_b -> psi_a and cos(4*(V+pi)) = cos(4V), so again
         I_Bc = I_Ac and the outer product is symmetric.
         """
+        c = self._rterms_continuous_c()
+        if c is not None:
+            return c[3]
         v = np.asarray(self.varphi1_grid)
         pw = _trapz_weights(self.phi_grid)
         vw = _periodic_weights(v)
         T = self.theta_centers[:, None]
         cV = np.cos(v)[None, :]
         sV = np.sin(v)[None, :]
-        c4V = np.cos(4. * v)[None, :]     # weight is cos(4*V) directly
+        c4V = np.cos(4. * v)[None, :] # weight is cos(4*V) directly
         n = self.n_r
         out = np.zeros((n, n))
         for kphi, phi in enumerate(self.phi_grid):
-            psi_a_x = phi - T * cV;  psi_a_y = -T * sV
+            psi_a_x = phi - T * cV
+            psi_a_y = -T * sV
             abs_a = np.hypot(psi_a_x, psi_a_y)
             xi_a = self.xip(abs_a)
             I_Ac = np.sum(xi_a * c4V * vw[None, :], axis=-1)
@@ -1402,11 +1491,14 @@ class GGCovarianceNoTomo:
     def getrpm_continuous(self):
         """Continuous r_+-. L25 Eq. (3.?).
 
-        Weight w = 2*cos(4*(V2-vb)).  Only V2 (the b-side) carries an angular
-        weight; the V1 integral reduces to a plain ∫ xip(|psi_a|) dV1.  The
+        Weight w = 2*cos(4*(V2-vb)). Only V2 (the b-side) carries an angular
+        weight; the V1 integral reduces to a plain ∫ xip(|psi_a|) dV1. The
         result is NOT symmetric under theta1 <-> theta2 (xip != xim in general),
         consistent with symmetrise=False in getrpm.
         """
+        c = self._rterms_continuous_c()
+        if c is not None:
+            return c[4]
         v = np.asarray(self.varphi1_grid)
         pw = _trapz_weights(self.phi_grid)
         vw = _periodic_weights(v)
@@ -1416,8 +1508,10 @@ class GGCovarianceNoTomo:
         n = self.n_r
         out = np.zeros((n, n))
         for kphi, phi in enumerate(self.phi_grid):
-            psi_a_x = phi - T * cV;  psi_a_y = -T * sV
-            psi_b_x = phi + T * cV;  psi_b_y = T * sV
+            psi_a_x = phi - T * cV
+            psi_a_y = -T * sV
+            psi_b_x = phi + T * cV
+            psi_b_y = T * sV
             abs_a = np.hypot(psi_a_x, psi_a_y)
             abs_b = np.hypot(psi_b_x, psi_b_y)
             vb = np.arctan2(psi_b_y, psi_b_x)
@@ -1473,7 +1567,7 @@ class GGCovarianceNoTomo:
         by the bounds check in :meth:`quadruplets_analytic`.
         """
         theta_centers = np.asarray(theta_centers, dtype=float)
-        theta_edges = np.asarray(theta_edges,   dtype=float)
+        theta_edges = np.asarray(theta_edges, dtype=float)
         ideal = (2. * np.pi * area * nbar**2 * weights_mean**2
                 * theta_centers * np.diff(theta_edges))
         supp_vals = np.asarray(Np_meas, dtype=float) / ideal
@@ -1600,22 +1694,33 @@ class GGCovarianceNoTomo:
               else np.asarray(dtheta_bin, dtype=float))
         dp = (self.q_dphi if dphi_bin is None
               else np.asarray(dphi_bin, dtype=float))
-        T1, T2, T3, _, _ = np.meshgrid(rc, rc, rc, pc, pc, indexing='ij')
-        DT1, DT2, DT3, DP12, DP13 = np.meshgrid(dt, dt, dt, dp, dp, indexing='ij')
-        V_q = (2. * np.pi * self.area
-               * T1 * DT1 * T2 * DT2 * T3 * DT3 * DP12 * DP13)
-        self.quadruplets = np.asarray(N_q, dtype=float) / V_q
+        # V_q is a rank-1 outer product of the five axes, so divide N_q by one
+        # axis at a time rather than materialising the 5-D volume.
+        tdt = rc * dt
+        q = np.array(N_q, dtype=float)
+        q /= 2. * np.pi * self.area
+        q /= tdt[:, None, None, None, None]
+        q /= tdt[None, :, None, None, None]
+        q /= tdt[None, None, :, None, None]
+        q /= dp[None, None, None, :, None]
+        q /= dp[None, None, None, None, :]
+        self.quadruplets = q
         self._q_func = _build_q_func(self.quadruplets, rc, pc)
 
         if return_volume:
-            return V_q
+            return (2. * np.pi * self.area
+                    * tdt[:, None, None, None, None]
+                    * tdt[None, :, None, None, None]
+                    * tdt[None, None, :, None, None]
+                    * dp[None, None, None, :, None]
+                    * dp[None, None, None, None, :])
 
     #######################################
     # Individual covariance contributions #
     #######################################
 
     def getD(self):
-        """Diagonal shape-noise term.  Dispatches to :meth:`getD_continuous`
+        """Diagonal shape-noise term. Dispatches to :meth:`getD_continuous`
         or :meth:`getD_discrete` based on ``method_pairs``.
         """
         self.D = (self.getD_continuous() if self.method_pairs == 'continuous'
@@ -1660,12 +1765,12 @@ class GGCovarianceNoTomo:
         p_f64 = ndpointer(np.float64, flags="C_CONTIGUOUS")
         lib.triplet_term_reduce.restype = None
         lib.triplet_term_reduce.argtypes = [
-            p_f64, ci, ci,            # Nt, nr, nphi
-            p_f64, p_f64,             # tc, phic
-            ci,                       # weight_type
-            p_f64, ci, cd, cd,        # xi_x, xi_n, xi_logx0, xi_inv_dlogx
-            p_f64,                    # xi_y
-            p_f64, ci]                # out, nthreads
+            p_f64, ci, ci, # Nt, nr, nphi
+            p_f64, p_f64, # tc, phic
+            ci, # weight_type
+            p_f64, ci, cd, cd, # xi_x, xi_n, xi_logx0, xi_inv_dlogx
+            p_f64, # xi_y
+            p_f64, ci, ci] # out, nthreads, verbose
         self._triplet_fn = lib.triplet_term_reduce
         return self._triplet_fn
 
@@ -1673,7 +1778,7 @@ class GGCovarianceNoTomo:
     def _triplet_xi_table(xi_func, fallback_lo=None, fallback_hi=None):
         """Tabulate a xi spline on its (log-uniform) grid for the C kernel.
 
-        Returns ``(xi_x, xi_y, xi_logx0, xi_inv_dlogx, xi_n)``.  Uses the
+        Returns ``(xi_x, xi_y, xi_logx0, xi_inv_dlogx, xi_n)``. Uses the
         spline's own ``.x`` knots when present (as the r-term kernel does);
         else samples a 4096-point geomspace grid over the fallback range.
         """
@@ -1709,7 +1814,7 @@ class GGCovarianceNoTomo:
                np.ascontiguousarray(tc, dtype=np.float64),
                np.ascontiguousarray(phic, dtype=np.float64),
                int(weight_type), xi_x, xi_n, logx0, inv_dlogx, xi_y,
-               out, int(self.n_workers))
+               out, int(self.n_workers), 0)
             return out
         # numpy fallback
         T1, T2, PHI = np.meshgrid(tc, tc, phic, indexing='ij')
@@ -1742,18 +1847,18 @@ class GGCovarianceNoTomo:
             When given, only the matrix elements flagged ``True`` are
             evaluated (rows are tiled and restricted to the column
             bounding-box of the mask, so memory and work stay O(n·bandwidth)).
-            Masked-out elements are returned as ``0``.  Used by the
+            Masked-out elements are returned as ``0``. Used by the
             near-diagonal slab recompute in :meth:`subbin`.
         ``weight_type`` : int or None
             When given (0 = q++, 1 = q--, 2 = q+-) and ``pair_mask`` is None,
             the φ-reduction uses the OpenMP C kernel via
-            :meth:`_triplet_phi_reduce`.  ``weight_func`` is still used for the
+            :meth:`_triplet_phi_reduce`. ``weight_func`` is still used for the
             banded (``pair_mask``) path.
         """
         if self.triplets is None:
             raise RuntimeError("`triplets` not initialised.")
-        Nt = np.asarray(self.triplets)   # (triplet_n_r, triplet_n_r, n_phi)
-        Np = np.asarray(self.pairs)       # (n_r,)
+        Nt = np.asarray(self.triplets) # (triplet_n_r, triplet_n_r, n_phi)
+        Np = np.asarray(self.pairs) # (n_r,)
         n = self.n_r
         alpha = self.triplet_oversample
         tc = self.triplet_theta_centers
@@ -1777,7 +1882,7 @@ class GGCovarianceNoTomo:
                 summed = fine
             return 2. * self.sigma_eps**2 * summed / np.outer(Np, Np)
 
-        ## banded evaluation: only the coarse (i, j) inside pair_mask
+        ## Banded evaluation: only the coarse (i, j) inside pair_mask
         summed = np.zeros((n, n))
         PHI = phic[None, None, :]
         cphi = np.cos(PHI)
@@ -1809,7 +1914,7 @@ class GGCovarianceNoTomo:
         return np.where(pair_mask, result, 0.)
 
     def getqpp(self, pair_mask=None):
-        """Mixed term for Cov_pp.  Dispatches to :meth:`getqpp_continuous` or
+        """Mixed term for Cov_pp. Dispatches to :meth:`getqpp_continuous` or
         :meth:`getqpp_discrete` based on ``method_triplets``
         (``pair_mask`` only applies to the discrete path).
         """
@@ -1826,7 +1931,7 @@ class GGCovarianceNoTomo:
         return self.qpp
 
     def getqmm(self, pair_mask=None):
-        """Mixed term for Cov_mm.  Dispatches to :meth:`getqmm_continuous` or
+        """Mixed term for Cov_mm. Dispatches to :meth:`getqmm_continuous` or
         :meth:`getqmm_discrete` based on ``method_triplets``
         (``pair_mask`` only applies to the discrete path).
         """
@@ -1843,7 +1948,7 @@ class GGCovarianceNoTomo:
         return self.qmm
 
     def getqpm(self, pair_mask=None):
-        """Mixed term for Cov_pm.  Dispatches to :meth:`getqpm_continuous` or
+        """Mixed term for Cov_pm. Dispatches to :meth:`getqpm_continuous` or
         :meth:`getqpm_discrete` based on ``method_triplets``
         (``pair_mask`` only applies to the discrete path).
         """
@@ -1866,6 +1971,9 @@ class GGCovarianceNoTomo:
                                    n_workers=None, pair_mask=None):
         """Generic 5-D integrator for the density-form quadruplet contributions.
 
+        Pure-numpy reference implementation; :meth:`_quadruplet_density_terms_c`
+        is the C-accelerated equivalent used by default.
+
         ``weight_callbacks`` / ``xi_callbacks`` may list several ``(weight,
         xi)`` terms at once; the dominant cost (the 4-D quadruplet-density
         interpolation ``q_func_local`` / ``q_func_phi``) is evaluated once per
@@ -1874,13 +1982,13 @@ class GGCovarianceNoTomo:
         ``symmetrise`` : bool or list of bool, one per entry in
                          ``weight_callbacks``.
             ``True``  : result is averaged with its own transpose, enforcing
-                        symmetry in (θ₁, θ₂).  Appropriate for pp and mm
+                        symmetry in (θ₁, θ₂). Appropriate for pp and mm
                         blocks.
-            ``False`` : raw asymmetric result is returned.  Use for the pm
+            ``False`` : raw asymmetric result is returned. Use for the pm
                         block where Cov(ξ₊, ξ₋) ≠ Cov(ξ₊, ξ₋)ᵀ.
             A scalar bool is broadcast to all entries.
         ``n_workers`` : number of forked worker processes, parallelising over
-                        the outer φ loop.  Default 1 (serial).  See module
+                        the outer φ loop. Default 1 (serial). See module
                         docstring for the shared-memory / scratch model.
         """
         if self.quadruplets is None:
@@ -1927,9 +2035,9 @@ class GGCovarianceNoTomo:
 
         nr1 = phi1_nodes.shape[0]
         nr2 = phi2_nodes.shape[0]
-        nrb = self.nr_block or nr1   # theta-tile size (None -> whole grid)
+        nrb = self.nr_block or nr1 # theta-tile size (None -> whole grid)
 
-        # Band-tile plan.  When a pair_mask is given (the near-diagonal slab in
+        # Band-tile plan. When a pair_mask is given (the near-diagonal slab in
         # subbin) enumerate only the nr_block tiles that intersect the mask,
         # grouped by row tile so the θ₁-dependent work is reused across the row.
         # Tiles keep the normal nr_block size, so per-tile memory is unchanged
@@ -1954,7 +2062,7 @@ class GGCovarianceNoTomo:
             import multiprocessing as mp
 
             # Single shared copy of the q tensor, reused across all five
-            # r-term calls.  Analytic (callable) q is shared via fork as-is.
+            # r-term calls. Analytic (callable) q is shared via fork as-is.
             self._ensure_q_shared()
 
             _WORKER_STATE.update(
@@ -1968,7 +2076,7 @@ class GGCovarianceNoTomo:
                 v1_w=v1_w,
                 v2_grid=varphi2_grid,
                 v2_w=v2_w,
-                q_func=self._q_func,       # backed by shared memory (if tensor)
+                q_func=self._q_func, # backed by shared memory (if tensor)
                 # Raw tensor + grids for the per-phi-node 4-D slice optimisation.
                 # None when q is an analytic callable (no tensor to slice).
                 q_array=(None if callable(self.quadruplets)
@@ -2002,11 +2110,11 @@ class GGCovarianceNoTomo:
                             el = time.perf_counter() - t0
                             # Wall-clock extrapolation from completed phi nodes;
                             # self-corrects as the steady-state pool throughput
-                            # is reached.  Free: one clock read per phi node.
+                            # is reached. Free: one clock read per phi node.
                             eta = el / done * (nphi - done)
                             sys.stdout.write(
-                                f'\r  phi {done}/{nphi}  '
-                                f'elapsed {_fmt_hms(el)}  eta {_fmt_hms(eta)}  ')
+                                f'\r phi {done}/{nphi} '
+                                f'elapsed {_fmt_hms(el)} eta {_fmt_hms(eta)} ')
                             sys.stdout.flush()
                         for k, c in enumerate(contribs):
                             accum[k] += c
@@ -2041,8 +2149,8 @@ class GGCovarianceNoTomo:
                     el = time.perf_counter() - t0
                     eta = el / kphi * (nphi - kphi) if kphi else float('inf')
                     sys.stdout.write(
-                        f'\r  phi {kphi}/{nphi}  '
-                        f'elapsed {_fmt_hms(el)}  eta {_fmt_hms(eta)}  ')
+                        f'\r phi {kphi}/{nphi} '
+                        f'elapsed {_fmt_hms(el)} eta {_fmt_hms(eta)} ')
                     sys.stdout.flush()
                 common = phi * phi_w[kphi]
 
@@ -2059,16 +2167,17 @@ class GGCovarianceNoTomo:
                         lambda t2, t3, a12, a13, _p=phi:
                         _q5d(_p, t2, t3, a12, a13))
 
-                # Build the per-phi matrix block by block.  The symmetrising
+                # Build the per-phi matrix block by block. The symmetrising
                 # transpose couples block (i1, i2) with (i2, i1), so it is
                 # applied only after the matrix is assembled.
                 I_full = [np.zeros((nr1, nr2)) for _ in weight_callbacks]
 
-                ## tile over the (theta1, theta2) radial axes
+                ## Tile over the (theta1, theta2) radial axes
                 for i1, i2s in row_iter:
                     s1 = slice(i1, i1 + nrb)
                     P1 = phi1_nodes[s1][:, :, None, None, None, None]
-                    psi_a_x = phi - P1 * CV1;  psi_a_y = -P1 * SV1
+                    psi_a_x = phi - P1 * CV1
+                    psi_a_y = -P1 * SV1
                     abs_a = np.hypot(psi_a_x, psi_a_y)
                     varphi_a = np.arctan2(psi_a_y, psi_a_x)
                     xi_a_cache = [xi_a_cb(abs_a)
@@ -2078,7 +2187,8 @@ class GGCovarianceNoTomo:
                     for i2 in i2s:
                         s2 = slice(i2, i2 + nrb)
                         P2 = phi2_nodes[s2][None, None, :, :, None, None]
-                        psi_b_x = phi + P2 * CV2;  psi_b_y = P2 * SV2
+                        psi_b_x = phi + P2 * CV2
+                        psi_b_y = P2 * SV2
                         abs_b = np.hypot(psi_b_x, psi_b_y)
                         varphi_b = np.arctan2(psi_b_y, psi_b_x)
                         p2w = phi2_weights[s2][None, None, :, :]
@@ -2086,9 +2196,9 @@ class GGCovarianceNoTomo:
                         full_shape = np.broadcast_shapes(
                             P1.shape, abs_b.shape, V1.shape, V2.shape)
                         q_vals = q_func_phi(
-                            np.broadcast_to(P1,       full_shape),
-                            np.broadcast_to(abs_b,    full_shape),
-                            np.broadcast_to(V1,       full_shape),
+                            np.broadcast_to(P1, full_shape),
+                            np.broadcast_to(abs_b, full_shape),
+                            np.broadcast_to(V1, full_shape),
                             np.broadcast_to(varphi_b, full_shape))
 
                         for k, (w_cb, (_, xi_b_cb)) in enumerate(
@@ -2116,6 +2226,331 @@ class GGCovarianceNoTomo:
         pre = 2. * np.pi * self.area / np.outer(Np, Np)
         return [pre * a for a in accum]
 
+    ## C-accelerated quadruplet integral
+    def _postq_kernel(self):
+        """Lazily load & cache the C post-q accumulation kernel.
+
+        Returns the ``postq_accumulate_tomo`` ctypes function, or ``False``
+        when the covariance kernels are absent from the build (the Python
+        reference is then used). Mirrors :meth:`_triplet_kernel`.
+        """
+        fn = getattr(self, '_postq_fn', None)
+        if fn is not None:
+            return fn
+        lib = getattr(self, '_clib', None)
+        if lib is None:
+            library_path = str(Path(__import__('orpheus').__file__).parent.absolute())
+            sos = glob.glob(library_path + "/orpheus_clib*.so")
+            lib = ctypes.CDLL(sos[0]) if sos else None
+        if lib is None or not hasattr(lib, 'postq_accumulate_tomo'):
+            self._postq_fn = False
+            return False
+        from numpy.ctypeslib import ndpointer
+        ci = ctypes.c_int
+        cd = ctypes.c_double
+        p_f64 = ndpointer(np.float64, flags="C_CONTIGUOUS")
+        p_i32 = ndpointer(np.int32, flags="C_CONTIGUOUS")
+        lib.postq_accumulate_tomo.restype = None
+        lib.postq_accumulate_tomo.argtypes = [
+            p_f64, ci, ci, ci, ci, # q_vals, nrb1, nrb2, nv1, nv2c
+            p_f64, p_f64, # abs_a, va
+            p_f64, p_f64, # abs_b, vb
+            p_f64, p_f64, # v1_grid, v2_chunk
+            p_f64, ci, cd, cd, # xi_x, xi_n, xi_logx0, xi_inv_dlogx
+            ci, p_i32, p_i32, # n_cb, xi_a_idx, xi_b_idx
+            p_f64, ci, # xi_y_tables, n_xi_unique
+            p_f64, p_f64, # v1_w, v2_wc
+            p_i32, p_i32, p_f64, # w_ids, out_idx, wick_fac
+            ci, p_f64] # n_out, sub_accum
+        self._postq_fn = lib.postq_accumulate_tomo
+        return self._postq_fn
+
+    def _continuous_kernel(self):
+        """Lazily bind the two continuum-limit C kernels.
+
+        Returns ``(continuous_q_single, continuous_rterms_tomo)``, or
+        ``(False, False)`` when the covariance kernels are absent.
+        """
+        fns = getattr(self, '_continuous_fns', None)
+        if fns is not None:
+            return fns
+        lib = getattr(self, '_clib', None)
+        if lib is None:
+            library_path = str(Path(__import__('orpheus').__file__).parent.absolute())
+            sos = glob.glob(library_path + "/orpheus_clib*.so")
+            lib = ctypes.CDLL(sos[0]) if sos else None
+        if lib is None or not hasattr(lib, 'continuous_rterms_tomo'):
+            self._continuous_fns = (False, False)
+            return self._continuous_fns
+        from numpy.ctypeslib import ndpointer
+        ci = ctypes.c_int
+        cd = ctypes.c_double
+        p_f64 = ndpointer(np.float64, flags="C_CONTIGUOUS")
+        p_i32 = ndpointer(np.int32, flags="C_CONTIGUOUS")
+        lib.continuous_q_single.restype = None
+        lib.continuous_q_single.argtypes = [
+            ci, ci, # n_r, alpha
+            p_f64, p_f64, # fine_centers, fine_weights
+            p_f64, p_f64, # phi_centers, dphi
+            ci, ci, # n_fine, n_phi
+            p_f64, ci, cd, cd, # xi_x, xi_n, xi_logx0, xi_inv_dlogx
+            p_f64, # xi_y
+            ci, # w_type
+            cd, cd, cd, # sigma_eps2, area, nbar
+            p_f64, p_f64] # Np, out
+        lib.continuous_rterms_tomo.restype = None
+        lib.continuous_rterms_tomo.argtypes = [
+            ci, p_f64, # n_r, theta_centers
+            p_f64, p_f64, ci, # phi_grid, phi_w, n_phi
+            p_f64, p_f64, ci, # v_grid, v_w, n_v
+            p_f64, p_f64, ci, # v_half, v_half_w, n_vh
+            cd, # area
+            p_f64, ci, cd, cd, # xi_x, xi_n, xi_logx0, xi_inv_dlogx
+            p_f64, ci, # xi_y_tables, n_xi_unique
+            ci, # n_work
+            p_i32, p_i32, p_i32, p_i32, # work_xi_a_p/b_p/a_m/b_m
+            p_i32, # work_out_idx
+            ci, p_f64, # n_out, results
+            ci, ci] # nthreads, verbose
+        self._continuous_fns = (lib.continuous_q_single,
+                                lib.continuous_rterms_tomo)
+        return self._continuous_fns
+
+    def _rterms_continuous_c(self):
+        """All five continuum-limit r-terms in one C/OpenMP call, or None.
+
+        One work unit: the non-tomographic case has a single bin pair, hence a
+        single Wick pairing and no 0.5 -- contrast :meth:`get_continuous_tomo_c`,
+        which emits both degenerate pairings and halves the result. Table 0 is
+        ξ_+, table 1 is ξ_-.
+        """
+        _, fn = self._continuous_kernel()
+        if not fn:
+            return None
+        tables = self._xi_tables_from_splines([self.xip, self.xim])
+        if tables is None:
+            return None
+        # One call yields all five terms, but the getters ask for them one at
+        # a time (smooth_rterms does so on a swapped-in fine grid), so the
+        # result is memoised against the grids it was computed on.
+        key = (id(self.phi_grid), id(self.varphi1_grid), self.n_r)
+        cached = getattr(self, '_rterms_cont_cache', None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        xi_x, xi_y_tables, xi_logx0, xi_inv_dlogx, xi_n = tables
+
+        v = np.ascontiguousarray(self.varphi1_grid, dtype=np.float64)
+        v_half = np.ascontiguousarray(v[v <= np.pi], dtype=np.float64)
+        n = self.n_r
+        results = np.zeros(5 * n * n, dtype=np.float64)
+        one = np.zeros(1, dtype=np.int32)
+        fn(n, np.ascontiguousarray(self.theta_centers, dtype=np.float64),
+           np.ascontiguousarray(self.phi_grid, dtype=np.float64),
+           np.ascontiguousarray(_trapz_weights(self.phi_grid), dtype=np.float64),
+           len(self.phi_grid),
+           v, np.ascontiguousarray(_periodic_weights(v), dtype=np.float64), len(v),
+           v_half, np.ascontiguousarray(_trapz_weights(v_half), dtype=np.float64),
+           len(v_half),
+           float(self.area),
+           xi_x, xi_n, xi_logx0, xi_inv_dlogx, xi_y_tables, 2,
+           1, one, one, one + 1, one + 1, one,
+           5, results, int(self.n_workers), 0)
+        out = results.reshape(5, n, n)
+        self._rterms_cont_cache = (key, out)
+        return out
+
+    @staticmethod
+    def _xi_tables_from_splines(splines):
+        """Tabulate xi splines on their shared log-uniform knots for C.
+
+        Returns ``(xi_x, xi_y_tables, xi_logx0, xi_inv_dlogx, xi_n)``, or
+        ``None`` if the splines carry no ``.x`` knots (the C kernel's
+        piecewise-linear lookup would then not reproduce them).
+        """
+        spl0 = splines[0]
+        x = getattr(spl0, 'x', None)
+        if x is None:
+            return None
+        xi_x = np.ascontiguousarray(x, dtype=np.float64)
+        xi_n = len(xi_x)
+        xi_y_tables = np.empty((len(splines), xi_n), dtype=np.float64)
+        for t, spl in enumerate(splines):
+            xi_y_tables[t] = spl(xi_x)
+        return (xi_x, np.ascontiguousarray(xi_y_tables),
+                float(np.log(xi_x[0])),
+                float(1. / (np.log(xi_x[1]) - np.log(xi_x[0]))), xi_n)
+
+    def _run_postq_engine(self, cbm, xi_tables, symmetric_mask, postq_fn,
+                          verbose=False, pair_mask=None, n_workers=None):
+        """Drive the C post-q kernel over the phi grid.
+
+        Shared by the non-tomographic and tomographic r-term integrals: the
+        only difference between them is the callback map, so both use the same
+        geometry setup, tiling and worker. Serial and parallel runs call the
+        identical worker, the former in-process instead of forking.
+
+        Returns one (n_r, n_r) array per output block, already carrying the
+        2πA/(N_p N_p) prefactor.
+        """
+        if n_workers is None:
+            n_workers = self.n_workers
+        xi_x, xi_y_tables, xi_logx0, xi_inv_dlogx, xi_n = xi_tables
+        n_out = cbm['n_out']
+        n = self.n_r
+
+        if self.phi1_subgrid_frac is None:
+            phi1_nodes = self.theta_centers[:, None]
+            phi1_weights = (self.theta_centers * self.dtheta)[:, None]
+        else:
+            s1f = np.asarray(self.phi1_subgrid_frac, dtype=float)
+            phi1_nodes = self.theta_centers[:, None] + np.outer(self.dtheta, s1f)
+            phi1_weights = phi1_nodes * self.dtheta[:, None] * _trapz_weights(s1f)[None, :]
+        if self.phi2_subgrid_frac is None:
+            phi2_nodes = self.theta_centers[:, None]
+            phi2_weights = (self.theta_centers * self.dtheta)[:, None]
+        else:
+            s2f = np.asarray(self.phi2_subgrid_frac, dtype=float)
+            phi2_nodes = self.theta_centers[:, None] + np.outer(self.dtheta, s2f)
+            phi2_weights = phi2_nodes * self.dtheta[:, None] * _trapz_weights(s2f)[None, :]
+
+        phi_grid = self.phi_grid
+        phi_w = _trapz_weights(phi_grid)
+        v1_w = np.ascontiguousarray(_periodic_weights(self.varphi1_grid),
+                                    dtype=np.float64)
+        v2_w = _periodic_weights(self.varphi2_grid)
+
+        nr1, nr2 = phi1_nodes.shape[0], phi2_nodes.shape[0]
+        nrb = self.nr_block or nr1
+        if pair_mask is not None:
+            tile_rows = []
+            for i1 in range(0, nr1, nrb):
+                sl1 = slice(i1, i1 + nrb)
+                if not pair_mask[sl1].any():
+                    continue
+                i2s = [i2 for i2 in range(0, nr2, nrb)
+                       if pair_mask[sl1, i2:i2 + nrb].any()]
+                if i2s:
+                    tile_rows.append((i1, i2s))
+        else:
+            tile_rows = None
+
+        accum = [np.zeros((n, n)) for _ in range(n_out)]
+        nphi = len(phi_grid)
+        if n_workers > 1:
+            self._ensure_q_shared()
+
+        _WORKER_STATE.update(
+            phi1_nodes=phi1_nodes,
+            phi1_weights=phi1_weights,
+            phi2_nodes=phi2_nodes,
+            phi2_weights=phi2_weights,
+            phi_grid=phi_grid,
+            phi_w=phi_w,
+            v1_grid=self.varphi1_grid,
+            v1_w=v1_w,
+            v2_grid=self.varphi2_grid,
+            v2_w=v2_w,
+            q_func=self._q_func,
+            q_array=(None if callable(self.quadruplets) else self.quadruplets),
+            q_r_centers=self.q_theta_centers,
+            q_phi_centers=self.q_phi_centers,
+            v2_block=self.v2_block,
+            nr_block=self.nr_block,
+            pair_mask=pair_mask,
+            tile_rows=tile_rows,
+            postq_fn=postq_fn,
+            n_cb=len(cbm['xi_a_idx']),
+            n_out=n_out,
+            xi_a_idx_c=np.ascontiguousarray(cbm['xi_a_idx'], dtype=np.int32),
+            xi_b_idx_c=np.ascontiguousarray(cbm['xi_b_idx'], dtype=np.int32),
+            w_ids_c=np.ascontiguousarray(cbm['w_ids'], dtype=np.int32),
+            out_idx_c=np.ascontiguousarray(cbm['out_idx'], dtype=np.int32),
+            wick_fac_c=np.ascontiguousarray(cbm['wick_fac'], dtype=np.float64),
+            xi_x=xi_x,
+            xi_y_tables=xi_y_tables,
+            xi_n=xi_n,
+            xi_logx0=xi_logx0,
+            xi_inv_dlogx=xi_inv_dlogx,
+            n_xi_unique=len(xi_y_tables),
+            symmetric_rterms_mask=np.asarray(symmetric_mask, dtype=bool),
+        )
+
+        gc.collect()
+        gc.freeze()
+        try:
+            t0 = time.perf_counter()
+            if n_workers > 1:
+                import multiprocessing as mp
+                ctx = mp.get_context('fork')
+                with ctx.Pool(processes=n_workers,
+                              initializer=_worker_init) as pool:
+                    it = pool.imap_unordered(_quadruplet_phi_worker_tomo,
+                                             range(nphi))
+                    for idx, contribs in enumerate(it):
+                        if verbose:
+                            _print_phi_eta(idx + 1, nphi, t0)
+                        for oi, c in enumerate(contribs):
+                            accum[oi] += c
+            else:
+                for kphi in range(nphi):
+                    if verbose:
+                        _print_phi_eta(kphi, nphi, t0)
+                    contribs = _quadruplet_phi_worker_tomo(kphi)
+                    for oi, c in enumerate(contribs):
+                        accum[oi] += c
+            if verbose:
+                sys.stdout.write('\n')
+        finally:
+            gc.unfreeze()
+            _WORKER_STATE.clear()
+
+        if pair_mask is not None:
+            for oi in range(n_out):
+                accum[oi] = np.where(pair_mask, accum[oi], 0.)
+
+        pre = 2. * np.pi * self.area / np.outer(self.pairs, self.pairs)
+        return [pre * a for a in accum]
+
+    def _build_notomo_callback_map(self):
+        """Callback map for the five non-tomo r-terms.
+
+        The weight ids match the tomo ``rterm_types`` term for term, and with
+        a single bin every Wick pairing is degenerate, so all factors are 1
+        (see the Wick convention in :meth:`_build_tomo_callback_map`). Table
+        0 is ξ_+, table 1 is ξ_-.
+        """
+        return dict(
+            xi_a_idx=[0, 1, 1, 0, 0],
+            xi_b_idx=[0, 1, 1, 0, 1],
+            w_ids=[0, 1, 2, 3, 4],
+            out_idx=[0, 1, 2, 3, 4],
+            wick_fac=[1.] * 5,
+            n_out=5)
+
+    def _quadruplet_density_terms_c(self, verbose=False, pair_mask=None,
+                                    n_workers=None):
+        """C-accelerated non-tomo r-term integration (rp0, rp1, rm0, rm1, rpm).
+
+        Numerically equivalent to :meth:`_quadruplet_density_terms` driven by
+        :meth:`_rterm_specs`, except that ξ_± are read from the kernel's
+        piecewise-linear table rather than evaluated directly. For a linear
+        ``interp1d`` (the usual input) that is exact; for a higher-order spline
+        it is a ~1e-6 approximation on the spline's own knots.
+
+        Returns ``None`` when the C path is unavailable, so the caller can
+        fall back to the Python reference.
+        """
+        fn = self._postq_kernel()
+        if not fn:
+            return None
+        xi_tables = self._xi_tables_from_splines([self.xip, self.xim])
+        if xi_tables is None:
+            return None
+        return self._run_postq_engine(
+            self._build_notomo_callback_map(), xi_tables,
+            [True, True, True, True, False], fn,
+            verbose=verbose, pair_mask=pair_mask, n_workers=n_workers)
+
     def _rterm_specs(self):
         """Ordered ``(name, weight_func, (xi_a, xi_b), symmetrise)`` for the
         five r-terms — single source of truth shared by the individual
@@ -2124,30 +2559,31 @@ class GGCovarianceNoTomo:
         return (
             ('rp0',
              lambda V1, V2, va, vb: 1.,
-             (self.xip, self.xip), True),                       # L25 Eq. 3.14
+             (self.xip, self.xip), True), # L25 Eq. 3.14
             ('rp1',
              lambda V1, V2, va, vb: (np.cos(4. * va) * np.cos(4. * vb)
                                       + np.sin(4. * va) * np.sin(4. * vb)),
-             (self.xim, self.xim), True),                       # L25 Eq. 3.15
+             (self.xim, self.xim), True), # L25 Eq. 3.15
             ('rm0',
              lambda V1, V2, va, vb: np.cos(4. * (V1 + V2 - va - vb)),
-             (self.xim, self.xim), True),                       # L25 Eq. 3.19
+             (self.xim, self.xim), True), # L25 Eq. 3.19
             ('rm1',
              lambda V1, V2, va, vb: np.cos(4. * (V1 - V2)),
-             (self.xip, self.xip), True),                       # L25 Eq. 3.20
+             (self.xip, self.xip), True), # L25 Eq. 3.20
             ('rpm',
              lambda V1, V2, va, vb: 2. * np.cos(4. * (V2 - vb)),
-             (self.xip, self.xim), False),  # asymmetric: Cov(xi+,xi-) != .T
+             (self.xip, self.xim), False), # asymmetric: Cov(xi+,xi-) != .T
         )
 
-    def get_all_rterms(self, verbose=False, n_workers=None, pair_mask=None):
+    def get_all_rterms(self, verbose=False, n_workers=None, pair_mask=None,
+                       use_c=True):
         """Compute rp0, rp1, rm0, rm1, rpm in a single pass.
 
         The 4-D quadruplet-density interpolation dominates the cost of each
         individual ``getrXX_discrete`` call and is identical across all five
-        terms (same grids, same tile plan); :meth:`_quadruplet_density_terms`
-        evaluates it once per tile and reuses it for every ``(weight, xi)``
-        pair, turning ~5x that cost into ~1x.
+        terms (same grids, same tile plan); the integral is evaluated once per
+        tile and reused for every ``(weight, xi)`` pair, turning ~5x that cost
+        into ~1x.
 
         ``pair_mask`` : (n_r, n_r) bool, optional
             Restrict to a near-diagonal band, as for the individual getters.
@@ -2155,6 +2591,11 @@ class GGCovarianceNoTomo:
             ``max(slab_width.values())`` — bands are nested, so this is a
             superset of every smaller band) and then assign each returned
             term back to its own (smaller) mask.
+        ``use_c`` : bool
+            Route the accumulation through the C kernel (the default). Set
+            False to force :meth:`_quadruplet_density_terms`, the pure-numpy
+            reference; the C path also falls back to it automatically when the
+            kernel or the ξ_± spline knots are unavailable.
 
         Returns
         -------
@@ -2165,13 +2606,16 @@ class GGCovarianceNoTomo:
                 "get_all_rterms() is not supported for "
                 "method_quadruplets='continuous'; call "
                 "getrp0()...getrpm() individually.")
-        specs = self._rterm_specs()
-        weight_callbacks = [w for _, w, _, _ in specs]
-        xi_callbacks = [xi for _, _, xi, _ in specs]
-        symmetrise = [s for _, _, _, s in specs]
-        results = self._quadruplet_density_terms(
-            weight_callbacks, xi_callbacks, symmetrise=symmetrise,
-            verbose=verbose, n_workers=n_workers, pair_mask=pair_mask)
+        results = None
+        if use_c:
+            results = self._quadruplet_density_terms_c(
+                verbose=verbose, pair_mask=pair_mask, n_workers=n_workers)
+        if results is None:
+            specs = self._rterm_specs()
+            results = self._quadruplet_density_terms(
+                [w for _, w, _, _ in specs], [xi for _, _, xi, _ in specs],
+                symmetrise=[s for _, _, _, s in specs],
+                verbose=verbose, n_workers=n_workers, pair_mask=pair_mask)
         self.rp0, self.rp1, self.rm0, self.rm1, self.rpm = results
         return tuple(results)
 
@@ -2181,7 +2625,7 @@ class GGCovarianceNoTomo:
         If any of the five are still ``None``, (re)computes all of them --
         via the batched :meth:`get_all_rterms` for the discrete methods, or
         individually for ``method_quadruplets='continuous'`` (unsupported by
-        :meth:`get_all_rterms`).  ``q_func_local`` is term-invariant and
+        :meth:`get_all_rterms`). ``q_func_local`` is term-invariant and
         dominates the cost of each individual ``getrXX_discrete`` call, so
         one batched pass beats five separate ones.
         """
@@ -2189,14 +2633,16 @@ class GGCovarianceNoTomo:
                (self.rp0, self.rp1, self.rm0, self.rm1, self.rpm)):
             return
         if self.method_quadruplets == 'continuous':
-            self.getrp0(); self.getrp1()
-            self.getrm0(); self.getrm1()
+            self.getrp0()
+            self.getrp1()
+            self.getrm0()
+            self.getrm1()
             self.getrpm()
         else:
             self.get_all_rterms(verbose=verbose, n_workers=n_workers)
 
     def getrp0(self, verbose=False, n_workers=None, pair_mask=None):
-        """r_+0 contribution to Cov_pp cosmic variance.  Dispatches to
+        """r_+0 contribution to Cov_pp cosmic variance. Dispatches to
         :meth:`getrp0_continuous` or :meth:`getrp0_discrete` based on
         ``method_quadruplets`` (``pair_mask``/``verbose``/``n_workers`` only
         apply to the discrete path).
@@ -2215,7 +2661,7 @@ class GGCovarianceNoTomo:
         return self.rp0
 
     def getrp1(self, verbose=False, n_workers=None, pair_mask=None):
-        """r_+1 contribution to Cov_pp cosmic variance.  Dispatches to
+        """r_+1 contribution to Cov_pp cosmic variance. Dispatches to
         :meth:`getrp1_continuous` or :meth:`getrp1_discrete` based on
         ``method_quadruplets`` (``pair_mask``/``verbose``/``n_workers`` only
         apply to the discrete path).
@@ -2234,7 +2680,7 @@ class GGCovarianceNoTomo:
         return self.rp1
 
     def getrm0(self, verbose=False, n_workers=None, pair_mask=None):
-        """r_-0 contribution to Cov_mm cosmic variance.  Dispatches to
+        """r_-0 contribution to Cov_mm cosmic variance. Dispatches to
         :meth:`getrm0_continuous` or :meth:`getrm0_discrete` based on
         ``method_quadruplets`` (``pair_mask``/``verbose``/``n_workers`` only
         apply to the discrete path).
@@ -2253,7 +2699,7 @@ class GGCovarianceNoTomo:
         return self.rm0
 
     def getrm1(self, verbose=False, n_workers=None, pair_mask=None):
-        """r_-1 contribution to Cov_mm cosmic variance.  Dispatches to
+        """r_-1 contribution to Cov_mm cosmic variance. Dispatches to
         :meth:`getrm1_continuous` or :meth:`getrm1_discrete` based on
         ``method_quadruplets`` (``pair_mask``/``verbose``/``n_workers`` only
         apply to the discrete path).
@@ -2272,7 +2718,7 @@ class GGCovarianceNoTomo:
         return self.rm1
 
     def getrpm(self, verbose=False, n_workers=None, pair_mask=None):
-        """r_+- contribution to Cov_pm cosmic variance.  Dispatches to
+        """r_+- contribution to Cov_pm cosmic variance. Dispatches to
         :meth:`getrpm_continuous` or :meth:`getrpm_discrete` based on
         ``method_quadruplets`` (``pair_mask``/``verbose``/``n_workers`` only
         apply to the discrete path).
@@ -2286,7 +2732,7 @@ class GGCovarianceNoTomo:
         """r_+- contribution to Cov_pm cosmic variance.
 
         Note: symmetrise=False because Cov(ξ₊, ξ₋) is genuinely asymmetric
-        under (θ₁, θ₂) ↔ (θ₂, θ₁).  The full Cov_xipm matrix is assembled
+        under (θ₁, θ₂) ↔ (θ₂, θ₁). The full Cov_xipm matrix is assembled
         with cov_pm in the upper-right block and cov_pm.T in the lower-left.
         """
         _, w, xi_pair, sym = self._rterm_specs()[4]
@@ -2338,9 +2784,12 @@ class GGCovarianceNoTomo:
         self._ensure_all_rterms()
 
         if window == 'gaussian':
-            smooth = lambda a: gaussian_filter(a, sigma=window_size, mode='nearest')
+            def smooth(a):
+                return gaussian_filter(a, sigma=window_size, mode='nearest')
         elif window == 'tophat':
-            smooth = lambda a: uniform_filter(a, size=int(round(window_size)), mode='nearest')
+            def smooth(a):
+                return uniform_filter(a, size=int(round(window_size)),
+                                      mode='nearest')
         else:
             raise ValueError(f"Unknown window='{window}'")
 
@@ -2376,7 +2825,7 @@ class GGCovarianceNoTomo:
     def get_cov_pp(self, verbose=False, n_workers=None):
         """Assemble the full Cov_pp matrix."""
         if verbose: print("Doing cov_++: D")
-        if self.D   is None: self.getD()
+        if self.D is None: self.getD()
         if verbose: print("Doing cov_++: q++")
         if self.qpp is None: self.getqpp()
         if verbose: print("Doing cov_++: r+0")
@@ -2389,7 +2838,7 @@ class GGCovarianceNoTomo:
     def get_cov_mm(self, verbose=False, n_workers=None):
         """Assemble the full Cov_mm matrix."""
         if verbose: print("Doing cov_--: D")
-        if self.D   is None: self.getD()
+        if self.D is None: self.getD()
         if verbose: print("Doing cov_--: q--")
         if self.qmm is None: self.getqmm()
         if verbose: print("Doing cov_--: r-0")
@@ -2400,7 +2849,7 @@ class GGCovarianceNoTomo:
         return self.cov_mm
 
     def get_cov_pm(self, verbose=False, n_workers=None):
-        """Assemble the full Cov_pm matrix.  No diagonal shape-noise term."""
+        """Assemble the full Cov_pm matrix. No diagonal shape-noise term."""
         if verbose: print("Doing cov_+-: q+-")
         if self.qpm is None: self.getqpm()
         if verbose: print("Doing cov_+-: r+-")
@@ -2444,12 +2893,13 @@ class GGCovarianceNoTomo:
         materialised on the q bin grid here.
         """
         if callable(self.quadruplets):
-            T1, T2, T3, A12, A13 = np.meshgrid(
-                self.q_theta_centers, self.q_theta_centers,
-                self.q_theta_centers, self.q_phi_centers,
-                self.q_phi_centers, indexing='ij')
-            vals = self.quadruplets(T1, T2, T3, A12, A13)
-            return np.broadcast_to(vals, T1.shape).copy()
+            rc, pc = self.q_theta_centers, self.q_phi_centers
+            shape = (len(rc),) * 3 + (len(pc),) * 2
+            vals = self.quadruplets(
+                rc[:, None, None, None, None], rc[None, :, None, None, None],
+                rc[None, None, :, None, None], pc[None, None, None, :, None],
+                pc[None, None, None, None, :])
+            return np.broadcast_to(vals, shape).copy()
         return np.asarray(self.quadruplets)
 
     @classmethod
@@ -2468,12 +2918,12 @@ class GGCovarianceNoTomo:
         obj = object.__new__(cls)
 
         obj.theta_centers = np.asarray(theta_centers, dtype=float)
-        obj.theta_edges = np.asarray(theta_edges,   dtype=float)
+        obj.theta_edges = np.asarray(theta_edges, dtype=float)
         obj.dtheta = np.diff(obj.theta_edges)
         obj.n_r = len(obj.theta_centers)
 
         obj.phi_centers = np.asarray(phi_centers, dtype=float)
-        obj.phi_edges = np.asarray(phi_edges,   dtype=float)
+        obj.phi_edges = np.asarray(phi_edges, dtype=float)
         obj.n_phi = len(obj.phi_centers)
         obj.dphi = np.diff(obj.phi_edges)
 
@@ -2555,8 +3005,8 @@ class GGCovarianceNoTomo:
         Re-measures the (cheap) fine pair / triplet counts on
         ``new_tc``/``new_te`` from ``self.catalog`` and reuses this instance's
         already-measured quadruplet density (geometry-only), so the expensive
-        4PCF is not remeasured.  Used by :meth:`subbin` to auto-build the
-        ``slab_instance`` when one is not supplied.  The tomographic
+        4PCF is not remeasured. Used by :meth:`subbin` to auto-build the
+        ``slab_instance`` when one is not supplied. The tomographic
         :class:`GGCovariance` overrides this to carry the per-bin-pair xi
         splines.
         """
@@ -2596,7 +3046,7 @@ class GGCovarianceNoTomo:
         """Resample the covariance to a finer radial binning by interpolation.
 
         Each covariance component is resampled individually, by default in
-        log(θ) space.  Plain interpolation undershoots the diagonal peak of
+        log(θ) space. Plain interpolation undershoots the diagonal peak of
         strongly diagonal-dominated components (notably ξ₋ξ₋); set
         ``recompute_slab=True`` to repair a near-diagonal band by evaluating
         the full discrete integrators directly on the fine grid and
@@ -2609,15 +3059,15 @@ class GGCovarianceNoTomo:
         new_theta_edges : (n_new+1,) array_like
             Edges of the fine radial bins, in arcmin.
         new_pairs : (n_new,) array_like, optional
-            Pair counts *measured* at the fine binning.  When given,
+            Pair counts *measured* at the fine binning. When given,
             components are converted to the density
 
                 DENSITY(θ₁,θ₂) = arr(θ₁,θ₂) · Nₚ(θ₁)·Nₚ(θ₂) / (θ₁Δθ₁·θ₂Δθ₂)
 
             interpolated, then rescaled by the measured fine Nₚ — this
             propagates the bin-width-dependent boundary suppression that
-            plain interpolation would miss.  D is recomputed as
-            σ_ε⁴⟨w²⟩²/⟨w⟩² / Nₚ_fine.  If None and ``infer_pairs=False``,
+            plain interpolation would miss. D is recomputed as
+            σ_ε⁴⟨w²⟩²/⟨w⟩² / Nₚ_fine. If None and ``infer_pairs=False``,
             components are log-interpolated directly (appropriate when
             Nₚ ∝ θΔθ, the borderless / analytic case).
         infer_pairs : bool, optional
@@ -2634,36 +3084,36 @@ class GGCovarianceNoTomo:
         recompute_slab : bool, optional
             Recompute a near-diagonal band of width ``slab_width`` directly
             on the fine grid and overwrite the interpolated values there.
-            Requires ``slab_width``.  Without ``slab_instance`` an analytic
+            Requires ``slab_width``. Without ``slab_instance`` an analytic
             fine instance is auto-built (analytic method only).
         slab_instance : GGCovarianceNoTomo, optional
             Fine-grid instance (same 2PCF ``theta`` grid as
             ``new_theta_centers``/``new_theta_edges``) supplying measured
             count tensors for the band — the route for ``'discrete'``: only
             the band is evaluated, so the O(n_r⁴) quadruplet integral is
-            never run over the full matrix.  The quadruplet density may
+            never run over the full matrix. The quadruplet density may
             reuse the coarse tensor (it lives on the independent ``q_theta``
-            grid and is queried continuously).  When None and this instance
+            grid and is queried continuously). When None and this instance
             was built from a ``catalog``, the fine instance is auto-built via
             :meth:`_fine_instance_from_catalog` (fine pairs/triplets
             re-measured, coarse quadruplet density reused).
         slab_width : float or dict, optional
             Half-width of the recomputed band as a θ ratio: element (a, b)
-            is recomputed when ``1/w < θ_b/θ_a < w``.  A scalar applies to
+            is recomputed when ``1/w < θ_b/θ_a < w``. A scalar applies to
             all blocks; a dict with keys ``'pp'``/``'mm'``/``'pm'`` sets the
             ξ₊ξ₊/ξ₋ξ₋/ξ₊ξ₋ widths independently (missing = 1.0, no
             recompute).  ξ₋ξ₋ is the most diagonal-dominated and typically
             needs the widest band.
         slab_nr_block : int, optional
-            θ-tile size for the banded quadruplet integrator.  Defaults to
+            θ-tile size for the banded quadruplet integrator. Defaults to
             roughly the band half-width in fine bins, so off-band tiles are
             skipped entirely.
         recompute_full : bool or iterable of {'D', 'qpp', 'qmm', 'qpm'}, optional
             Components cheap enough (O(n) or O(n²·n_phi), unlike the
             O(n²·n_phi²) 4-D ``r*`` integrals) to evaluate on the *entire*
             fine grid via ``slab_instance`` rather than interpolated.
-            ``True`` = all four, or pass a subset.  Requires
-            ``slab_instance``.  Combine with ``recompute_slab=True`` to keep
+            ``True`` = all four, or pass a subset. Requires
+            ``slab_instance``. Combine with ``recompute_slab=True`` to keep
             ``r*`` on the cheaper banded scheme — ``_recompute_slab`` then
             skips the now-redundant masked recompute for components listed
             here.
@@ -2674,18 +3124,12 @@ class GGCovarianceNoTomo:
             If True, skip computation and print/return a summary dict (keys
             ``'n_fine'``, ``'nr_block'``, ``'slab_elements'``, ``'n_tiles'``,
             ``'total_elements'``, ``'total_integrator_tile_calls'``) of how
-            many elements/tiles each band touches.  ``total_integrator_tile_
+            many elements/tiles each band touches. ``total_integrator_tile_
             calls`` is the tile count of the widest band, since
             ``get_all_rterms`` computes rp0/rp1/rm0/rm1/rpm in one batched
-            pass over the union of the pp/mm/pm bands.  Requires
+            pass over the union of the pp/mm/pm bands. Requires
             ``recompute_slab=True`` and ``slab_width`` for a non-trivial
             summary.
-
-        Notes
-        -----
-        Parallelism uses the instance-level ``n_workers`` (or
-        ``slab_instance.n_workers`` for the banded recompute); the banded
-        path parallelises over φ nodes just like the full path.
 
         Returns
         -------
@@ -2693,6 +3137,12 @@ class GGCovarianceNoTomo:
             New instance on ``new_theta_centers``/``new_theta_edges`` with
             all covariance components pre-loaded (diagonal band recomputed
             when ``recompute_slab=True``).
+
+        Notes
+        -----
+        Parallelism uses the instance-level ``n_workers`` (or
+        ``slab_instance.n_workers`` for the banded recompute); the banded
+        path parallelises over φ nodes just like the full path.
         """
         if dry:
             return self._subbin_dry_run(
@@ -2700,7 +3150,7 @@ class GGCovarianceNoTomo:
                 slab_instance, recompute_slab)
 
         new_tc = np.asarray(new_theta_centers, dtype=float)
-        new_te = np.asarray(new_theta_edges,   dtype=float)
+        new_te = np.asarray(new_theta_edges, dtype=float)
         if len(new_te) != len(new_tc) + 1:
             raise ValueError(
                 "new_theta_edges must have exactly one more entry than "
@@ -2708,7 +3158,7 @@ class GGCovarianceNoTomo:
 
         # Auto-build the fine-grid slab instance from the catalogue when one is
         # not supplied (discrete method): re-measure the cheap fine pair/triplet
-        # counts and reuse this instance's quadruplet density.  Done before
+        # counts and reuse this instance's quadruplet density. Done before
         # computing the coarse r-terms so the still-private q tensor is shared
         # by reference rather than after it moves to shared memory.
         if (slab_instance is None and (recompute_slab or recompute_full)
@@ -2732,7 +3182,7 @@ class GGCovarianceNoTomo:
         else:
             full_set = set()
 
-        if self.D   is None: self.getD()
+        if self.D is None: self.getD()
         if self.qpp is None: self.getqpp()
         if self.qmm is None: self.getqmm()
         if self.qpm is None: self.getqpm()
@@ -2744,14 +3194,14 @@ class GGCovarianceNoTomo:
         tc = self.theta_centers
         dthc = self.dtheta
 
-        x_c = np.log(tc)    if log_theta else tc
+        x_c = np.log(tc) if log_theta else tc
         x_new = np.log(new_tc) if log_theta else new_tc
 
         _interp_arr = self._build_block_interpolator(x_c, x_new, n_new, use_corr)
 
         ## D and 2-D component strategies
         Np_c = np.asarray(self.pairs)
-        phiw_c = tc * dthc                          # θΔθ, coarse
+        phiw_c = tc * dthc # θΔθ, coarse
 
         if infer_pairs and new_pairs is None:
             if self.area is None or self.nbar is None:
@@ -2778,10 +3228,10 @@ class GGCovarianceNoTomo:
             D_scale = float(np.mean(self.D * Np_c))
             D_fine = D_scale / Np_f
 
-            ow_Np_c = np.outer(Np_c,   Np_c)
+            ow_Np_c = np.outer(Np_c, Np_c)
             ow_phiw_c = np.outer(phiw_c, phiw_c)
             ow_phiw_f = np.outer(phiw_f, phiw_f)
-            ow_Np_f = np.outer(Np_f,   Np_f)
+            ow_Np_f = np.outer(Np_f, Np_f)
 
             def _interp(arr, sym):
                 # Remove coarse Nₚ variation → smooth DENSITY, interpolate,
@@ -2797,7 +3247,7 @@ class GGCovarianceNoTomo:
         else:
             # Borderless / analytic case: Nₚ ∝ θΔθ, q and r are
             # bin-width-independent → direct log-interpolation.
-            D_scaled = self.D * dthc        # ∝ 1/θ, bin-width-independent
+            D_scaled = self.D * dthc # ∝ 1/θ, bin-width-independent
             D_fine = np.exp(np.interp(x_new, x_c,
                                         np.log(D_scaled))) / new_dtheta
             _interp = _interp_arr
@@ -2806,9 +3256,14 @@ class GGCovarianceNoTomo:
                   ('rp0', True), ('rp1', True), ('rm0', True),
                   ('rm1', True), ('rpm', False)]
         fine = {name: _interp(getattr(self, name), sym) for name, sym in _specs}
-        qpp_f = fine['qpp']; qmm_f = fine['qmm']; qpm_f = fine['qpm']
-        rp0_f = fine['rp0']; rp1_f = fine['rp1']
-        rm0_f = fine['rm0']; rm1_f = fine['rm1']; rpm_f = fine['rpm']
+        qpp_f = fine['qpp']
+        qmm_f = fine['qmm']
+        qpm_f = fine['qpm']
+        rp0_f = fine['rp0']
+        rp1_f = fine['rp1']
+        rm0_f = fine['rm0']
+        rm1_f = fine['rm1']
+        rpm_f = fine['rpm']
 
         # Repair the diagonal-dominated band by direct fine-grid evaluation.
         if recompute_slab:
@@ -2915,17 +3370,17 @@ class GGCovarianceNoTomo:
         total_elems = sum(elem_counts.values())
         total_calls = tile_counts[max_blk]
 
-        print(f"Slab dry run  (fine grid: {N}×{N}, nr_block={nr_block}, "
+        print(f"Slab dry run (fine grid: {N}×{N}, nr_block={nr_block}, "
               f"v2_block={v2_block_slab})")
         for blk in ('pp', 'mm', 'pm'):
             w = widths[blk]
             e = elem_counts[blk]
             t = tile_counts[blk]
-            print(f"  {blk} band (w={w:.3g}):  {e:>8d} elements "
-                  f"({e / N**2 * 100:5.1f}%),  {t:>5d} tiles")
-        print(f"  {'Total':15s}  {total_elems:>8d} elements "
+            print(f" {blk} band (w={w:.3g}): {e:>8d} elements "
+                  f"({e / N**2 * 100:5.1f}%), {t:>5d} tiles")
+        print(f" {'Total':15s}  {total_elems:>8d} elements "
               f"({total_elems / N**2 * 100:5.1f}%)")
-        print(f"  r-terms (rp0,rp1,rm0,rm1,rpm): single batched pass over "
+        print(f" r-terms (rp0,rp1,rm0,rm1,rpm): single batched pass over "
               f"'{max_blk}' band (w={widths[max_blk]:.3g}) "
               f"= {total_calls:>5d} integrator×tile calls")
 
@@ -2956,14 +3411,17 @@ class GGCovarianceNoTomo:
 
         Zero blocks are returned as zero without interpolation.
         """
+        # Bilinear interpolation on a tensor grid is separable, so the 2-D
+        # map is the same 1-D weight matrix applied along both axes. Building
+        # it once here replaces one RegularGridInterpolator per block, of
+        # which subbin_tomo needs O(n_bp^2).
+        W = RegularGridInterpolator(
+            (x_c,), np.eye(len(x_c)),
+            method='linear', bounds_error=False, fill_value=None)(x_new[:, None])
+
         def _raw(arr, log_interp=False):
             data = np.log(arr) if log_interp else arr
-            rgi = RegularGridInterpolator(
-                (x_c, x_c), data,
-                method='linear', bounds_error=False, fill_value=None)
-            G1, G2 = np.meshgrid(x_new, x_new, indexing='ij')
-            result = rgi(np.stack([G1.ravel(), G2.ravel()], axis=-1)
-                         ).reshape(n_new, n_new)
+            result = W @ data @ W.T
             return np.exp(result) if log_interp else result
 
         def _corr(arr):
@@ -3021,7 +3479,7 @@ class GGCovarianceNoTomo:
         """Overwrite the near-diagonal band of the (interpolated) fine-grid
         components with values evaluated directly on the fine grid.
 
-        Helper for :meth:`subbin` (``recompute_slab=True``).  ``components`` is
+        Helper for :meth:`subbin` (``recompute_slab=True``). ``components`` is
         ``(qpp, qmm, qpm, rp0, rp1, rm0, rm1, rpm)`` already interpolated onto
         the fine grid; the returned tuple has the diagonal band overwritten.
 
@@ -3035,7 +3493,7 @@ class GGCovarianceNoTomo:
             ``new_te``) whose measured count tensors supply the band — the
             route for ``'discrete'`` (quadruplet density may reuse the
             coarse tensor, since it lives on the independent ``q_theta``
-            grid).  If ``None``, an analytic fine instance is auto-built from
+            grid). If ``None``, an analytic fine instance is auto-built from
             this instance's ``nbar``/``area``/suppression (analytic method
             only).
         """
@@ -3061,13 +3519,13 @@ class GGCovarianceNoTomo:
                 max(4, m_max), self.v2_block, n_v2)
 
         if fine is None:
-            ## auto-build an analytic fine instance
+            ## Auto-build an analytic fine instance
             if not (self.method_pairs == 'analytic'
                     and self.method_triplets == 'analytic'
                     and self.method_quadruplets == 'analytic'):
                 raise NotImplementedError(
                     "recompute_slab=True without an explicit `slab_instance` "
-                    "is only supported for analytic count tensors.  For the "
+                    "is only supported for analytic count tensors. For the "
                     "'discrete' method, build a fine-grid GGCovarianceNoTomo "
                     "with your measured triplet/quadruplet tensors and pass it "
                     "as subbin(..., slab_instance=fine).")
@@ -3096,10 +3554,10 @@ class GGCovarianceNoTomo:
             if fine_pairs is not None:
                 fine.pairs = np.asarray(fine_pairs, dtype=float)
         else:
-            ## use the caller-supplied fine instance (any method)
+            ## Use the caller-supplied fine instance (any method)
             self._check_slab_instance_grid(fine, new_tc, new_te)
-            # Apply tile-size reduction.  When slab_nr_block is given explicitly,
-            # honour it directly.  Otherwise apply _auto_reduce_tiles: if fine
+            # Apply tile-size reduction. When slab_nr_block is given explicitly,
+            # honour it directly. Otherwise apply _auto_reduce_tiles: if fine
             # already has an nr_block set (user-chosen for memory safety),
             # rebase the reduction on that value so nr_block²·v2_block stays
             # within the user's budget; if not, use the m_max-derived values
@@ -3190,6 +3648,16 @@ class GGCovarianceNoTomo:
             raise ValueError(f"catalog['{name}'] is required")
         return default
 
+    def _nmaxs(self):
+        """``catalog['nmaxs']`` in a form the NPCF constructors accept.
+
+        They take either a scalar ``int`` (broadcast over the ``order-2``
+        angular arguments) or an array; a plain list has no ``.astype`` and
+        would fail inside ``npcf_base``.
+        """
+        nmaxs = self._catalog_param('nmaxs', required=True)
+        return nmaxs if isinstance(nmaxs, int) else np.asarray(nmaxs, dtype=np.int32)
+
     def _catalog_arrays(self):
         """Return ``(ra, dec, weight)`` float arrays from ``self.catalog``."""
         ra = np.asarray(self._catalog_param('ra', required=True), dtype=float)
@@ -3203,9 +3671,9 @@ class GGCovarianceNoTomo:
 
         ``kind='spin'`` -> SpinTracerCatalog (GG / GGG), patch-extended for the
         2PCF θ range; ``kind='scalar'`` -> ScalarTracerCatalog (NNNN),
-        patch-extended for the q θ range.  Tracers are unit fields so the
+        patch-extended for the q θ range. Tracers are unit fields so the
         measured ``norm`` / ``npcf_norm`` / ``npcf`` are pure (weighted)
-        geometry counts.  Spherical catalogues must be decomposed into patches
+        geometry counts. Spherical catalogues must be decomposed into patches
         before ``process`` / ``frompatchind`` (orpheus requirement), so
         ``topatches`` is applied here with the requested ``npatches``.
         """
@@ -3249,19 +3717,26 @@ class GGCovarianceNoTomo:
         rmin_pixsize = self._catalog_param('rmin_pixsize', 40)
         tree_resos = list(np.ravel(self._catalog_param(
             'tree_resos', [0., 0.5, 1., 2., 4.])))
-        nmaxs = list(np.ravel(self._catalog_param('nmaxs', required=True)))
+        # Every statistic is measured on the patched catalogue, so npatches
+        # belongs in all three keys. It is appended only when it differs from
+        # the default of 1, so caches written before it entered the pairs and
+        # triplets keys stay valid. nmaxs is only read by the multipole
+        # estimators -- GGCorrelation never sees it.
+        npatches = int(self._catalog_param('npatches', required=True))
+        np_tag = () if npatches == 1 else (npatches,)
         if stat == 'pairs':
             meta = ('pairs', float(self.theta_edges[0]),
-                    float(self.theta_edges[-1]), int(self.n_r))
+                    float(self.theta_edges[-1]), int(self.n_r)) + np_tag
         elif stat == 'triplets':
+            nmaxs = list(np.ravel(self._catalog_param('nmaxs', required=True)))
             meta = ('triplets', float(self.theta_edges[0]),
                     float(self.theta_edges[-1]), int(self.triplet_n_r),
-                    int(self.n_phi), nmaxs)
+                    int(self.n_phi), nmaxs) + np_tag
         elif stat == 'quadruplets':
+            nmaxs = list(np.ravel(self._catalog_param('nmaxs', required=True)))
             meta = ('quadruplets', float(self.q_theta_edges[0]),
                     float(self.q_theta_edges[-1]), int(self.q_n_r),
-                    int(self.q_n_phi), nmaxs,
-                    int(self._catalog_param('npatches', required=True)),
+                    int(self.q_n_phi), nmaxs, npatches,
                     self._catalog_param('method', 'DoubleTree'))
         else:
             raise ValueError(f"unknown stat '{stat}'")
@@ -3290,9 +3765,9 @@ class GGCovarianceNoTomo:
 
         The orpheus measurement binning is derived from the covariance grids
         (θ grid for pairs; the oversampled triplet θ grid + ``phi_centers``
-        for triplets; ``q_theta`` / ``q_phi`` for quadruplets).  Only
+        for triplets; ``q_theta`` / ``q_phi`` for quadruplets). Only
         ``rmin_pixsize``, ``tree_resos``, ``npatches`` and ``nmaxs`` come from
-        the ``catalog`` dict.  Catalog θ grids must be log-uniform.
+        the ``catalog`` dict. Catalog θ grids must be log-uniform.
 
         Results are cached under ``catalog['path_save']`` keyed by a hash of
         the inputs (so an identical request is reloaded, not recomputed).
@@ -3366,14 +3841,15 @@ class GGCovarianceNoTomo:
             ggg = GGGCorrelation(
                 n_cfs=4, min_sep=float(self.theta_edges[0]),
                 max_sep=float(self.theta_edges[-1]), nbinsr=self.triplet_n_r,
-                nmaxs=self._catalog_param('nmaxs', required=True),
-                nbinsphi=self.n_phi,
+                nmaxs=self._nmaxs(), nbinsphi=self.n_phi,
                 rmin_pixsize=self._catalog_param('rmin_pixsize', 40),
                 tree_resos=self._catalog_param('tree_resos', [0., 0.5, 1., 2., 4.]),
                 shuffle_pix=1, verbosity=self._catalog_param('verbosity', 1),
                 nthreads=self.n_workers)
             ggg.process(self._ensure_catalog('spin'))
-            ggg.multipoles2npcf()
+            # Only the norm is needed; 'X' skips the centroid rotation of the
+            # (4, nz, nr, nr, nphi) shear array, which would be discarded.
+            ggg.multipoles2npcf(projection='X')
             triplets = np.asarray(ggg.npcf_norm[0].real, dtype=float)
             bc = np.asarray(ggg.bin_centers_mean, dtype=float)
             empty = bc == 0.
@@ -3431,19 +3907,19 @@ class GGCovarianceNoTomo:
         Each patch is measured sequentially with the full thread budget
         (``self.n_workers``); orpheus' 4PCF kernels parallelise internally over
         radial-bin combinations via ``#pragma omp parallel num_threads(...)``,
-        so a serial patch loop keeps every core busy without forking.  (A
+        so a serial patch loop keeps every core busy without forking. (A
         forked patch pool would inherit an already-initialised OpenMP runtime
         from the parent's pair/triplet measurement and silently run each child
         single-threaded.)  Per-patch multipoles are written to disk (enabling
         the ``store_multiplets`` footprint cleanup and crash recovery) and
-        summed before the single multipole->real conversion.  ``npatches == 1``
-        is the trivial single-footprint case.  Returns the real-space count
+        summed before the single multipole->real conversion. ``npatches == 1``
+        is the trivial single-footprint case. Returns the real-space count
         tensor ``(q_n_r, q_n_r, q_n_r, q_n_phi, q_n_phi)``.
         """
         from .npcf_fourth import NNNNCorrelation_NoTomo
         path_save = self.catalog['path_save']
         npatches = int(self._catalog_param('npatches', required=True))
-        nmaxs = self._catalog_param('nmaxs', required=True)
+        nmaxs = self._nmaxs()
         rmin_pixsize = self._catalog_param('rmin_pixsize', 40)
         tree_resos = self._catalog_param('tree_resos', [0., 0.5, 1., 2., 4.])
         method = self._catalog_param('method', 'DoubleTree')
@@ -3470,12 +3946,11 @@ class GGCovarianceNoTomo:
             if empty.any():
                 bc[empty] = self.q_theta_centers[empty]
             self.q_theta_centers = bc
-            nnnn.nbinsz = 1
             nnnn.multipoles2npcf()
             return nnnn.npcf[:, :, :, 0].real.copy()
 
-        ## Multi-patch: serial loop, each patch using all threads.  Per-patch
-        ## multipoles are cached to disk so an interrupted run can resume.
+        ## Multi-patch: serial loop, each patch using all threads
+        # Per-patch multipoles are cached so an interrupted run can resume.
         summed = None
         centers = None
         norm_centers = None
@@ -3503,7 +3978,6 @@ class GGCovarianceNoTomo:
 
         ## Combine: sum the per-patch multipoles, average the bin centers.
         nnnn = _new_nnnn()
-        nnnn.nbinsz = 1
         nnnn.npcf_multipoles = summed
         nnnn.bin_centers_mean = np.divide(
             centers, norm_centers, out=np.zeros_like(centers),
@@ -3528,14 +4002,18 @@ class GGCovarianceNoTomo:
         if self.area is None:
             raise ValueError("`area` is required to convert counts to density")
         quadcounts_norm = 2. * np.pi / self.q_n_phi / self.q_n_phi
-        N_q = np.asarray(counts, dtype=float) * quadcounts_norm
-        rc, pc = self.q_theta_centers, self.q_phi_centers
-        dt, dp = self.q_dtheta, self.q_dphi
-        T1, T2, T3, _, _ = np.meshgrid(rc, rc, rc, pc, pc, indexing='ij')
-        DT1, DT2, DT3, DP12, DP13 = np.meshgrid(dt, dt, dt, dp, dp, indexing='ij')
-        V_q = (2. * np.pi * self.area
-               * T1 * DT1 * T2 * DT2 * T3 * DT3 * DP12 * DP13)
-        return N_q / V_q
+        q = np.array(counts, dtype=float)
+        tdt = self.q_theta_centers * self.q_dtheta
+        dp = self.q_dphi
+        # V_q is separable -- divide axis by axis (see set_quadruplets_from_counts).
+        q *= quadcounts_norm
+        q /= 2. * np.pi * self.area
+        q /= tdt[:, None, None, None, None]
+        q /= tdt[None, :, None, None, None]
+        q /= tdt[None, None, :, None, None]
+        q /= dp[None, None, None, :, None]
+        q /= dp[None, None, None, None, :]
+        return q
 
     def _cleanup_quadruplet_patchfiles(self, tag):
         """Delete the per-footprint 4PCF patch files for ``tag``."""
@@ -3583,21 +4061,21 @@ class GGCovarianceNoTomo:
         """
         n = gg.nbinsr
         # Measure correction: gg uses `binsize` as the log Δθ;
-        # the exact per-bin measure is dtheta/theta.  For log-uniform bins
-        # (the typical case) this ratio equals 1.  We absorb it into the
+        # the exact per-bin measure is dtheta/theta. For log-uniform bins
+        # (the typical case) this ratio equals 1. We absorb it into the
         # δ-function inputs so the output already carries the right measure.
         theta = np.asarray(gg.bin_centers_mean, dtype=float)
         # Reconstruct dtheta from the GGCorrelation bin edges
-        dtheta = theta * (np.exp(gg.binsize) - 1.)   # exact for log-uniform grid
+        dtheta = theta * (np.exp(gg.binsize) - 1.) # exact for log-uniform grid
         # corr[j]: converts (binsize * theta[j]^2) measure → (dtheta[j] * theta[j]) measure
-        corr = dtheta / (gg.binsize * theta)        # ≡ 1 for log-uniform bins
+        corr = dtheta / (gg.binsize * theta) # ≡ 1 for log-uniform bins
 
         if filter_type == 'Map2':
             R = float(x)
             # Inject xip = diag(corr), xim = 0  →  output = T_+(θ_i/R) * dtheta_i * θ_i/(2R²)
             gg.xip = np.diag(corr).astype(complex)
             gg.xim = np.zeros((n, n), dtype=complex)
-            res_p = gg.computeMap2([R])   # (4, n, 1)
+            res_p = gg.computeMap2([R]) # (4, n, 1)
             # Inject xip = 0, xim = diag(corr)  →  output = T_-(θ_i/R) * dtheta_i * θ_i/(2R²)
             gg.xip = np.zeros((n, n), dtype=complex)
             gg.xim = np.diag(corr).astype(complex)
@@ -3610,28 +4088,30 @@ class GGCovarianceNoTomo:
             # so  M_pEpp = (xip_pure[0] / corr).T
             C = np.diag(corr).astype(complex)
             Z = np.zeros((n, n), dtype=complex)
-            gg.xip = C;  gg.xim = Z
-            xip_p, xim_p = gg.computepuremode()   # (3, n, n) each
-            gg.xip = Z;  gg.xim = C
+            gg.xip = C
+            gg.xim = Z
+            xip_p, xim_p = gg.computepuremode() # (3, n, n) each
+            gg.xip = Z
+            gg.xim = C
             xip_m, xim_m = gg.computepuremode()
 
             # (3, n, n) → (n, n) via divide by corr and transpose
             def _extract(res):
                 return (res / corr[np.newaxis, :, np.newaxis]).real.transpose(0, 2, 1)
 
-            pp = _extract(xip_p)   # (3, n, n):  pp[k] = M_k_pp
-            pm = _extract(xip_m)   # (3, n, n):  pm[k] = M_k_pm
-            mp = _extract(xim_p)   # (3, n, n):  mp[k] = M_k_mp
-            mm = _extract(xim_m)   # (3, n, n):  mm[k] = M_k_mm
+            pp = _extract(xip_p) # (3, n, n):  pp[k] = M_k_pp
+            pm = _extract(xip_m) # (3, n, n):  pm[k] = M_k_pm
+            mp = _extract(xim_p) # (3, n, n):  mp[k] = M_k_mp
+            mm = _extract(xim_m) # (3, n, n):  mm[k] = M_k_mm
 
             # Ordering: xip_E[0], xip_B[1], xip_amb[2], xim_E[0], xim_B[1], xim_amb[2]
             K = np.block([
-                [pp[0], pm[0]],   # xip_E
-                [pp[1], pm[1]],   # xip_B
-                [pp[2], pm[2]],   # xip_amb
-                [mp[0], mm[0]],   # xim_E
-                [mp[1], mm[1]],   # xim_B
-                [mp[2], mm[2]],   # xim_amb
+                [pp[0], pm[0]], # xip_E
+                [pp[1], pm[1]], # xip_B
+                [pp[2], pm[2]], # xip_amb
+                [mp[0], mm[0]], # xim_E
+                [mp[1], mm[1]], # xim_B
+                [mp[2], mm[2]], # xim_amb
             ])
             return K
 
@@ -3670,7 +4150,7 @@ class GGCovarianceNoTomo:
         Nmax : int
             Number of modes — required for ``'cosebis'``.
         theta_min, theta_max : float, optional
-            Survey angular limits.  Defaults to ``self.theta_edges[0/−1]``.
+            Survey angular limits. Defaults to ``self.theta_edges[0/−1]``.
             Required for ``'cosebis'`` (defines the COSEBI integration range)
             and used by ``'puremode'`` for its geometric constants.
         cosebi_dps : int
@@ -3680,7 +4160,7 @@ class GGCovarianceNoTomo:
             ``GGCorrelation.computecosebi``.
         _return_weights : bool
             If True, also return the filter weight matrices alongside the
-            covariance dict.  Used internally by
+            covariance dict. Used internally by
             :meth:`~GGCovariance.cov_of_statistic_tomo` to compute weights
             once and reuse them for all bin-pair blocks.
 
@@ -3691,6 +4171,10 @@ class GGCovarianceNoTomo:
                 ``'cov_EE'`` : (N, N) – E-mode covariance
                 ``'cov_BB'`` : (N, N) – B-mode covariance
                 ``'cov_EB'`` : (N, N) – E×B cross-covariance
+
+            Map2 is dimensionless; COSEBI blocks carry the θ² measure of
+            ``computecosebi`` and are returned in rad⁴, matching a data
+            vector from ``gg.computecosebi(Nmax)`` at its default units.
 
             ``'puremode'``
                 ``'cov'``    : (6·n_r, 6·n_r) – full covariance of
@@ -3703,11 +4187,9 @@ class GGCovarianceNoTomo:
 
         Notes
         -----
-        * When constructing the weights we use nzcombis = n_r "tomographic bins" as
-        basis vectors so that one call to the GGCorrelation compute method
-        returns all n_r weights simultaneously.
-        * We absorb the per-bin integration measure dtheta * theta in the diagonal input
-        matrix, making the approach exact for log-uniform theta grids and reasonable else
+        The per-bin integration measure dθ·θ is absorbed into the diagonal
+        input matrix, which is exact for log-uniform θ grids and a good
+        approximation otherwise.
         """
         from .npcf_second import GGCorrelation
 
@@ -3716,7 +4198,7 @@ class GGCovarianceNoTomo:
         C = self.cov_xipm
         n = self.n_r
         tc = self.theta_centers
-        tmin = float(self.theta_edges[0])  if theta_min is None else float(theta_min)
+        tmin = float(self.theta_edges[0]) if theta_min is None else float(theta_min)
         tmax = float(self.theta_edges[-1]) if theta_max is None else float(theta_max)
 
         # Allocate one helper GGCorrelation for filter extraction.
@@ -3744,8 +4226,10 @@ class GGCovarianceNoTomo:
             W_B = np.zeros((n_R, 2*n))
             for k, R in enumerate(radii):
                 wp, wm = GGCovarianceNoTomo._getfilter('Map2', gg, R)
-                W_E[k, :n] = wp;  W_E[k, n:] = wm
-                W_B[k, :n] = wp;  W_B[k, n:] = -wm
+                W_E[k, :n] = wp
+                W_E[k, n:] = wm
+                W_B[k, :n] = wp
+                W_B[k, n:] = -wm
 
         # COSEBIs
         elif filter_type == 'cosebis':
@@ -3753,23 +4237,27 @@ class GGCovarianceNoTomo:
                 raise ValueError("'Nmax' is required for filter_type='cosebis'")
             # Measure correction (see _getfilter docstring)
             dtheta = tc * (np.exp(gg.binsize) - 1.)
-            corr = dtheta / (gg.binsize * tc)  # = 1 for log-spacing, but lets be safe
+            corr = dtheta / (gg.binsize * tc) # = 1 for log-spacing, but lets be safe
 
-            # T_+ weights: set xip=diag(corr), xim=0
+            # T_+ weights: set xip=diag(corr), xim=0.  units is pinned so the
+            # covariance stays consistent with the computecosebi default even
+            # if that default changes; cov_EE/BB/EB are then in rad^4.
             gg.xip = np.diag(corr).astype(complex)
             gg.xim = np.zeros((n, n), dtype=complex)
             res_p = gg.computecosebi(Nmax, dps=cosebi_dps,
-                                      Tminus_nsample=cosebi_nsample)
+                                      Tminus_nsample=cosebi_nsample,
+                                      units='rad2')
             # T_- weights: set xip = 0, xim = diag(corr)
             gg.xip = np.zeros((n, n), dtype=complex)
             gg.xim = np.diag(corr).astype(complex)
             res_m = gg.computecosebi(Nmax, dps=cosebi_dps,
-                                      Tminus_nsample=cosebi_nsample)
+                                      Tminus_nsample=cosebi_nsample,
+                                      units='rad2')
             # res_p/m shape: (4, n_r, Nmax); res[0] = E contribution from ξ_±
             # E-mode weight matrix W_E[n, iz] = T_+n(θ_iz)*meas + T_-n(θ_iz)*meas
-            W_plus = res_p[0].real.T    # (Nmax, n_r): T_+ weights from ξ_+
-            W_minus = res_m[0].real.T    # (Nmax, n_r): T_- weights from ξ_-
-            W_E = np.concatenate([W_plus,  W_minus], axis=1)   # (Nmax, 2·n_r)
+            W_plus = res_p[0].real.T # (Nmax, n_r): T_+ weights from ξ_+
+            W_minus = res_m[0].real.T # (Nmax, n_r): T_- weights from ξ_-
+            W_E = np.concatenate([W_plus, W_minus], axis=1) # (Nmax, 2·n_r)
             W_B = np.concatenate([W_plus, -W_minus], axis=1)
 
         # Pure mode correlation functions
@@ -3777,18 +4265,19 @@ class GGCovarianceNoTomo:
             K = GGCovarianceNoTomo._getfilter('puremode', gg, None)   # (6·n_r, 2·n_r)
             cov_full = K @ C @ K.T
             lbl = (
-                [f'xip_E[{i}]'   for i in range(n)]
-                + [f'xip_B[{i}]'   for i in range(n)]
+                [f'xip_E[{i}]' for i in range(n)]
+                + [f'xip_B[{i}]' for i in range(n)]
                 + [f'xip_amb[{i}]' for i in range(n)]
-                + [f'xim_E[{i}]'   for i in range(n)]
-                + [f'xim_B[{i}]'   for i in range(n)]
+                + [f'xim_E[{i}]' for i in range(n)]
+                + [f'xim_B[{i}]' for i in range(n)]
                 + [f'xim_amb[{i}]' for i in range(n)]
             )
             out = {'cov': cov_full, 'labels': lbl}
             return (out, (K, lbl)) if _return_weights else out
 
         else:
-            raise ValueError(f"filter_type must be 'Map2', 'cosebis', or 'puremode', got '{filter_type}'")
+            raise ValueError("filter_type must be 'Map2', 'cosebis' or "
+                             f"'puremode', got '{filter_type}'")
 
         out = {
             'cov_EE': W_E @ C @ W_E.T,
@@ -3797,9 +4286,9 @@ class GGCovarianceNoTomo:
         return (out, (W_E, W_B)) if _return_weights else out
 
 
-############################
-# Tomographic covariance   #
-############################
+##########################
+# Tomographic covariance #
+##########################
 
 def _infer_ntomo(n_bp):
     """Recover ntomo from number of unique bin pairs n_bp = ntomo*(ntomo+1)/2."""
@@ -3826,7 +4315,7 @@ class GGCovariance(GGCovarianceNoTomo):
         If a bare callable: single non-tomographic spline, equivalent to
         ``[(0, 0, f)]`` (ntomo=1).
         If a list of ``(i, j, spline)`` tuples with ``i <= j``: one entry
-        per unique tomographic bin pair.  Length must equal
+        per unique tomographic bin pair. Length must equal
         ``ntomo*(ntomo+1)/2`` for some integer ntomo.
     **kwargs
         All other parameters forwarded to :class:`GGCovarianceNoTomo`.
@@ -3872,7 +4361,7 @@ class GGCovariance(GGCovarianceNoTomo):
         self.nbar_ref = float(nbar_ref) if nbar_ref is not None else None
 
         # Parent needs scalar xip/xim for its internal plumbing (analytic
-        # pair/triplet counts, q_func building).  Pass the (0,0) auto-
+        # pair/triplet counts, q_func building). Pass the (0,0) auto-
         # correlation as a reasonable default; the parent's xip/xim are
         # NOT used for the tomo r-term computation.
         super().__init__(
@@ -3904,64 +4393,67 @@ class GGCovariance(GGCovarianceNoTomo):
         p_i32 = ndpointer(np.int32, flags="C_CONTIGUOUS")
         library_path = str(Path(__import__('orpheus').__file__).parent.absolute())
         sos = glob.glob(library_path + "/orpheus_clib*.so")
-        if sos:
-            self._clib = ctypes.CDLL(sos[0])
+        lib = ctypes.CDLL(sos[0]) if sos else None
+        # cov_postq.c is optional in a distribution build, so gate on the
+        # symbol rather than on the library file (which always exists).
+        if lib is not None and hasattr(lib, 'postq_accumulate_tomo'):
+            self._clib = lib
 
             self._clib.postq_accumulate_tomo.restype = None
             self._clib.postq_accumulate_tomo.argtypes = [
-                p_f64, ci, ci, ci, ci,       # q_vals, nrb1, nrb2, nv1, nv2c
-                p_f64, p_f64,                # abs_a, va
-                p_f64, p_f64,                # abs_b, vb
-                p_f64, p_f64,                # v1_grid, v2_chunk
-                p_f64, ci, cd, cd,           # xi_x, xi_n, xi_logx0, xi_inv_dlogx
-                ci, p_i32, p_i32,            # n_cb, xi_a_idx, xi_b_idx
-                p_f64, ci,                   # xi_y_tables, n_xi_unique
-                p_f64, p_f64,                # v1_w, v2_wc
-                p_i32, p_i32, p_f64,         # w_ids, out_idx, wick_fac
-                ci, p_f64]                   # n_out, sub_accum
+                p_f64, ci, ci, ci, ci, # q_vals, nrb1, nrb2, nv1, nv2c
+                p_f64, p_f64, # abs_a, va
+                p_f64, p_f64, # abs_b, vb
+                p_f64, p_f64, # v1_grid, v2_chunk
+                p_f64, ci, cd, cd, # xi_x, xi_n, xi_logx0, xi_inv_dlogx
+                ci, p_i32, p_i32, # n_cb, xi_a_idx, xi_b_idx
+                p_f64, ci, # xi_y_tables, n_xi_unique
+                p_f64, p_f64, # v1_w, v2_wc
+                p_i32, p_i32, p_f64, # w_ids, out_idx, wick_fac
+                ci, p_f64] # n_out, sub_accum
 
             self._clib.continuous_q_tomo.restype = None
             self._clib.continuous_q_tomo.argtypes = [
-                ci, ci,                      # n_r, alpha
-                p_f64, p_f64,                # fine_centers, fine_weights
-                p_f64, p_f64,                # phi_centers, dphi
-                ci, ci,                      # n_fine, n_phi
-                p_f64, ci, cd, cd,           # xi_x, xi_n, xi_logx0, xi_inv_dlogx
-                p_f64, ci,                   # xi_y_tables, n_xi_unique
-                cd, cd, cd,                  # sigma_eps2, area, nbar
-                p_f64,                       # Np
-                ci,                          # n_calls
-                p_i32, p_i32, p_i32,         # call_xi_idx, call_w_type, call_out_idx
-                p_f64,                       # call_factor
-                ci, p_f64,                   # n_out, results
-                ci]                          # nthreads
+                ci, ci, # n_r, alpha
+                p_f64, p_f64, # fine_centers, fine_weights
+                p_f64, p_f64, # phi_centers, dphi
+                ci, ci, # n_fine, n_phi
+                p_f64, ci, cd, cd, # xi_x, xi_n, xi_logx0, xi_inv_dlogx
+                p_f64, ci, # xi_y_tables, n_xi_unique
+                cd, cd, cd, # sigma_eps2, area, nbar
+                p_f64, # Np
+                ci, # n_calls
+                p_i32, p_i32, p_i32, # call_xi_idx, call_w_type, call_out_idx
+                p_f64, # call_factor
+                ci, p_f64, # n_out, results
+                ci, ci] # nthreads, verbose
 
             self._clib.continuous_rterms_tomo.restype = None
             self._clib.continuous_rterms_tomo.argtypes = [
-                ci, p_f64,                   # n_r, theta_centers
-                p_f64, p_f64, ci,            # phi_grid, phi_w, n_phi
-                p_f64, p_f64, ci,            # v_grid, v_w, n_v
-                p_f64, p_f64, ci,            # v_half, v_half_w, n_vh
-                cd,                          # area
-                p_f64, ci, cd, cd,           # xi_x, xi_n, xi_logx0, xi_inv_dlogx
-                p_f64, ci,                   # xi_y_tables, n_xi_unique
-                ci,                          # n_work
-                p_i32, p_i32, p_i32, p_i32,  # work_xi_a_p/b_p/a_m/b_m
-                p_i32,                       # work_out_idx
-                ci, p_f64,                   # n_out, results
-                ci]                          # nthreads
+                ci, p_f64, # n_r, theta_centers
+                p_f64, p_f64, ci, # phi_grid, phi_w, n_phi
+                p_f64, p_f64, ci, # v_grid, v_w, n_v
+                p_f64, p_f64, ci, # v_half, v_half_w, n_vh
+                cd, # area
+                p_f64, ci, cd, cd, # xi_x, xi_n, xi_logx0, xi_inv_dlogx
+                p_f64, ci, # xi_y_tables, n_xi_unique
+                ci, # n_work
+                p_i32, p_i32, p_i32, p_i32, # work_xi_a_p/b_p/a_m/b_m
+                p_i32, # work_out_idx
+                ci, p_f64, # n_out, results
+                ci, ci] # nthreads, verbose
         else:
             self._clib = None
 
-    # ------------------------------------------------------------------
-    # Xi spline parsing
-    # ------------------------------------------------------------------
+    #####################
+    # Xi spline parsing #
+    #####################
 
     @staticmethod
     def _parse_xi_splines(raw_xip, raw_xim):
         """Convert xi inputs to dicts keyed by (i, j) with i <= j.
 
-        Returns (xip_dict, xim_dict, ntomo).  Bin indices must be
+        Returns (xip_dict, xim_dict, ntomo). Bin indices must be
         consecutive 0-based integers; the caller is responsible for
         remapping non-consecutive bin IDs before constructing the lists.
         """
@@ -3993,9 +4485,9 @@ class GGCovariance(GGCovarianceNoTomo):
         d = self._xip if pm == 'p' else self._xim
         return d[key]
 
-    # ------------------------------------------------------------------
-    # Tomo combo enumeration
-    # ------------------------------------------------------------------
+    ##########################
+    # Tomo combo enumeration #
+    ##########################
 
     def _tomo_combos(self):
         """Non-redundant ((a,b),(c,d)) with a<=b, c<=d, (a,b)<=(c,d) lex.
@@ -4019,9 +4511,9 @@ class GGCovariance(GGCovarianceNoTomo):
         """
         return [(bp1, bp2) for bp1 in self.bp_list for bp2 in self.bp_list]
 
-    # ------------------------------------------------------------------
-    # Callback mapping for the integration engine
-    # ------------------------------------------------------------------
+    ###############################################
+    # Callback mapping for the integration engine #
+    ###############################################
 
     def _build_tomo_callback_map(self):
         """Build flat arrays describing all tomo callbacks for the C kernel.
@@ -4042,8 +4534,8 @@ class GGCovariance(GGCovarianceNoTomo):
             out_keys : list of (rterm_name, (a,b), (c,d))
                 Maps output index to (r-term, combo).
         """
-        combos_sym = self._tomo_combos()       # upper-triangle for symmetric rterms
-        combos_all = self._tomo_combos_all()   # all ordered pairs for rpm
+        combos_sym = self._tomo_combos() # upper-triangle for symmetric rterms
+        combos_all = self._tomo_combos_all() # all ordered pairs for rpm
 
         # R-term types: (name, weight_id, xi_type_a, xi_type_b)
         rterm_types = [
@@ -4063,7 +4555,7 @@ class GGCovariance(GGCovarianceNoTomo):
         xi_keys = sorted(xi_keys)
         xi_key_to_idx = {k: idx for idx, k in enumerate(xi_keys)}
 
-        # Build output key list.  Symmetric r-terms use upper-triangle combos;
+        # Build output key list. Symmetric r-terms use upper-triangle combos;
         # rpm uses ALL ordered pairs (cov_pm is not symmetric under bin swap).
         out_keys = []
         out_key_to_idx = {}
@@ -4099,7 +4591,7 @@ class GGCovariance(GGCovarianceNoTomo):
                 ]
 
                 # The non-tomo prefactor (2/πA) already includes a factor
-                # of 2 for both Wick contractions being equal.  When we
+                # of 2 for both Wick contractions being equal. When we
                 # explicitly sum two non-degenerate contractions, each
                 # must contribute half (fac=0.5) so the total = 1.0.
                 # For degenerate pairs (single callback), fac=1.0.
@@ -4128,9 +4620,9 @@ class GGCovariance(GGCovarianceNoTomo):
             n_out=len(out_keys),
         )
 
-    # ------------------------------------------------------------------
-    # Tomo integration engine (Python-only serial reference)
-    # ------------------------------------------------------------------
+    ##########################################################
+    # Tomo integration engine (Python-only serial reference) #
+    ##########################################################
 
     def _quadruplet_density_terms_tomo(self, verbose=False, pair_mask=None):
         """Compute all tomo r-term blocks in a single pass (serial, Python).
@@ -4161,12 +4653,12 @@ class GGCovariance(GGCovarianceNoTomo):
 
         # Weight callables (5 types, matching _rterm_specs order).
         w_funcs = [
-            lambda V1, V2, va, vb: 1.,                                # 0: rp0
+            lambda V1, V2, va, vb: 1., # 0: rp0
             lambda V1, V2, va, vb: (np.cos(4. * va) * np.cos(4. * vb)
-                                     + np.sin(4. * va) * np.sin(4. * vb)),  # 1: rp1
-            lambda V1, V2, va, vb: np.cos(4. * (V1 + V2 - va - vb)),  # 2: rm0
-            lambda V1, V2, va, vb: np.cos(4. * (V1 - V2)),            # 3: rm1
-            lambda V1, V2, va, vb: 2. * np.cos(4. * (V2 - vb)),       # 4: rpm
+                                     + np.sin(4. * va) * np.sin(4. * vb)), # 1: rp1
+            lambda V1, V2, va, vb: np.cos(4. * (V1 + V2 - va - vb)), # 2: rm0
+            lambda V1, V2, va, vb: np.cos(4. * (V1 - V2)), # 3: rm1
+            lambda V1, V2, va, vb: 2. * np.cos(4. * (V2 - vb)), # 4: rpm
         ]
 
         Np = np.asarray(self.pairs)
@@ -4234,8 +4726,8 @@ class GGCovariance(GGCovarianceNoTomo):
                 el = time.perf_counter() - t0
                 eta = el / kphi * (nphi - kphi) if kphi else float('inf')
                 sys.stdout.write(
-                    f'\r  phi {kphi}/{nphi}  '
-                    f'elapsed {_fmt_hms(el)}  eta {_fmt_hms(eta)}  ')
+                    f'\r phi {kphi}/{nphi} '
+                    f'elapsed {_fmt_hms(el)} eta {_fmt_hms(eta)} ')
                 sys.stdout.flush()
             common = phi * phi_w[kphi]
 
@@ -4254,7 +4746,8 @@ class GGCovariance(GGCovarianceNoTomo):
             for i1, i2s in row_iter:
                 s1 = slice(i1, i1 + nrb)
                 P1 = phi1_nodes[s1][:, :, None, None, None, None]
-                psi_a_x = phi - P1 * CV1;  psi_a_y = -P1 * SV1
+                psi_a_x = phi - P1 * CV1
+                psi_a_y = -P1 * SV1
                 abs_a = np.hypot(psi_a_x, psi_a_y)
                 varphi_a = np.arctan2(psi_a_y, psi_a_x)
                 p1w = phi1_weights[s1][:, :, None, None]
@@ -4266,7 +4759,8 @@ class GGCovariance(GGCovarianceNoTomo):
                 for i2 in i2s:
                     s2 = slice(i2, i2 + nrb)
                     P2 = phi2_nodes[s2][None, None, :, :, None, None]
-                    psi_b_x = phi + P2 * CV2;  psi_b_y = P2 * SV2
+                    psi_b_x = phi + P2 * CV2
+                    psi_b_y = P2 * SV2
                     abs_b = np.hypot(psi_b_x, psi_b_y)
                     varphi_b = np.arctan2(psi_b_y, psi_b_x)
                     p2w = phi2_weights[s2][None, None, :, :]
@@ -4274,9 +4768,9 @@ class GGCovariance(GGCovarianceNoTomo):
                     full_shape = np.broadcast_shapes(
                         P1.shape, abs_b.shape, V1.shape, V2.shape)
                     q_vals = q_func_phi(
-                        np.broadcast_to(P1,       full_shape),
-                        np.broadcast_to(abs_b,    full_shape),
-                        np.broadcast_to(V1,       full_shape),
+                        np.broadcast_to(P1, full_shape),
+                        np.broadcast_to(abs_b, full_shape),
+                        np.broadcast_to(V1, full_shape),
                         np.broadcast_to(varphi_b, full_shape))
 
                     # Cache xi_b for each unique xi spline on this theta2 tile.
@@ -4323,16 +4817,16 @@ class GGCovariance(GGCovarianceNoTomo):
             result[key] = block
         return result
 
-    # ------------------------------------------------------------------
-    # R-term getters
-    # ------------------------------------------------------------------
+    ##################
+    # R-term getters #
+    ##################
 
     def get_all_rterms_tomo(self, verbose=False, pair_mask=None,
                             use_c=True, n_workers=None):
         """Compute all tomo r-term blocks in one pass.
 
         When ``use_c=True`` (default) and the C kernel is available, uses
-        the accelerated path.  Falls back to pure Python otherwise.
+        the accelerated path. Falls back to pure Python otherwise.
 
         Returns dict ``{(rterm_name, ((a,b),(c,d))): (n_r, n_r)}``.
         """
@@ -4346,9 +4840,9 @@ class GGCovariance(GGCovarianceNoTomo):
                 verbose=verbose, pair_mask=pair_mask)
         return self.rterms_tomo
 
-    # ------------------------------------------------------------------
-    # Shape noise (D)
-    # ------------------------------------------------------------------
+    ###################
+    # Shape noise (D) #
+    ###################
 
     def getD_tomo(self):
         """Diagonal shape-noise term per bin pair.
@@ -4374,9 +4868,9 @@ class GGCovariance(GGCovarianceNoTomo):
             self.D_tomo[bp] = se4 * ww_factor / Np
         return self.D_tomo
 
-    # ------------------------------------------------------------------
-    # Triplet terms (tomo)
-    # ------------------------------------------------------------------
+    ########################
+    # Triplet terms (tomo) #
+    ########################
 
     def _triplet_term_tomo_single(self, weight_type, xi_func, sigma_eps_sq,
                                    nbar_fac=1.):
@@ -4408,10 +4902,10 @@ class GGCovariance(GGCovarianceNoTomo):
         """Triplet block for one tomo combo with Kronecker-delta selection.
 
         The triplet term involves a shared apex galaxy between the two
-        pairs.  Sharing requires a common bin: if pair 1 = (a,b) and
+        pairs. Sharing requires a common bin: if pair 1 = (a,b) and
         pair 2 = (c,d), the apex must be in a bin from {a,b} ∩ {c,d}.
         Each valid sharing case contributes the triplet integral with xi
-        evaluated at the NON-shared bin pair.  The /4 normalisation
+        evaluated at the NON-shared bin pair. The /4 normalisation
         matches the non-tomo convention (which includes all 4 cases).
         σ_ε² and n̄ scaling are taken from the shared (apex) bin.
         """
@@ -4423,10 +4917,14 @@ class GGCovariance(GGCovarianceNoTomo):
             nf_b = self.nbar_ref / self.nbar[b]
         else:
             nf_a = nf_b = 1.
-        if a == c: block += self._triplet_term_tomo_single(weight_type, self._xi(xi_pm, b, d), self.sigma_eps[a]**2, nf_a)
-        if a == d: block += self._triplet_term_tomo_single(weight_type, self._xi(xi_pm, b, c), self.sigma_eps[a]**2, nf_a)
-        if b == c: block += self._triplet_term_tomo_single(weight_type, self._xi(xi_pm, a, d), self.sigma_eps[b]**2, nf_b)
-        if b == d: block += self._triplet_term_tomo_single(weight_type, self._xi(xi_pm, a, c), self.sigma_eps[b]**2, nf_b)
+        # xi is evaluated at the NON-shared bin pair of each Kronecker match.
+        for shared_a, shared_b, xi_i, xi_j, sig, nf in [
+                (a, c, b, d, a, nf_a), (a, d, b, c, a, nf_a),
+                (b, c, a, d, b, nf_b), (b, d, a, c, b, nf_b)]:
+            if shared_a == shared_b:
+                block += self._triplet_term_tomo_single(
+                    weight_type, self._xi(xi_pm, xi_i, xi_j),
+                    self.sigma_eps[sig]**2, nf)
         return .25 * block
 
     def getqpp_tomo(self):
@@ -4460,9 +4958,9 @@ class GGCovariance(GGCovarianceNoTomo):
             self.qpm_tomo[combo] = self._triplet_tomo_block(2, 'm', combo)
         return self.qpm_tomo
 
-    # ------------------------------------------------------------------
-    # Covariance assembly
-    # ------------------------------------------------------------------
+    #######################
+    # Covariance assembly #
+    #######################
 
     def _rterm_block(self, rname, combo):
         """Look up r-term block, filling the lower triangle by transpose."""
@@ -4568,7 +5066,7 @@ class GGCovariance(GGCovarianceNoTomo):
         Re-measures the (cheap) fine pair / triplet counts on
         ``new_tc``/``new_te`` from ``self.catalog`` and reuses this instance's
         already-measured quadruplet density (geometry-only, tomo-independent),
-        so the expensive 4PCF is not remeasured.  Used by :meth:`subbin_tomo`
+        so the expensive 4PCF is not remeasured. Used by :meth:`subbin_tomo`
         to auto-build the ``slab_instance`` when one is not supplied.
         """
         if getattr(self, 'catalog', None) is None:
@@ -4612,7 +5110,7 @@ class GGCovariance(GGCovarianceNoTomo):
         a near-diagonal slab and the cheap D/q terms on the fine grid.
 
         Parameters match :meth:`GGCovarianceNoTomo.subbin`, except
-        ``slab_instance`` must be a :class:`GGCovariance` (tomo-aware).  When
+        ``slab_instance`` must be a :class:`GGCovariance` (tomo-aware). When
         ``slab_instance`` is None and this instance was built from a
         ``catalog``, the fine instance is auto-built via
         :meth:`_fine_instance_from_catalog` (fine pairs/triplets re-measured,
@@ -4672,7 +5170,9 @@ class GGCovariance(GGCovarianceNoTomo):
                 x_new, x_c, np.log(D_scaled))) / new_dtheta
 
         ## Interpolate q-terms
-        qpp_fine = {}; qmm_fine = {}; qpm_fine = {}
+        qpp_fine = {}
+        qmm_fine = {}
+        qpm_fine = {}
         for combo in self._tomo_combos():
             if combo in self.qpp_tomo:
                 qpp_fine[combo] = _interp(self.qpp_tomo[combo], sym=True)
@@ -4792,11 +5292,16 @@ class GGCovariance(GGCovarianceNoTomo):
         out.method_triplets = 'precomputed'
         out.method_quadruplets = 'precomputed'
         # Cosmology / survey
-        out.xip = self.xip; out.xim = self.xim
+        out.xip = self.xip
+        out.xim = self.xim
         out.sigma_eps = self.sigma_eps
-        out.nbar = self.nbar; out.nbar_ref = self.nbar_ref; out.area = self.area
-        out.weights_mean = self.weights_mean; out.weights_std = self.weights_std
-        out._w1 = self._w1; out._w2 = self._w2
+        out.nbar = self.nbar
+        out.nbar_ref = self.nbar_ref
+        out.area = self.area
+        out.weights_mean = self.weights_mean
+        out.weights_std = self.weights_std
+        out._w1 = self._w1
+        out._w2 = self._w2
         out.spl_suppression_ww = getattr(self, 'spl_suppression_ww', None)
         # Integration grids
         out.phi_grid = self.phi_grid
@@ -4811,18 +5316,32 @@ class GGCovariance(GGCovarianceNoTomo):
         out._shm = None
         # Count tensors: not available for precomputed
         out.pairs = new_pairs if new_pairs is not None else None
-        out.triplets = None; out.quadruplets = None; out._q_func = None
+        out.triplets = None
+        out.quadruplets = None
+        out._q_func = None
         # Non-tomo output: None
-        out.D = None; out.qpp = None; out.qmm = None; out.qpm = None
-        out.rp0 = None; out.rp1 = None; out.rm0 = None; out.rm1 = None; out.rpm = None
-        out.cov_pp = None; out.cov_mm = None; out.cov_pm = None; out.cov_xipm = None
+        out.D = None
+        out.qpp = None
+        out.qmm = None
+        out.qpm = None
+        out.rp0 = None
+        out.rp1 = None
+        out.rm0 = None
+        out.rm1 = None
+        out.rpm = None
+        out.cov_pp = None
+        out.cov_mm = None
+        out.cov_pm = None
+        out.cov_xipm = None
         # Tomo output
         out.D_tomo = D_fine
         out.qpp_tomo = qpp_fine
         out.qmm_tomo = qmm_fine
         out.qpm_tomo = qpm_fine
         out.rterms_tomo = rterms_fine
-        out.cov_pp_tomo = None; out.cov_mm_tomo = None; out.cov_pm_tomo = None
+        out.cov_pp_tomo = None
+        out.cov_mm_tomo = None
+        out.cov_pm_tomo = None
         out.cov_xipm_tomo = None
         # C library
         out._clib = self._clib
@@ -5028,19 +5547,8 @@ class GGCovariance(GGCovarianceNoTomo):
         Returns (xi_x, xi_y_tables, xi_logx0, xi_inv_dlogx, xi_n),
         all as contiguous float64 arrays.
         """
-        # Collect all xi splines and evaluate on a shared theta grid.
-        splines = [self._xi(pm, i, j) for pm, i, j in xi_keys]
-        # Use the x-grid from the first spline (scipy interp1d stores it).
-        spl0 = splines[0]
-        xi_x = np.ascontiguousarray(spl0.x, dtype=np.float64)
-        xi_n = len(xi_x)
-        xi_logx0 = np.log(xi_x[0])
-        xi_inv_dlogx = 1. / (np.log(xi_x[1]) - np.log(xi_x[0]))
-        xi_y_tables = np.empty((len(splines), xi_n), dtype=np.float64)
-        for t, spl in enumerate(splines):
-            xi_y_tables[t] = spl(spl0.x)
-        xi_y_tables = np.ascontiguousarray(xi_y_tables)
-        return xi_x, xi_y_tables, xi_logx0, xi_inv_dlogx, xi_n
+        return self._xi_tables_from_splines(
+            [self._xi(pm, i, j) for pm, i, j in xi_keys])
 
     def _quadruplet_density_terms_tomo_c(self, verbose=False, pair_mask=None,
                                          n_workers=None):
@@ -5053,293 +5561,30 @@ class GGCovariance(GGCovarianceNoTomo):
             raise RuntimeError("`quadruplets` not initialised.")
         if self.area is None:
             raise ValueError("`area` is required for the quadruplet integral.")
-        if n_workers is None:
-            n_workers = self.n_workers
-        lib = self._clib
-        if lib is None:
-            raise RuntimeError("cov_postq_clib not found; rebuild with pip install .")
+        fn = self._postq_kernel()
+        if not fn:
+            raise RuntimeError("covariance kernels missing from orpheus_clib; "
+                               "rebuild with pip install .")
 
         cbm = self._build_tomo_callback_map()
-        n_cb = len(cbm['xi_a_idx'])
-        n_out = cbm['n_out']
-        xi_keys = cbm['xi_table_keys']
         out_keys = cbm['out_keys']
-
-        xi_x, xi_y_tables, xi_logx0, xi_inv_dlogx, xi_n = \
-            self._build_xi_tables(xi_keys)
+        xi_tables = self._build_xi_tables(cbm['xi_table_keys'])
 
         # Per-output-block mask: True if this block's r-term is symmetric.
         symmetric_rterms = {'rp0', 'rp1', 'rm0', 'rm1'}
-        symmetric_rterms_mask = np.array(
-            [out_keys[oi][0] in symmetric_rterms
-             and out_keys[oi][1][0] == out_keys[oi][1][1]
-             for oi in range(n_out)], dtype=bool)
+        symmetric_mask = [key[0] in symmetric_rterms and key[1][0] == key[1][1]
+                          for key in out_keys]
 
-        def _ptr(a): return np.ascontiguousarray(a, dtype=np.float64)
-        def _iptr(a): return np.ascontiguousarray(a, dtype=np.int32)
+        accum = self._run_postq_engine(
+            cbm, xi_tables, symmetric_mask, fn,
+            verbose=verbose, pair_mask=pair_mask, n_workers=n_workers)
 
-        Np = np.asarray(self.pairs)
-        n = self.n_r
-        phi_grid = self.phi_grid
-        varphi1_grid = self.varphi1_grid
-        varphi2_grid = self.varphi2_grid
+        return {key: (.5 * (block + block.T) if symmetric_mask[oi] else block)
+                for oi, (key, block) in enumerate(zip(out_keys, accum))}
 
-        if self.phi1_subgrid_frac is None:
-            phi1_nodes = self.theta_centers[:, None]
-            phi1_weights = (self.theta_centers * self.dtheta)[:, None]
-        else:
-            s1f = np.asarray(self.phi1_subgrid_frac, dtype=float)
-            phi1_nodes = self.theta_centers[:, None] + np.outer(self.dtheta, s1f)
-            phi1_weights = phi1_nodes * self.dtheta[:, None] * _trapz_weights(s1f)[None, :]
-        if self.phi2_subgrid_frac is None:
-            phi2_nodes = self.theta_centers[:, None]
-            phi2_weights = (self.theta_centers * self.dtheta)[:, None]
-        else:
-            s2f = np.asarray(self.phi2_subgrid_frac, dtype=float)
-            phi2_nodes = self.theta_centers[:, None] + np.outer(self.dtheta, s2f)
-            phi2_weights = phi2_nodes * self.dtheta[:, None] * _trapz_weights(s2f)[None, :]
-
-        phi_w = _trapz_weights(phi_grid)
-        v1_w = np.ascontiguousarray(_periodic_weights(varphi1_grid), dtype=np.float64)
-        v2_w = _periodic_weights(varphi2_grid)
-
-        accum = [np.zeros((n, n)) for _ in range(n_out)]
-
-        nr1 = phi1_nodes.shape[0]
-        nr2 = phi2_nodes.shape[0]
-        nrb = self.nr_block or nr1
-
-        if pair_mask is not None:
-            tile_rows = []
-            for i1 in range(0, nr1, nrb):
-                sl1 = slice(i1, i1 + nrb)
-                if not pair_mask[sl1].any():
-                    continue
-                i2s = [i2 for i2 in range(0, nr2, nrb)
-                       if pair_mask[sl1, i2:i2 + nrb].any()]
-                if i2s:
-                    tile_rows.append((i1, i2s))
-        else:
-            tile_rows = None
-
-        cV1, sV1 = np.cos(varphi1_grid), np.sin(varphi1_grid)
-        cV2, sV2 = np.cos(varphi2_grid), np.sin(varphi2_grid)
-        CV1 = cV1[None, None, None, None, :, None]
-        SV1 = sV1[None, None, None, None, :, None]
-        CV2 = cV2[None, None, None, None, None, :]
-        SV2 = sV2[None, None, None, None, None, :]
-        V1 = varphi1_grid[None, None, None, None, :, None]
-        V2 = varphi2_grid[None, None, None, None, None, :]
-
-        v1_grid_c = np.ascontiguousarray(varphi1_grid, dtype=np.float64)
-        xi_a_idx_c = np.ascontiguousarray(cbm['xi_a_idx'], dtype=np.int32)
-        xi_b_idx_c = np.ascontiguousarray(cbm['xi_b_idx'], dtype=np.int32)
-        w_ids_c = np.ascontiguousarray(cbm['w_ids'], dtype=np.int32)
-        out_idx_c = np.ascontiguousarray(cbm['out_idx'], dtype=np.int32)
-        wick_fac_c = np.ascontiguousarray(cbm['wick_fac'], dtype=np.float64)
-
-        row_iter = (tile_rows if tile_rows is not None
-                    else [(i1, list(range(0, nr2, nrb)))
-                          for i1 in range(0, nr1, nrb)])
-
-        nphi = len(phi_grid)
-        nv1 = len(varphi1_grid)
-
-        if n_workers > 1:
-            import multiprocessing as mp
-
-            self._ensure_q_shared()
-
-            _WORKER_STATE.update(
-                phi1_nodes=phi1_nodes,
-                phi1_weights=phi1_weights,
-                phi2_nodes=phi2_nodes,
-                phi2_weights=phi2_weights,
-                phi_grid=phi_grid,
-                phi_w=phi_w,
-                v1_grid=varphi1_grid,
-                v1_w=v1_w,
-                v2_grid=varphi2_grid,
-                v2_w=v2_w,
-                q_func=self._q_func,
-                q_array=(None if callable(self.quadruplets)
-                         else self.quadruplets),
-                q_r_centers=self.q_theta_centers,
-                q_phi_centers=self.q_phi_centers,
-                v2_block=self.v2_block,
-                nr_block=self.nr_block,
-                pair_mask=pair_mask,
-                tile_rows=tile_rows,
-                # Tomo-specific state
-                postq_fn=lib.postq_accumulate_tomo,
-                n_cb=n_cb,
-                n_out=n_out,
-                xi_a_idx_c=xi_a_idx_c,
-                xi_b_idx_c=xi_b_idx_c,
-                w_ids_c=w_ids_c,
-                out_idx_c=out_idx_c,
-                wick_fac_c=wick_fac_c,
-                xi_x=xi_x,
-                xi_y_tables=xi_y_tables,
-                xi_n=xi_n,
-                xi_logx0=xi_logx0,
-                xi_inv_dlogx=xi_inv_dlogx,
-                n_xi_unique=len(xi_keys),
-                symmetric_rterms_mask=symmetric_rterms_mask,
-            )
-
-            gc.collect()
-            gc.freeze()
-            try:
-                ctx = mp.get_context('fork')
-                t0 = time.perf_counter()
-                with ctx.Pool(processes=n_workers,
-                              initializer=_worker_init) as pool:
-                    for idx, contribs in enumerate(
-                            pool.imap_unordered(
-                                _quadruplet_phi_worker_tomo,
-                                range(nphi))):
-                        if verbose:
-                            done = idx + 1
-                            el = time.perf_counter() - t0
-                            eta = el / done * (nphi - done)
-                            sys.stdout.write(
-                                f'\r  phi {done}/{nphi}  '
-                                f'elapsed {_fmt_hms(el)}  '
-                                f'eta {_fmt_hms(eta)}  ')
-                            sys.stdout.flush()
-                        for oi, c in enumerate(contribs):
-                            accum[oi] += c
-                if verbose:
-                    sys.stdout.write('\n')
-            finally:
-                gc.unfreeze()
-                _WORKER_STATE.clear()
-
-        else:
-            t0 = time.perf_counter()
-            for kphi, phi in enumerate(phi_grid):
-                if verbose:
-                    el = time.perf_counter() - t0
-                    eta = el / kphi * (nphi - kphi) if kphi else float('inf')
-                    sys.stdout.write(
-                        f'\r  phi {kphi}/{nphi}  '
-                        f'elapsed {_fmt_hms(el)}  eta {_fmt_hms(eta)}  ')
-                    sys.stdout.flush()
-                common = phi * phi_w[kphi]
-
-                if not callable(self.quadruplets):
-                    q_func_phi = _build_q4d_at_phi(
-                        self.quadruplets, self.q_theta_centers,
-                        self.q_phi_centers, phi)
-                else:
-                    _q5d = self._q_func
-                    q_func_phi = (
-                        lambda t2, t3, a12, a13, _p=phi:
-                        _q5d(_p, t2, t3, a12, a13))
-
-                I_full = [np.zeros((nr1, nr2)) for _ in range(n_out)]
-
-                for i1, i2s in row_iter:
-                    s1 = slice(i1, i1 + nrb)
-                    nrb1_actual = min(nrb, nr1 - i1)
-                    P1 = phi1_nodes[s1][:, :, None, None, None, None]
-                    psi_a_x = phi - P1 * CV1;  psi_a_y = -P1 * SV1
-                    abs_a = np.hypot(psi_a_x, psi_a_y)
-                    varphi_a = np.arctan2(psi_a_y, psi_a_x)
-                    p1w = phi1_weights[s1][:, :, None, None]
-
-                    abs_a_flat = np.ascontiguousarray(
-                        abs_a[:, 0, 0, 0, :, 0], dtype=np.float64)
-                    va_flat = np.ascontiguousarray(
-                        varphi_a[:, 0, 0, 0, :, 0], dtype=np.float64)
-
-                    for i2 in i2s:
-                        s2 = slice(i2, i2 + nrb)
-                        nrb2_actual = min(nrb, nr2 - i2)
-                        P2 = phi2_nodes[s2][None, None, :, :, None, None]
-                        psi_b_x = phi + P2 * CV2;  psi_b_y = P2 * SV2
-                        abs_b = np.hypot(psi_b_x, psi_b_y)
-                        varphi_b = np.arctan2(psi_b_y, psi_b_x)
-                        p2w = phi2_weights[s2][None, None, :, :]
-
-                        full_shape = np.broadcast_shapes(
-                            P1.shape, abs_b.shape, V1.shape, V2.shape)
-                        q_vals = q_func_phi(
-                            np.broadcast_to(P1,       full_shape),
-                            np.broadcast_to(abs_b,    full_shape),
-                            np.broadcast_to(V1,       full_shape),
-                            np.broadcast_to(varphi_b, full_shape))
-                        q_vals = np.broadcast_to(
-                            np.asarray(q_vals), full_shape)
-
-                        q_flat = np.ascontiguousarray(
-                            q_vals[:, 0, :, 0, :, :].reshape(
-                                nrb1_actual, nrb2_actual, nv1, -1),
-                            dtype=np.float64)
-                        nv2c_local = q_flat.shape[3]
-                        abs_b_flat = np.ascontiguousarray(
-                            abs_b[0, 0, :, 0, 0, :], dtype=np.float64)
-                        vb_flat = np.ascontiguousarray(
-                            varphi_b[0, 0, :, 0, 0, :], dtype=np.float64)
-                        v2c = np.ascontiguousarray(
-                            varphi2_grid[:nv2c_local], dtype=np.float64)
-                        v2wc = np.ascontiguousarray(
-                            v2_w[:nv2c_local], dtype=np.float64)
-
-                        c_accum_buf = np.zeros(
-                            n_out * nrb1_actual * nrb2_actual,
-                            dtype=np.float64)
-                        lib.postq_accumulate_tomo(
-                            _ptr(q_flat),
-                            nrb1_actual, nrb2_actual, nv1, nv2c_local,
-                            _ptr(abs_a_flat), _ptr(va_flat),
-                            _ptr(abs_b_flat), _ptr(vb_flat),
-                            _ptr(v1_grid_c), _ptr(v2c),
-                            _ptr(xi_x), xi_n,
-                            xi_logx0, xi_inv_dlogx,
-                            n_cb,
-                            _iptr(xi_a_idx_c), _iptr(xi_b_idx_c),
-                            _ptr(xi_y_tables), len(xi_keys),
-                            _ptr(v1_w), _ptr(v2wc),
-                            _iptr(w_ids_c), _iptr(out_idx_c),
-                            _ptr(wick_fac_c),
-                            n_out,
-                            _ptr(c_accum_buf))
-
-                        c_accum_buf = c_accum_buf.reshape(
-                            n_out, nrb1_actual, nrb2_actual)
-                        for oi in range(n_out):
-                            I_full[oi][s1, s2] = (
-                                c_accum_buf[oi]
-                                * p1w[:nrb1_actual, 0, 0, 0, None]
-                                * p2w[0, 0, :nrb2_actual, 0, None].T
-                            ).reshape(nrb1_actual, nrb2_actual)
-
-                for oi in range(n_out):
-                    accum[oi] += common * I_full[oi]
-
-            if verbose:
-                sys.stdout.write('\n')
-
-        if pair_mask is not None:
-            for oi in range(n_out):
-                accum[oi] = np.where(pair_mask, accum[oi], 0.)
-
-        pre = 2. * np.pi * self.area / np.outer(Np, Np)
-        symmetric_rterms = {'rp0', 'rp1', 'rm0', 'rm1'}
-        result = {}
-        for oi, key in enumerate(out_keys):
-            rname, combo = key
-            block = pre * accum[oi]
-            if combo[0] == combo[1] and rname in symmetric_rterms:
-                block = .5 * (block + block.T)
-            result[key] = block
-        return result
-
-    # ------------------------------------------------------------------
-    # Continuous tomo equations (C/OpenMP)
-    # ------------------------------------------------------------------
+    ########################################
+    # Continuous tomo equations (C/OpenMP) #
+    ########################################
 
     def get_continuous_tomo_c(self, verbose=False, nr_target=1024, nphi_target=1024):
         """Compute all continuous tomo terms (q + r) via the C/OpenMP kernel.
@@ -5349,7 +5594,8 @@ class GGCovariance(GGCovarianceNoTomo):
         """
         lib = self._clib
         if lib is None:
-            raise RuntimeError("cov_postq_clib not found; rebuild with pip install .")
+            raise RuntimeError("covariance kernels missing from orpheus_clib; "
+                               "rebuild with pip install .")
 
         def _ptr(a): return np.ascontiguousarray(a, dtype=np.float64)
         def _iptr(a): return np.ascontiguousarray(a, dtype=np.int32)
@@ -5390,32 +5636,33 @@ class GGCovariance(GGCovarianceNoTomo):
         # continuous_q_single; provide a dummy (n_r,) array.
         Np_ideal = np.ones(n, dtype=np.float64)
 
-        # Build call list for all q combos
-        q_calls_xi = []
-        q_calls_wt = []
-        q_calls_out = []
-        q_calls_fac = []
+        # The kernel output depends only on (w_type, xi_idx), so integrate each
+        # distinct pair once with factor 1 and scatter the per-combo Wick
+        # factors in numpy afterwards.
+        q_calls = {} # (w_type, xi_idx) -> kernel slot
+        q_scatter = [] # (out_idx, slot, factor)
         q_out_keys = []
         for qname, w_type, xi_pm in [('qpp', 0, 'p'), ('qmm', 1, 'p'), ('qpm', 2, 'm')]:
-            for ci, combo in enumerate(combos_sym):
+            for combo in combos_sym:
                 (a, b), (c, d) = combo
                 q_out_keys.append((qname, combo))
                 out_idx = len(q_out_keys) - 1
                 for shared_a, shared_b, xi_i, xi_j in [
                     (a, c, b, d), (a, d, b, c), (b, c, a, d), (b, d, a, c)]:
                     if shared_a == shared_b:
-                        q_calls_xi.append(xi_key_to_idx[(xi_pm, xi_i, xi_j)])
-                        q_calls_wt.append(w_type)
-                        q_calls_out.append(out_idx)
-                        q_calls_fac.append(
+                        call = (w_type, xi_key_to_idx[(xi_pm, xi_i, xi_j)])
+                        slot = q_calls.setdefault(call, len(q_calls))
+                        q_scatter.append((
+                            out_idx, slot,
                             .25 * self.sigma_eps[shared_a]**2
-                            / self.nbar[shared_a])
+                            / self.nbar[shared_a]))
 
-        n_q_calls = len(q_calls_xi)
+        n_q_calls = len(q_calls)
         n_q_out = len(q_out_keys)
-        q_results = np.zeros(n_q_out * n * n, dtype=np.float64)
+        q_raw = np.zeros(n_q_calls * n * n, dtype=np.float64)
 
         if n_q_calls > 0:
+            calls = sorted(q_calls, key=q_calls.get)
             lib.continuous_q_tomo(
                 n, alpha,
                 _ptr(fine_centers), _ptr(fine_weights),
@@ -5426,16 +5673,22 @@ class GGCovariance(GGCovarianceNoTomo):
                 1., self.area, 1.,
                 _ptr(Np_ideal),
                 n_q_calls,
-                _iptr(np.array(q_calls_xi, dtype=np.int32)),
-                _iptr(np.array(q_calls_wt, dtype=np.int32)),
-                _iptr(np.array(q_calls_out, dtype=np.int32)),
-                _ptr(np.array(q_calls_fac, dtype=np.float64)),
-                n_q_out,
-                q_results,
-                self.n_workers)
+                _iptr(np.array([c[1] for c in calls], dtype=np.int32)),
+                _iptr(np.array([c[0] for c in calls], dtype=np.int32)),
+                _iptr(np.arange(n_q_calls, dtype=np.int32)),
+                _ptr(np.ones(n_q_calls, dtype=np.float64)),
+                n_q_calls,
+                q_raw,
+                self.n_workers, int(verbose))
 
-        q_results = q_results.reshape(n_q_out, n, n)
-        self.qpp_tomo = {}; self.qmm_tomo = {}; self.qpm_tomo = {}
+        q_raw = q_raw.reshape(n_q_calls, n, n)
+        q_results = np.zeros((n_q_out, n, n))
+        for out_idx, slot, fac in q_scatter:
+            q_results[out_idx] += fac * q_raw[slot]
+
+        self.qpp_tomo = {}
+        self.qmm_tomo = {}
+        self.qpm_tomo = {}
         for oi, (qname, combo) in enumerate(q_out_keys):
             block = q_results[oi]
             sym = qname in ('qpp', 'qmm')
@@ -5455,80 +5708,32 @@ class GGCovariance(GGCovarianceNoTomo):
         v_half_w = np.ascontiguousarray(_trapz_weights(v_half), dtype=np.float64)
         theta_c = np.ascontiguousarray(self.theta_centers, dtype=np.float64)
 
-        # Build work list: for symmetric terms use upper-triangle combos,
-        # for rpm use all ordered pairs.
-        # Each work unit gets 5 consecutive output blocks: rp0,rp1,rm0,rm1,rpm
-        # We reuse the same output layout for both types.
+        ## Build the r-term work list
+        # Every combo gets 5 consecutive output blocks (rp0, rp1, rm0, rm1,
+        # rpm), all of which come out of the same Wick pairing.  rpm needs the
+        # full ordered combo set, so all_combos is used throughout and the
+        # redundant symmetric blocks are dropped afterwards (as in Python).
         rterm_names = ['rp0', 'rp1', 'rm0', 'rm1', 'rpm']
-        work_xi_a_p = []; work_xi_b_p = []
-        work_xi_a_m = []; work_xi_b_m = []
-        work_out_idx = []
-        r_out_keys = []
-
-        # For symmetric terms: upper-triangle combos × 2 Wick (or 1 if degenerate)
-        # For rpm: all ordered combos × 2 Wick (or 1)
-        # We allocate 5 output slots per Wick work unit.
-        sym_combos = combos_sym
         all_combos = combos_all
+        r_out_keys = [(rname, combo)
+                      for combo in all_combos for rname in rterm_names]
 
-        # We need to track: for each combo, which output block maps to which
-        # (rname, combo) key.  Layout: each work unit produces 5 blocks at
-        # consecutive indices.  Symmetric terms share work units (the 4
-        # symmetric rterms come from the same Wick pairing).  rpm comes from
-        # the same pairing too.  So each Wick work = 5 blocks.
-
-        # Upper-triangle Wick pairs (for symmetric terms + rpm where applicable)
-        wick_units_sym = []
-        for combo in sym_combos:
-            (a, b), (c, d) = combo
-            wp1 = ((min(a,c),max(a,c)), (min(b,d),max(b,d)))
-            wp2 = ((min(a,d),max(a,d)), (min(b,c),max(b,c)))
-            if wp1 == wp2:
-                wick_units_sym.append((combo, [(a,c),(b,d)]))
-            else:
-                wick_units_sym.append((combo, [(a,c),(b,d)]))
-                wick_units_sym.append((combo, [(a,d),(b,c)]))
-
-        # All-pairs Wick pairs (for rpm only)
-        wick_units_rpm = []
-        for combo in all_combos:
-            if combo in [(c[0], c[0]) for c in [combo]]:  # always include
-                pass
-            (a, b), (c, d) = combo
-            wp1 = ((min(a,c),max(a,c)), (min(b,d),max(b,d)))
-            wp2 = ((min(a,d),max(a,d)), (min(b,c),max(b,c)))
-            if wp1 == wp2:
-                wick_units_rpm.append((combo, [(a,c),(b,d)]))
-            else:
-                wick_units_rpm.append((combo, [(a,c),(b,d)]))
-                wick_units_rpm.append((combo, [(a,d),(b,c)]))
-
-        # Merge: each work unit computes 5 r-terms.  We store them at
-        # consecutive output indices.  We need to build a mapping from
-        # (rname, combo) -> which output slots contribute.
-        # Simpler: one pass for the symmetric combo set (produces rp0-rm1
-        # and rpm for upper-triangle), then another pass for lower-triangle
-        # rpm only.
-
-        # Actually, simplest: just use all_combos for everything and discard
-        # redundant symmetric blocks afterwards (same as the Python path).
-        r_out_keys = []
-        for combo in all_combos:
-            for rname in rterm_names:
-                r_out_keys.append((rname, combo))
-
-        # Always emit BOTH Wick pairings (even degenerate).  The non-tomo
+        # Always emit BOTH Wick pairings (even degenerate). The non-tomo
         # prefactor (2/πA) includes a factor of 2 for both contractions
         # being equal; halving the result compensates for the explicit sum.
-        for combo in all_combos:
+        work_xi_a_p = []
+        work_xi_b_p = []
+        work_xi_a_m = []
+        work_xi_b_m = []
+        work_out_idx = []
+        for ic, combo in enumerate(all_combos):
             (a, b), (c, d) = combo
-            for wa, wb in [((a,c),(b,d)), ((a,d),(b,c))]:
-                base_out = all_combos.index(combo) * 5
+            for wa, wb in [((a, c), (b, d)), ((a, d), (b, c))]:
                 work_xi_a_p.append(xi_key_to_idx[('p', *wa)])
                 work_xi_b_p.append(xi_key_to_idx[('p', *wb)])
                 work_xi_a_m.append(xi_key_to_idx[('m', *wa)])
                 work_xi_b_m.append(xi_key_to_idx[('m', *wb)])
-                work_out_idx.append(base_out)
+                work_out_idx.append(ic * 5)
 
         n_work = len(work_xi_a_p)
         n_r_out = len(r_out_keys)
@@ -5550,7 +5755,7 @@ class GGCovariance(GGCovarianceNoTomo):
             _iptr(np.array(work_out_idx, dtype=np.int32)),
             n_r_out,
             r_results,
-            self.n_workers)
+            self.n_workers, int(verbose))
 
         r_results = .5 * r_results.reshape(n_r_out, n, n)
         symmetric = {'rp0', 'rp1', 'rm0', 'rm1'}
