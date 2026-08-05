@@ -66,13 +66,13 @@ Troubleshooting
                print(name)
 
     The clean fix is an environment in which every package links the same
-    ``libomp``, which conda-forge provides
+    ``libomp``, which conda-forge provides.
 
     .. code-block:: shell
 
-       conda create -n orpheus python=3.12
+       conda create -n orpheus -c conda-forge --override-channels python=3.12
        conda activate orpheus
-       conda install -c conda-forge healpy scikit-learn scipy numpy astropy llvm-openmp
+       conda install -c conda-forge --override-channels healpy scikit-learn scipy numpy astropy llvm-openmp
        pip install --no-binary orpheus-npcf orpheus-npcf
 
     In an existing environment the copies can instead be pointed at a single file.
