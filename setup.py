@@ -188,22 +188,24 @@ class BuildExtWithDetect(build_ext):
                         use_openmp = True
                         applied_alternative_clang_flags = True
                         omp_cflags = clang_alt_cflags
-                        # libomp is resolved through @rpath (see the install_name_tool
-                        # pass below) against this list, in order. healpy and
-                        # scikit-learn are hard dependencies whose macOS wheels each
-                        # vendor a copy, so reusing one of those keeps a second OpenMP
-                        # runtime out of the process. Environments that provide a
-                        # shared libomp instead -- conda-forge puts it in <prefix>/lib,
-                        # four levels above the package -- fall through to the last two.
-                        omp_lflags = ["-L" + libomp_lib, "-lomp", "-lm",
-                                      "-Wl,-rpath,@loader_path/../healpy/.dylibs",
-                                      "-Wl,-rpath,@loader_path/../sklearn/.dylibs",
-                                      "-Wl,-rpath,@loader_path/../../..",
-                                      "-Wl,-rpath," + libomp_lib]
+                        omp_lflags = ["-L" + libomp_lib, "-lomp", "-lm"]
                     else:
                         use_openmp = False
                 else:
                     use_openmp = False
+
+        # Whichever compiler was picked, libomp ends up resolved through @rpath (see
+        # the install_name_tool pass below) against this list, in order. healpy and
+        # scikit-learn are hard dependencies whose macOS wheels each vendor a copy, so
+        # reusing one of those keeps another OpenMP runtime out of the process, which
+        # is what segfaults the kernels. Environments providing a shared libomp
+        # instead -- conda-forge puts it in <prefix>/lib, three levels above the
+        # package -- fall through to the third entry, and the directory the extension
+        # was linked against is appended last as a fallback.
+        if sys.platform == "darwin" and use_openmp:
+            omp_lflags = omp_lflags + ["-Wl,-rpath,@loader_path/../healpy/.dylibs",
+                                       "-Wl,-rpath,@loader_path/../sklearn/.dylibs",
+                                       "-Wl,-rpath,@loader_path/../../.."]
 
         if not use_openmp:
             print("WARNING: OpenMP support not detected for the selected compiler.")
@@ -256,14 +258,19 @@ class BuildExtWithDetect(build_ext):
         # and delocate would then bundle it into the wheel as a third OpenMP runtime
         # next to the ones healpy and scikit-learn ship. Point the dependency at
         # @rpath instead so it binds to whichever copy the rpath list finds first.
-        if sys.platform == "darwin" and applied_alternative_clang_flags:
+        if sys.platform == "darwin" and use_openmp:
             for ext in self.extensions:
                 so_path = self.get_ext_fullpath(ext.name)
                 deps = subprocess.check_output(["otool", "-L", so_path]).decode().splitlines()[1:]
                 for dep in (line.strip().split(" ")[0] for line in deps):
-                    if "libomp" in os.path.basename(dep) and not dep.startswith("@rpath"):
-                        subprocess.check_call(["install_name_tool", "-change", dep,
-                                               "@rpath/libomp.dylib", so_path])
+                    if "libomp" not in os.path.basename(dep) or dep.startswith("@rpath"):
+                        continue
+                    # Appended, so the directory the extension was linked against ends
+                    # up behind the entries above rather than shadowing them.
+                    subprocess.check_call(["install_name_tool", "-add_rpath",
+                                           os.path.dirname(dep), so_path])
+                    subprocess.check_call(["install_name_tool", "-change", dep,
+                                           "@rpath/libomp.dylib", so_path])
 
 
 # All external modules from orpheus
