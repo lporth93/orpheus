@@ -70,7 +70,7 @@ jobs:
           "$RUNNER_TEMP/smoke_env/bin/pip" install --quiet "$whl" scikit-learn
           # Away from the checkout, so that the source tree cannot shadow the wheel
           cd "$RUNNER_TEMP"
-          "$RUNNER_TEMP/smoke_env/bin/python" - <<'PY'
+          "$RUNNER_TEMP/smoke_env/bin/python" -u - <<'PY'
           import ctypes as ct
           import os
           import warnings
@@ -98,10 +98,13 @@ jobs:
                                           pos2=rng.uniform(0., 600., ngal),
                                           tracer_1=rng.normal(0., 0.3, ngal),
                                           tracer_2=rng.normal(0., 0.3, ngal))
-          twopcf = orpheus.GGCorrelation(min_sep=1., max_sep=100., binsize=0.2, nthreads=4)
-          twopcf.process(cat)
-          assert np.isfinite(twopcf.xip).any(), "xip is all non-finite"
-          print("xip[:3] =", np.asarray(twopcf.xip).ravel()[:3])
+          # Serial first: if that already dies the fault is in the kernel rather than
+          # in the OpenMP runtimes fighting over the worker threads
+          for nthreads in (1, 4):
+              twopcf = orpheus.GGCorrelation(min_sep=1., max_sep=100., binsize=0.2, nthreads=nthreads)
+              twopcf.process(cat)
+              assert np.isfinite(twopcf.xip).any(), "xip is all non-finite"
+              print("nthreads=%d ok, xip[:3] ="%nthreads, np.asarray(twopcf.xip).ravel()[:3])
           PY
 
   # The wheel above bundles its own libomp; this job covers the other half, the
@@ -142,7 +145,7 @@ jobs:
         run: |
           # Away from the checkout, so that the source tree cannot shadow the install
           cd "$RUNNER_TEMP"
-          python - <<'PY'
+          python -u - <<'PY'
           import ctypes as ct
           import os
           import numpy as np
