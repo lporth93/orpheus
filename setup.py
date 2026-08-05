@@ -159,24 +159,26 @@ class BuildExtWithDetect(build_ext):
             use_openmp = True
         else:
             if sys.platform == "darwin":
-                brew_prefixes = ["/opt/homebrew", "/usr/local"]
+                # An active conda environment takes precedence over homebrew: its libomp
+                # is the one the conda-forge builds of healpy and scikit-learn link
+                # against, and a single OpenMP runtime per process is what keeps the
+                # kernels from crashing (see the macOS section of the installation docs).
+                prefixes = []
+                if os.environ.get("CONDA_PREFIX"):
+                    prefixes.append(os.environ["CONDA_PREFIX"])
+                prefixes += ["/opt/homebrew", "/usr/local"]
                 libomp_include = None
                 libomp_lib = None
-                for p in brew_prefixes:
-                    inc = os.path.join(p, "opt", "libomp", "include")
-                    lib = os.path.join(p, "opt", "libomp", "lib")
-                    if os.path.isdir(inc) and os.path.isdir(lib):
-                        libomp_include = inc
-                        libomp_lib = lib
-                        break
-                if not libomp_include:
-                    for p in brew_prefixes:
-                        inc = os.path.join(p, "include")
-                        lib = os.path.join(p, "lib")
-                        if os.path.isdir(inc) and os.path.isdir(lib) and os.path.exists(os.path.join(lib, "libomp.dylib")):
+                for p in prefixes:
+                    layouts = [(os.path.join(p, "opt", "libomp", "include"), os.path.join(p, "opt", "libomp", "lib")),
+                               (os.path.join(p, "include"), os.path.join(p, "lib"))]
+                    for inc, lib in layouts:
+                        if os.path.isdir(inc) and os.path.exists(os.path.join(lib, "libomp.dylib")):
                             libomp_include = inc
                             libomp_lib = lib
                             break
+                    if libomp_include:
+                        break
 
                 if libomp_include and libomp_lib:
                     clang_alt_cflags = ["-Xpreprocessor", "-fopenmp", "-O3", "-ffast-math", "-std=c99", "-fPIC"]
@@ -186,7 +188,10 @@ class BuildExtWithDetect(build_ext):
                         use_openmp = True
                         applied_alternative_clang_flags = True
                         omp_cflags = clang_alt_cflags
-                        omp_lflags = ["-L" + libomp_lib, "-lomp", "-lm"]
+                        # conda-forge builds libomp with an @rpath install name, so
+                        # without the rpath entry the extension cannot find it at import.
+                        # Homebrew records an absolute path and simply ignores the entry.
+                        omp_lflags = ["-L" + libomp_lib, "-Wl,-rpath," + libomp_lib, "-lomp", "-lm"]
                     else:
                         use_openmp = False
                 else:
@@ -201,13 +206,8 @@ class BuildExtWithDetect(build_ext):
                 ext.extra_compile_args = omp_cflags
                 ext.extra_link_args = omp_lflags
                 if applied_alternative_clang_flags:
-                    for p in ["/opt/homebrew", "/usr/local"]:
-                        inc = os.path.join(p, "opt", "libomp", "include")
-                        lib = os.path.join(p, "opt", "libomp", "lib")
-                        if os.path.isdir(inc) and os.path.isdir(lib):
-                            ext.include_dirs = list(ext.include_dirs or []) + [inc]
-                            ext.library_dirs = list(getattr(ext, "library_dirs", []) or []) + [lib]
-                            break
+                    ext.include_dirs = list(ext.include_dirs or []) + [libomp_include]
+                    ext.library_dirs = list(getattr(ext, "library_dirs", []) or []) + [libomp_lib]
             else:
                 ext.extra_compile_args = ["-O3", "-ffast-math", "-std=c99", "-fPIC"]
                 ext.extra_link_args = link_shared + ["-lm"]

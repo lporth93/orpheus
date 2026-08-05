@@ -1,9 +1,12 @@
 import numpy as np
 from healpy import pix2ang, ang2pix, nside2resol
 
+import ctypes as ct
 from itertools import combinations_with_replacement, product
 import os
 import site
+import sys
+import warnings
 
 def convertunits(unit_in, unit_target):
     """Convert between angular units. Returns the multiplicative factor to convert from ``from_unit`` to ``to_unit``. Supported units: None (no conversion), 'rad', 'deg', 'arcmin'."""
@@ -31,6 +34,37 @@ def search_file_in_site_package(directory, package):
             if file.startswith(package):
                 return os.path.join(root, file)
     return None
+
+_openmp_checked = False
+
+def _check_openmp_runtimes():
+    """Warns if the process has loaded more than one OpenMP runtime.
+
+    On macOS the wheels of healpy, scikit-learn and orpheus each vendor their own
+    copy of ``libomp.dylib``. Their weak symbols coalesce into a single definition,
+    so a worker thread created by one runtime may suspend itself in the state of
+    another one, which segfaults as soon as a kernel opens a parallel region.
+    """
+    global _openmp_checked
+    if _openmp_checked or sys.platform != "darwin":
+        return
+    _openmp_checked = True
+
+    try:
+        dyld = ct.CDLL(None)
+        dyld._dyld_get_image_name.restype = ct.c_char_p
+        images = [dyld._dyld_get_image_name(i).decode() for i in range(dyld._dyld_image_count())]
+    except Exception:
+        return
+
+    runtimes = [p for p in images if os.path.basename(p).startswith(("libomp", "libiomp", "libgomp"))]
+    if len(runtimes) > 1:
+        warnings.warn(
+            "Found %d OpenMP runtimes in this process:\n  %s\n"
+            "The C kernels can crash once they spawn worker threads. Pass nthreads=1 to "
+            "stay on a single thread, or see the macOS section of "
+            "https://orpheus.readthedocs.io/en/latest/installation.html for how to collapse "
+            "them onto one library."%(len(runtimes), "\n  ".join(runtimes)), RuntimeWarning)
 
 def _randomhealpixshift(nside, pixel_idx, rng, oversampling=3):
     """Applies a random shift within a healpix pixel assuming NEST

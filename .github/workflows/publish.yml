@@ -57,6 +57,117 @@ jobs:
           name: wheelhouse-${{ matrix.os }}
           path: wheelhouse/*.whl
 
+      # A wheel that imports fine can still die the moment a kernel spawns worker
+      # threads, because healpy, scikit-learn and orpheus each vendor a libomp copy
+      # on macOS. Run one real parallel correlation to catch that before publishing.
+      - name: Smoke test the wheel with OpenMP workers
+        if: runner.os == 'macOS'
+        run: |
+          whl=$(ls wheelhouse/*cp311*.whl 2>/dev/null | head -1)
+          if [ -z "$whl" ]; then echo "no cp311 wheel found in wheelhouse"; exit 1; fi
+          python -m venv smoke_env
+          smoke_env/bin/pip install --quiet --upgrade pip
+          smoke_env/bin/pip install --quiet "$whl" scikit-learn
+          smoke_env/bin/python - <<'PY'
+          import ctypes as ct
+          import os
+          import warnings
+          import numpy as np
+
+          # Import order of a typical session: the vendored runtimes land first
+          import healpy
+          import sklearn.decomposition
+          warnings.simplefilter("always")
+          import orpheus
+
+          dyld = ct.CDLL(None)
+          dyld._dyld_get_image_name.restype = ct.c_char_p
+          images = [dyld._dyld_get_image_name(i).decode() for i in range(dyld._dyld_image_count())]
+          runtimes = [p for p in images if os.path.basename(p).startswith(("libomp", "libiomp", "libgomp"))]
+          print("OpenMP runtimes loaded: %d"%len(runtimes))
+          for p in runtimes:
+              print("   ", p)
+
+          rng = np.random.default_rng(42)
+          ngal = 20000
+          cat = orpheus.SpinTracerCatalog(spin=2,
+                                          pos1=rng.uniform(0., 600., ngal),
+                                          pos2=rng.uniform(0., 600., ngal),
+                                          tracer_1=rng.normal(0., 0.3, ngal),
+                                          tracer_2=rng.normal(0., 0.3, ngal))
+          twopcf = orpheus.GGCorrelation(min_sep=1., max_sep=100., binsize=0.2, nthreads=4)
+          twopcf.process(cat)
+          assert np.isfinite(twopcf.xip).any(), "xip is all non-finite"
+          print("xip[:3] =", np.asarray(twopcf.xip).ravel()[:3])
+          PY
+
+  # The wheel above bundles its own libomp; this job covers the other half, the
+  # conda-forge source build the installation docs recommend. Homebrew's libomp is
+  # installed on purpose so that the conda prefix has to win the search in setup.py.
+  conda_source_build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-26]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref || github.sha }}
+
+      - name: Install a competing libomp
+        run: brew install libomp
+
+      - name: Set up a conda-forge environment
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-version: latest
+          channels: conda-forge
+          activate-environment: orpheus_omp
+          python-version: "3.12"
+
+      - name: Build orpheus from source against the conda libomp
+        shell: bash -el {0}
+        run: |
+          conda install -y astropy healpy "numba<=0.62.1" numpy scipy scikit-learn llvm-openmp
+          pip install .
+
+      - name: Require a single OpenMP runtime, then run a parallel kernel
+        shell: bash -el {0}
+        run: |
+          cd "$RUNNER_TEMP"
+          python - <<'PY'
+          import ctypes as ct
+          import os
+          import numpy as np
+
+          import healpy
+          import sklearn.decomposition
+          import orpheus
+
+          dyld = ct.CDLL(None)
+          dyld._dyld_get_image_name.restype = ct.c_char_p
+          images = [dyld._dyld_get_image_name(i).decode() for i in range(dyld._dyld_image_count())]
+          runtimes = [p for p in images if os.path.basename(p).startswith(("libomp", "libiomp", "libgomp"))]
+          for p in runtimes:
+              print("   ", p)
+          assert len(runtimes) == 1, "expected one OpenMP runtime, found %d"%len(runtimes)
+
+          rng = np.random.default_rng(42)
+          ngal = 20000
+          cat = orpheus.SpinTracerCatalog(spin=2,
+                                          pos1=rng.uniform(0., 600., ngal),
+                                          pos2=rng.uniform(0., 600., ngal),
+                                          tracer_1=rng.normal(0., 0.3, ngal),
+                                          tracer_2=rng.normal(0., 0.3, ngal))
+          twopcf = orpheus.GGCorrelation(min_sep=1., max_sep=100., binsize=0.2, nthreads=4)
+          twopcf.process(cat)
+          assert np.isfinite(twopcf.xip).any(), "xip is all non-finite"
+          print("xip[:3] =", np.asarray(twopcf.xip).ravel()[:3])
+          PY
+
   sdist:
     runs-on: ubuntu-latest
     steps:

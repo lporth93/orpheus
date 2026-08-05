@@ -5,7 +5,8 @@ import numpy as np
 from numpy.ctypeslib import ndpointer
 from pathlib import Path
 import glob
-from .utils import get_site_packages_dir, search_file_in_site_package, convertunits, _randomhealpixshift
+from .utils import (get_site_packages_dir, search_file_in_site_package, convertunits,
+                    _randomhealpixshift, _check_openmp_runtimes)
 from .flat2dgrid import FlatPixelGrid_2D, FlatDataGrid_2D
 from .patchutils import gen_cat_patchindices, frompatchindices_preparerot
 import sys
@@ -177,6 +178,7 @@ class Catalog:
         target_path = __import__('orpheus').__file__
         self.library_path = str(Path(__import__('orpheus').__file__).parent.absolute())
         self.clib = ct.CDLL(glob.glob(self.library_path+"/orpheus_clib*.so")[0])
+        _check_openmp_runtimes()
         p_c128 = ndpointer(np.complex128, flags="C_CONTIGUOUS")
         p_f64 = ndpointer(np.float64, flags="C_CONTIGUOUS")
         p_f32 = ndpointer(np.float32, flags="C_CONTIGUOUS")
