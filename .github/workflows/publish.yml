@@ -42,6 +42,13 @@ jobs:
           CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-*"
           # HEALPix is vendored, so only clang's OpenMP runtime is still external
           CIBW_BEFORE_ALL_MACOS: brew install libomp
+          # libomp is deliberately left out of the wheel: healpy and scikit-learn
+          # already ship one each, and a third copy segfaults the kernels as soon as
+          # they spawn workers. setup.py points the dependency at @rpath so it binds
+          # to a copy that is already there.
+          CIBW_REPAIR_WHEEL_COMMAND_MACOS: >
+            delocate-wheel --require-archs {delocate_archs} --exclude libomp
+            -w {dest_dir} -v {wheel}
         run: |
           # The deployment target must not be older than the brew libomp that
           # delocate bundles, so pin it to the runner's own macOS version.
@@ -83,21 +90,28 @@ jobs:
           import orpheus
           assert "site-packages" in orpheus.__file__, orpheus.__file__
 
-          dyld = ct.CDLL(None)
-          dyld._dyld_get_image_name.restype = ct.c_char_p
-          images = [dyld._dyld_get_image_name(i).decode() for i in range(dyld._dyld_image_count())]
-          runtimes = [p for p in images if os.path.basename(p).startswith(("libomp", "libiomp", "libgomp"))]
-          print("OpenMP runtimes loaded: %d"%len(runtimes))
-          for p in runtimes:
-              print("   ", p)
+          def omp_runtimes():
+              dyld = ct.CDLL(None)
+              dyld._dyld_get_image_name.restype = ct.c_char_p
+              images = [dyld._dyld_get_image_name(i).decode() for i in range(dyld._dyld_image_count())]
+              return [p for p in images if os.path.basename(p).startswith(("libomp", "libiomp", "libgomp"))]
+
+          bundled = os.path.join(os.path.dirname(orpheus.__file__), ".dylibs", "libomp.dylib")
+          assert not os.path.exists(bundled), "the wheel still ships its own libomp: %s"%bundled
 
           rng = np.random.default_rng(42)
           ngal = 20000
+          # Constructing the catalog is what loads the C library, and with it libomp
           cat = orpheus.SpinTracerCatalog(spin=2,
                                           pos1=rng.uniform(0., 600., ngal),
                                           pos2=rng.uniform(0., 600., ngal),
                                           tracer_1=rng.normal(0., 0.3, ngal),
                                           tracer_2=rng.normal(0., 0.3, ngal))
+          runtimes = omp_runtimes()
+          print("OpenMP runtimes loaded: %d"%len(runtimes))
+          for p in runtimes:
+              print("   ", p)
+
           # Serial first: if that already dies the fault is in the kernel rather than
           # in the OpenMP runtimes fighting over the worker threads
           for nthreads in (1, 4):

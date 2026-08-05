@@ -188,10 +188,18 @@ class BuildExtWithDetect(build_ext):
                         use_openmp = True
                         applied_alternative_clang_flags = True
                         omp_cflags = clang_alt_cflags
-                        # conda-forge builds libomp with an @rpath install name, so
-                        # without the rpath entry the extension cannot find it at import.
-                        # Homebrew records an absolute path and simply ignores the entry.
-                        omp_lflags = ["-L" + libomp_lib, "-Wl,-rpath," + libomp_lib, "-lomp", "-lm"]
+                        # libomp is resolved through @rpath (see the install_name_tool
+                        # pass below) against this list, in order. healpy and
+                        # scikit-learn are hard dependencies whose macOS wheels each
+                        # vendor a copy, so reusing one of those keeps a second OpenMP
+                        # runtime out of the process. Environments that provide a
+                        # shared libomp instead -- conda-forge puts it in <prefix>/lib,
+                        # four levels above the package -- fall through to the last two.
+                        omp_lflags = ["-L" + libomp_lib, "-lomp", "-lm",
+                                      "-Wl,-rpath,@loader_path/../healpy/.dylibs",
+                                      "-Wl,-rpath,@loader_path/../sklearn/.dylibs",
+                                      "-Wl,-rpath,@loader_path/../../..",
+                                      "-Wl,-rpath," + libomp_lib]
                     else:
                         use_openmp = False
                 else:
@@ -243,6 +251,19 @@ class BuildExtWithDetect(build_ext):
             ext.extra_link_args = list(ext.extra_link_args or []) + [cxx_runtime]
 
         super().build_extensions()
+
+        # A libomp recorded by absolute path pins the extension to one specific copy,
+        # and delocate would then bundle it into the wheel as a third OpenMP runtime
+        # next to the ones healpy and scikit-learn ship. Point the dependency at
+        # @rpath instead so it binds to whichever copy the rpath list finds first.
+        if sys.platform == "darwin" and applied_alternative_clang_flags:
+            for ext in self.extensions:
+                so_path = self.get_ext_fullpath(ext.name)
+                deps = subprocess.check_output(["otool", "-L", so_path]).decode().splitlines()[1:]
+                for dep in (line.strip().split(" ")[0] for line in deps):
+                    if "libomp" in os.path.basename(dep) and not dep.startswith("@rpath"):
+                        subprocess.check_call(["install_name_tool", "-change", dep,
+                                               "@rpath/libomp.dylib", so_path])
 
 
 # All external modules from orpheus
