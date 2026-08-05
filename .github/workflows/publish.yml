@@ -42,19 +42,20 @@ jobs:
           CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-*"
           # HEALPix is vendored, so only clang's OpenMP runtime is still external
           CIBW_BEFORE_ALL_MACOS: brew install libomp
-          # libomp is deliberately left out of the wheel: healpy and scikit-learn
-          # already ship one each, and a third copy segfaults the kernels as soon as
-          # they spawn workers. setup.py points the dependency at @rpath so it binds
-          # to a copy that is already there.
-          CIBW_REPAIR_WHEEL_COMMAND_MACOS: >
-            delocate-wheel --require-archs {delocate_archs} --exclude libomp
-            -w {dest_dir} -v {wheel}
         run: |
           # The deployment target must not be older than the brew libomp that
           # delocate bundles, so pin it to the runner's own macOS version.
           if [ "$(uname -s)" = "Darwin" ]; then
             export MACOSX_DEPLOYMENT_TARGET="$(sw_vers -productVersion | cut -d. -f1).0"
             echo "Setting MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET"
+            # On arm64 the wheel reuses the libomp that healpy already ships, so that
+            # a third OpenMP runtime does not end up in the process. The x86_64 wheels
+            # of healpy and scikit-learn carry copies too old for the symbols clang
+            # emits from our schedule(dynamic) loops, so there a bundled one is kept.
+            if [ "$(uname -m)" = "arm64" ]; then
+              export CIBW_REPAIR_WHEEL_COMMAND_MACOS="delocate-wheel --require-archs {delocate_archs} --exclude libomp -w {dest_dir} -v {wheel}"
+              echo "macOS arm64: building without a bundled libomp"
+            fi
           fi
           cibuildwheel --output-dir wheelhouse
 
@@ -80,6 +81,7 @@ jobs:
           "$RUNNER_TEMP/smoke_env/bin/python" -u - <<'PY'
           import ctypes as ct
           import os
+          import platform
           import warnings
           import numpy as np
 
@@ -97,7 +99,9 @@ jobs:
               return [p for p in images if os.path.basename(p).startswith(("libomp", "libiomp", "libgomp"))]
 
           bundled = os.path.join(os.path.dirname(orpheus.__file__), ".dylibs", "libomp.dylib")
-          assert not os.path.exists(bundled), "the wheel still ships its own libomp: %s"%bundled
+          print("wheel bundles its own libomp:", os.path.exists(bundled))
+          if platform.machine() == "arm64":
+              assert not os.path.exists(bundled), "the arm64 wheel still ships its own libomp"
 
           rng = np.random.default_rng(42)
           ngal = 20000
