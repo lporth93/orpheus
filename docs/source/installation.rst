@@ -42,13 +42,18 @@ Troubleshooting
     installation with ``libgomp`` is available.
 
 ``RuntimeWarning: Found N OpenMP runtimes in this process``, or a segmentation fault on macOS
-    Python wheels on macOS bundle their own copy of ``libomp.dylib``, and healpy,
-    scikit-learn and orpheus all ship one. The copies coalesce their weak symbols
+    Python wheels on macOS tend to bundle their own copy of ``libomp.dylib``, and
+    both healpy and scikit-learn ship one. The copies coalesce their weak symbols
     into a single definition, so a worker thread created by one runtime can end up
     suspending itself in the state of another one. The process then segfaults as
-    soon as a kernel opens a parallel region, which is why the crash disappears
-    when passing ``nthreads=1``. orpheus emits the warning above when it loads its
-    C library and finds more than one runtime; to list them by hand use
+    soon as a kernel opens a parallel region whenever ``nthreads>1``.
+
+    The Apple silicon wheels of orpheus bind to the copy healpy already provides
+    rather than adding another one. The x86_64 wheels still carry their own, as the
+    copies vendored there predate symbols that the kernels need. orpheus emits the
+    warning above whenever it loads its C library and finds more than one runtime:
+    two coexisting copies are the norm on macOS and generally harmless, three are
+    what might crash. To list them by hand use
 
     .. code-block:: python
 
@@ -70,13 +75,6 @@ Troubleshooting
        conda install -c conda-forge healpy scikit-learn scipy numpy astropy llvm-openmp
        pip install --no-binary orpheus-npcf orpheus-npcf
 
-    The repeated name is not a typo: ``--no-binary`` takes the packages it applies
-    to, so the line installs ``orpheus-npcf`` and builds that one from source while
-    its dependencies still arrive as wheels. The source build compiles the same C
-    extension the wheel contains, but links the ``libomp`` of the active environment
-    instead of carrying a private copy, as the bundling only happens in the wheel
-    repair step.
-
     In an existing environment the copies can instead be pointed at a single file.
     This has to be repeated whenever pip reinstalls one of the packages
 
@@ -84,6 +82,7 @@ Troubleshooting
 
        SP=$(python -c "import site; print(site.getsitepackages()[0])")
        for p in sklearn orpheus; do
+         [ -e "$SP/$p/.dylibs/libomp.dylib" ] || continue
          mv "$SP/$p/.dylibs/libomp.dylib" "$SP/$p/.dylibs/libomp.dylib.backup"
          ln -s "$SP/healpy/.dylibs/libomp.dylib" "$SP/$p/.dylibs/libomp.dylib"
        done
