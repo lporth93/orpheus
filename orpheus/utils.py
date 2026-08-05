@@ -61,10 +61,10 @@ def _check_openmp_runtimes():
     if len(runtimes) > 1:
         warnings.warn(
             "Found %d OpenMP runtimes in this process:\n  %s\n"
-            "The C kernels can crash once they spawn worker threads. Pass nthreads=1 to "
-            "stay on a single thread, or see the macOS section of "
-            "https://orpheus.readthedocs.io/en/latest/installation.html for how to collapse "
-            "them onto one library."%(len(runtimes), "\n  ".join(runtimes)), RuntimeWarning)
+            "Two copies are common on macOS and usually harmless; three or more can crash "
+            "the C kernels once they spawn worker threads. See the macOS section of "
+            "https://orpheus.readthedocs.io/en/latest/installation.html"
+            %(len(runtimes), "\n  ".join(runtimes)), RuntimeWarning)
 
 def _randomhealpixshift(nside, pixel_idx, rng, oversampling=3):
     """Applies a random shift within a healpix pixel assuming NEST
