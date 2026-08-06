@@ -2,6 +2,12 @@
   <img src="docs/orpheus_logov1.png" alt="Orpheus logo" width="500"/>
 </p>
 
+<p align="center">
+  <a href="https://github.com/lporth93/orpheus/actions/workflows/ci.yml"><img src="https://github.com/lporth93/orpheus/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
+  <a href="https://pypi.org/project/orpheus-npcf/"><img src="https://img.shields.io/pypi/v/orpheus-npcf" alt="PyPI"/></a>
+  <a href="https://orpheus.readthedocs.io/"><img src="https://readthedocs.org/projects/orpheus/badge/?version=latest" alt="Documentation"/></a>
+</p>
+
 Orpheus is python package for the calculation of second- third- and fourth-order correlation functions of scalar and polar fields such as weak lensing shear. To efficiently perform the calculations, orpheus makes use of a mulitpole decomposition of the N>2 correlation functions and uses parallelized C code for the heavy lifting.
 
 ## Installation, Documentation and Examples

@@ -15,7 +15,7 @@ jobs:
   build:
     runs-on: ${{ matrix.os }}
     strategy:
-      # one red platform should not hide the result of the others
+      # Continue the job even if one platform fails
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, ubuntu-24.04-arm,

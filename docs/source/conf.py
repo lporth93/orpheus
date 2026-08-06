@@ -18,12 +18,15 @@ sys.path.insert(0, os.path.abspath('../../orpheus/'))
 ## Project information ##
 
 project = 'orpheus'
-copyright = '2026, L. Porth'
+copyright = '2024-2026, L. Porth'
 author = 'L. Porth'
 
-# The full version, including alpha/beta/rc tags
-release = '0.3.0'
-version = '0.3.0'
+# Get the full version directly from repo
+thisversion = {}
+with open(os.path.abspath('../../orpheus/_version.py')) as _f:
+    exec(_f.read(), thisversion)
+release = thisversion['__version__']
+version = release
 
 ## General configuration ##
 

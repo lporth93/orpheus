@@ -313,9 +313,15 @@ thisfile = os.path.abspath(os.path.dirname(__file__))
 with open(os.path.join(thisfile, "README.md"), encoding="utf-8") as f:
     long_description = f.read()
 
+# The version lives in the package. It is read rather than imported, as the
+# runtime dependencies pulled in by orpheus/__init__.py are not available here.
+thisversion = {}
+with open(os.path.join(thisfile, "orpheus", "_version.py"), encoding="utf-8") as f:
+    exec(f.read(), thisversion)
+
 setup(
     name="orpheus-npcf",
-    version="0.3.0",
+    version=thisversion["__version__"],
     description="Compute N-point correlation functions of spin-s fields.",
     long_description=long_description,
     long_description_content_type="text/markdown",

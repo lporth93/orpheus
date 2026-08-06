@@ -1,5 +1,6 @@
+from ._version import __version__
 from .catalog import *
-# The covariance module is not part of the distribution
+# The covariance module is not yet part of the public distribution
 try:
     from .covariance import *
 except ModuleNotFoundError:
