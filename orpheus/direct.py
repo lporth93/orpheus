@@ -284,6 +284,76 @@ class DirectEstimator:
     def __getmap(self, R, cat, dotomo, field, filter_form):
         """ This simply computes an aperture mass map together with weights and coverages """
 
+    def _checkmask(self, cat):
+        """The aperture centers are preselected from the angular mask of the catalog."""
+        if cat.mask is None:
+            raise ValueError('The catalog has no angular mask, which the direct '
+                             'estimators need to place the aperture centers. '
+                             'Call cat.create_mask() before processing.')
+
+    def saveinst(self, path_save, fname, extr_pars=None):
+        r"""Save an instance as a ``.npz`` archive.
+
+        The parameters shared by any direct estimator are given here explicitly.
+        Children pass their measured statistics through the optional ``extr_pars`` dict.
+        """
+        if not Path(path_save).is_dir():
+            raise ValueError('Path to directory does not exist.')
+
+        # Shared parameters
+        pars = dict(Rmin=self.Rmin, Rmax=self.Rmax, nbinsr=self.nbinsr,
+                    aperture_centers=self.aperture_centers, accuracies=self.accuracies,
+                    frac_covs=self.frac_covs, dpix_hash=self.dpix_hash,
+                    weight_outer=self.weight_outer, weight_inpainted=self.weight_inpainted,
+                    method=self.method, multicountcorr=self.multicountcorr,
+                    shuffle_pix=self.shuffle_pix, tree_resos=self.tree_resos,
+                    rmin_pixsize=self.rmin_pixsize, resoshift_leafs=self.resoshift_leafs,
+                    minresoind_leaf=self.minresoind_leaf, maxresoind_leaf=self.maxresoind_leaf,
+                    nthreads=self.nthreads, nbinsz=self.nbinsz)
+
+        # Update all the extra pars and save
+        if extr_pars:
+            pars.update({k: v for k, v in extr_pars.items() if v is not None})
+        np.savez(path_save+fname, **pars)
+
+    @classmethod
+    def loadinst(cls, path_save, fname):
+        r"""Reconstruct an instance from an archive written by ``saveinst``.
+        """
+        import inspect
+        fpath = path_save + fname
+        if not fpath.endswith('.npz'): fpath += '.npz'
+        with np.load(fpath, allow_pickle=True) as d:
+
+            # Little helper that reads either array or a non-array from a .npz file
+            _val = lambda v: v.item() if isinstance(v, np.ndarray) and v.ndim == 0 else v
+
+            # Alloc constructor arguments every child forwards to DirectEstimator.__init__.
+            ctor_keys = ('Rmin', 'Rmax', 'nbinsr', 'aperture_centers', 'accuracies',
+                         'frac_covs', 'dpix_hash', 'weight_outer', 'weight_inpainted',
+                         'method', 'multicountcorr', 'shuffle_pix', 'tree_resos',
+                         'rmin_pixsize', 'resoshift_leafs', 'minresoind_leaf',
+                         'maxresoind_leaf', 'nthreads')
+            ctor = {k: _val(d[k]) for k in ctor_keys if k in d.files}
+
+            # Alloc all child-specific constructor names that are not fixed internally
+            params = inspect.signature(cls.__init__).parameters
+            for k in d.files:
+                if k in params and k not in ctor:
+                    ctor[k] = _val(d[k])
+
+            # Init the instance
+            inst = cls(**ctor)
+
+            # Add the remaining attributes saved after the __init__ call, 
+            # ie all that did require a .process() call.
+            skip = set(ctor) | {'tree_redges'}
+            for k in d.files:
+                if k not in skip:
+                    setattr(inst, k, _val(d[k]))
+
+        return inst
+
 class Direct_Map3Unequal(DirectEstimator):
 
     def __init__(self, Rmin, Rmax, field="polar", filter_form="C02", ap_weights="InvShot", **kwargs):
@@ -291,6 +361,8 @@ class Direct_Map3Unequal(DirectEstimator):
         super().__init__(Rmin=Rmin, Rmax=Rmax, **kwargs)
         self.order_max = 3
         self.nbinsz = None
+        self.Map3 = None
+        self.wMap3 = None
         self.field = field
         self.filter_form = filter_form
         self.ap_weights = ap_weights
@@ -324,6 +396,13 @@ class Direct_Map3Unequal(DirectEstimator):
             ct.c_double, ct.c_double, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
             p_i32, p_i32, p_i32,
             ct.c_int32, p_f64, p_f64]
+
+    def saveinst(self, path_save, fname, extr_pars=None):
+        r"""Serialise the instance to a ``.npz`` archive."""
+        extras = dict(field=self.field, filter_form=self.filter_form,
+                      ap_weights=self.ap_weights, Map3=self.Map3, wMap3=self.wMap3)
+        if extr_pars: extras.update(extr_pars)
+        super().saveinst(path_save, fname, extr_pars=extras)
 
     def process_discrete(self, cat, dotomo=True, Emodeonly=True, connected=True, dpix_innergrid=2.):
 
@@ -373,6 +452,7 @@ class Direct_Map3Unequal(DirectEstimator):
         cat.build_spatialhash(dpix=self.dpix_hash, extent=[None, None, None, None])
         hashgrid = FlatPixelGrid_2D(cat.pix1_start, cat.pix2_start, 
                                     cat.pix1_n, cat.pix2_n, cat.pix1_d, cat.pix2_d)
+        self._checkmask(cat)
         regridded_mask = cat.mask.regrid(hashgrid).data.flatten().astype(np.float64)
 
         args_centers = (self.radii, self.nbinsr, centers_1, centers_2, ncenters, )  
@@ -400,8 +480,10 @@ class Direct_Map3Unequal(DirectEstimator):
         func(*args)
         result_Map3 = args[-2].reshape((self.nfrac_covs, nzrcombis))[:]
         result_wMap3 = args[-1].reshape((self.nfrac_covs, nzrcombis))[:]
-                       
-        return result_Map3, result_wMap3  
+
+        self.Map3 = result_Map3
+        self.wMap3 = result_wMap3
+        return result_Map3, result_wMap3
         
                 
 class Direct_MapnEqual(DirectEstimator):
@@ -441,6 +523,8 @@ class Direct_MapnEqual(DirectEstimator):
         super().__init__(Rmin=Rmin, Rmax=Rmax, **kwargs)
         self.order_max = order_max
         self.nbinsz = None
+        self.Mapn = None
+        self.wMapn = None
         self.field = field
         self.filter_form = filter_form
         self.ap_weights = ap_weights
@@ -496,6 +580,14 @@ class Direct_MapnEqual(DirectEstimator):
             ct.c_int32, p_f64, p_f64, p_f64, p_f64, p_f64, p_f64]
                
                        
+    def saveinst(self, path_save, fname, extr_pars=None):
+        r"""Serialise the instance to a ``.npz`` archive."""
+        extras = dict(order_max=self.order_max, field=self.field,
+                      filter_form=self.filter_form, ap_weights=self.ap_weights,
+                      Mapn=self.Mapn, wMapn=self.wMapn)
+        if extr_pars: extras.update(extr_pars)
+        super().saveinst(path_save, fname, extr_pars=extras)
+
     def process(self, cat, dotomo=True, Emodeonly=True, connected=True, dpix_innergrid=2.):
         r"""Computes aperture statistics on a catalog.
 
@@ -554,7 +646,9 @@ class Direct_MapnEqual(DirectEstimator):
             result_wMapn[elr] = args[-1].reshape((self.nfrac_covs, nzcombis))[:]
             
             sys.stdout.write("\rDone %i/%i aperture radii"%(elr+1,self.nbinsr))
-                       
+
+        self.Mapn = result_Mapn
+        self.wMapn = result_wMapn
         return result_Mapn, result_wMapn
                 
     def _getindex(self, order, mode, zcombi):
@@ -609,6 +703,7 @@ class Direct_MapnEqual(DirectEstimator):
         cat.build_spatialhash(dpix=self.dpix_hash, extent=[None, None, None, None])
         hashgrid = FlatPixelGrid_2D(cat.pix1_start, cat.pix2_start, 
                                     cat.pix1_n, cat.pix2_n, cat.pix1_d, cat.pix2_d)
+        self._checkmask(cat)
         regridded_mask = cat.mask.regrid(hashgrid).data.flatten().astype(np.float64)
         
         len_out = self._nzcombis_tot(nbinsz,dotomo)*self.nfrac_covs
@@ -800,10 +895,12 @@ class Direct_NapnEqual(DirectEstimator):
         super().__init__(Rmin=Rmin, Rmax=Rmax, **kwargs)
         self.order_max = order_max
         self.nbinsz = None
+        self.Napn = None
+        self.wNapn = None
         self.field = field
         self.filter_form = filter_form
         self.ap_weights = ap_weights
-        
+
         self.fields_avail = ["scalar", "polar"]
         self.ap_weights_dict = {"Identity":0, "InvShot":1}
         self.filters_dict = {"S98":0, "C02":1, "Sch04":2, "PolyExp":3}
@@ -856,6 +953,14 @@ class Direct_NapnEqual(DirectEstimator):
             p_i32, p_i32, p_i32,
             p_f64, p_f64, p_f64, p_f64]
                
+    def saveinst(self, path_save, fname, extr_pars=None):
+        r"""Serialise the instance to a ``.npz`` archive."""
+        extras = dict(order_max=self.order_max, field=self.field,
+                      filter_form=self.filter_form, ap_weights=self.ap_weights,
+                      Napn=self.Napn, wNapn=self.wNapn)
+        if extr_pars: extras.update(extr_pars)
+        super().saveinst(path_save, fname, extr_pars=extras)
+
     def process(self, cat, dotomo=True, Nbar_policy=1, connected=True, dpix_innergrid=2.):
         r"""Computes aperture statistics on a catalog.
 
@@ -920,7 +1025,9 @@ class Direct_NapnEqual(DirectEstimator):
             result_wNapn[elr] = args[-1].reshape((self.nfrac_covs, nzcombis))[:]
             
             sys.stdout.write("\rDone %i/%i aperture radii"%(elr+1,self.nbinsr))
-                       
+
+        self.Napn = result_Napn
+        self.wNapn = result_wNapn
         return result_Napn, result_wNapn
                 
     def _getindex(self, order, mode, zcombi):
@@ -963,6 +1070,7 @@ class Direct_NapnEqual(DirectEstimator):
         cat.build_spatialhash(dpix=self.dpix_hash, extent=[None, None, None, None])
         hashgrid = FlatPixelGrid_2D(cat.pix1_start, cat.pix2_start, 
                                     cat.pix1_n, cat.pix2_n, cat.pix1_d, cat.pix2_d)
+        self._checkmask(cat)
         regridded_mask = cat.mask.regrid(hashgrid).data.flatten().astype(np.float64)
         
         if forfunc=="Equal":
