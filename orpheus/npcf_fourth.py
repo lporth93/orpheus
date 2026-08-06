@@ -50,7 +50,8 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
         self.process_spherical = bool(process_spherical)
 
     def saveinst(self, path_save, fname, extr_pars=None):
-        extras = dict(nbinsz=self.nbinsz, nzcombis=self.nzcombis)
+        extras = dict(nbinsz=self.nbinsz, nzcombis=self.nzcombis,
+                      thetabatchsize_max=self.thetabatchsize_max)
         if extr_pars: extras.update(extr_pars)
         super().saveinst(path_save, fname, extr_pars=extras)
 
@@ -465,7 +466,8 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
         self.project["X"]["Centroid"] = self._x2centroid
 
     def saveinst(self, path_save, fname, extr_pars=None):
-        extras = dict(nbinsz=self.nbinsz, nzcombis=self.nzcombis)
+        extras = dict(nbinsz=self.nbinsz, nzcombis=self.nzcombis,
+                      thetabatchsize_max=self.thetabatchsize_max)
         if extr_pars: extras.update(extr_pars)
         super().saveinst(path_save, fname, extr_pars=extras)
 
@@ -1198,7 +1200,7 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
 
     def saveinst(self, path_save, fname, extr_pars=None):
         extras = dict(nbinsz_source=self.nbinsz_source, nbinsz_lens=self.nbinsz_lens,
-                      nzcombis=self.nzcombis)
+                      nzcombis=self.nzcombis, thetabatchsize_max=self.thetabatchsize_max)
         if extr_pars: extras.update(extr_pars)
         super().saveinst(path_save, fname, extr_pars=extras)
 

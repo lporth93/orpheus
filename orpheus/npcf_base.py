@@ -883,31 +883,31 @@ class BinnedNPCF:
         """Reconstruct an instance from an archive written by ``saveinst``.
         """
         import inspect
-        fn = path_save + fname
-        if not fn.endswith('.npz'): fn += '.npz'
-        with np.load(fn, allow_pickle=True) as d:
+        fpath = path_save + fname
+        if not fpath.endswith('.npz'): fpath += '.npz'
+        with np.load(fpath, allow_pickle=True) as d:
+
+            # Little helper that reads either array or a non-array from a .npz file
             _val = lambda v: v.item() if isinstance(v, np.ndarray) and v.ndim == 0 else v
 
-            # Constructor arguments every child forwards to BinnedNPCF.__init__.
+            # Alloc constructor arguments every child forwards to BinnedNPCF.__init__.
             ctor_keys = ('min_sep', 'max_sep', 'nbinsr', 'sep_units', 'nbinsphi', 'nmaxs',
                          'method', 'multicountcorr', 'shuffle_pix', 'process_spherical',
                          'tree_resos', 'rmin_pixsize', 'resoshift_leafs', 'minresoind_leaf',
                          'maxresoind_leaf', 'nthreads')
             ctor = {k: _val(d[k]) for k in ctor_keys if k in d.files}
 
-            # order/spins/n_cfs are fixed internally by most children; pass them
-            # only when the concrete constructor names them (base, n_cfs of GGG).
+            # Alloc all child-specific constructor names that are not fixed internally
             params = inspect.signature(cls.__init__).parameters
-            for k in ('order', 'spins', 'n_cfs'):
-                if k in params and k in d.files:
+            for k in d.files:
+                if k in params and k not in ctor:
                     ctor[k] = _val(d[k])
 
             # Init the instances
             inst = cls(**ctor)
 
-            # Add the measured arrays/counts/projection saved on top to
-            # the instance; i.e. everything that was not already passed and 
-            # built by __init__.
+            # Add the remaining attributes, like counts, npcfs, ..., saved after 
+            # the __init__, ie all that did require a .process() call.
             skip = set(ctor) | {'order', 'spins', 'n_cfs', 'tree_redges'}
             for k in d.files:
                 if k not in skip:

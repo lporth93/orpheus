@@ -357,7 +357,6 @@ class GGCorrelation(BinnedNPCF):
         self.projections_avail = [None]
         self.nbinsz = None
         self.nzcombis = None
-        self.counts = None
         self.xip = None
         self.xim = None
         self.norm = None

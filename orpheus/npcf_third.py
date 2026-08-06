@@ -64,7 +64,7 @@ class NNNCorrelation(BinnedNPCF):
 
     def saveinst(self, path_save, fname, extr_pars=None):
         r"""Serialise the instance to a ``.npz`` archive."""
-        extras = dict(nbinsz=self.nbinsz, nzcombis=self.nzcombis)
+        extras = dict(nbinsz=self.nbinsz, nzcombis=self.nzcombis, zeta=self.zeta)
         if extr_pars: extras.update(extr_pars)
         super().saveinst(path_save, fname, extr_pars=extras)
 
@@ -889,7 +889,8 @@ class GNNCorrelation(BinnedNPCF):
 
     def saveinst(self, path_save, fname, extr_pars=None):
         r"""Serialise the instance to a ``.npz`` archive."""
-        extras = dict(nbinsz_source=self.nbinsz_source, nbinsz_lens=self.nbinsz_lens)
+        extras = dict(nbinsz_source=self.nbinsz_source, nbinsz_lens=self.nbinsz_lens,
+                      zweighting=self.zweighting, zweighting_sigma=self.zweighting_sigma)
         if extr_pars: extras.update(extr_pars)
         super().saveinst(path_save, fname, extr_pars=extras)
 
