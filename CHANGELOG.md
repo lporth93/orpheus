@@ -25,6 +25,32 @@ parallelised C kernels.
 
 ## Detailed changelog
 
+### Unreleased
+
+#### Added
+
+* `saveinst` and `loadinst` for the direct estimators. `Direct_Map3Unequal`,
+  `Direct_MapnEqual` and `Direct_NapnEqual` now serialise their configuration and
+  their measured statistics the same way as the correlation function classes do.
+* The direct estimators keep their results on the instance instead of only
+  returning them, so a reloaded archive carries the aperture statistics.
+* A readable error when a direct estimator is handed a catalog without an angular
+  mask, which is where the aperture centers are drawn from. This previously failed
+  with an `AttributeError` inside the regridding.
+
+#### Fixed
+
+* `saveinst` dropped attributes that a reloaded instance needs: the clustering
+  three-point function `zeta` of `NNNCorrelation`, the redshift weighting of
+  `GNNCorrelation`, and `thetabatchsize_max` of the fourth-order estimators. On
+  `loadinst` these silently fell back to their defaults.
+
+#### Changed
+
+* `BinnedNPCF.loadinst` matches the saved keys against the signature of the
+  concrete constructor, so child-specific arguments no longer need to be listed
+  by hand.
+
 ### 0.3.1 — 2026-08-06
 
 #### Fixed
