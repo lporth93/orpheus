@@ -17,7 +17,38 @@ __all__ = ["BinnedNPCF"]
 class BinnedNPCF:
     r"""Class of a binned N-point correlation function of various arbitrary tracer catalogs.
     This class contains attributes and methods that can be used across any of its children.
-    
+
+    .. note::
+        **Sign convention for polar fields.** Every spin-2 leg is projected in the
+        tangential basis,
+
+        .. math::
+
+            \gamma_\mathrm{t} + i\gamma_\times = -\gamma\,e^{-2i\phi} \ ,
+
+        with :math:`\phi` the direction along which the field is projected. A correlator
+        built from :math:`k` polar legs therefore carries an overall factor
+        :math:`(-1)^k` relative to the raw product of :math:`\gamma\,e^{-2i\phi}`,
+        applied once at the level of the accumulated correlator:
+
+        ==========================  =====  ==============
+        correlator                  k      :math:`(-1)^k`
+        ==========================  =====  ==============
+        ``NNCorrelation``           0      :math:`+1`
+        ``NGCorrelation``           1      :math:`-1`
+        ``GGCorrelation``           2      :math:`+1`
+        ``GNNCorrelation``          1      :math:`-1`
+        ``NGGCorrelation``          2      :math:`+1`
+        ``GGGCorrelation``          3      :math:`-1`
+        ``GNNNCorrelation_NoTomo``  1      :math:`-1`
+        ``GGGGCorrelation_NoTomo``  4      :math:`+1`
+        ==========================  =====  ==============
+
+        As a consequence a pure tangential shear returns a positive
+        :math:`\mathrm{Re}\,\xi` from ``NGCorrelation``, and the aperture masses built
+        from these correlators are the usual :math:`M_\mathrm{ap} + iM_\times` with no
+        further sign handling.
+
     Attributes
     ----------
     order: int

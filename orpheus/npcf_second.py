@@ -562,10 +562,23 @@ class GGCorrelation(BinnedNPCF):
             
         
     def computeMap2(self, radii, tofile=False):
-        """ Computes second-order aperture mass statistics given the shear correlation functions.
+        r""" Computes second-order aperture mass statistics given the shear correlation functions.
         Uses the Crittenden 2002 filter.
+
+        The four components are ordered as
+
+        .. math::
+
+            \left[ \langle M_\mathrm{ap}^2 \rangle,\,
+                   \langle M_\mathrm{ap} M_\times \rangle,\,
+                   \langle M_\times^2 \rangle,\,
+                   -\langle M_\mathrm{ap} M_\times \rangle \right] \ .
+
+        The last component is not independent: since :math:`\langle M_\mathrm{ap} M_\times\rangle`
+        is symmetric under exchange of the two apertures, it equals minus the second one up
+        to :math:`\mathrm{Im}\,\xi_+`, which vanishes identically for ``do_dc=True``.
         """
-        
+
         Tp = lambda x: 1./128. * (x**4-16*x**2+32) * np.exp(-x**2/4.)  
         Tm = lambda x: 1./128. * (x**4) * np.exp(-x**2/4.)  
         result = np.zeros((4, self.nzcombis, len(radii)), dtype=float)
@@ -575,9 +588,9 @@ class GGCorrelation(BinnedNPCF):
             t1 = np.sum(pref*(Tp(thetared)*self.xip + Tm(thetared)*self.xim), axis=1)
             t2 = np.sum(pref*(Tp(thetared)*self.xip - Tm(thetared)*self.xim), axis=1)
             result[0,:,elr] =  t1.real  # Map2
-            result[1,:,elr] =  t1.imag  # MapMx 
+            result[1,:,elr] =  t1.imag  # MapMx
             result[2,:,elr] =  t2.real  # Mx2
-            result[3,:,elr] =  t2.imag  # MxMap 
+            result[3,:,elr] =  t2.imag  # -MapMx (up to Im(xi_p), zero for do_dc=True)
             
         return result
     
@@ -1127,10 +1140,13 @@ class NGCorrelation(BinnedNPCF):
             ct.byref(out_s))
         
         # Unpack results
+        # The kernel accumulates e_c*exp(-2i*phi); the minus turns this into the
+        # tangential basis gamma_t + i*gamma_x, matching the 3dbox path and the
+        # (-1)^nspin2 convention of the higher-order correlators.
         szr = (nzl*nzs, self.nbinsr)
         self.bin_centers = bin_centers.reshape(szr)
         self.bin_centers_mean = np.mean(self.bin_centers, axis=0)
-        self.xi = xi.reshape(szr)
+        self.xi = -xi.reshape(szr)
         self.norm = norm.reshape(szr)
         self.npair = npair.reshape(szr)
         self.projection = None
@@ -1198,8 +1214,15 @@ class NGCorrelation(BinnedNPCF):
         super().saveinst(path_save, fname, extr_pars=extras)
 
     def computeMapNap(self, radii, tofile=False):
-        """ Computes second-order aperture statistics given the projected position-shape correlation function.
+        r""" Computes second-order aperture statistics given the projected position-shape correlation function.
         Uses the Crittenden 2002 filter.
+
+        Returns
+        -------
+        numpy.ndarray
+            Complex, of shape ``(nzcombis, nradii)``. The real part is
+            :math:`\langle N_\mathrm{ap} M_\mathrm{ap}\rangle`, the imaginary part
+            :math:`\langle N_\mathrm{ap} M_\times\rangle`.
         """
 
         mapnap = np.zeros((self.xi.shape[0], len(radii)), dtype=complex)
