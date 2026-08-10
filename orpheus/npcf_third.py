@@ -1338,7 +1338,7 @@ class GNNCorrelation(BinnedNPCF):
 
     ## INTEGRATED MEASURES ##
     def computeNNM(self, radii, do_multiscale=False, xi=None, tofile=False):
-        """Compute third-order aperture statistics using the polyonomial filter of Crittenden 2002.
+        r"""Compute third-order aperture statistics using the polyonomial filter of Crittenden 2002.
 
          Parameters
         ----------
@@ -1356,7 +1356,10 @@ class GNNCorrelation(BinnedNPCF):
         Returns
         -------
         numpy.ndarray
-            The third-order aperture statistics.
+            The third-order aperture statistics, complex, of shape
+            ``(1, nzcombis, nrcombis)``. The real part is
+            :math:`\langle N_\mathrm{ap} N_\mathrm{ap} M_\mathrm{ap}\rangle`, the
+            imaginary part :math:`\langle N_\mathrm{ap} N_\mathrm{ap} M_\times\rangle`.
         """
 
         if self.npcf is None and self.npcf_multipoles is not None:
@@ -1848,12 +1851,24 @@ class NGGCorrelation(BinnedNPCF):
         
     ## INTEGRATED MEASURES ##        
     def computeNMM(self, radii, do_multiscale=False,  basis="MapMx", tofile=False):
-        """Compute third-order aperture statistics.
+        r"""Compute third-order aperture statistics.
 
         Returns
         -------
         numpy.ndarray
-            The third-order aperture statistics.
+            For ``basis='MM*'`` the two raw correlators
+            :math:`[\langle N MM \rangle, \langle N MM^* \rangle]`. For ``basis='MapMx'``
+            the four real components
+
+            .. math::
+
+                \left[ \langle N M_\mathrm{ap} M_\mathrm{ap} \rangle,\,
+                       \langle N M_\times M_\times \rangle,\,
+                       \langle N M_\times M_\mathrm{ap} \rangle,\,
+                       \langle N M_\mathrm{ap} M_\times \rangle \right] \ ,
+
+            where the last two coincide for ``do_multiscale=False`` but are independent
+            once the two aperture radii differ.
         """
 
         assert(basis in ["MM*", "MapMx"])
@@ -1892,9 +1907,10 @@ class NGGCorrelation(BinnedNPCF):
             NMM = rawstats.reshape((2, nzcombis, nrcombis))
         if basis=="MapMx":
             _NMM, _NMMstar = rawstats.reshape((2, nzcombis, nrcombis))
-            NMM = np.zeros((3, nzcombis, nrcombis), dtype=complex)
-            NMM[0] = (_NMM + _NMMstar).real/2.
-            NMM[1] = (-_NMM + _NMMstar).real/2.
-            NMM[2] = (_NMM + _NMMstar).imag/2.
+            NMM = np.zeros((4, nzcombis, nrcombis), dtype=float)
+            NMM[0] = (_NMM + _NMMstar).real/2.   # NMapMap
+            NMM[1] = (-_NMM + _NMMstar).real/2.  # NMxMx
+            NMM[2] = (_NMM + _NMMstar).imag/2.   # NMxMap
+            NMM[3] = (_NMM - _NMMstar).imag/2.   # NMapMx
 
         return NMM

@@ -27,6 +27,26 @@ parallelised C kernels.
 
 ### Unreleased
 
+#### Changed — please read before upgrading
+
+These change the numbers that existing scripts get back.
+
+* **`NGCorrelation.xi` has flipped sign for `flat2d` and `spherical` geometries.**
+  It now returns the tangential basis `gamma_t + i*gamma_x`, so a pure tangential
+  shear gives a positive real part. Previously these two geometries returned
+  `-gamma_t`, which contradicted both the documented behaviour and the `3dbox`
+  geometry, whose sign is unchanged. Every polar leg of every other correlator
+  already used the tangential basis, so this brings `NGCorrelation` into line with
+  the rest of the package; the convention is now stated in `BinnedNPCF`.
+* **`NGCorrelation.computeMapNap` follows**, and now returns `+<Nap Map>` on all
+  geometries. Combining `NGCorrelation` output with `GNNCorrelation` or
+  `GNNNCorrelation_NoTomo` no longer needs a manual sign flip.
+* **`NGGCorrelation.computeNMM(basis='MapMx')` returns four components instead of
+  three.** The two complex correlators carry four real degrees of freedom, but
+  `<N Map Mx>` was being discarded. It is now returned as the fourth component;
+  it agrees with the third only when `do_multiscale=False`. The array is real
+  rather than complex, since all four components are.
+
 #### Added
 
 * `saveinst` and `loadinst` for the direct estimators. `Direct_Map3Unequal`,

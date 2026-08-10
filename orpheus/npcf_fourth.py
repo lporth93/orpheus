@@ -430,6 +430,25 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
     r""" Class containing methods to measure and obtain statistics that are built
     from nontomographic fourth-order shear correlation functions.
 
+    Note that the different components of the GGGG correlator are ordered as
+
+    .. math::
+
+        \Upsilon_\mu \sim \left[
+        \langle \gamma \gamma \gamma \gamma \rangle,\,
+        \langle \gamma^* \gamma \gamma \gamma \rangle,\,
+        \langle \gamma \gamma^* \gamma \gamma \rangle,\,
+        \langle \gamma \gamma \gamma^* \gamma \rangle,\,
+        \langle \gamma \gamma \gamma \gamma^* \rangle,\,
+        \langle \gamma^* \gamma^* \gamma \gamma \rangle,\,
+        \langle \gamma^* \gamma \gamma^* \gamma \rangle,\,
+        \langle \gamma^* \gamma \gamma \gamma^* \rangle
+        \right] \ ,
+
+    following the same rule as :class:`GGGCorrelation`, i.e. starting with the
+    correlator in which no polar field is conjugated and then moving the
+    conjugations from left to right.
+
     Attributes
     ----------
     min_sep: float
