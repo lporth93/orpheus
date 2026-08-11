@@ -1245,12 +1245,16 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
 
         ## Preparations ##
         # Some default argument resettings
+        # lowmem is used both as a branch and as a 0/1 multiplier on the verbosity, so
+        # the None default has to be resolved before either. None already selects the
+        # same branches as False everywhere below.
+        lowmem = bool(lowmem)
         if self.method=='Discrete' and not lowmem:
             statistics = ['4pcf_multipole']
 
         # Check memory requirements
         if not lowmem:
-            _resradial = gen_thetacombis_fourthorder(nbinsr=self.nbinsr, nthreads=self.nthreads, batchsize=batchsize, 
+            _resradial = gen_thetacombis_fourthorder(nbinsr=self.nbinsr, nthreads=self.nthreads, batchsize=batchsize,
                                                      batchsize_max=self.thetabatchsize_max, ordered=True, custom=custom_thetacombis,
                                                      verbose=self._verbose_python*lowmem)
             nthetacombis_tot, _, _, _, _, _ = _resradial

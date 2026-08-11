@@ -29,25 +29,8 @@ class BinnedNPCF:
         with :math:`\phi` the direction along which the field is projected. A correlator
         built from :math:`k` polar legs therefore carries an overall factor
         :math:`(-1)^k` relative to the raw product of :math:`\gamma\,e^{-2i\phi}`,
-        applied once at the level of the accumulated correlator:
+        applied once at the level of the accumulated correlator.
 
-        ==========================  =====  ==============
-        correlator                  k      :math:`(-1)^k`
-        ==========================  =====  ==============
-        ``NNCorrelation``           0      :math:`+1`
-        ``NGCorrelation``           1      :math:`-1`
-        ``GGCorrelation``           2      :math:`+1`
-        ``GNNCorrelation``          1      :math:`-1`
-        ``NGGCorrelation``          2      :math:`+1`
-        ``GGGCorrelation``          3      :math:`-1`
-        ``GNNNCorrelation_NoTomo``  1      :math:`-1`
-        ``GGGGCorrelation_NoTomo``  4      :math:`+1`
-        ==========================  =====  ==============
-
-        As a consequence a pure tangential shear returns a positive
-        :math:`\mathrm{Re}\,\xi` from ``NGCorrelation``, and the aperture masses built
-        from these correlators are the usual :math:`M_\mathrm{ap} + iM_\times` with no
-        further sign handling.
 
     Attributes
     ----------
@@ -1019,6 +1002,11 @@ class BinnedNPCF:
         self.tree_nresos = new_nresos
         self.tree_redges = new_redges
         self.tree_resosatr = new_resosatr
+
+        # Set hash resolution to coarsest pixel scale. For discrete estimator
+        # use a quarter of the search range which should never be at risk
+        # for becoming a time bottleneck.
+        self.dpix_hash = new_resos[-1] if new_resos[-1] > 0. else self.max_sep/4.
 
         if include_shifts:
             if self.resoshift_leafs<0:

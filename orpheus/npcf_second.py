@@ -16,7 +16,7 @@ from .multires_structs import (build_catalog_struct, build_navhash_struct,
 __all__ = ["NNCorrelation", "GGCorrelation", "NGCorrelation"]
 
 
-###############################   
+###############################
 ## SECOND - ORDER STATISTICS ##
 ###############################
 
@@ -207,7 +207,7 @@ class NNCorrelation(BinnedNPCF):
         else:
             # Here we need to cut the first reso if it corresponds to discrete catalog
             cutfirst = np.int32(self.tree_resos[0]==0.)
-            mh = cat.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1],
+            mh = cat.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.dpix_hash,
                                       shuffle=self.shuffle_pix, normed=False, nthreads=self.nthreads)
 
         # Build the four input structs + output arrays
@@ -512,7 +512,7 @@ class GGCorrelation(BinnedNPCF):
         else:
             # Here we need to cut the first reso if it corresponds to discrete catalog
             cutfirst = np.int32(self.tree_resos[0]==0.)
-            mh = cat.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1],
+            mh = cat.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.dpix_hash,
                                       shuffle=self.shuffle_pix, w2field=True, normed=True, nthreads=self.nthreads)
             allfields = mh['allfields']
             extra = {'e1_resos': np.concatenate([allfields[i][0] for i in range(len(allfields))]).astype(np.float64),
@@ -904,7 +904,6 @@ class NGCorrelation(BinnedNPCF):
     """
 
     def __init__(self, min_sep, max_sep, **kwargs):
-        kwargs.setdefault('method', 'Discrete')
         super().__init__(order=2, spins=np.array([0, 2], dtype=np.int32), n_cfs=1,
                          min_sep=min_sep, max_sep=max_sep, **kwargs)
         self.projection = None
@@ -1104,13 +1103,13 @@ class NGCorrelation(BinnedNPCF):
         # Build multihashes
         cutfirst = np.int32(self.tree_resos[0] == 0.)
         jointextent = list(cat_source._jointextent([cat_lens], extend=self.tree_resos[-1]))
-        mh_source = cat_source.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1],
+        mh_source = cat_source.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.dpix_hash,
                                                 shuffle=self.shuffle_pix, w2field=True, normed=True,
                                                 extent=jointextent, nthreads=self.nthreads)
         allfields = mh_source['allfields']
         extra_s = {'e1_resos': np.concatenate([allfields[i][0] for i in range(len(allfields))]).astype(np.float64),
                    'e2_resos': np.concatenate([allfields[i][1] for i in range(len(allfields))]).astype(np.float64)}
-        mh_lens = cat_lens.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1],
+        mh_lens = cat_lens.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.dpix_hash,
                                             shuffle=self.shuffle_pix, normed=False,
                                             extent=jointextent, nthreads=self.nthreads)
 
