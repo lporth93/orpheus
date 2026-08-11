@@ -200,6 +200,10 @@ class BinnedNPCF:
         assert(self.method in self.methods_avail)
         assert(isinstance(self.tree_resos, np.ndarray))
         assert(isinstance(self.tree_resos[0], np.float64))
+        # The first entry is the discrete resolution, i.e. zero.
+        assert self.tree_resos[0] == 0., (
+            "tree_resos must start with 0., the discrete resolution; got %s"
+            %str(self.tree_resos))
         
         # Setup radial bins
         # Note that we always have self.binsize <= binsize
@@ -233,9 +237,8 @@ class BinnedNPCF:
             self.tree_resosatr[elbin] = _tmpreso
         # Update tree resolutions to make sure that `tree_redges` is monotonous
         # (This is i.e. not fulfilled for a default tree setup and a large value of `rmin`)
-        _resomin = self.tree_resosatr[0]
         _resomax = self.tree_resosatr[-1]
-        self._updatetree(self.tree_resos[_resomin:_resomax+1], include_shifts=False)
+        self._updatetree(self.tree_resos[:_resomax+1], include_shifts=False)
             
         # Prepare leaf resolutions
         if np.abs(self.resoshift_leafs)>=self.tree_nresos:
@@ -250,15 +253,15 @@ class BinnedNPCF:
             print("Error: Parameter minreso_leaf is out of bounds. Set to 0.")
         if self.minresoind_leaf>=self.tree_nresos:
             self.minresoind_leaf = self.tree_nresos-1
-            print("Error: Parameter minreso_leaf is out of bounds. Set to %i."%self.minresoint_leaf)
+            print("Error: Parameter minreso_leaf is out of bounds. Set to %i."%self.minresoind_leaf)
         if self.maxresoind_leaf<0:
             self.maxresoind_leaf = 0
             print("Error: Parameter minreso_leaf is out of bounds. Set to 0.")
         if self.maxresoind_leaf>=self.tree_nresos:
             self.maxresoind_leaf = self.tree_nresos-1
-            print("Error: Parameter minreso_leaf is out of bounds. Set to %i."%self.maxresoint_leaf) 
+            print("Error: Parameter maxreso_leaf is out of bounds. Set to %i."%self.maxresoind_leaf) 
         if self.maxresoind_leaf<self.minresoind_leaf:
-            print("Error: Parameter maxreso_leaf is smaller than minreso_leaf. Set to %i."%self.minreso_leaf) 
+            print("Error: Parameter maxreso_leaf is smaller than minreso_leaf. Set to %i."%self.minresoind_leaf) 
             
         # Setup phi bins
         for elp in range(self.order-2):
@@ -682,8 +685,8 @@ class BinnedNPCF:
                 ct.c_int32, ct.c_int32,
                 p_f64, p_f64, ct.c_int32,
                 p_f64, ct.c_int32,
-                p_f64, p_f64, p_f64, p_f64, ct.c_int32, ct.c_int32, 
-                ct.c_int32, ct.c_int32, 
+                p_f64, p_f64, p_f64, p_f64, ct.c_int32, ct.c_int32,
+                ct.c_int32, ct.c_int32, ct.c_int32,
                 p_c128, p_c128, np.ctypeslib.ndpointer(dtype=np.complex128)]
             
             # [DEBUG]: Shear 4pt function in terms of xip/xim

@@ -43,6 +43,19 @@ These change the numbers that existing scripts get back.
   `<N Map Mx>` was being discarded. It is now returned as the fourth component;
   it agrees with the third only when `do_multiscale=False`. The array is real
   rather than complex, since all four components are.
+* **`GGGGCorrelation_NoTomo.process` refuses `lowmem=False`.** That kernel returns a
+  normalisation one to two per cent away from the true quadruplet counts, measured
+  against `NNNNCorrelation`, which agrees with itself across both of its own branches.
+  It was reached by default for a multipole-only run, so results obtained that way
+  carry the error. Pass `lowmem=True`, which is exact.
+* **`tree_resos` must begin with `0.`, the discrete resolution.** The tree machinery
+  already assumed it -- `tree_redges[0]` is anchored at `min_sep` and only
+  `tree_resos[1:]` is gridded -- so a list without it was misread and crashed in C.
+  It is now rejected on construction. Relatedly, a large `rmin_pixsize` no longer
+  drops that entry when selecting resolutions.
+* **A spatial hash of more than 1e9 cells raises.** A cell size far finer than the
+  footprint asks for an allocation that fails inside C; the number of cells is now
+  checked against the extent first, and the message names both.
 
 #### Added
 
@@ -69,6 +82,18 @@ These change the numbers that existing scripts get back.
   three-point function `zeta` of `NNNCorrelation`, the redshift weighting of
   `GNNCorrelation`, and `thetabatchsize_max` of the fourth-order estimators. On
   `loadinst` these silently fell back to their defaults.
+* `GNNNCorrelation_NoTomo` returned an array of zeros for `method='BaseTree'` and
+  `method='DoubleTree'`, without raising. It never narrowed `methods_avail`, so it
+  inherited all four schemes from `BinnedNPCF` while implementing two. It now
+  declares `['Discrete', 'Tree']` and defaults to `'Tree'`; the previous default was
+  `'DoubleTree'`, one of the two that produced nothing.
+* An invalid `statistics` argument to a fourth-order `process` reported the `repr` of
+  a lambda rather than the offending value, at six call sites.
+* The out-of-bounds handlers for `minresoind_leaf` and `maxresoind_leaf` raised
+  `AttributeError` from inside the error path, naming three attributes that do not
+  exist. They now clamp and report as intended.
+* `computeMap4` printed a progress bar unconditionally from C. It is now gated on
+  `verbosity`, like every other kernel.
 
 #### Changed
 
