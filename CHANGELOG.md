@@ -33,11 +33,8 @@ These change the numbers that existing scripts get back.
 
 * **`NGCorrelation.xi` has flipped sign for `flat2d` and `spherical` geometries.**
   It now returns the tangential basis `gamma_t + i*gamma_x`, so a pure tangential
-  shear gives a positive real part. Previously these two geometries returned
-  `-gamma_t`, which contradicted both the documented behaviour and the `3dbox`
-  geometry, whose sign is unchanged. Every polar leg of every other correlator
-  already used the tangential basis, so this brings `NGCorrelation` into line with
-  the rest of the package; the convention is now stated in `BinnedNPCF`.
+  shear gives a positive real part. This brings `NGCorrelation` in line with
+  the general orpheus convention which has been documented in in `BinnedNPCF`.
 * **`NGCorrelation.computeMapNap` follows**, and now returns `+<Nap Map>` on all
   geometries. Combining `NGCorrelation` output with `GNNCorrelation` or
   `GNNNCorrelation_NoTomo` no longer needs a manual sign flip.
@@ -60,6 +57,14 @@ These change the numbers that existing scripts get back.
 
 #### Fixed
 
+* `tree_resos=[0.]` crashed with `OverflowError: cannot convert float infinity to
+  integer`. The spatial hash takes its cellsize from the coarsest tree resolution,
+  which is zero for a fully discrete tree; it now falls back to a fraction of the
+  search radius.
+* `GNNNCorrelation_NoTomo.process` raised `TypeError` unless `lowmem` was passed
+  explicitly. It defaults to `None`, which is used both as a branch and as a 0/1
+  multiplier on the verbosity, and the latter fails on `None`. It is now resolved to
+  a bool first, selecting the same branches it did before.
 * `saveinst` dropped attributes that a reloaded instance needs: the clustering
   three-point function `zeta` of `NNNCorrelation`, the redshift weighting of
   `GNNCorrelation`, and `thetabatchsize_max` of the fourth-order estimators. On
@@ -67,6 +72,11 @@ These change the numbers that existing scripts get back.
 
 #### Changed
 
+* `NGCorrelation` no longer defaults to `method='Discrete'`. Second-order statistics
+  have a single algorithm, so the approximation schemes never applied there and the
+  argument had no effect; the default now matches `NNCorrelation` and
+  `GGCorrelation`. The accuracy is set by `tree_resos` and `rmin_pixsize`, and the
+  exact estimator corresponds to `tree_resos=[0.]`.
 * `BinnedNPCF.loadinst` matches the saved keys against the signature of the
   concrete constructor, so child-specific arguments no longer need to be listed
   by hand.
