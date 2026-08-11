@@ -306,14 +306,15 @@ void fourpcfmultipoles2M4correlators(
     double *theta_edges, double *theta_centers, int nthetas, 
     double *mapradii, int nmapradii,
     double *phis1, double *phis2, double *dphis1, double *dphis2, int nbinsphi1, int nbinsphi2,
-    int projection, int nthreads, 
+    int projection, int nthreads, int verbose,
     double complex *Upsilon_n, double complex *N_n, double complex *m4corr){
-    
-    
+
+
     double complex *allm4corr = calloc(nthreads*8*nmapradii, sizeof(double complex));
     int trafos_finished = 0;
     int lastprint = 0;
-    
+    reset_progress();
+
     #pragma omp parallel for num_threads(nthreads)
     for (int thetacombi=0; thetacombi<nthetas*nthetas*nthetas; thetacombi++){
         
@@ -392,7 +393,7 @@ void fourpcfmultipoles2M4correlators(
         #pragma omp atomic
         trafos_finished+=1;
         
-        printf("\r Done %.2f per cent of Multipole to M4 trafos.",100.0*trafos_finished/nthetas3);
+        print_progress(trafos_finished, nthetas3, verbose);
         //int tmpprint=(int) (100.0*trafos_finished/nthetas3);
         //if (tmpprint > lastprint){
         //    printf("\rStatus after %i per cent:",tmpprint);
@@ -404,7 +405,8 @@ void fourpcfmultipoles2M4correlators(
         //    {lastprint = tmpprint;}
         //}
     }
-    
+    if (verbose>0){ printf("\n"); }
+
     // Accumulate the M4correlators
     for (int elthread=0;elthread<nthreads;elthread++){
         for (int elcr=0;elcr<8*nmapradii;elcr++){

@@ -582,14 +582,25 @@ class Catalog:
         -----
         The parameters are as documented in :meth:`Catalog.multihash_bundle`.
         """
-        
+
+        max_hash_cells = 1e9
+
         dpixs = sorted(dpixs)
         if dpix_hash is None:
             dpix_hash = dpixs[-1]
         if extent[0] is None:
             extent = [self.min1-dpix_hash, self.max1+dpix_hash, self.min2-dpix_hash, self.max2+dpix_hash]
-            
-        
+
+        # Make sure that we do not use a too small pixel grid that will exceed
+        # memory bounds within C.
+        _len1, _len2 = extent[1]-extent[0], extent[3]-extent[2]
+        for _dpix in list(dpixs[:1]) + [dpix_hash]:
+            _ncells = (_len1/_dpix)*(_len2/_dpix)
+            if _ncells > max_hash_cells:
+                raise ValueError(
+                    "Too fine resolution for multihash (dpix=%.4f requires %.2f cells)."
+                    %(_dpix, _ncells))
+
         # Initialize spatial hash for discrete catalog
         self.build_spatialhash(dpix=dpix_hash, extent=extent)
         ngals = [self.ngal]
@@ -633,7 +644,7 @@ class Catalog:
             allfields.append(fields_red)
             index_matchers.append(nextcat.index_matcher)
             pixs_galind_bounds.append(nextcat.pixs_galind_bounds)
-            pix_gals.append(nextcat.pix_gals)
+            pix_gals.append(nextcat.pix_gals)            
 
         # Allocate result in standard output structure
         multihash_dict = dict(

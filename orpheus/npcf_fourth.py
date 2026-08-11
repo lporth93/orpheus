@@ -94,7 +94,7 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
             raise ValueError("The parameter `statistics` should either be a list or a string.")
         if type(statistics) is str:
             if statistics not in statistics_avail:
-                raise ValueError(_strbadstats)
+                raise ValueError(_strbadstats(statistics))
             statistics = [statistics]
         if type(statistics) is list:
             if "all" in statistics:
@@ -106,7 +106,7 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
             _statistics = flatlist(_statistics)
             for stat in statistics:
                 if stat not in statistics_avail:
-                    raise ValueError(_strbadstats)
+                    raise ValueError(_strbadstats(stat))
                 if stat in statistics_avail_phys and stat not in _statistics:
                     _statistics.append(stat)
         statistics = list(set(flatlist(_statistics)))
@@ -528,7 +528,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
             raise ValueError("The parameter `statistics` should either be a list or a string.")
         if type(statistics) is str:
             if statistics not in statistics_avail:
-                raise ValueError(_strbadstats)
+                raise ValueError(_strbadstats(statistics))
             statistics = [statistics]
         if type(statistics) is list:
             if "all" in statistics:
@@ -540,7 +540,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
             _statistics = flatlist(_statistics)
             for stat in statistics:
                 if stat not in statistics_avail:
-                    raise ValueError(_strbadstats)
+                    raise ValueError(_strbadstats(stat))
                 if stat in statistics_avail_phys and stat not in _statistics:
                     _statistics.append(stat)
         statistics = list(set(flatlist(_statistics)))
@@ -591,8 +591,15 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                         lowmem = True
                     else:
                         lowmem = False
-                        
-        # Misc checks            
+
+        ## Blocked for now as the tests reveiled some small counting error. In particular,
+        # the normalisation disagrees with the NNNN quadruplet counts by a few percent.
+        if not lowmem:
+            raise NotImplementedError(
+                "The GGGG kernel for `lowmem=False` returns a slightly incorrect normalisation, "
+                "and is disabled right now. Pass `lowmem=True` instead.")
+
+        # Misc checks
         assert(projection in self.projections_avail)
         self._checkcats(cat, self.spins)
         i_projection = np.int32(self.proj_dict[projection])
@@ -865,6 +872,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
             self.dphis[0].astype(np.float64), self.dphis[1].astype(np.float64), 
             len(self.phis[0]), len(self.phis[1]),
             np.int32(self.proj_dict[self.projection]), np.int32(self.nthreads),
+            np.int32(self._verbose_c+self._verbose_debug),
             self.npcf_multipoles.flatten(), self.npcf_multipoles_norm.flatten(),
             M4correlators)
         res_MMStar = M4correlators.reshape((8,len(radii)))
@@ -1183,7 +1191,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
 
 
 class GNNNCorrelation_NoTomo(BinnedNPCF):
-    def __init__(self, min_sep, max_sep, thetabatchsize_max=10000, **kwargs):
+    def __init__(self, min_sep, max_sep, thetabatchsize_max=10000, method="Tree", **kwargs):
         r""" Class containing methods to measure and and obtain statistics that are built
         from fourth-order source-lens-lens-lens (G4L) correlation functions.
         
@@ -1203,7 +1211,8 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
         Additional child-specific parameters can be passed via ``kwargs``.
         Either ``nbinsr`` or ``binsize`` has to be provided to fix the binning scheme.
         """
-        super().__init__(4, [2,0,0,0], n_cfs=1, min_sep=min_sep, max_sep=max_sep, **kwargs)
+        super().__init__(4, [2,0,0,0], n_cfs=1, min_sep=min_sep, max_sep=max_sep,
+                         method=method, methods_avail=["Discrete", "Tree"], **kwargs)
         self.nmax = self.nmaxs[0]
         self.phi = self.phis[0]
         self.projection = None
@@ -1280,7 +1289,7 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
             raise ValueError("The parameter `statistics` should either be a list or a string.")
         if type(statistics) is str:
             if statistics not in statistics_avail:
-                raise ValueError(_strbadstats)
+                raise ValueError(_strbadstats(statistics))
             statistics = [statistics]
         if type(statistics) is list:
             if "all" in statistics:
@@ -1292,7 +1301,7 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
             _statistics = flatlist(_statistics)
             for stat in statistics:
                 if stat not in statistics_avail:
-                    raise ValueError(_strbadstats)
+                    raise ValueError(_strbadstats(stat))
                 if stat in statistics_avail_phys and stat not in _statistics:
                     _statistics.append(stat)
         statistics = list(set(flatlist(_statistics)))

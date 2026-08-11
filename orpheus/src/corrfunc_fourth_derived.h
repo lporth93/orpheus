@@ -39,7 +39,7 @@ void fourpcfmultipoles2M4correlators(
     double *theta_edges, double *theta_centers, int nthetas, 
     double *mapradii, int nmapradii,
     double *phis1, double *phis2, double *dphis1, double *dphis2, int nbinsphi1, int nbinsphi2,
-    int projection, int nthreads, 
+    int projection, int nthreads, int verbose,
     double complex *Upsilon_n, double complex *N_n, double complex *m4corr);
 
 void alloc_notomoMap4_analytic(
