@@ -285,7 +285,7 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
 
             # Prepare reduced catalogs
             cutfirst = np.int32(self.tree_resos[0]==0.)
-            mh = cat.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1],
+            mh = cat.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.dpix_hash,
                                       shuffle=self.shuffle_pix, normed=False, nthreads=self.nthreads)
             _zb = np.zeros(cat.ngal, dtype=np.int32)   # notomo: zbins unused by C
             catc_s, keep_cc = build_flat_catalog_struct(cat.pos1, cat.pos2, cat.weight, _zb,
@@ -592,13 +592,6 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                     else:
                         lowmem = False
 
-        ## Blocked for now as the tests reveiled some small counting error. In particular,
-        # the normalisation disagrees with the NNNN quadruplet counts by a few percent.
-        if not lowmem:
-            raise NotImplementedError(
-                "The GGGG kernel for `lowmem=False` returns a slightly incorrect normalisation, "
-                "and is disabled right now. Pass `lowmem=True` instead.")
-
         # Misc checks
         assert(projection in self.projections_avail)
         self._checkcats(cat, self.spins)
@@ -699,7 +692,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
             assert(self.nmaxs[0]==self.nmaxs[1])
             _shape, _inds, _n2s, _n3s = gen_n2n3indices_Upsfourth(self.nmaxs[0])
             cutfirst = np.int32(self.tree_resos[0]==0.)
-            mh = cat.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1],
+            mh = cat.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.dpix_hash,
                                       shuffle=self.shuffle_pix, w2field=True, normed=True, nthreads=self.nthreads)
             allfields = mh['allfields']
             e1_resos = np.concatenate([allfields[i][0] for i in range(len(allfields))]).astype(np.float64)
@@ -1390,7 +1383,7 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
 
             # Prepare reduced catalogs 
             cutfirst = np.int32(self.tree_resos[0]==0.)
-            mhl = cat_lens.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.tree_resos[-1],
+            mhl = cat_lens.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.dpix_hash,
                                             shuffle=self.shuffle_pix, normed=True, nthreads=self.nthreads)
             cats_s, keep_cs = build_flat_catalog_struct(
                 cat_source.pos1, cat_source.pos2, cat_source.weight, _zbz_source,

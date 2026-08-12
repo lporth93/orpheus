@@ -43,11 +43,14 @@ These change the numbers that existing scripts get back.
   `<N Map Mx>` was being discarded. It is now returned as the fourth component;
   it agrees with the third only when `do_multiscale=False`. The array is real
   rather than complex, since all four components are.
-* **`GGGGCorrelation_NoTomo.process` refuses `lowmem=False`.** That kernel returns a
-  normalisation one to two per cent away from the true quadruplet counts, measured
-  against `NNNNCorrelation`, which agrees with itself across both of its own branches.
-  It was reached by default for a multipole-only run, so results obtained that way
-  carry the error. Pass `lowmem=True`, which is exact.
+* **`GGGGCorrelation_NoTomo` with `lowmem=False` returned wrong quadruplet counts and
+  `Upsilon`.** It was reached by default for a multipole-only run, so results obtained
+  that way carry the error and should be recomputed; see the entry under Fixed for what
+  was wrong. Both kernels now agree to machine precision.
+* **`multicountcorr=False` is now honoured by every `GNNN` kernel.** The `Discrete` and
+  the `lowmem=True` `Tree` kernels applied the multiple-count corrections unconditionally
+  while the `lowmem=False` `Tree` one already gated them, so the three disagreed whenever
+  the flag was turned off. They now all follow it.
 * **`tree_resos` must begin with `0.`, the discrete resolution.** The tree machinery
   already assumed it -- `tree_redges[0]` is anchored at `min_sep` and only
   `tree_resos[1:]` is gridded -- so a list without it was misread and crashed in C.
@@ -70,6 +73,28 @@ These change the numbers that existing scripts get back.
 
 #### Fixed
 
+* **The `GGGG` coincidence corrections for `theta1==theta2` were wrong in both
+  `lowmem=False` kernels.** In the `Tree` kernel the correction sat in the `elb2` loop
+  rather than the `elb3` one, so it was spent on the single bin triple `(a,a,a)` instead
+  of the whole `(a,a,c)` family, and the `theta1==theta3` and `theta2==theta3` blocks
+  carried an `elb1!=elb2` guard that suppressed them exactly where they were also needed.
+  In both the `Tree` and the `Discrete` kernel, components 6 and 7 of that block were
+  copies of component 0. The `lowmem=True` helper `gggg_accum_batchUpsilon` had it right
+  all along and is what the corrected blocks now match. This is the miscount that made
+  `lowmem=False` disagree with the `NNNN` quadruplet counts: not the "one to two per
+  cent" first recorded, which was normalised to the global peak, but up to a factor 18
+  in the sparsest radial bins, and it affected the eight `Upsilon` components as well as
+  the normalisation.
+* **Intermittent segfault in the `Tree` kernels of `GNNNCorrelation_NoTomo` and
+  `GGGGCorrelation_NoTomo`.** Their resolution loop ran `elreso <= nresos`, one
+  iteration past the `nresos` entries of the three `rshift_*` offset arrays and past
+  the last edge of `reso_redges`. The extra shell spans `[max_sep, garbage]` and so
+  holds no valid pair, but the offsets it reads are whatever the heap happens to
+  carry, which is why the crash depended on what had run before in the same process
+  rather than on the input. Where the garbage did not fault it could still admit
+  pairs beyond `max_sep`, whose radial bin is not bounds-checked, so the accumulators
+  could be corrupted silently. The loop now runs `elreso < nresos`, matching every
+  other kernel in the library.
 * `tree_resos=[0.]` crashed with `OverflowError: cannot convert float infinity to
   integer`. The spatial hash takes its cellsize from the coarsest tree resolution,
   which is zero for a fully discrete tree; it now falls back to a fraction of the

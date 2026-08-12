@@ -692,12 +692,12 @@ void alloc_notomoGammans_discrete_gggg(const MultiresoCatalog *cat, const NavHas
                                 tmpUpsilon5_n[thisnrshift] -= wshape1c  *
                                     nextG2ns_ggc[(nzero_G2n+thisn3+1)*nbinsr+elb1] * nextGns[thisGshift_mn3m1+elb2];
                                 tmpUpsilon6_n[thisnrshift] -= wshape1c  *
-                                    nextG2ns_gg[(nzero_G2n+thisn3-5)*nbinsr+elb1]  * nextGns[thisGshift_mn3m3+elb2];
+                                    nextG2ns_ggc[(nzero_G2n+thisn3+1)*nbinsr+elb1] * nextGns[thisGshift_mn3m1+elb2];
                                 tmpUpsilon7_n[thisnrshift] -= wshape1c  *
-                                    nextG2ns_gg[(nzero_G2n+thisn3-5)*nbinsr+elb1]  * nextGns[thisGshift_mn3m3+elb2];
-                                tmpN_n[thisnrshift] -= w1 * 
+                                    nextG2ns_gg[(nzero_G2n+thisn3-3)*nbinsr+elb1]  * conj(nextGns[thisGshift_n3m3+elb2]);
+                                tmpN_n[thisnrshift] -= w1 *
                                     nextW2ns[(nzero_Wn+thisn3)*nbinsr+elb1]*conj(nextWns[thisWshift_n3+elb2]);
-                                // Double-counting corr for theta1==theta3 
+                                // Double-counting corr for theta1==theta3
                                 thisnrshift = elthread*ups_compshift + thisnshift + elb1*nbinsr*nbinsr + elb2*nbinsr + elb1;
                                 tmpUpsilon0_n[thisnrshift] -= wshape1  *
                                     nextG2ns_gg[(nzero_G2n+thisn2-6)*nbinsr+elb1]  * nextGns[thisGshift_mn2m2+elb2];
@@ -972,7 +972,7 @@ void alloc_notomoGammans_tree_gggg(const MultiresoCatalog *cat_base, const Multi
                 double complex wshape1, wshape1c, wshape2, wshape_sq, wshape_cube, wshapewshapec, wshapesqwshapec;
                 double complex phirot, phirotc, twophirotc, fourphirotc;
                 // Allocate Gn, Wn and their multiple-couting corrections
-                for (int elreso=0;elreso<=nresos;elreso++){
+                for (int elreso=0;elreso<nresos;elreso++){
                     int ind_rbin, rbin, zrshift, ind_Gn, ind_G2n, ind_Wn;
                     double rmin_reso = reso_redges[elreso];
                     double rmin_reso2 = rmin_reso*rmin_reso;
@@ -1072,29 +1072,6 @@ void alloc_notomoGammans_tree_gggg(const MultiresoCatalog *cat_base, const Multi
                         tmpN_n[thisnrshift] += 2 * w1*nextW3ns[elb1];
 
                         for (int elb2=elb1; elb2<nbinsr; elb2++){
-                            thisnrshift = elthread*ups_compshift + thisnshift + elbcombi;
-                            // Double-counting corr for theta1==theta2
-                            if (elb1==elb2){
-                                tmpUpsilon0_n[thisnrshift] -= wshape1  *
-                                    nextG2ns_gg[(nzero_G2n+thisn3-5)*nbinsr+elb1]  * nextGns[thisGshift_mn3m3+elb2];
-                                tmpUpsilon1_n[thisnrshift] -= wshape1c  *
-                                    nextG2ns_gg[(nzero_G2n+thisn3-3)*nbinsr+elb1]  * nextGns[thisGshift_mn3m1+elb2];
-                                tmpUpsilon2_n[thisnrshift] -= wshape1  *
-                                    nextG2ns_ggc[(nzero_G2n+thisn3-1)*nbinsr+elb1] * nextGns[thisGshift_mn3m3+elb2];
-                                tmpUpsilon3_n[thisnrshift] -= wshape1  *
-                                    nextG2ns_ggc[(nzero_G2n+thisn3-1)*nbinsr+elb1] * nextGns[thisGshift_mn3m3+elb2];
-                                tmpUpsilon4_n[thisnrshift] -= wshape1  *
-                                    nextG2ns_gg[(nzero_G2n+thisn3-5)*nbinsr+elb1]  * conj(nextGns[thisGshift_n3m1+elb2]);
-                                tmpUpsilon5_n[thisnrshift] -= wshape1c  *
-                                    nextG2ns_ggc[(nzero_G2n+thisn3+1)*nbinsr+elb1] * nextGns[thisGshift_mn3m1+elb2];
-                                tmpUpsilon6_n[thisnrshift] -= wshape1c  *
-                                    nextG2ns_gg[(nzero_G2n+thisn3-5)*nbinsr+elb1]  * nextGns[thisGshift_mn3m3+elb2];
-                                tmpUpsilon7_n[thisnrshift] -= wshape1c  *
-                                    nextG2ns_gg[(nzero_G2n+thisn3-5)*nbinsr+elb1]  * nextGns[thisGshift_mn3m3+elb2];
-                                tmpN_n[thisnrshift] -= w1 * 
-                                    nextW2ns[(nzero_Wn+thisn3)*nbinsr+elb1]*conj(nextWns[thisWshift_n3+elb2]);
-                            }
-
                             // Allocation of first three complex products for Upsilon/Norm updates
                             gGG0 = wshape1*nextGns[thisGshift_n2n3m3+elb1]*nextGns[thisGshift_mn2m2+elb2];
                             gGG1 = wshape1c*nextGns[thisGshift_n2n3m1+elb1]*nextGns[thisGshift_mn2m2+elb2];
@@ -1108,8 +1085,29 @@ void alloc_notomoGammans_tree_gggg(const MultiresoCatalog *cat_base, const Multi
                             
                             for (int elb3=elb2; elb3<nbinsr; elb3++){
                                 thisnrshift = elthread*ups_compshift + thisnshift + elbcombi;
-                                // Double-counting corr for theta1==theta3 
-                                if ((elb1==elb3) && (elb1!=elb2)){ 
+                                // Double-counting corr for theta1==theta2
+                                if (elb1==elb2){
+                                    tmpUpsilon0_n[thisnrshift] -= wshape1  *
+                                        nextG2ns_gg[(nzero_G2n+thisn3-5)*nbinsr+elb1]  * nextGns[thisGshift_mn3m3+elb3];
+                                    tmpUpsilon1_n[thisnrshift] -= wshape1c  *
+                                        nextG2ns_gg[(nzero_G2n+thisn3-3)*nbinsr+elb1]  * nextGns[thisGshift_mn3m1+elb3];
+                                    tmpUpsilon2_n[thisnrshift] -= wshape1  *
+                                        nextG2ns_ggc[(nzero_G2n+thisn3-1)*nbinsr+elb1] * nextGns[thisGshift_mn3m3+elb3];
+                                    tmpUpsilon3_n[thisnrshift] -= wshape1  *
+                                        nextG2ns_ggc[(nzero_G2n+thisn3-1)*nbinsr+elb1] * nextGns[thisGshift_mn3m3+elb3];
+                                    tmpUpsilon4_n[thisnrshift] -= wshape1  *
+                                        nextG2ns_gg[(nzero_G2n+thisn3-5)*nbinsr+elb1]  * conj(nextGns[thisGshift_n3m1+elb3]);
+                                    tmpUpsilon5_n[thisnrshift] -= wshape1c  *
+                                        nextG2ns_ggc[(nzero_G2n+thisn3+1)*nbinsr+elb1] * nextGns[thisGshift_mn3m1+elb3];
+                                    tmpUpsilon6_n[thisnrshift] -= wshape1c  *
+                                        nextG2ns_ggc[(nzero_G2n+thisn3+1)*nbinsr+elb1] * nextGns[thisGshift_mn3m1+elb3];
+                                    tmpUpsilon7_n[thisnrshift] -= wshape1c  *
+                                        nextG2ns_gg[(nzero_G2n+thisn3-3)*nbinsr+elb1]  * conj(nextGns[thisGshift_n3m3+elb3]);
+                                    tmpN_n[thisnrshift] -= w1 *
+                                        nextW2ns[(nzero_Wn+thisn3)*nbinsr+elb1]*conj(nextWns[thisWshift_n3+elb3]);
+                                }
+                                // Double-counting corr for theta1==theta3
+                                if (elb1==elb3){
                                     tmpUpsilon0_n[thisnrshift] -= wshape1  *
                                         nextG2ns_gg[(nzero_G2n+thisn2-6)*nbinsr+elb1]  * nextGns[thisGshift_mn2m2+elb2];
                                     tmpUpsilon1_n[thisnrshift] -= wshape1c  *
@@ -1130,7 +1128,7 @@ void alloc_notomoGammans_tree_gggg(const MultiresoCatalog *cat_base, const Multi
                                         nextW2ns[(nzero_Wn+thisn2)*nbinsr+elb1] * conj(nextWns[thisWshift_n2+elb2]);
                                 }
                                 // Double-counting corr for theta2==theta3
-                                if ((elb2==elb3) && (elb1!=elb2)){ 
+                                if (elb2==elb3){
                                     tmpUpsilon0_n[thisnrshift] -= wshape1  *
                                         nextG2ns_gg[(nzero_G2n-thisn2-thisn3-5)*nbinsr+elb2]  * nextGns[thisGshift_n2n3m3+elb1];
                                     tmpUpsilon1_n[thisnrshift] -= wshape1c  *
@@ -2212,7 +2210,7 @@ void alloc_notomoGammans_discrete_gnnn(const MultiresoCatalog *cat_source, const
     int *index_matcher_lens = nav_lens->index_matcher, *pixs_galind_bounds_lens = nav_lens->pixs_galind_bounds, *pix_gals_lens = nav_lens->pix_gals;
     double pix1_start = nav_lens->pix1_start, pix1_d = nav_lens->pix1_d; int pix1_n = nav_lens->pix1_n;
     double pix2_start = nav_lens->pix2_start, pix2_d = nav_lens->pix2_d; int pix2_n = nav_lens->pix2_n;
-    int nmax = bin->nmax, nbinsr = bin->nbinsr;
+    int nmax = bin->nmax, nbinsr = bin->nbinsr, dccorr = bin->dccorr;
     double rmin = bin->rmin, rmax = bin->rmax;
     double *bin_centers = out->bin_centers;
     double complex *Gtilde_n = out->npcf, *N_n = out->norm_mp;
@@ -2332,22 +2330,26 @@ void alloc_notomoGammans_discrete_gnnn(const MultiresoCatalog *cat_source, const
                 thisnshift = Gtilde_threadshift + ((n2+nzero_Gtilden)*nnvals_Gtilden + (n3+nzero_Gtilden)) * Gtilde_nshift;
                 for (int elb1=0;elb1<nbinsr;elb1++){
                     // elb1 = elb2 = elb3
-                    thisnrshift = thisnshift + elb1*nbinsr*nbinsr + elb1*nbinsr + elb1;
-                    allGtilden[thisnrshift] += 2 * wshape1*nextW3ns[1*nbinsr+elb1];
-                    allNormn[thisnrshift] += 2 * w1*nextW3ns[0*nbinsr+elb1];
+                    if (dccorr==1){
+                        thisnrshift = thisnshift + elb1*nbinsr*nbinsr + elb1*nbinsr + elb1;
+                        allGtilden[thisnrshift] += 2 * wshape1*nextW3ns[1*nbinsr+elb1];
+                        allNormn[thisnrshift] += 2 * w1*nextW3ns[0*nbinsr+elb1];
+                    }
                     for (int elb2=0;elb2<nbinsr;elb2++){
-                        // elb1 = elb2
-                        thisnrshift = thisnshift + elb1*nbinsr*nbinsr + elb1*nbinsr + elb2;
-                        allGtilden[thisnrshift] -= wshape1*nextW2ns[(nzero_Wn+n3-1)*nbinsr+elb1]*nextWns[thisWshift_mn3m1+elb2];
-                        allNormn[thisnrshift] -= w1*nextW2ns[(nzero_Wn+n3)*nbinsr+elb1]*conj(nextWns[thisWshift_n3+elb2]);
-                        // elb1 = elb3
-                        thisnrshift = thisnshift + elb1*nbinsr*nbinsr + elb2*nbinsr + elb1;
-                        allGtilden[thisnrshift] -= wshape1*nextW2ns[(nzero_Wn+n2-2)*nbinsr+elb1]*nextWns[thisWshift_mn2+elb2];
-                        allNormn[thisnrshift] -= w1*nextW2ns[(nzero_Wn+n2)*nbinsr+elb1]*nextWns[thisWshift_mn2+elb2];
-                        //elb2 = elb3
-                        thisnrshift = thisnshift + elb2*nbinsr*nbinsr + elb1*nbinsr + elb1;
-                        allGtilden[thisnrshift] -= wshape1*nextW2ns[thisWshift_mn2mn3m1+elb1]*nextWns[thisWshift_n2n3m1+elb2];
-                        allNormn[thisnrshift] -= w1*nextW2ns[(nzero_Wn-n2-n3)*nbinsr+elb1] * nextWns[thisWshift_n2pn3+elb2];
+                        if (dccorr==1){
+                            // elb1 = elb2
+                            thisnrshift = thisnshift + elb1*nbinsr*nbinsr + elb1*nbinsr + elb2;
+                            allGtilden[thisnrshift] -= wshape1*nextW2ns[(nzero_Wn+n3-1)*nbinsr+elb1]*nextWns[thisWshift_mn3m1+elb2];
+                            allNormn[thisnrshift] -= w1*nextW2ns[(nzero_Wn+n3)*nbinsr+elb1]*conj(nextWns[thisWshift_n3+elb2]);
+                            // elb1 = elb3
+                            thisnrshift = thisnshift + elb1*nbinsr*nbinsr + elb2*nbinsr + elb1;
+                            allGtilden[thisnrshift] -= wshape1*nextW2ns[(nzero_Wn+n2-2)*nbinsr+elb1]*nextWns[thisWshift_mn2+elb2];
+                            allNormn[thisnrshift] -= w1*nextW2ns[(nzero_Wn+n2)*nbinsr+elb1]*nextWns[thisWshift_mn2+elb2];
+                            //elb2 = elb3
+                            thisnrshift = thisnshift + elb2*nbinsr*nbinsr + elb1*nbinsr + elb1;
+                            allGtilden[thisnrshift] -= wshape1*nextW2ns[thisWshift_mn2mn3m1+elb1]*nextWns[thisWshift_n2n3m1+elb2];
+                            allNormn[thisnrshift] -= w1*nextW2ns[(nzero_Wn-n2-n3)*nbinsr+elb1] * nextWns[thisWshift_n2pn3+elb2];
+                        }
                         wWW = wshape1 * nextWns[thisWshift_n2n3m1+elb1] *  nextWns[thisWshift_mn2+elb2];
                         wNN =  w1 * nextWns[thisWshift_n2pn3+elb1] * conj(nextWns[thisWshift_n2+elb2]);
                         for (int elb3=0;elb3<nbinsr;elb3++){
@@ -2545,7 +2547,7 @@ void alloc_notomoGammans_tree_gnnn(const MultiresoCatalog *cat_source, const Nav
                 for (int i=0;i<nnvals_Wn*nbinszr;i++){nextWns[i]=0;}
                 for (int i=0;i<nnvals_W2n*nbinszr;i++){nextW2ns[i]=0;}
                 for (int i=0;i<nnvals_W3n*nbinszr;i++){nextW3ns[i]=0;}
-                for (int elreso=0;elreso<=nresos;elreso++){
+                for (int elreso=0;elreso<nresos;elreso++){
                     int rbin, zrshift, ind_Wn;
                     double rmin_reso = reso_redges[elreso];
                     double rmax_reso = reso_redges[elreso+1];
@@ -2811,7 +2813,7 @@ void alloc_notomoMapNap3_tree_gnnn(const MultiresoCatalog *cat_source, const Nav
     int nregions = nav_source->nregions;
     double pix1_start = nav_lens->pix1_start, pix1_d = nav_lens->pix1_d; int pix1_n = nav_lens->pix1_n;
     double pix2_start = nav_lens->pix2_start, pix2_d = nav_lens->pix2_d; int pix2_n = nav_lens->pix2_n;
-    int nmax = bin->nmax, nbinsr = bin->nbinsr;
+    int nmax = bin->nmax, nbinsr = bin->nbinsr, dccorr = bin->dccorr;
     double rmin = bin->rmin, rmax = bin->rmax;
     int *nindices = fourth->nindices, len_nindices = fourth->len_nindices;
     double *phibins = fourth->phibins1, *dbinsphi = fourth->dbinsphi1; int nbinsphi = fourth->nbinsphi1;
@@ -3003,22 +3005,22 @@ void alloc_notomoMapNap3_tree_gnnn(const MultiresoCatalog *cat_source, const Nav
                         // Multiple counting corrections:
                         // sum_(i neq j neq k) = sum_(i,j,k) - ( sum_(i, j, i=k) + 2perm ) + 2 * sum_(i, i=j, i=k)
                         // Triple-counting corr
-                        if ((elb1==elb2) && (elb1==elb3) && (elb2==elb3)){
+                        if ((elb1==elb2) && (elb1==elb3) && (elb2==elb3) && (dccorr==1)){
                             batchGtilde_n[thisnrshift] += 2 * wshape1*nextW3ns[1*nbinsr+elb1];
                             batchN_n[thisnrshift] += 2 * w1*nextW3ns[0*nbinsr+elb1];
                         }
                         // Double-counting corr for theta1==theta2
-                        if ((elb1==elb2)){
+                        if ((elb1==elb2) && (dccorr==1)){
                             batchGtilde_n[thisnrshift] -= wshape1*nextW2ns[(nzero_Wn+thisn3-1)*nbinsr+elb1]*nextWns[thisWshift_mn3m1+elb3];
                             batchN_n[thisnrshift] -= w1*nextW2ns[(nzero_Wn+thisn3)*nbinsr+elb1]*conj(nextWns[thisWshift_n3+elb3]);
                         }
                         // Double-counting corr for theta1==theta3
-                        if ((elb1==elb3)){
+                        if ((elb1==elb3) && (dccorr==1)){
                             batchGtilde_n[thisnrshift] -= wshape1*nextW2ns[(nzero_Wn+thisn2-2)*nbinsr+elb1]*nextWns[thisWshift_mn2+elb2];
                             batchN_n[thisnrshift] -= w1*nextW2ns[(nzero_Wn+thisn2)*nbinsr+elb1]*conj(nextWns[thisWshift_n2+elb2]);
                         }
                         // Double-counting corr for theta2==theta3
-                        if ((elb2==elb3)){
+                        if ((elb2==elb3) && (dccorr==1)){
                             batchGtilde_n[thisnrshift] -= wshape1*nextW2ns[thisWshift_mn2mn3m1+elb2]*nextWns[thisWshift_n2n3m1+elb1];
                             batchN_n[thisnrshift] -= w1*nextW2ns[(nzero_Wn-thisn2-thisn3)*nbinsr+elb2] * nextWns[thisWshift_n2pn3+elb1];
                         }
