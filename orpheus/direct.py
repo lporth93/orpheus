@@ -1295,12 +1295,12 @@ class MapCombinatorics:
         sel = np.zeros(self.order_max)#, dtype=np.int)
         # Edge cases
         if ind==0:
-            return sel.astype(np.int)
+            return sel.astype(int)
         if ind==1:
             sel[-1] = 1
-            return sel.astype(np.int)
+            return sel.astype(int)
         if ind==self.nindices-1:
-            return (self.nradii-1)*np.zeros(self.order_max, dtype=np.int)
+            return (self.nradii-1)*np.zeros(self.order_max, dtype=int)
         
         tmpind = ind # Remainder of index in psum
         nextind_ax0 = self.order_max-1 # Value of i_k
@@ -1324,8 +1324,8 @@ class MapCombinatorics:
                     break
                 else:
                     sel[indsel:] = tmpsel + 1
-                    return sel.astype(np.int)
+                    return sel.astype(int)
             if sel[-2] != 0:
                 sel[-1] = sel[-2] + tmpind
             if sel[-1] != 0:
-                return sel.astype(np.int)
+                return sel.astype(int)

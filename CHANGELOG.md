@@ -73,6 +73,25 @@ These change the numbers that existing scripts get back.
 
 #### Fixed
 
+* **`GGGCorrelation.multipoles2npcf` ignored `is_edge_corrected`.** It passed a hardcoded
+  `0` to the C kernel, so after `edge_correction()` the estimator kept dividing by the
+  angle-dependent counts `N(phi)` where it should have used the monopole `N_0`. The result
+  was the correctly edge-corrected correlator times `N_0/N(phi)`: unbiased in the median,
+  since that factor averages to one, but carrying the full local-to-mean count contrast
+  bin by bin. It reproduced across independent catalogs at `r = 0.98`, so it read as a
+  large extra scatter rather than as the systematic it was. `GNNCorrelation` and
+  `NGGCorrelation` passed the flag correctly and were unaffected. With the flag honoured,
+  the edge-corrected estimator agrees with the direct ratio, as it must: in the
+  exponential basis the coupling matrix is Toeplitz, so inverting it is the same operation
+  as dividing by the angle-dependent counts.
+* **`edge_correction` raised `AttributeError` on numpy 1.24 and newer**, for all three
+  third-order correlators. It used `np.int` and `np.complex`, removed in that release, so
+  the method could not be called at all. Five live call sites in `direct.py` carried the
+  same aliases.
+* **`edge_correction(ret_matrices=True)` raised `ValueError`.** The returned array was
+  allocated with the wrong multipole extent, half the size of the matrices it had to hold
+  for `GGG` and `GNN` and a different wrong size for `NGG`.
+
 * **The `GGGG` coincidence corrections for `theta1==theta2` were wrong in both
   `lowmem=False` kernels.** In the `Tree` kernel the correction sat in the `elb2` loop
   rather than the `elb3` one, so it was spent on the single bin triple `(a,a,a)` instead
