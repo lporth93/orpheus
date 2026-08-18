@@ -1,0 +1,37 @@
+name: Numerical validation
+
+# This builds the package and then runs the full (i.e. fast-tier and slow-tier) test suite.
+# It only runs once weekly and before a release rather than on every push.
+on:
+  schedule:
+    # Mondays, 04:00 UTC
+    - cron: "0 4 * * 1" 
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  numerical:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build and install
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest
+          pip install .
+
+      - name: Run the full tier
+        # Threads are left to os.cpu_count() so the job uses whatever the runner
+        # provides. Set ORPHEUS_TEST_NTHREADS to pin it, which is how a runner's
+        # timing is reproduced on a larger machine.
+        # ORPHEUS_TEST_NTHREADS = 4
+        run: pytest tests/ --runslow -q --durations=10
