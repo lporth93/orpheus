@@ -49,8 +49,11 @@ class NNNCorrelation(BinnedNPCF):
 
     def __init__(self, min_sep, max_sep, process_spherical=False, **kwargs):
 
+        # Only the doubletree kernel is implemented; `process` raised for the other three
+        # schemes, which is now refused on construction instead.
         super().__init__(order=3, spins=np.array([0,0,0], dtype=np.int32), n_cfs=1,
-                         min_sep=min_sep, max_sep=max_sep, **kwargs)
+                         min_sep=min_sep, max_sep=max_sep,
+                         methods_avail=["DoubleTree"], **kwargs)
         self.process_spherical = bool(process_spherical)
         self.nmax = self.nmaxs[0]
         self.phi = self.phis[0]
@@ -868,7 +871,10 @@ class GNNCorrelation(BinnedNPCF):
     """
 
     def __init__(self, min_sep, max_sep, zweighting=False, zweighting_sigma=None, **kwargs):
-        super().__init__(3, [2,0,0], n_cfs=1, min_sep=min_sep, max_sep=max_sep, **kwargs)
+        # Only the discrete and doubletree kernels are dispatched in `process`; the other
+        # two schemes would leave the multipoles at zero without raising.
+        super().__init__(3, [2,0,0], n_cfs=1, min_sep=min_sep, max_sep=max_sep,
+                         methods_avail=["Discrete", "DoubleTree"], **kwargs)
         self.nmax = self.nmaxs[0]
         self.phi = self.phis[0]
         self.projection = None
@@ -1423,7 +1429,10 @@ class NGGCorrelation(BinnedNPCF):
     """
     def __init__(self, min_sep, max_sep, **kwargs):
         
-        super().__init__(3, [0,2,2], n_cfs=2, min_sep=min_sep, max_sep=max_sep, **kwargs)
+        # No basetree kernel is dispatched in `process`; that scheme would leave the
+        # multipoles at zero without raising.
+        super().__init__(3, [0,2,2], n_cfs=2, min_sep=min_sep, max_sep=max_sep,
+                         methods_avail=["Discrete", "Tree", "DoubleTree"], **kwargs)
         self.nmax = self.nmaxs[0]
         self.phi = self.phis[0]
         self.projection = None
