@@ -779,19 +779,15 @@ void alloc_notomoGammans_discrete_gggg(const MultiresoCatalog *cat, const NavHas
     }
 
     // Accumulate Upsilon_n and N_n
-    int thisn_thread, thisn2, thisn3, thistmpnshift, thisnshift, thisnrshift, ind_Upsn;
-    double complex toadd;
     #pragma omp parallel for num_threads(nthreads)
     for (int thisn=0; thisn<_n2n3combis; thisn++){
-        thisn2 = thisn_thread/_nnvals_Upsn;
-        thisn3 = thisn_thread%_nnvals_Upsn;
-        thisnshift = thisn*_ups_nshift;
+        int thisnshift = thisn*_ups_nshift;
         for (int elb1=0; elb1<nbinsr; elb1++){
             for (int elb2=0; elb2<nbinsr; elb2++){
                 for (int elb3=0; elb3<nbinsr; elb3++){
                     for (int elthread=0; elthread<nthreads; elthread++){
-                        thisnrshift = thisnshift + elb1*nbinsr*nbinsr + elb2*nbinsr + elb3;
-                        thistmpnshift = elthread*_ups_compshift+thisnrshift;
+                        int thisnrshift = thisnshift + elb1*nbinsr*nbinsr + elb2*nbinsr + elb3;
+                        int thistmpnshift = elthread*_ups_compshift+thisnrshift;
                         Upsilon_n[0*_ups_compshift+thisnrshift] += tmpUpsilon0_n[thistmpnshift];
                         Upsilon_n[1*_ups_compshift+thisnrshift] += tmpUpsilon1_n[thistmpnshift];
                         Upsilon_n[2*_ups_compshift+thisnrshift] += tmpUpsilon2_n[thistmpnshift];
