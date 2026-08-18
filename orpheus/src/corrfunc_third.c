@@ -118,7 +118,9 @@ static void build_region_pix2redpix(int nresos_grid, int hasdiscrete, int elregi
 }
 
 // Region cache-slot layout from the base catalog's per-(zbin, reso) counts.
-// The discrete band shares the reso-1 grid slots, so its own count is skipped. 
+// The discrete band shares the reso-1 grid slots, so its own count is skipped. That
+// sharing needs a reso 1 to exist: with a single resolution the discrete band counts its
+// own galaxies, as ngal_in_pix only holds nresos entries per zbin.
 // Only used for flat geometries and doubletree approximations
 static void setup_region_shifts(int nbinsz_base, int nbinsz_leaf, int nresos,
     int hasdiscrete, int nbinsr, const int *ngal_in_pix,
@@ -126,7 +128,7 @@ static void setup_region_shifts(int nbinsz_base, int nbinsz_leaf, int nresos,
     int *zbin2shift, int *nshift){
     for (int elz=0; elz<nbinsz_base; elz++){
         for (int elreso=0; elreso<nresos; elreso++){
-            if (hasdiscrete==1 && elreso==0){
+            if (hasdiscrete==1 && elreso==0 && nresos>1){
                 cumresoshift_z[elz*(nresos+1) + elreso+1] = ngal_in_pix[elz*nresos + elreso+1];
             } else {
                 cumresoshift_z[elz*(nresos+1) + elreso+1] =
@@ -149,6 +151,10 @@ static inline void build_redpix_by_reso2(int elreso, int nresos, int nresos_grid
     const double *dpix1_resos, const double *dpix2_resos,
     const int *matchers_resoshift, int len_matcher, const int *pix2redpix,
     int *redpix_by_reso2){
+    // The reduced pixels and this cache exist only for *_accum_crossreso, which has no
+    // resolution pair to visit for a single-resolution tree. Returning here also keeps the
+    // grid arrays, which are empty in that case, from being indexed at all.
+    if (nresos<=1){return;}
     for (int elreso2=elreso; elreso2<nresos; elreso2++){
         int red_reso2 = elreso2 - hasdiscrete;
         if (hasdiscrete==1 && elreso==0 && elreso2==0){red_reso2 += hasdiscrete;}
@@ -186,6 +192,10 @@ static void nnn_zero_caches(NnnContext *c){
 static void nnn_update_nncache(NnnContext *c, int elreso, int rbinmin, int rbinmax,
     int nbinsr_reso, int z_gal1, double w_gal1,
     const int *redpix_by_reso2, const double complex *nextWns){
+    // The reduced pixels and this cache exist only for *_accum_crossreso, which has no
+    // resolution pair to visit for a single-resolution tree. Returning here also keeps the
+    // grid arrays, which are empty in that case, from being indexed at all.
+    if (c->nresos<=1){return;}
     int nbinszr_reso = c->nbinsz*nbinsr_reso;
     for (int elreso2=elreso; elreso2<c->nresos; elreso2++){
         int redpix_reso2 = redpix_by_reso2[elreso2];
@@ -485,6 +495,10 @@ static void ggg_update_gnwncache(GggContext *c, int elreso, int rbinmin, int rbi
     int nbinsr_reso, int z_gal1, double w_gal1, double complex wshape_gal1,
     const int *redpix_by_reso2,
     const double complex *nextGns, const double complex *nextWns){
+    // The reduced pixels and this cache exist only for *_accum_crossreso, which has no
+    // resolution pair to visit for a single-resolution tree. Returning here also keeps the
+    // grid arrays, which are empty in that case, from being indexed at all.
+    if (c->nresos<=1){return;}
     int nbinsz = c->nbinsz, nresos = c->nresos, nshift = c->nshift;
     int nnvals_Gn = c->nnvals_Gn, nnvals_Nn = c->nnvals_Nn, zbin2shift = c->zbin2shift;
     int zbinshift_z1 = c->zbinshifts[z_gal1], thetashift_z1 = c->thetashifts_z[z_gal1];
@@ -790,6 +804,10 @@ static void gnn_zero_caches(GnnContext *c){
 static void gnn_update_wncache(GnnContext *c, int elreso, int rbinmin, int rbinmax,
     int nbinsr_reso, int z_gal1, double w_gal1, double complex wshape_gal1,
     const int *redpix_by_reso2, const double complex *thisWns){
+    // The reduced pixels and this cache exist only for *_accum_crossreso, which has no
+    // resolution pair to visit for a single-resolution tree. Returning here also keeps the
+    // grid arrays, which are empty in that case, from being indexed at all.
+    if (c->nresos<=1){return;}
     int nbinszr_reso = c->nbinsz_lens*nbinsr_reso;
     for (int elreso2=elreso; elreso2<c->nresos; elreso2++){
         int redpix_reso2 = redpix_by_reso2[elreso2];
@@ -1221,6 +1239,10 @@ static void ngg_zero_caches(NggContext *c){
 static void ngg_update_gnwncache(NggContext *c, int elreso, int rbinmin, int rbinmax,
     int nbinsr_reso, int z_gal1, double w_gal1, const int *redpix_by_reso2,
     const double complex *thisGns, const double complex *thisWns){
+    // The reduced pixels and this cache exist only for *_accum_crossreso, which has no
+    // resolution pair to visit for a single-resolution tree. Returning here also keeps the
+    // grid arrays, which are empty in that case, from being indexed at all.
+    if (c->nresos<=1){return;}
     int nbinszr_reso = c->nbinsz_source*nbinsr_reso;
     for (int elreso2=elreso; elreso2<c->nresos; elreso2++){
         int redpix_reso2 = redpix_by_reso2[elreso2];
@@ -1716,7 +1738,10 @@ static void alloc_nnn_doubletree_flat(const MultiresoCatalog *cat, const NavHash
                 } else {
                     _leaf_lo = _leaf_hi = mymin(mymax(minresoind_leaf, elreso + resoshift_leafs), maxresoind_leaf);
                 }
-                double _dpix_ratio = dpix1_resos[nresos_grid-1] / dpix1_resos[nresos_grid-2];
+                // Needs two grid resolutions to form a ratio; with fewer, the leaf band
+                // is a single resolution and the value is never used.
+                double _dpix_ratio = (nresos_grid>1) ?
+                    dpix1_resos[nresos_grid-1] / dpix1_resos[nresos_grid-2] : 1.;
 
                 for (int ind_inpix1=lower1; ind_inpix1<upper1; ind_inpix1++){
                     int ind_gal1 = rshift_pix_gals[elreso] + pix_gals[rshift_pix_gals[elreso]+ind_inpix1];
@@ -3104,7 +3129,10 @@ static void alloc_ggg_doubletree_flat(const MultiresoCatalog *cat, const NavHash
                 } else {
                     _leaf_lo = _leaf_hi = mymin(mymax(minresoind_leaf, elreso + resoshift_leafs), maxresoind_leaf);
                 }
-                double _dpix_ratio = dpix1_resos[nresos_grid-1] / dpix1_resos[nresos_grid-2];
+                // Needs two grid resolutions to form a ratio; with fewer, the leaf band
+                // is a single resolution and the value is never used.
+                double _dpix_ratio = (nresos_grid>1) ?
+                    dpix1_resos[nresos_grid-1] / dpix1_resos[nresos_grid-2] : 1.;
 
                 for (int ind_inpix1=lower1; ind_inpix1<upper1; ind_inpix1++){
                     int ind_gal1 = rshift_pix_gals[elreso] + pix_gals[rshift_pix_gals[elreso]+ind_inpix1];
