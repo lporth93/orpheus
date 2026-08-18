@@ -668,7 +668,7 @@ class GGGCorrelation(BinnedNPCF):
         def gen_M_matrix(thet1,thet2,threepcf_n_norm):
             nvals, ntheta, _ = threepcf_n_norm.shape
             nmax = (nvals-1)//2
-            narr = np.arange(-nmax,nmax+1, dtype=np.int)
+            narr = np.arange(-nmax,nmax+1, dtype=int)
             nextM = np.zeros((nvals,nvals))
             for ind, ell in enumerate(narr):
                 lminusn = ell-narr
@@ -680,7 +680,7 @@ class GGGCorrelation(BinnedNPCF):
         nmax = nvals-1
         threepcf_n_full = np.zeros((4,2*nmax+1, nzcombis, ntheta, ntheta), dtype=complex)
         threepcf_n_norm_full = np.zeros((2*nmax+1, nzcombis, ntheta, ntheta), dtype=complex)
-        threepcf_n_corr = np.zeros(threepcf_n_full.shape, dtype=np.complex)
+        threepcf_n_corr = np.zeros(threepcf_n_full.shape, dtype=complex)
         threepcf_n_full[:,nmax:] = self.npcf_multipoles
         threepcf_n_norm_full[nmax:] = self.npcf_multipoles_norm
         for nextn in range(1,nvals):
@@ -691,7 +691,7 @@ class GGGCorrelation(BinnedNPCF):
             threepcf_n_norm_full[nmax-nextn] = self.npcf_multipoles_norm[nextn].transpose(0,2,1)
 
         if ret_matrices:
-            mats = np.zeros((nzcombis,ntheta,ntheta,nvals,nvals))
+            mats = np.zeros((nzcombis,ntheta,ntheta,2*nmax+1,2*nmax+1))
         for indz in range(nzcombis):
             #sys.stdout.write("%i"%indz)
             for thet1 in range(ntheta):
@@ -728,7 +728,7 @@ class GGGCorrelation(BinnedNPCF):
             np.int32(rbins),
             self.phi.astype(np.float64), np.int32(nbinsphi),
             np.int32(0), conjmap, modeweight,
-            np.int32(0), np.int32(1), floor_thr,
+            np.int32(self.is_edge_corrected), np.int32(1), floor_thr,
             np.int32(self.nthreads),
             thisnpcf, thisnpcf_norm)
         if projection == "Centroid":
@@ -1248,7 +1248,7 @@ class GNNCorrelation(BinnedNPCF):
         def gen_M_matrix(thet1,thet2,threepcf_n_norm):
             nvals, ntheta, _ = threepcf_n_norm.shape
             nmax = (nvals-1)//2
-            narr = np.arange(-nmax,nmax+1, dtype=np.int)
+            narr = np.arange(-nmax,nmax+1, dtype=int)
             nextM = np.zeros((nvals,nvals))
             for ind, ell in enumerate(narr):
                 lminusn = ell-narr
@@ -1260,7 +1260,7 @@ class GNNCorrelation(BinnedNPCF):
         nmax = nvals-1
         threepcf_n_full = np.zeros((1,2*nmax+1, nzcombis, ntheta, ntheta), dtype=complex)
         threepcf_n_norm_full = np.zeros((2*nmax+1, nzcombis, ntheta, ntheta), dtype=complex)
-        threepcf_n_corr = np.zeros(threepcf_n_full.shape, dtype=np.complex)
+        threepcf_n_corr = np.zeros(threepcf_n_full.shape, dtype=complex)
         threepcf_n_full[:,nmax:] = self.npcf_multipoles
         threepcf_n_norm_full[nmax:] = self.npcf_multipoles_norm
         for nextn in range(1,nvals):
@@ -1268,7 +1268,7 @@ class GNNCorrelation(BinnedNPCF):
             threepcf_n_norm_full[nmax-nextn] = self.npcf_multipoles_norm[nextn].transpose(0,2,1)
         
         if ret_matrices:
-            mats = np.zeros((nzcombis,ntheta,ntheta,nvals,nvals))
+            mats = np.zeros((nzcombis,ntheta,ntheta,2*nmax+1,2*nmax+1))
         for indz in range(nzcombis):
             #sys.stdout.write("%i"%indz)
             for thet1 in range(ntheta):
@@ -1787,7 +1787,7 @@ class NGGCorrelation(BinnedNPCF):
         def gen_M_matrix(thet1,thet2,threepcf_n_norm):
             nvals, ntheta, _ = threepcf_n_norm.shape
             nmax = (nvals-1)//2
-            narr = np.arange(-nmax,nmax+1, dtype=np.int)
+            narr = np.arange(-nmax,nmax+1, dtype=int)
             nextM = np.zeros((nvals,nvals))
             for ind, ell in enumerate(narr):
                 lminusn = ell-narr
@@ -1796,11 +1796,9 @@ class NGGCorrelation(BinnedNPCF):
             return nextM
     
         _nvals, nzcombis, ntheta, _ = self.npcf_multipoles_norm.shape
-        nvals = int((_nvals-1)/2)
-        nmax = nvals-1
         threepcf_n_corr = np.zeros_like(self.npcf_multipoles)
         if ret_matrices:
-            mats = np.zeros((nzcombis,ntheta,ntheta,nvals,nvals))
+            mats = np.zeros((nzcombis,ntheta,ntheta,_nvals,_nvals))
         for indz in range(nzcombis):
             #sys.stdout.write("%i"%indz)
             for thet1 in range(ntheta):
