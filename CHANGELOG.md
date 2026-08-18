@@ -85,6 +85,23 @@ These change the numbers that existing scripts get back.
   cent" first recorded, which was normalised to the global peak, but up to a factor 18
   in the sparsest radial bins, and it affected the eight `Upsilon` components as well as
   the normalisation.
+* **`GNNCorrelation` and `NGGCorrelation` returned arrays of zeros for schemes they never
+  implemented, without raising.** Neither narrowed `methods_avail`, so both inherited all
+  four schemes from `BinnedNPCF` while `process` dispatches a kernel for fewer: GNN has only
+  `Discrete` and `DoubleTree`, NGG only those plus `Tree`. Selecting one of the others ran to
+  completion and left the multipoles at zero, which no shape or finiteness check can see.
+  They now declare what they dispatch and reject the rest on construction. This is the same
+  defect recorded below for `GNNNCorrelation_NoTomo`.
+* **`methods_avail` now names exactly the schemes each correlator dispatches**, everywhere.
+  An audit of all ten found three further classes advertising more than they implement, none
+  of them silently: `NNNCorrelation` declared four and implemented `DoubleTree` alone, raising
+  `NotImplementedError` from `process`, which is now refused on construction instead; and
+  `NNCorrelation`, `NGCorrelation` and `GGCorrelation` declared four schemes for which
+  `method` was never read at all -- second order dispatches its one doubletree kernel
+  regardless, and all four settings returned bit-identical results. Those three now declare
+  `["DoubleTree"]`, which is the default they already used, so only an explicit
+  `method=` naming one of the inert schemes changes behaviour, from silently ignored to
+  rejected. Accuracy at second order is set by `tree_resos` and `rmin_pixsize`, as before.
 * **Intermittent segfault in the `Tree` kernels of `GNNNCorrelation_NoTomo` and
   `GGGGCorrelation_NoTomo`.** Their resolution loop ran `elreso <= nresos`, one
   iteration past the `nresos` entries of the three `rshift_*` offset arrays and past

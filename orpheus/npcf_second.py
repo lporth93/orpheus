@@ -44,7 +44,13 @@ class NNCorrelation(BinnedNPCF):
     """
 
     def __init__(self, min_sep, max_sep, shuffle_pix=1, **kwargs):
-        super().__init__(order=2, spins=np.array([0,0], dtype=np.int32), n_cfs=1, min_sep=min_sep, max_sep=max_sep, shuffle_pix=shuffle_pix, **kwargs)
+        # Second order has a single algorithm: `process` dispatches the doubletree
+        # kernel whatever `method` says, and the accuracy is set by `tree_resos` and
+        # `rmin_pixsize` instead. Declaring the one scheme keeps `methods_avail`
+        # meaning the same thing here as at third and fourth order.
+        super().__init__(order=2, spins=np.array([0,0], dtype=np.int32), n_cfs=1,
+                         min_sep=min_sep, max_sep=max_sep, shuffle_pix=shuffle_pix,
+                         methods_avail=["DoubleTree"], **kwargs)
         self.projection = None
         self.projections_avail = [None]
         self.nbinsz = None
@@ -352,7 +358,13 @@ class GGCorrelation(BinnedNPCF):
     """
 
     def __init__(self, min_sep, max_sep, **kwargs):
-        super().__init__(order=2, spins=np.array([2,2], dtype=np.int32), n_cfs=2, min_sep=min_sep, max_sep=max_sep, **kwargs)
+        # Second order has a single algorithm: `process` dispatches the doubletree
+        # kernel whatever `method` says, and the accuracy is set by `tree_resos` and
+        # `rmin_pixsize` instead. Declaring the one scheme keeps `methods_avail`
+        # meaning the same thing here as at third and fourth order.
+        super().__init__(order=2, spins=np.array([2,2], dtype=np.int32), n_cfs=2,
+                         min_sep=min_sep, max_sep=max_sep,
+                         methods_avail=["DoubleTree"], **kwargs)
         self.projection = None
         self.projections_avail = [None]
         self.nbinsz = None
@@ -904,8 +916,13 @@ class NGCorrelation(BinnedNPCF):
     """
 
     def __init__(self, min_sep, max_sep, **kwargs):
+        # Second order has a single algorithm: `process` dispatches the doubletree
+        # kernel whatever `method` says, and the accuracy is set by `tree_resos` and
+        # `rmin_pixsize` instead. Declaring the one scheme keeps `methods_avail`
+        # meaning the same thing here as at third and fourth order.
         super().__init__(order=2, spins=np.array([0, 2], dtype=np.int32), n_cfs=1,
-                         min_sep=min_sep, max_sep=max_sep, **kwargs)
+                         min_sep=min_sep, max_sep=max_sep,
+                         methods_avail=["DoubleTree"], **kwargs)
         self.projection = None
         self.projections_avail = [None]
         self.nbinsz_shape = None
