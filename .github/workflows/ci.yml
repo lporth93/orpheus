@@ -1,8 +1,6 @@
 name: CI
 
-# The release workflow only runs on tags, so this is what checks a commit before
-# it lands. It builds the C extension and exercises one parallel kernel; the full
-# test suite is not part of the repository yet.
+# This builds the package and then runs the fast-tier test suite.
 on: [push, pull_request]
 
 jobs:
@@ -33,28 +31,15 @@ jobs:
       - name: Build and install
         run: |
           python -m pip install --upgrade pip
+          pip install pytest
           pip install .
 
-      - name: Import and run a parallel kernel
+      - name: Run the fast tier
         run: |
-          # Away from the checkout: the C library is looked up next to the imported
-          # package, so a source tree on sys.path shadows the install
-          cd "$RUNNER_TEMP"
-          python -u - <<'PY'
-          import numpy as np
-          import orpheus
-
-          print("orpheus", orpheus.__version__, "from", orpheus.__file__)
-
-          rng = np.random.default_rng(42)
-          ngal = 20000
-          cat = orpheus.SpinTracerCatalog(spin=2,
-                                          pos1=rng.uniform(0., 600., ngal),
-                                          pos2=rng.uniform(0., 600., ngal),
-                                          tracer_1=rng.normal(0., 0.3, ngal),
-                                          tracer_2=rng.normal(0., 0.3, ngal))
-          twopcf = orpheus.GGCorrelation(min_sep=1., max_sep=100., binsize=0.2, nthreads=2)
-          twopcf.process(cat)
-          assert np.isfinite(twopcf.xip).any(), "xip is all non-finite"
-          print("xip[:3] =", np.asarray(twopcf.xip).ravel()[:3])
-          PY
+          # Report the installed package from outside the checkout: `python -c` puts the
+          # working directory first on sys.path, so run from here it would report the
+          # source tree instead of the wheel that was just built.
+          (cd "$RUNNER_TEMP" && python -c "import orpheus; print('orpheus', orpheus.__version__, 'from', orpheus.__file__)")
+          # The pytest run itself is safe from the same shadowing: `tests/conftest.py`
+          # drops the checkout from sys.path when it carries no compiled extension.
+          pytest tests/ -q
