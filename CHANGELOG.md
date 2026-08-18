@@ -59,6 +59,25 @@ These change the numbers that existing scripts get back.
 * **A spatial hash of more than 1e9 cells raises.** A cell size far finer than the
   footprint asks for an allocation that fails inside C; the number of cells is now
   checked against the extent first, and the message names both.
+* **Bins whose multiplet count is consistent with zero are now set to zero**, controlled
+  by the new `filter_ringing` flag which defaults to `True`. Reconstructing the counts
+  from a truncated multipole series makes them ring, and where the reconstruction passes
+  near zero the division that turns `Upsilon` into the NPCF amplifies without bound. The
+  threshold is the shot noise of the reconstruction itself, measured from the upper half
+  of the multipole band, so it carries no absolute scale. It is inert where the sampling
+  is adequate and only bites as bins thin out: on a test configuration it touched no bin
+  at `ngal=4000`, 4.9 per cent at 2000 and 45 per cent at 400, while the largest `|npcf|`
+  fell from 2.8e3 to 3.7e-1 at the sparse end. Pass `filter_ringing=False` for the
+  previous behaviour.
+* **`GGGCorrelation` no longer applies a hardcoded count floor of `0.1`.** It was absolute
+  rather than relative, so it depended on the weight normalisation: a triplet count scales
+  as `w^3`, and rescaling the weights by 0.01 took it from masking nothing to masking three
+  quarters of the grid. `GNNNCorrelation_NoTomo.multipoles2npcf` defaults `count_floor` to
+  `0.` for the same reason. Both are superseded by `filter_ringing`.
+* **The NPCF is divided by the real part of the reconstructed counts, not by its modulus.**
+  A bin whose count reconstructs negative previously had the sign of its correlator
+  flipped; it now keeps it, and is removed by `filter_ringing` instead. `GNN` and `NGG`
+  already used the real part, so this aligns `GGG` and the fourth-order kernels with them.
 
 #### Added
 
@@ -70,6 +89,10 @@ These change the numbers that existing scripts get back.
 * A readable error when a direct estimator is handed a catalog without an angular
   mask, which is where the aperture centers are drawn from. This previously failed
   with an `AttributeError` inside the regridding.
+* `filter_ringing` on `BinnedNPCF`, together with the helpers `ringing_sigma` and
+  `apply_ringing_filter` that implement it. Bins carrying no multiplets at all are
+  always set to zero, independently of the flag, and are reported at `verbosity > 0`.
+  `npcf_norm` is never masked, so both classes of bin remain identifiable afterwards.
 
 #### Fixed
 
