@@ -144,6 +144,22 @@ These change the numbers that existing scripts get back.
   `["DoubleTree"]`, which is the default they already used, so only an explicit
   `method=` naming one of the inert schemes changes behaviour, from silently ignored to
   rejected. Accuracy at second order is set by `tree_resos` and `rmin_pixsize`, as before.
+* **Segfault in every third-order tree kernel when the resolution list reduced to a single
+  entry.** `NNNCorrelation`, `GGGCorrelation`, `GNNCorrelation` and `NGGCorrelation` crashed
+  on `method='DoubleTree'`, and `GGGCorrelation` also on `'BaseTree'`, whenever the *effective*
+  `tree_resos` held one resolution. That is reached two ways: by passing `tree_resos=[0.]`, or
+  by an ordinary list whose coarse entries the constructor prunes away because `max_sep` is
+  small. With `min_sep=1`, `rmin_pixsize=8` and `tree_resos=[0., 2., 4.]` the list keeps two
+  entries at `max_sep=60` but collapses to `[0.]` at `max_sep<=40`, so narrowing the separation
+  range was enough to trigger it on otherwise unchanged arguments. With no gridded resolution
+  the reduced-pixel arrays are empty, and `build_redpix_by_reso2` and the `*_update_*cache`
+  helpers indexed them regardless; `setup_region_shifts` additionally read past `ngal_in_pix`,
+  which sized the cross-resolution cache to zero and left it NULL for the kernel to write
+  through. Those helpers exist only to feed `*_accum_crossreso`, which has no resolution pair
+  to visit for a single-resolution tree, so they now return early and the same-resolution path
+  carries the full result. `nresos >= 2` is untouched and bit-identical. The repaired path
+  agrees with `method='Discrete'` to 1e-15, as it must: a fully discrete tree *is* the exact
+  estimator, and on this configuration it reaches it about twice as fast.
 * **Intermittent segfault in the `Tree` kernels of `GNNNCorrelation_NoTomo` and
   `GGGGCorrelation_NoTomo`.** Their resolution loop ran `elreso <= nresos`, one
   iteration past the `nresos` entries of the three `rshift_*` offset arrays and past
