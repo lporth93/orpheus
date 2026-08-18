@@ -779,6 +779,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
         self.npcf = self.npcf.reshape(shape_npcf)
         self.npcf_norm = self.npcf_norm.reshape(shape_npcf_norm)
         self.projection = projection
+        self.apply_ringing_filter(1./(2*np.pi), self.nmaxs[:2], full_range=True)
         
         
     def multipoles2npcf_singlethetcombi(self, elthet1, elthet2, elthet3, projection="X"):
@@ -1449,7 +1450,7 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
      
     # TODO: 
     # * Same inclusion of z-weighting etc as for g3l?
-    def multipoles2npcf(self, xi=None, nnn=None, count_floor=0.1):
+    def multipoles2npcf(self, xi=None, nnn=None, count_floor=0.):
         r"""Converts the GNNN 4PCF from the multipole basis to the real-space basis for
         every combination of radial bins (shape ``(n_cfs, nzcombis, nbinsr, nbinsr, nbinsr, nphi, nphi)``).
 
@@ -1494,6 +1495,7 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
         self.npcf = npcf_out.reshape((self.n_cfs, self.nzcombis, self.nbinsr, self.nbinsr, self.nbinsr, _nphis1, _nphis2))
         self.npcf_norm = npcf_norm_out.reshape((self.nzcombis, self.nbinsr, self.nbinsr, self.nbinsr, _nphis1, _nphis2))
         self.projection = projection
+        self.apply_ringing_filter(1./(2*np.pi), self.nmaxs[:2], full_range=True)
         return self.npcf, self.npcf_norm
 
     def multipoles2npcf_singlethetcombi(self, elthet1, elthet2, elthet3, xi=None, nnn=None, count_floor=0.1):

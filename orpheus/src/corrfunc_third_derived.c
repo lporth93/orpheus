@@ -162,12 +162,14 @@ void multipoles2npcf_third_z1z23(double complex *Upsilon_n, double complex *N_n,
                     }
 
                     npcf_norm[ind_gam] = norm_acc;
-                    // Check whether bin is ~emtpy and, if not, divide by norm
+                    // Only guard against bins without any multiplets. Bins whose counts
+                    // ring through zero are kept here and filtered on the python layer.
                     double complex divisor = is_edge_corrected ? N0 : norm_acc;
-                    double cmpval = floor_use_abs ? cabs(divisor) : creal(divisor);
+                    double dval = creal(divisor);
+                    double cmpval = floor_use_abs ? cabs(divisor) : dval;
                     if (cmpval > floor_thr[zcombi]){
                         for (int elcf=0; elcf<ncomp_cf; elcf++){
-                            npcf[elcf*gam_compshift+ind_gam] = npcf_acc[elcf]/cmpval;
+                            npcf[elcf*gam_compshift+ind_gam] = npcf_acc[elcf]/dval;
                         }
                     } else {
                         for (int elcf=0; elcf<ncomp_cf; elcf++){

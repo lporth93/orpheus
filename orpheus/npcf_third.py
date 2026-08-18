@@ -721,7 +721,7 @@ class GGGCorrelation(BinnedNPCF):
         # This is how the 3pcf components need to ber permuted for n-->-n, see A.6 in Porth+23.
         conjmap = np.array([0, 1, 3, 2], dtype=np.int32)
         modeweight = np.full(self.nmax+1, 1./nbinsphi, dtype=np.float64)
-        floor_thr = np.full(nzcombis, 0.1, dtype=np.float64)
+        floor_thr = np.zeros(nzcombis, dtype=np.float64)
         self.clib.multipoles2npcf_third_z1z23(
             self.npcf_multipoles.flatten(), self.npcf_multipoles_norm.flatten(),
             np.int32(self.nmax), np.int32(self.n_cfs), np.int32(self.nbinsz), np.int32(self.nbinsz),
@@ -739,6 +739,7 @@ class GGGCorrelation(BinnedNPCF):
         self.npcf = thisnpcf.reshape((self.n_cfs, nzcombis, rbins, rbins, nbinsphi))
         self.npcf_norm = thisnpcf_norm.reshape((nzcombis, rbins, rbins, nbinsphi))
         self.projection = projection
+        self.apply_ringing_filter(modeweight[0], self.nmax)
             
     ## PROJECTIONS ##
     def projectnpcf(self, projection):
@@ -1300,22 +1301,24 @@ class GNNCorrelation(BinnedNPCF):
         thisnpcf_norm = np.zeros(nzcombis*rbins*rbins*nbinsphi, dtype=np.complex128)
         conjmap = np.array([0], dtype=np.int32)
         modeweight = np.full(self.nmax+1, 1./(2*np.pi), dtype=np.float64)
-        _rtol = self.norm_divisionmask if count_floor_rtol is None else count_floor_rtol
         _scale = getattr(self, '_normcountscale', None)
-        floor_thr = np.zeros(nzcombis, dtype=np.float64) if _scale is None else \
-            (_rtol*_scale).astype(np.float64)
+        floor_thr = np.zeros(nzcombis, dtype=np.float64) if \
+            (count_floor_rtol is None or _scale is None) else \
+            (count_floor_rtol*_scale).astype(np.float64)
         self.clib.multipoles2npcf_third_z1z23(
             self.npcf_multipoles.flatten(), self.npcf_multipoles_norm.flatten(),
             np.int32(self.nmax), np.int32(self.n_cfs), np.int32(self.nbinsz_source), np.int32(self.nbinsz_lens),
             np.int32(rbins),
             self.phi.astype(np.float64), np.int32(nbinsphi),
             np.int32(0), conjmap, modeweight,
-            np.int32(self.is_edge_corrected), np.int32(0), floor_thr,
+            np.int32(self.is_edge_corrected), np.int32(1), floor_thr,
             np.int32(self.nthreads),
             thisnpcf, thisnpcf_norm)
         self.npcf = thisnpcf.reshape((self.n_cfs, nzcombis, rbins, rbins, nbinsphi))
         self.npcf_norm = thisnpcf_norm.reshape((nzcombis, rbins, rbins, nbinsphi)).real
         self.projection = "X"
+        self.apply_ringing_filter(modeweight[0], self.nmax,
+                                  edge_corrected=self.is_edge_corrected)
 
         # Optionally correct by clustering correlation function
         # Assume
@@ -1834,22 +1837,24 @@ class NGGCorrelation(BinnedNPCF):
         else:
             modeweight = np.full(self.nmax+1, dphi, dtype=np.float64)
         modeweight = (modeweight/(2*np.pi)).astype(np.float64)
-        _rtol = self.norm_divisionmask if count_floor_rtol is None else count_floor_rtol
         _scale = getattr(self, '_normcountscale', None)
-        floor_thr = np.zeros(nzcombis, dtype=np.float64) if _scale is None else \
-            (_rtol*_scale).astype(np.float64)
+        floor_thr = np.zeros(nzcombis, dtype=np.float64) if \
+            (count_floor_rtol is None or _scale is None) else \
+            (count_floor_rtol*_scale).astype(np.float64)
         self.clib.multipoles2npcf_third_z1z23(
             self.npcf_multipoles.flatten(), self.npcf_multipoles_norm.flatten(),
             np.int32(self.nmax), np.int32(self.n_cfs), np.int32(self.nbinsz_lens), np.int32(self.nbinsz_source),
             np.int32(rbins),
             self.phi.astype(np.float64), np.int32(nbinsphi),
             np.int32(1), conjmap, modeweight,
-            np.int32(self.is_edge_corrected), np.int32(0), floor_thr,
+            np.int32(self.is_edge_corrected), np.int32(1), floor_thr,
             np.int32(self.nthreads),
             thisnpcf, thisnpcf_norm)
         self.npcf = thisnpcf.reshape((self.n_cfs, nzcombis, rbins, rbins, nbinsphi))
         self.npcf_norm = thisnpcf_norm.reshape((nzcombis, rbins, rbins, nbinsphi)).real
         self.projection = "X"
+        self.apply_ringing_filter(modeweight[0], self.nmax, full_range=True,
+                                  edge_corrected=self.is_edge_corrected)
 
     ## PROJECTIONS ##
     def projectnpcf(self, projection):

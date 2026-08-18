@@ -174,7 +174,7 @@ void multipoles2npcf_gggg_singletheta(double complex *Upsilon_n, double complex 
             }
             // Normalize: Gamma=Upsilon/N --> Make sure that we have counts, i.e. N >~ 1.
             for (int elcf=0; elcf<n_cfs; elcf++){ 
-                if (cabs(npcf_norm[ind_npcf]) > 0.1){npcf[elcf*npcf_compshift + ind_npcf] /= cabs(npcf_norm[ind_npcf]);}
+                if (cabs(npcf_norm[ind_npcf]) > 0.){npcf[elcf*npcf_compshift + ind_npcf] /= creal(npcf_norm[ind_npcf]);}
                 else{npcf[elcf*npcf_compshift + ind_npcf] = 0;}
             }
             // Now transform to some projection
@@ -262,7 +262,7 @@ void multipoles2npcf_gggg_singletheta_nconvergence(
                     }
                     // Normalize: Gamma=Upsilon/N --> Make sure that we have counts, i.e. N >~ 1.
                     for (int elcf=0; elcf<n_cfs; elcf++){ 
-                        if (cabs(npcf_norm[ind_npcf]) > 0.1){npcf[elcf*npcf_compshift + ind_npcf] /= cabs(npcf_norm[ind_npcf]);}
+                        if (cabs(npcf_norm[ind_npcf]) > 0.){npcf[elcf*npcf_compshift + ind_npcf] /= creal(npcf_norm[ind_npcf]);}
                         else{npcf[elcf*npcf_compshift + ind_npcf] = 0;}
                     }
                     // Now transform to some projection
@@ -563,7 +563,7 @@ void multipoles2npcf_gggg(double complex *upsilon_n, double complex *N_n, double
                 }
                 // Normalize: Gamma=Upsilon/N --> Make sure that we have counts, i.e. N >~ 1.
                 for (int elcf=0; elcf<n_cfs; elcf++){ 
-                    if (cabs(npcf_norm[ind_npcf]) > 0.1){npcf[elcf*npcf_compshift + ind_npcf] /= cabs(npcf_norm[ind_npcf]);}
+                    if (cabs(npcf_norm[ind_npcf]) > 0.){npcf[elcf*npcf_compshift + ind_npcf] /= creal(npcf_norm[ind_npcf]);}
                     else{npcf[elcf*npcf_compshift + ind_npcf] = 0;}
                 }
                 // Now transform to some projection
@@ -1041,7 +1041,7 @@ void multipoles2npcf_gnnn_singletheta(double complex *Gtilde_n, double complex *
 
             // Normalize Gtilde--> Make sure that we have counts, i.e. N >~ 1.
             // We treat set small values as zero, as those could be interpreted as ringing effects from the multipole-based reconstruction, i.e. they are oscillating around zero.
-            if (cabs(npcf_norm[ind_npcf]) > count_floor){npcf[ind_npcf] /= cabs(npcf_norm[ind_npcf]);}
+            if (cabs(npcf_norm[ind_npcf]) > count_floor){npcf[ind_npcf] /= creal(npcf_norm[ind_npcf]);}
             else{npcf[ind_npcf] = 0;}
 
             // Optionally debias the estimator by applying the 2pt & 3pt clustering correction
@@ -1110,7 +1110,7 @@ void multipoles2npcf_gnnn_singletheta_nconvergence(
                     }
                     // Normalize: Gamma=Upsilon/N --> Make sure that we have counts, i.e. N >~ 1.
                     for (int elcf=0; elcf<n_cfs; elcf++){
-                        if (cabs(npcf_norm[ind_npcf]) > count_floor){npcf[elcf*npcf_compshift + ind_npcf] /= cabs(npcf_norm[ind_npcf]);}
+                        if (cabs(npcf_norm[ind_npcf]) > count_floor){npcf[elcf*npcf_compshift + ind_npcf] /= creal(npcf_norm[ind_npcf]);}
                         else{npcf[elcf*npcf_compshift + ind_npcf] = 0;}
                         if (has_xi==1 || has_zeta==1){
                             npcf[elcf*npcf_compshift + ind_npcf] *= gnnn_clustering_corr(
