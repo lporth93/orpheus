@@ -1,6 +1,7 @@
 name: Build and Publish Wheels
 
-# Trigger on tags like v0.1.0 and allow manual runs
+# Thus builds the weels for a plethora of os and then publishes them on PYPI
+# Only triggers on tags like v0.1.0 but also allows manual runs
 on:
   push:
     tags:
