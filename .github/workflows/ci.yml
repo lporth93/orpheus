@@ -31,7 +31,9 @@ jobs:
       - name: Build and install
         run: |
           python -m pip install --upgrade pip
-          pip install pytest
+          # mpmath is not a dependency of the package: it is imported lazily and only the
+          # log-COSEBI roots need it. Installing it here keeps that path under test.
+          pip install pytest mpmath
           pip install .
 
       - name: Run the fast tier
