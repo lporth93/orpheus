@@ -64,6 +64,28 @@ parallelised C kernels.
   interpolation in `corrfunc_fourth_derived.c` ignored the return value of `locate_lin`, which
   leaves its outputs untouched on failure. None is reachable through the python layer today.
   Found by building with `-Wall -Wextra`, which is now on.
+* **`autoset_tree` gave sparse catalogs a far too fine cell ladder.** It estimates the number
+  density by counting occupied cells on a helper grid, which was fixed at 2 arcmin. Once a
+  catalog is sparse enough that most galaxies sit alone in a cell, that count tracks `ngal`
+  rather than the footprint and the estimate saturates at one galaxy per cell, i.e. at
+  `0.25/arcmin^2`. A lens sample at `0.01/arcmin^2` was therefore read as 25 times denser and
+  handed the ladder `[0, 1, 2, 4]` where `[0, 4]` is appropriate -- four levels of tree
+  overhead with nothing to group. The grid is now taken from the bounding box and `ngal`, which
+  fixes the mean occupancy at nine galaxies per cell whatever the density. Source catalogs, at
+  one galaxy per arcmin^2 and above, were never in the saturated regime and are unaffected.
+* **`autoset_tree` could hand the kernels a tree that crashed them.** A level's radial edge is
+  `rmin_pixsize*reso`, so with the default `rmin_pixsize=20` a ladder reaching the 4 arcmin
+  ceiling implies an edge at 80 arcmin. Where `max_sep` was below that, `tree_redges` came out
+  non-monotonic -- `[1, 2.5, 5, 10, 20, 40, 80, 15]` for `max_sep=15` -- and the negative shell
+  width reached the kernels as a negative `nbinsr_reso`, i.e. as a negative allocation size.
+  `GGGCorrelation` died in `Tree` with a double free and in `DoubleTree` on an allocation of
+  `2**64-4416` bytes. `__init__` has always trimmed a user-supplied ladder for this reason;
+  `autoset_tree` now applies the same trim. Any `max_sep` below `rmin_pixsize` times the
+  coarsest cell was affected, which the default settings reach easily.
+* The complexity estimate behind the leaf resolutions divided by the discrete level's zero
+  cell size. The result was correct, since the infinity it produced lost the `minimum` that
+  follows it, but every call raised a `divide by zero` warning. It now uses `np.divide`.
+
 * **Radial bin indices are bounds-checked in the third-order tree kernels.** The shell guard
   there is on squared or geodesic distance while the bin index goes through `sqrt` and `log`;
   the two roundings can disagree by one bin at a shell edge, which the 0.4.0 notes flagged as
