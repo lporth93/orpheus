@@ -308,42 +308,9 @@ ext_modules = [
     ),
 ]
 
-# read long description from README
-thisfile = os.path.abspath(os.path.dirname(__file__))
-with open(os.path.join(thisfile, "README.md"), encoding="utf-8") as f:
-    long_description = f.read()
-
-# The version lives in the package. It is read rather than imported, as the
-# runtime dependencies pulled in by orpheus/__init__.py are not available here.
-thisversion = {}
-with open(os.path.join(thisfile, "orpheus", "_version.py"), encoding="utf-8") as f:
-    exec(f.read(), thisversion)
-
+# All package metadata lives in pyproject.toml. What is left here is the extension
+# itself, which needs the compiler detection above to be resolved at build time.
 setup(
-    name="orpheus-npcf",
-    version=thisversion["__version__"],
-    description="Compute N-point correlation functions of spin-s fields.",
-    long_description=long_description,
-    long_description_content_type="text/markdown",
-    license="GPL-3.0-or-later",
-    url="https://github.com/lporth93/orpheus",
-    author="Lucas Porth",
-    packages=["orpheus"],
-    python_requires=">=3.10",
-    install_requires=[
-        "astropy>=6",
-        "healpy>=1.18",
-        "numba>=0.61,<=0.62.1",
-        "numpy>=1.24",
-        "scipy>=1.15",
-        "scikit-learn",],
     ext_modules=ext_modules,
     cmdclass={"build_ext": BuildExtWithDetect},
-    include_package_data=False,
-    zip_safe=False,
-    classifiers=[
-        "Development Status :: 4 - Beta",
-        "Programming Language :: Python :: 3",
-        "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
-    ],
 )

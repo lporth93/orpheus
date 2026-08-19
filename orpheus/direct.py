@@ -198,19 +198,9 @@ class DirectEstimator:
         #############################
         ## Link compiled libraries ##
         #############################
-        # Method that works for LP
         target_path = __import__('orpheus').__file__
         self.library_path = str(Path(__import__('orpheus').__file__).parent.absolute())
         self.clib = ct.CDLL(glob.glob(self.library_path+"/orpheus_clib*.so")[0])
-        
-        # In case the environment is weird, compile code manually and load it here...
-        #self.clib = ct.CDLL("/vol/euclidraid4/data/lporth/HigherOrderLensing/Estimator/orpheus/orpheus/src/discrete.so")
-        
-        # Method that works for RR (but not for LP with a local HPC install)
-        #self.clib = ct.CDLL(search_file_in_site_package(get_site_packages_dir(),"orpheus_clib"))
-        #self.library_path = str(Path(__import__('orpheus').__file__).parent.parent.absolute())
-        #print(self.library_path)
-        #print(self.clib)
         p_c128 = ndpointer(complex, flags="C_CONTIGUOUS")
         p_f64 = ndpointer(np.float64, flags="C_CONTIGUOUS")
         p_f32 = ndpointer(np.float32, flags="C_CONTIGUOUS")

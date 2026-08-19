@@ -48,7 +48,7 @@ These change the numbers that existing scripts get back.
 * **`NGCorrelation.xi` has flipped sign for `flat2d` and `spherical` geometries.**
   It now returns the tangential basis `gamma_t + i*gamma_x`, so a pure tangential
   shear gives a positive real part. This brings `NGCorrelation` in line with
-  the general orpheus convention which has been documented in in `BinnedNPCF`.
+  the general orpheus convention which has been documented in `BinnedNPCF`.
 * **`NGCorrelation.computeMapNap` follows**, and now returns `+<Nap Map>` on all
   geometries. Combining `NGCorrelation` output with `GNNCorrelation` or
   `GNNNCorrelation_NoTomo` no longer needs a manual sign flip.

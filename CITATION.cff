@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+title: orpheus
+abstract: >-
+  A python package for the calculation of second-, third- and fourth-order
+  correlation functions of scalar and polar fields such as weak lensing shear.
+  The N>2 correlators are computed through a multipole decomposition, with the
+  heavy lifting carried out by parallelised C kernels.
+message: >-
+  As there is currently no dedicated orpheus paper, please cite the paper that
+  introduced the functionality you use. The list is given in the README and in
+  the documentation at https://orpheus.readthedocs.io/.
+type: software
+authors:
+  - family-names: Porth
+    given-names: Lucas
+version: 0.4.0
+license: GPL-3.0-or-later
+repository-code: "https://github.com/lporth93/orpheus"
+url: "https://orpheus.readthedocs.io/"
+keywords:
+  - cosmology
+  - weak gravitational lensing
+  - correlation functions
+  - aperture mass
+  - intrinsic alignments

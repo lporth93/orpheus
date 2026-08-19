@@ -11,6 +11,9 @@ orpheus/covariance.py
 orpheus/covariance_old.py
 orpheus/src/cov_postq.c
 
+# Profiling artifacts
+*.stats
+
 # Only keep pdf of latex
 *.tex
 *.aux
