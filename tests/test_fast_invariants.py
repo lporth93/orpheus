@@ -320,7 +320,7 @@ def test_tomography_partitions_the_single_bin_result(spec, shear_catalog, scalar
         if spec.order == 2:
             kwargs = dict(**SEPS, tree_resos=[0.], nthreads=NTHREADS)
         else:
-            kwargs = dict(**SEPS, **ANGULAR, filter_ringing=False,
+            kwargs = dict(**SEPS, **ANGULAR,
                           **_discrete_method(spec),
                           **TOMO_EXTRA.get(spec.cls.__name__, {}))
         inst = build_correlator(spec, **kwargs)
@@ -356,14 +356,13 @@ def test_tomography_partitions_the_single_bin_result(spec, shear_catalog, scalar
 # This test asserts the equality of edge-correcting the npcf as Slepian & Eisenstein (2015)
 # advocates or to simily divide the two correlators as is implemented in orpheus by default.
 # Note the this equality is not true in general, but it holds in the exponential basis, see
-# i.e. sect 7.5 in the notes
+# i.e. sect 7.6.3 in the notes
 
 # Run the test
 @pytest.mark.parametrize("cls", [GGGCorrelation, GNNCorrelation, NGGCorrelation])
 def test_edge_correction_matrix_is_toeplitz(cls, shear_catalog, scalar_catalog):
-    """Every diagonal of M is constant, which is the premise of notes eq (85)."""
-    kwargs = dict(**SEPS, **ANGULAR, method='Discrete', nthreads=NTHREADS,
-                  filter_ringing=False)
+    """Every diagonal of M is constant, which is the premise of notes eq (77)."""
+    kwargs = dict(**SEPS, **ANGULAR, method='Discrete', nthreads=NTHREADS)
     corr = GGGCorrelation(n_cfs=4, **kwargs) if cls is GGGCorrelation else cls(**kwargs)
     if cls is GGGCorrelation:
         corr.process(shear_catalog, dotomo=False)
@@ -377,3 +376,36 @@ def test_edge_correction_matrix_is_toeplitz(cls, shear_catalog, scalar_catalog):
             diag = np.diagonal(M, offset=offset)
             if diag.size > 1:
                 assert np.ptp(diag) == 0., (offset, diag)
+
+
+#######################
+# MULTIPOLE WINDOWING #
+#######################
+
+# The standard window reconstructs the NPCF as a sum of delta functions, so the reconstructed 
+# multiplet counts oscillate and can cross zero. This should not be the case for the  Fejer kernel
+# and this tests makes sure this also holds in our implementation
+
+# Run the test
+@pytest.mark.parametrize("cls", [GGGCorrelation, GNNCorrelation, NGGCorrelation])
+def test_fejer_window_keeps_the_reconstructed_counts_positive(cls, shear_catalog,
+                                                              scalar_catalog):
+    """The counts stay non-negative under the Fejer taper, and the multipoles are intact."""
+    norms, multipoles = {}, {}
+    for apodization in ('rect', 'fejer'):
+        kwargs = dict(**SEPS, **ANGULAR, method='Discrete', nthreads=NTHREADS,
+                      apodization=apodization)
+        corr = GGGCorrelation(n_cfs=4, **kwargs) if cls is GGGCorrelation else cls(**kwargs)
+        if cls is GGGCorrelation:
+            corr.process(shear_catalog, dotomo=False)
+        else:
+            corr.process(shear_catalog, scalar_catalog, dotomo_source=False,
+                         dotomo_lens=False)
+        corr.multipoles2npcf()
+        norms[apodization] = np.real(np.asarray(corr.npcf_norm))
+        multipoles[apodization] = np.asarray(corr.npcf_multipoles_norm)
+    # The window is a reweighting of the transform, so the multipoles must be untouched
+    assert np.array_equal(multipoles['rect'], multipoles['fejer'])
+    # Empty bins reconstruct to zero either way, so allow rounding but nothing structural
+    floor = 1e-12*np.max(norms['fejer'])
+    assert norms['fejer'].min() > -floor, norms['fejer'].min()

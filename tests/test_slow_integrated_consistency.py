@@ -96,12 +96,11 @@ def test_map3_unequal_matches_the_transform_of_the_binned_theory(ggg_measured):
     ggg, theory, window = ggg_measured
     # Get map3 from measured npcf, corrected by finite-field window
     npcf = np.asarray(ggg.npcf).copy()
-    radii = np.geomspace(*RECOMMENDED['aperture_radii'], 3)*R0
     ggg.npcf = npcf*window[None, None]
-    meas = np.asarray(ggg.computeMap3(radii, do_multiscale=True, basis='MapMx'))[0, 0]
+    meas = np.asarray(ggg.computeMap3(APR4, do_multiscale=True, basis='MapMx'))[0, 0]
     # Get map3 from theory npcf
     ggg.npcf = np.broadcast_to(theory[:, None], npcf.shape).copy()
-    theo = np.asarray(ggg.computeMap3(radii, do_multiscale=True, basis='MapMx'))[0, 0]
+    theo = np.asarray(ggg.computeMap3(APR4, do_multiscale=True, basis='MapMx'))[0, 0]
     ggg.npcf = npcf
     k = kept_radii(theo, AP_FLOOR)
     assert np.allclose(meas[k], theo[k], rtol=RTOL_SHARP, atol=0.), meas[k]/theo[k]
