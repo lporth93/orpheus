@@ -142,9 +142,9 @@ void multipoles2npcf_gggg_singletheta(double complex *Upsilon_n, double complex 
     int nmax = n1max;
     int nns = 2*nmax+1;
     double complex expphi12, expphi13;
-    double complex *expphi12s = calloc(nns, sizeof(double complex));
-    double complex *expphi13s = calloc(nns, sizeof(double complex));
-    double complex *projdir = calloc(n_cfs, sizeof(double complex));
+    double complex *expphi12s = orpheus_calloc(nns, sizeof(double complex));
+    double complex *expphi13s = orpheus_calloc(nns, sizeof(double complex));
+    double complex *projdir = orpheus_calloc(n_cfs, sizeof(double complex));
     int npcf_compshift = nbinsphi12*nbinsphi13;
     int ups_compshift = nns*nns;
     for (int elphi12=0; elphi12<nbinsphi12; elphi12++){
@@ -223,9 +223,9 @@ void multipoles2npcf_gggg_singletheta_nconvergence(
     int nmax = n1max;
     int nns = 2*nmax+1;
     double complex expphi12, expphi13;
-    double complex *expphi12s = calloc(nns, sizeof(double complex));
-    double complex *expphi13s = calloc(nns, sizeof(double complex));
-    double complex *projdir = calloc(n_cfs, sizeof(double complex));
+    double complex *expphi12s = orpheus_calloc(nns, sizeof(double complex));
+    double complex *expphi13s = orpheus_calloc(nns, sizeof(double complex));
+    double complex *projdir = orpheus_calloc(n_cfs, sizeof(double complex));
     int npcf_n2cutshift = nbinsphi12*nbinsphi13;
     int npcf_n1cutshift = (n2max+1)*nbinsphi12*nbinsphi13;
     int npcf_compshift = (n1max+1)*(n2max+1)*nbinsphi12*nbinsphi13;
@@ -310,7 +310,7 @@ void fourpcfmultipoles2M4correlators(
     double complex *Upsilon_n, double complex *N_n, double complex *m4corr){
 
 
-    double complex *allm4corr = calloc(nthreads*8*nmapradii, sizeof(double complex));
+    double complex *allm4corr = orpheus_calloc(nthreads*8*nmapradii, sizeof(double complex));
     int trafos_finished = 0;
     int lastprint = 0;
     reset_progress();
@@ -343,10 +343,10 @@ void fourpcfmultipoles2M4correlators(
         
         // Transform multipoles to 4pcf
         int thisn1, thisn2, n2n3combi_trafo;
-        double complex *thisnpcf = calloc(8*nphicombis, sizeof(double complex));
-        double complex *thisnpcf_norm = calloc(nphicombis, sizeof(double complex));
-        double complex *Upsn_single = calloc(8*n2n3combis_trafo, sizeof(double complex));
-        double complex *Nn_single = calloc(1*n2n3combis_trafo, sizeof(double complex));
+        double complex *thisnpcf = orpheus_calloc(8*nphicombis, sizeof(double complex));
+        double complex *thisnpcf_norm = orpheus_calloc(nphicombis, sizeof(double complex));
+        double complex *Upsn_single = orpheus_calloc(8*n2n3combis_trafo, sizeof(double complex));
+        double complex *Nn_single = orpheus_calloc(1*n2n3combis_trafo, sizeof(double complex));
         for (int elcomp=0; elcomp<8; elcomp++){
             for (int n2n3combi=0; n2n3combi<n2n3combis; n2n3combi++){
                 thisn1 = n2n3combi/(2*nmax+1) - nmax;
@@ -531,9 +531,9 @@ void multipoles2npcf_gggg(double complex *upsilon_n, double complex *N_n, double
         int elr2 = (nrcombi-elr1*nbinsr2)/nbinsr;
         int elr3 = nrcombi%nbinsr;
         double rcenter1, rcenter2, rcenter3;
-        double complex *expphi12s = calloc(2*nmax+1, sizeof(double complex));
-        double complex *expphi13s = calloc(2*nmax+1, sizeof(double complex));
-        double complex *projdir = calloc(n_cfs, sizeof(double complex));
+        double complex *expphi12s = orpheus_calloc(2*nmax+1, sizeof(double complex));
+        double complex *expphi13s = orpheus_calloc(2*nmax+1, sizeof(double complex));
+        double complex *projdir = orpheus_calloc(n_cfs, sizeof(double complex));
         double complex nextang;
         int ind_multi, ind_npcf;
         double complex q1, q2, q3, q4;
@@ -610,7 +610,7 @@ void alloc_notomoMap4_analytic(
     double complex *M4correlators){
                
     
-    double complex *allM4correlators = calloc(nthreads*8*1*nmapradii, sizeof(double complex));
+    double complex *allM4correlators = orpheus_calloc(nthreads*8*1*nmapradii, sizeof(double complex));
     #pragma omp parallel for num_threads(nthreads)
     for(int elthetbatch=0;elthetbatch<nthetbatches;elthetbatch++){
         int thisthread = omp_get_thread_num();
@@ -620,15 +620,15 @@ void alloc_notomoMap4_analytic(
         int batch_nthetas = nthetacombis_batches[elthetbatch];   
         int batchgamma_thetshift = nbinsphi*nbinsphi;
         
-        double *bin_centers = calloc(nbinsr, sizeof(double));
-        double *bin_edges = calloc(nbinsr+1, sizeof(double));
+        double *bin_centers = orpheus_calloc(nbinsr, sizeof(double));
+        double *bin_edges = orpheus_calloc(nbinsr+1, sizeof(double));
         double drbin = exp((log(rmax)-log(rmin))/(nbinsr));
-        int *elb1s_batch = calloc(batch_nthetas, sizeof(int));
-        int *elb2s_batch = calloc(batch_nthetas, sizeof(int));
-        int *elb3s_batch = calloc(batch_nthetas, sizeof(int));
+        int *elb1s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
+        int *elb2s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
+        int *elb3s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
         
-        double complex *nextM4correlators = calloc(8, sizeof(double complex));
-        double complex *thisnpcf = calloc(8*batchgamma_thetshift, sizeof(double complex));
+        double complex *nextM4correlators = orpheus_calloc(8, sizeof(double complex));
+        double complex *thisnpcf = orpheus_calloc(8*batchgamma_thetshift, sizeof(double complex));
         //printf("Done allocations for thetabatch %d/%d on thread %d with %d thetacombis\n",
         //       elthetbatch,nthetbatches,thisthread,nthetacombis_batches[elthetbatch]);
         
@@ -741,9 +741,9 @@ void gauss4pcf_analytic_integrated(
     double complex *gaussfourpcf){
     
     double dtheta1, dtheta2, dtheta3, subshift, subsubshift, thisw, wtot;
-    double *theta1_subs = calloc(nsubr, sizeof(double));
-    double *theta2_subs = calloc(nsubr, sizeof(double));
-    double *theta3_subs = calloc(nsubr, sizeof(double));
+    double *theta1_subs = orpheus_calloc(nsubr, sizeof(double));
+    double *theta2_subs = orpheus_calloc(nsubr, sizeof(double));
+    double *theta3_subs = orpheus_calloc(nsubr, sizeof(double));
     
     // We define the subsampling in a way s.t. the subsampled bin values are different for the different thetas.
     // In particular, the values for theta2 are the `true` subsampled ones, while we shift the values of
@@ -767,7 +767,7 @@ void gauss4pcf_analytic_integrated(
         for (int elsub2=0; elsub2<nsubr; elsub2++){
             for (int elsub3=0; elsub3<nsubr; elsub3++){
                 thisw = 1;
-                double complex *nextfourpcf = calloc(8*nphis*nphis, sizeof(double complex));
+                double complex *nextfourpcf = orpheus_calloc(8*nphis*nphis, sizeof(double complex));
                 gauss4pcf_analytic(theta1_subs[elsub1],
                                    theta2_subs[elsub2],
                                    theta3_subs[elsub3], phis, nphis,
@@ -988,7 +988,10 @@ double gnnn_clustering_corr(double theta1, double theta2, double theta3,
             double psi = acos(cpsi);
             if (psi<=zeta_phis[0]){i3 = 0; w3 = 0.;}
             else if (psi>=zeta_phis[zeta_nphi-1]){i3 = zeta_nphi-2; w3 = 1.;}
-            else{locate_lin(zeta_phis, zeta_nphi, psi, &i3, &w3);}
+            // The bracketing above already implies success, but locate_lin leaves its
+            // outputs untouched on failure, so an unchecked call would index zeta with
+            // an uninitialised i3 should that invariant ever break
+            else if (locate_lin(zeta_phis, zeta_nphi, psi, &i3, &w3)!=1){i3 = 0; w3 = 0.;}
             double z_ll = (1-w3)*zeta[(i1*zeta_nr+i2)*zeta_nphi+i3] + w3*zeta[(i1*zeta_nr+i2)*zeta_nphi+i3+1];
             double z_lu = (1-w3)*zeta[(i1*zeta_nr+i2+1)*zeta_nphi+i3] + w3*zeta[(i1*zeta_nr+i2+1)*zeta_nphi+i3+1];
             double z_ul = (1-w3)*zeta[((i1+1)*zeta_nr+i2)*zeta_nphi+i3] + w3*zeta[((i1+1)*zeta_nr+i2)*zeta_nphi+i3+1];
@@ -1011,8 +1014,8 @@ void multipoles2npcf_gnnn_singletheta(double complex *Gtilde_n, double complex *
     int nmax = n1max;
     int nns = 2*nmax+1;
     double complex expphi12, expphi13;
-    double complex *expphi12s = calloc(nns, sizeof(double complex));
-    double complex *expphi13s = calloc(nns, sizeof(double complex));
+    double complex *expphi12s = orpheus_calloc(nns, sizeof(double complex));
+    double complex *expphi13s = orpheus_calloc(nns, sizeof(double complex));
     int npcf_compshift = nbinsphi12*nbinsphi13;
     int ups_compshift = nns*nns;
     for (int elphi12=0; elphi12<nbinsphi12; elphi12++){
@@ -1073,9 +1076,9 @@ void multipoles2npcf_gnnn_singletheta_nconvergence(
     int nmax = n1max;
     int nns = 2*nmax+1;
     double complex expphi12, expphi13;
-    double complex *expphi12s = calloc(nns, sizeof(double complex));
-    double complex *expphi13s = calloc(nns, sizeof(double complex));
-    double complex *projdir = calloc(n_cfs, sizeof(double complex));
+    double complex *expphi12s = orpheus_calloc(nns, sizeof(double complex));
+    double complex *expphi13s = orpheus_calloc(nns, sizeof(double complex));
+    double complex *projdir = orpheus_calloc(n_cfs, sizeof(double complex));
     int npcf_n2cutshift = nbinsphi12*nbinsphi13;
     int npcf_n1cutshift = (n2max+1)*nbinsphi12*nbinsphi13;
     int npcf_compshift = (n1max+1)*(n2max+1)*nbinsphi12*nbinsphi13;
@@ -1144,7 +1147,7 @@ void multipoles2npcf_gnnn(const double complex *Gtilde_n, const double complex *
     int nphicombis = nbinsphi1*nbinsphi2;
 
     // Geometric bin centers use the explicit edges when passed (bin->rbins), else log-spaced
-    double *bin_edges = calloc(nbinsr+1, sizeof(double));
+    double *bin_edges = orpheus_calloc(nbinsr+1, sizeof(double));
     if (rbins!=NULL){
         for (int elb=0;elb<=nbinsr;elb++){bin_edges[elb] = rbins[elb];}
     }
@@ -1159,8 +1162,8 @@ void multipoles2npcf_gnnn(const double complex *Gtilde_n, const double complex *
         int elr1 = nrcombi/nbinsr2;
         int elr2 = (nrcombi-elr1*nbinsr2)/nbinsr;
         int elr3 = nrcombi%nbinsr;
-        double complex *npcf_slice = calloc(nns*nns, sizeof(double complex));
-        double complex *norm_slice = calloc(nns*nns, sizeof(double complex));
+        double complex *npcf_slice = orpheus_calloc(nns*nns, sizeof(double complex));
+        double complex *norm_slice = orpheus_calloc(nns*nns, sizeof(double complex));
         for (int n1=0;n1<nns;n1++){
             for (int n2=0;n2<nns;n2++){
                 int ind = (n1*nns+n2)*nbinsr3 + elr1*nbinsr2 + elr2*nbinsr + elr3;
@@ -1192,7 +1195,7 @@ void fourpcfmultipoles2MN3correlators(
     double complex *Upsilon_n, double complex *N_n, double complex *mn3corr){
 
     int n_cfs = 1;
-    double complex *allmn3corr = calloc(nthreads*n_cfs*napradii, sizeof(double complex));
+    double complex *allmn3corr = orpheus_calloc(nthreads*n_cfs*napradii, sizeof(double complex));
 
     int trafos_finished = 0;
     reset_progress();
@@ -1224,10 +1227,10 @@ void fourpcfmultipoles2MN3correlators(
 
         // Transform multipoles to 4pcf
         int thisn1, thisn2, n2n3combi_trafo;
-        double complex *thisnpcf = calloc(n_cfs*nphicombis, sizeof(double complex));
-        double complex *thisnpcf_norm = calloc(nphicombis, sizeof(double complex));
-        double complex *Upsn_single = calloc(n_cfs*n2n3combis_trafo, sizeof(double complex));
-        double complex *Nn_single = calloc(1*n2n3combis_trafo, sizeof(double complex));
+        double complex *thisnpcf = orpheus_calloc(n_cfs*nphicombis, sizeof(double complex));
+        double complex *thisnpcf_norm = orpheus_calloc(nphicombis, sizeof(double complex));
+        double complex *Upsn_single = orpheus_calloc(n_cfs*n2n3combis_trafo, sizeof(double complex));
+        double complex *Nn_single = orpheus_calloc(1*n2n3combis_trafo, sizeof(double complex));
         for (int elcomp=0; elcomp<n_cfs; elcomp++){
             for (int n2n3combi=0; n2n3combi<n2n3combis; n2n3combi++){
                 thisn1 = n2n3combi/(2*nmax+1) - nmax;
@@ -1403,7 +1406,7 @@ void alloc_notomoMapNap3_corrections(
     double *xing, double complex *Gtilde_third, 
     int include_second, int include_third, double complex *MN3correlators){
     
-    double complex *allMN3correlators = calloc(nthreads*1*napradii, sizeof(double complex));
+    double complex *allMN3correlators = orpheus_calloc(nthreads*1*napradii, sizeof(double complex));
     #pragma omp parallel for num_threads(nthreads)
     for(int thisrcombi=0;thisrcombi<nbinsr*nbinsr*nbinsr;thisrcombi++){
         int thisthread = omp_get_thread_num();
@@ -1413,8 +1416,8 @@ void alloc_notomoMapNap3_corrections(
         int elb1, elb2, elb3;
         int n_cfs = 1;
         int batchgamma_thetshift = nbinsphi*nbinsphi;
-        double complex *nextMN3correlators = calloc(n_cfs, sizeof(double complex));
-        double complex *thisnpcf = calloc(n_cfs*batchgamma_thetshift, sizeof(double complex));
+        double complex *nextMN3correlators = orpheus_calloc(n_cfs, sizeof(double complex));
+        double complex *thisnpcf = orpheus_calloc(n_cfs*batchgamma_thetshift, sizeof(double complex));
         //printf("Done allocations for thetabatch %d/%d on thread %d with %d thetacombis\n",
         //       elthetbatch,nthetbatches,thisthread,nthetacombis_batches[elthetbatch]);
         
@@ -1491,7 +1494,7 @@ void alloc_notomoMapNap3_analytic(
     double complex *MN3correlators){
                
     
-    double complex *allMN3correlators = calloc(nthreads*1*napradii, sizeof(double complex));
+    double complex *allMN3correlators = orpheus_calloc(nthreads*1*napradii, sizeof(double complex));
     #pragma omp parallel for num_threads(nthreads)
     for(int elthetbatch=0;elthetbatch<nthetbatches;elthetbatch++){
         int thisthread = omp_get_thread_num();
@@ -1501,17 +1504,16 @@ void alloc_notomoMapNap3_analytic(
         int n_cfs = 1;
         int batch_nthetas = nthetacombis_batches[elthetbatch];   
         int batchgamma_thetshift = nbinsphi*nbinsphi;
-
-        
-        double *bin_centers = calloc(nbinsr, sizeof(double));
-        double *bin_edges = calloc(nbinsr+1, sizeof(double));
         double drbin = exp((log(rmax)-log(rmin))/(nbinsr));
-        int *elb1s_batch = calloc(batch_nthetas, sizeof(int));
-        int *elb2s_batch = calloc(batch_nthetas, sizeof(int));
-        int *elb3s_batch = calloc(batch_nthetas, sizeof(int));
+
+        double *bin_centers = orpheus_calloc(nbinsr, sizeof(double));
+        double *bin_edges = orpheus_calloc(nbinsr+1, sizeof(double));
+        int *elb1s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
+        int *elb2s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
+        int *elb3s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
         
-        double complex *nextMN3correlators = calloc(n_cfs, sizeof(double complex));
-        double complex *thisnpcf = calloc(n_cfs*batchgamma_thetshift, sizeof(double complex));
+        double complex *nextMN3correlators = orpheus_calloc(n_cfs, sizeof(double complex));
+        double complex *thisnpcf = orpheus_calloc(n_cfs*batchgamma_thetshift, sizeof(double complex));
         //printf("Done allocations for thetabatch %d/%d on thread %d with %d thetacombis\n",
         //       elthetbatch,nthetbatches,thisthread,nthetacombis_batches[elthetbatch]);
         
@@ -1623,9 +1625,9 @@ void gtilde4pcf_analytic_integrated(
     double complex *gaussfourpcf){
     int n_cfs = 1;
     double dtheta1, dtheta2, dtheta3, subshift, subsubshift, thisw, wtot;
-    double *theta1_subs = calloc(nsubr, sizeof(double));
-    double *theta2_subs = calloc(nsubr, sizeof(double));
-    double *theta3_subs = calloc(nsubr, sizeof(double));
+    double *theta1_subs = orpheus_calloc(nsubr, sizeof(double));
+    double *theta2_subs = orpheus_calloc(nsubr, sizeof(double));
+    double *theta3_subs = orpheus_calloc(nsubr, sizeof(double));
     
     // We define the subsampling in a way s.t. the subsampled bin values are different for the different thetas.
     // In particular, the values for theta2 are the true subsampled ones, while we shift the values of
@@ -1649,7 +1651,7 @@ void gtilde4pcf_analytic_integrated(
         for (int elsub2=0; elsub2<nsubr; elsub2++){
             for (int elsub3=0; elsub3<nsubr; elsub3++){
                 thisw = 1;
-                double complex *nextfourpcf = calloc(n_cfs*nphis*nphis, sizeof(double complex));
+                double complex *nextfourpcf = orpheus_calloc(n_cfs*nphis*nphis, sizeof(double complex));
                 gtilde4pcf_analytic(theta1_subs[elsub1],
                                     theta2_subs[elsub2],
                                     theta3_subs[elsub3], phis, nphis,
@@ -1808,8 +1810,8 @@ void multipoles2npcf_nnnn(double complex *N_n, const BinningParams *bin, const F
         int eltheta1=nthetacombi/ntheta2;
         int eltheta2=(nthetacombi-eltheta1*ntheta2)/nbinsstheta;
         int eltheta3=nthetacombi%nbinsstheta;
-        double complex *tmpnpcf = calloc(phi23combis, sizeof(double complex));
-        double complex *tmpNn = calloc(n12combis, sizeof(double complex));
+        double complex *tmpnpcf = orpheus_calloc(phi23combis, sizeof(double complex));
+        double complex *tmpNn = orpheus_calloc(n12combis, sizeof(double complex));
         for (int n12=0;n12<n12combis;n12++){
             tmpNn[n12] = N_n[n12*ntheta3+nthetacombi];
         }
@@ -1834,8 +1836,8 @@ void multipoles2npcf_nnnn_singletheta(double complex *N_n, int n1max, int n2max,
     int nmax = n1max;
     int nns = 2*nmax+1;
     double complex expphi12, expphi13;
-    double complex *expphi12s = calloc(nns, sizeof(double complex));
-    double complex *expphi13s = calloc(nns, sizeof(double complex));
+    double complex *expphi12s = orpheus_calloc(nns, sizeof(double complex));
+    double complex *expphi13s = orpheus_calloc(nns, sizeof(double complex));
     int npcf_compshift = nbinsphi12*nbinsphi13;
     int ups_compshift = nns*nns;
     for (int elphi12=0; elphi12<nbinsphi12; elphi12++){

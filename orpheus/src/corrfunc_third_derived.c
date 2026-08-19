@@ -20,7 +20,7 @@ void _x2centroid_ggg(double complex *npcf, int nbinsz,
                      double *theta_centers, int nbinstheta, double *phi_centers, int nbinsphi,
                      int nthreads){
     
-    double *thetas_buffer = calloc(nthreads*nbinstheta, sizeof(double));
+    double *thetas_buffer = orpheus_calloc(nthreads*nbinstheta, sizeof(double));
     for (int elthread=0;elthread<nthreads; elthread++){
         for (int eltheta=0;eltheta<nbinstheta; eltheta++){
             thetas_buffer[elthread*nbinstheta+eltheta] = theta_centers[eltheta];
@@ -93,7 +93,7 @@ void multipoles2npcf_third_z1z23(double complex *Upsilon_n, double complex *N_n,
     int gam_compshift = nzcombis*gam_zshift;
 
     // Generate lookup table for exp s.t. we dont need it in the inner loop
-    double complex *expphis = calloc((2*nmax+1)*nbinsphi, sizeof(double complex));
+    double complex *expphis = orpheus_calloc((2*nmax+1)*nbinsphi, sizeof(double complex));
     for (int nextn=0; nextn<=nmax; nextn++){
         for (int elphi=0; elphi<nbinsphi; elphi++){
             expphis[(nmax+nextn)*nbinsphi+elphi] = cexp(I*nextn*phi_centers[elphi]);
@@ -338,7 +338,7 @@ void threepcf2M3correlators_ggg(double complex *npcf,
                                 double complex *M3correlators){
 
     // If radial bins empty set them to arithmetic mean
-    double *centers = malloc(nbinstheta*sizeof(double));
+    double *centers = orpheus_malloc(nbinstheta*sizeof(double));
     int haszero = 0;
     for (int i=0; i<nbinstheta; i++){ centers[i] = theta_centers[i]; if (centers[i]==0.){ haszero = 1; } }
     if (haszero){
@@ -358,7 +358,7 @@ void threepcf2M3correlators_ggg(double complex *npcf,
     int gam_compshift = nzcombis*gam_zshift;
     int buf_compshift = nzcombis*nrcombis;
     int gam_threadshift = 4*buf_compshift;
-    double complex *buf = calloc((size_t)nthreads*gam_threadshift, sizeof(double complex));
+    double complex *buf = orpheus_calloc((size_t)nthreads*gam_threadshift, sizeof(double complex));
     double dphi = phi_centers[1]-phi_centers[0];
 
     #pragma omp parallel for num_threads(nthreads)
@@ -445,7 +445,7 @@ void threepcf2NNMcorrelators_gnn(double complex *npcf,
     int gam_thetshift = nbinsphi;
     int gam_zshift = nthetcombis*gam_thetshift;
     int gam_compshift = nzcombis*nrcombis;
-    double complex *buf = calloc((size_t)nthreads*gam_compshift, sizeof(double complex));
+    double complex *buf = orpheus_calloc((size_t)nthreads*gam_compshift, sizeof(double complex));
     double dphi = phi_centers[1]-phi_centers[0];
 
     #pragma omp parallel for num_threads(nthreads)
@@ -526,7 +526,7 @@ void threepcf2NMMcorrelators_ngg(double complex *npcf,
     int gam_compshift = nzcombis*gam_zshift;
     int buf_compshift = nzcombis*nrcombis;
     int gam_threadshift = 2*buf_compshift;
-    double complex *buf = calloc((size_t)nthreads*gam_threadshift, sizeof(double complex));
+    double complex *buf = orpheus_calloc((size_t)nthreads*gam_threadshift, sizeof(double complex));
     double dphi = phi_centers[1]-phi_centers[0];
 
     #pragma omp parallel for num_threads(nthreads)

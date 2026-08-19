@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 from orpheus.catalog import ScalarTracerCatalog, SpinTracerCatalog
+from orpheus.direct import Direct_MapnEqual, Direct_NapnEqual
 from orpheus.npcf_fourth import GGGGCorrelation_NoTomo, GNNNCorrelation_NoTomo, NNNNCorrelation_NoTomo
 from orpheus.npcf_second import GGCorrelation, NGCorrelation, NNCorrelation
 from orpheus.npcf_third import GGGCorrelation, GNNCorrelation, NGGCorrelation, NNNCorrelation
@@ -423,3 +424,47 @@ def test_schemes_agree_on_a_fully_discrete_tree():
 def test_fully_discrete_tree_gets_a_usable_hash_cellsize(spec):
     inst = build_correlator(spec, **SEPS, tree_resos=[0.], nthreads=NTHREADS)
     assert inst.dpix_hash > 0. and np.isfinite(inst.dpix_hash)
+
+####################
+# DIRECT ESTIMATOR #
+####################
+# The direct aperture-mass estimators (Porth & Smith 2022) had no test coverage at all.
+# Their catalogs are built here rather than taken from the shared fixtures, since the
+# direct estimators need an angular mask and create_mask mutates the catalog.
+DIRECT = dict(order_max=3, Rmin=4., Rmax=8., nbinsr=3, nthreads=NTHREADS, accuracies=1.)
+
+
+@pytest.fixture(scope="module")
+def mapn_equal():
+    rng = np.random.default_rng(7)
+    ngal = 4000
+    cat = SpinTracerCatalog(spin=2,
+                            pos1=rng.uniform(0., 300., ngal),
+                            pos2=rng.uniform(0., 300., ngal),
+                            tracer_1=rng.normal(0., .3, ngal),
+                            tracer_2=rng.normal(0., .3, ngal),
+                            weight=rng.uniform(.5, 1.5, ngal), geometry='flat2d')
+    cat.create_mask(method="Basic", pixsize=2.)
+    return Direct_MapnEqual(filter_form="C02", **DIRECT).process(cat, dotomo=False)
+
+
+def test_direct_mapn_equal_is_finite(mapn_equal):
+    mapn, wmapn = (np.asarray(a) for a in mapn_equal)
+    assert mapn.size and np.isfinite(mapn).any()
+    assert wmapn.shape == mapn.shape
+    # An undispatched branch returns zeros without raising, which no shape check sees
+    assert not np.all(mapn == 0)
+
+
+def test_direct_napn_equal_is_finite():
+    rng = np.random.default_rng(8)
+    ngal = 4000
+    cat = ScalarTracerCatalog(pos1=rng.uniform(0., 300., ngal),
+                              pos2=rng.uniform(0., 300., ngal),
+                              tracer=np.ones(ngal),
+                              weight=rng.uniform(.5, 1.5, ngal), geometry='flat2d')
+    cat.create_mask(method="Basic", pixsize=2.)
+    napn, wnapn = (np.asarray(a) for a in
+                   Direct_NapnEqual(**DIRECT).process(cat, dotomo=False))
+    assert napn.size and np.isfinite(napn).any()
+    assert not np.all(napn == 0)

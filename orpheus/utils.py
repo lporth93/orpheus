@@ -264,3 +264,11 @@ def map_ztuples(ntomobins, order):
         index_mapper[idx] = sorted_tuples_indices[sorted_tuple]
 
     return len(sorted_tuples), len(index_mapper), index_mapper
+
+
+def check_clib_error(clib):
+    """Raise if the last kernel call could not allocate. The failing size is on stderr."""
+    if clib.orpheus_get_error():
+        clib.orpheus_clear_error()
+        raise MemoryError("an orpheus kernel could not allocate its working arrays; "
+                          "the size that failed is reported on stderr")

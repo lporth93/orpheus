@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stddef.h>
 #include <complex.h>
 #include <math.h>
 
@@ -21,6 +22,14 @@ void print_progress(int nregionsdone, int nfilledregions, int verbose);
 double sphere_dist(double x1, double y1, double z1, double x2, double y2, double z2);
 double sphere_bearing(double ra_a, double sindec_a, double cosdec_a,
                       double ra_b, double sindec_b, double cosdec_b);
+
+int orpheus_struct_layout(int which, size_t *out, int len_out);
+const char *orpheus_struct_fields(int which);
+
+void orpheus_clear_error(void);
+int orpheus_get_error(void);
+void *orpheus_malloc(size_t nbytes);
+void *orpheus_calloc(size_t nmemb, size_t size);
 
 /////////////////////////
 // Curved-sky geometry //

@@ -25,13 +25,29 @@ source
    cd orpheus
    pip install .
 
+Build options
+-------------
+
+The kernels are compiled with IEEE-conforming optimisation flags, so that the
+non-finite guards inside them work and OpenMP reductions give the same answer
+whatever the thread count. ``-ffast-math`` breaks both, and is opt-in
+
+.. code-block:: shell
+
+   ORPHEUS_FAST_MATH=1 pip install .
+
+which buys roughly 5%-10% on the various NPCF instances. The main caveat is that 
+having ``-ffinite-math-only`` folds ``isnan`` and ``isfinite`` into constants which 
+bypass the guards in place for (near-) empty bins
+
+Arbitrary flags can be appended with ``ORPHEUS_EXTRA_CFLAGS`` and
+``ORPHEUS_EXTRA_LDFLAGS``.
+
 Known version constraints
 -------------------------
 
 
 * ``python>=3.10``, inherited from ``scipy>=1.15`` and ``healpy>=1.18``.
-* ``numba<=0.62.1``, which in turn caps ``numpy`` below 2.4. Neither bound
-  originates in the orpheus code itself.
 
 Troubleshooting
 ---------------

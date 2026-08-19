@@ -1,0 +1,93 @@
+name: Sanitizers & Valgrind
+
+# This makes sure that the code is safe to use by running through AddressSanitizer, 
+# UndefinedBehaviorSanitizer and valigrind.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Mondays, 05:00 UTC, an hour after the numerical job
+    - cron: "0 5 * * 1"
+
+jobs:
+
+  # Builds the kernels under AddressSanitizer and UndefinedBehaviorSanitizer and runs the
+  # fast tier against them. 
+  asan_ubsan:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build with the sanitizers enabled
+        env:
+          # -O1 keeps the stack traces readable while staying fast enough for the fast tier
+          ORPHEUS_EXTRA_CFLAGS: "-fsanitize=address,undefined -fno-omit-frame-pointer -g -O1"
+          ORPHEUS_EXTRA_LDFLAGS: "-fsanitize=address,undefined"
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest
+          pip install .
+
+      - name: Run the fast tier under the sanitizers
+        env:
+          PYTHONMALLOC: malloc
+          # Leak detection is left to the valgrind job
+          ASAN_OPTIONS: "detect_leaks=0:halt_on_error=0:abort_on_error=0:print_summary=1"
+          UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=0"
+        run: |
+          # The extension is dlopened by an already-running interpreter, so the asan runtime
+          # has to be in the process before python starts.
+          LD_PRELOAD=$(gcc -print-file-name=libasan.so) \
+            pytest tests/ -q --no-header 2>&1 | tee sanitize.log
+          echo "--- sanitizer findings ---"
+          grep -E "runtime error|ERROR: AddressSanitizer" sanitize.log | sort | uniq -c \
+            || echo "none"
+
+  # Settles whether the allocation and free counts in the kernels actually balance.
+  # Single-threaded and smoke tests only, since valgrind is very expensive.
+  valgrind:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build with debug symbols
+        env:
+          ORPHEUS_EXTRA_CFLAGS: "-g"
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest
+          pip install .
+
+      - name: Install valgrind
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+
+      - name: Look for leaks in the kernels
+        env:
+          OMP_NUM_THREADS: "1"
+          PYTHONMALLOC: malloc
+        run: |
+          valgrind --leak-check=full --show-leak-kinds=definite --error-exitcode=0 \
+                   --log-file=valgrind.log \
+                   python -m pytest tests/test_fast_smoke.py -q --no-header || true
+          echo "--- definite leaks in orpheus frames ---"
+          grep -A12 "definitely lost" valgrind.log | grep -i "orpheus" \
+            || echo "none attributable to orpheus"

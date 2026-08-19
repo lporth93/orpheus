@@ -4,7 +4,7 @@ from functools import reduce
 import operator
 from scipy.interpolate import interp1d, RegularGridInterpolator
 
-from .utils import flatlist, gen_thetacombis_fourthorder, gen_n2n3indices_Upsfourth
+from .utils import check_clib_error, flatlist, gen_thetacombis_fourthorder, gen_n2n3indices_Upsfourth
 from .npcf_base import BinnedNPCF
 from .npcf_second import GGCorrelation
 from .multires_structs import (build_flat_catalog_struct, build_flat_navhash_struct,
@@ -268,6 +268,7 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
                 ct.byref(bin_s), ct.byref(fourth_s),
                 np.float64(memory_bound), np.int32(self.nthreads),
                 np.int32(self._verbose_c+self._verbose_debug), ct.byref(out_s))
+            check_clib_error(self.clib)
         elif self.method=="Discrete" and not lowmem:
             raise NotImplementedError
         elif self.method=="Discrete" and lowmem:
@@ -312,6 +313,7 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
                     ct.byref(bin_s), ct.byref(fourth_s),
                     np.float64(memory_bound), np.int32(self.nthreads),
                     np.int32(self._verbose_c+self._verbose_debug), ct.byref(out_s))
+                check_clib_error(self.clib)
             elif self.method=="DoubleTree" and only_multipoles and lowmem:
                 # True double tree (central-vertex gridding), multipoles only.
                 tree_s.nresos_grid = int(self.tree_nresos - cutfirst)
@@ -325,6 +327,7 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
                     ct.byref(bin_s), ct.byref(fourth_s),
                     np.float64(memory_bound), np.int32(self.nthreads),
                     np.int32(self._verbose_c+self._verbose_debug), ct.byref(out_s))
+                check_clib_error(self.clib)
             else:
                 # Aperture/real-space paths (Nap4): partial struct port, aperture radii and
                 # output arrays stay loose. Tree and DoubleTree share the same signature.
@@ -663,6 +666,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
             self.clib.alloc_notomoGammans_discrete_gggg(
                 ct.byref(cat_s), ct.byref(nav_s), ct.byref(bin_s), None,
                 np.int32(self.nthreads), np.int32(self._verbose_c+self._verbose_debug), ct.byref(out_s))
+            check_clib_error(self.clib)
         if self.method=="Discrete" and lowmem:
             _resradial = gen_thetacombis_fourthorder(nbinsr=self.nbinsr, nthreads=self.nthreads, batchsize=batchsize,
                                                      batchsize_max=self.thetabatchsize_max, ordered=True, custom=custom_thetacombis,
@@ -684,6 +688,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                 np.int32(alloc_4pcfmultipoles), np.int32(alloc_4pcfreal),
                 np.int32(self.nthreads), np.int32(self._verbose_c+self._verbose_debug),
                 bin_centers, Upsilon_n, N_n, fourpcf, fourpcf_norm)
+            check_clib_error(self.clib)
         if self.method=="Tree":
             _resradial = gen_thetacombis_fourthorder(nbinsr=self.nbinsr, nthreads=self.nthreads, batchsize=batchsize,
                                                      batchsize_max=self.thetabatchsize_max, ordered=True, custom=custom_thetacombis,
@@ -714,6 +719,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                     ct.byref(catc_s), ct.byref(catr_s), ct.byref(nav_s), ct.byref(tree_s),
                     ct.byref(bin_s), ct.byref(fourth_s),
                     np.int32(self.nthreads), np.int32(self._verbose_c+self._verbose_debug), ct.byref(out_s))
+                check_clib_error(self.clib)
             if lowmem:
                 fourth_s, keep_f = build_fourth_params(
                     nindices=_inds, len_nindices=len(_inds),
@@ -727,6 +733,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                     np.int32(alloc_4pcfmultipoles), np.int32(alloc_4pcfreal),
                     np.int32(self.nthreads), np.int32(self._verbose_c+self._verbose_debug),
                     bin_centers, Upsilon_n, N_n, fourpcf, fourpcf_norm)
+                check_clib_error(self.clib)
         self.projection = projection
         
         ## Massage the output ##
@@ -1375,6 +1382,7 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
                 ct.byref(cats_s), ct.byref(navs_s), ct.byref(catl_s), ct.byref(navl_s),
                 ct.byref(bin_s), None,
                 int(self.nthreads), int(self._verbose_c+self._verbose_debug), ct.byref(out_s))
+            check_clib_error(self.clib)
 
         if self.method=="Tree":
         # Prepare mask for nonredundant theta- and multipole configurations
@@ -1416,6 +1424,7 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
                     np.int32(alloc_4pcfmultipoles), np.int32(alloc_4pcfreal),
                     np.int32(self.nthreads), np.int32(self._verbose_c+self._verbose_debug),
                     bin_centers, Upsilon_n, N_n, fourpcf, fourpcf_norm, MN3correlators)
+                check_clib_error(self.clib)
             else:
                 fourth_s, keep_f = build_fourth_params(
                     nindices=_inds, len_nindices=len(_inds), nthetacombis=nthetacombis_tot)
@@ -1424,6 +1433,7 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
                     ct.byref(cats_s), ct.byref(navs_s), ct.byref(catl_s), ct.byref(navl_s),
                     ct.byref(tree_s), ct.byref(bin_s), ct.byref(fourth_s),
                     np.int32(self.nthreads), np.int32(self._verbose_c), ct.byref(out_s))
+                check_clib_error(self.clib)
 
         ## Massage the output ##
         istatout = ()

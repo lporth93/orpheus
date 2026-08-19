@@ -148,25 +148,25 @@ void ApertureMassMap_Equal(
     for (int elthread=0; elthread<nthreads; elthread++){
         //printf("Entered parallel region %d\n",elthread);
         int ind_ap, elbinz, order;
-        double *nextcounts = calloc(3*nbinsz, sizeof(double));
-        double *nextcovs = calloc(2, sizeof(double));
-        double *nextMsn = calloc(max_order*nbinsz, sizeof(double));
-        double *nextSn = calloc(max_order*nbinsz, sizeof(double));
-        double *nextSn_w = calloc(max_order*nbinsz, sizeof(double));
-        double *nextS2n_w = calloc(max_order*nbinsz, sizeof(double));
-        double *nextMapn = calloc(max_order*nbinsz, sizeof(double));
-        double *nextMapn_var = calloc(max_order*nbinsz, sizeof(double));
+        double *nextcounts = orpheus_calloc(3*nbinsz, sizeof(double));
+        double *nextcovs = orpheus_calloc(2, sizeof(double));
+        double *nextMsn = orpheus_calloc(max_order*nbinsz, sizeof(double));
+        double *nextSn = orpheus_calloc(max_order*nbinsz, sizeof(double));
+        double *nextSn_w = orpheus_calloc(max_order*nbinsz, sizeof(double));
+        double *nextS2n_w = orpheus_calloc(max_order*nbinsz, sizeof(double));
+        double *nextMapn = orpheus_calloc(max_order*nbinsz, sizeof(double));
+        double *nextMapn_var = orpheus_calloc(max_order*nbinsz, sizeof(double));
         
-        double *factorials_zcombis = calloc(max_order+nbinsz+1, sizeof(double));
-        double *factorials = calloc(max_order+1, sizeof(double));
-        double *bellargs_Msn = calloc(max_order, sizeof(double));
-        double *bellargs_Sn = calloc(max_order, sizeof(double));
-        double *bellargs_Sn_w = calloc(max_order, sizeof(double));
-        double *bellargs_S2n_w = calloc(max_order, sizeof(double));
-        double *nextMapn_singlez = calloc(max_order+1, sizeof(double));
-        double *nextMapn_norm_singlez = calloc(max_order+1, sizeof(double));
-        double *nextMapn_var_singlez = calloc(max_order+1, sizeof(double));
-        double *nextMapn_var_norm_singlez = calloc(max_order+1, sizeof(double));
+        double *factorials_zcombis = orpheus_calloc(max_order+nbinsz+1, sizeof(double));
+        double *factorials = orpheus_calloc(max_order+1, sizeof(double));
+        double *bellargs_Msn = orpheus_calloc(max_order, sizeof(double));
+        double *bellargs_Sn = orpheus_calloc(max_order, sizeof(double));
+        double *bellargs_Sn_w = orpheus_calloc(max_order, sizeof(double));
+        double *bellargs_S2n_w = orpheus_calloc(max_order, sizeof(double));
+        double *nextMapn_singlez = orpheus_calloc(max_order+1, sizeof(double));
+        double *nextMapn_norm_singlez = orpheus_calloc(max_order+1, sizeof(double));
+        double *nextMapn_var_singlez = orpheus_calloc(max_order+1, sizeof(double));
+        double *nextMapn_var_norm_singlez = orpheus_calloc(max_order+1, sizeof(double));
         
         gen_fac_table(max_order, factorials);
         gen_fac_table(max_order+nbinsz, factorials_zcombis);
@@ -311,19 +311,19 @@ void ApertureCountsMap_Equal(
     for (int elthread=0; elthread<nthreads; elthread++){
         //printf("Entered parallel region %d\n",elthread);
         int ind_ap, elbinz, elzcombi, elcov_cut, order;
-        double *nextcounts = calloc(3*nbinsz, sizeof(double));
-        double *nextcovs = calloc(2, sizeof(double));
-        double *nextMsn = calloc(max_order*nbinsz, sizeof(double));
-        double *nextSn = calloc(max_order*nbinsz, sizeof(double));
+        double *nextcounts = orpheus_calloc(3*nbinsz, sizeof(double));
+        double *nextcovs = orpheus_calloc(2, sizeof(double));
+        double *nextMsn = orpheus_calloc(max_order*nbinsz, sizeof(double));
+        double *nextSn = orpheus_calloc(max_order*nbinsz, sizeof(double));
         
-        double *factorials_zcombis = calloc(max_order+nbinsz+1, sizeof(double));
-        double *factorials = calloc(max_order+1, sizeof(double));
-        double *bellargs_Msn = calloc(max_order, sizeof(double));
-        double *bellargs_Sn = calloc(max_order, sizeof(double));
-        double *nextNapn_singlez = calloc(max_order+1, sizeof(double));
-        double *nextNapn = calloc(max_order*nbinsz, sizeof(double));
-        double *nextNapn_norm_singlez = calloc(max_order+1, sizeof(double));
-        double *nextNapn_norm = calloc(max_order*nbinsz, sizeof(double));
+        double *factorials_zcombis = orpheus_calloc(max_order+nbinsz+1, sizeof(double));
+        double *factorials = orpheus_calloc(max_order+1, sizeof(double));
+        double *bellargs_Msn = orpheus_calloc(max_order, sizeof(double));
+        double *bellargs_Sn = orpheus_calloc(max_order, sizeof(double));
+        double *nextNapn_singlez = orpheus_calloc(max_order+1, sizeof(double));
+        double *nextNapn = orpheus_calloc(max_order*nbinsz, sizeof(double));
+        double *nextNapn_norm_singlez = orpheus_calloc(max_order+1, sizeof(double));
+        double *nextNapn_norm = orpheus_calloc(max_order*nbinsz, sizeof(double));
         
         gen_fac_table(max_order, factorials);
         gen_fac_table(max_order+nbinsz, factorials_zcombis);
@@ -418,38 +418,42 @@ void MapnSingleEonlyDisc(
     int nthreads, double *Mapn, double *wtot_Mapn){
     
     //printf("Starting\n");
-    double *fac_zcombis = calloc(max_order+nbinsz+1, sizeof(double));
+    double *fac_zcombis = orpheus_calloc(max_order+nbinsz+1, sizeof(double));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){free(fac_zcombis); return;}
     gen_fac_table(max_order+nbinsz, fac_zcombis);
     int nzcombis = zcombis_tot(nbinsz, max_order, fac_zcombis);
     
     // shape (nthreads, nfrac_cuts, nzcombis)
-    double *tmpMapn = calloc(nthreads*nfrac_cuts*nzcombis, sizeof(double));
-    double *tmpwtot_Mapn = calloc(nthreads*nfrac_cuts*nzcombis, sizeof(double));
+    double *tmpMapn = orpheus_calloc(nthreads*nfrac_cuts*nzcombis, sizeof(double));
+    double *tmpwtot_Mapn = orpheus_calloc(nthreads*nfrac_cuts*nzcombis, sizeof(double));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){free(fac_zcombis); free(tmpMapn); free(tmpwtot_Mapn); return;}
     //printf("Now entering parallel region\n");
     
     #pragma omp parallel for num_threads(nthreads)
     for (int elthread=0; elthread<nthreads; elthread++){
         //printf("Entered parallel region %d\n",elthread);
         int ind_ap, elbinz, elzcombi, elcov_cut, order;
-        double *nextcounts = calloc(3*nbinsz, sizeof(double));
-        double *nextcovs = calloc(2, sizeof(double));
-        double *nextMsn = calloc(max_order*nbinsz, sizeof(double));
-        double *nextSn = calloc(max_order*nbinsz, sizeof(double));
-        double *nextSn_w = calloc(max_order*nbinsz, sizeof(double));
-        double *nextS2n_w = calloc(max_order*nbinsz, sizeof(double));
+        double *nextcounts = orpheus_calloc(3*nbinsz, sizeof(double));
+        double *nextcovs = orpheus_calloc(2, sizeof(double));
+        double *nextMsn = orpheus_calloc(max_order*nbinsz, sizeof(double));
+        double *nextSn = orpheus_calloc(max_order*nbinsz, sizeof(double));
+        double *nextSn_w = orpheus_calloc(max_order*nbinsz, sizeof(double));
+        double *nextS2n_w = orpheus_calloc(max_order*nbinsz, sizeof(double));
         
-        double *factorials_zcombis = calloc(max_order+nbinsz+1, sizeof(double));
-        double *factorials = calloc(max_order+1, sizeof(double));
-        double *bellargs_Msn = calloc(max_order, sizeof(double));
-        double *bellargs_Sn = calloc(max_order, sizeof(double));
-        double *bellargs_Sn_w = calloc(max_order, sizeof(double));
-        double *bellargs_S2n_w = calloc(max_order, sizeof(double));
-        double *nextMapn_singlez = calloc(max_order+1, sizeof(double));
-        double *nextMapn_norm_singlez = calloc(max_order+1, sizeof(double));
-        double *nextMapn_var_singlez = calloc(max_order+1, sizeof(double));
-        double *nextMapn_var_norm_singlez = calloc(max_order+1, sizeof(double));
-        double *nextMapn = calloc(max_order*nbinsz, sizeof(double));
-        double *nextMapn_var = calloc(max_order*nbinsz, sizeof(double));
+        double *factorials_zcombis = orpheus_calloc(max_order+nbinsz+1, sizeof(double));
+        double *factorials = orpheus_calloc(max_order+1, sizeof(double));
+        double *bellargs_Msn = orpheus_calloc(max_order, sizeof(double));
+        double *bellargs_Sn = orpheus_calloc(max_order, sizeof(double));
+        double *bellargs_Sn_w = orpheus_calloc(max_order, sizeof(double));
+        double *bellargs_S2n_w = orpheus_calloc(max_order, sizeof(double));
+        double *nextMapn_singlez = orpheus_calloc(max_order+1, sizeof(double));
+        double *nextMapn_norm_singlez = orpheus_calloc(max_order+1, sizeof(double));
+        double *nextMapn_var_singlez = orpheus_calloc(max_order+1, sizeof(double));
+        double *nextMapn_var_norm_singlez = orpheus_calloc(max_order+1, sizeof(double));
+        double *nextMapn = orpheus_calloc(max_order*nbinsz, sizeof(double));
+        double *nextMapn_var = orpheus_calloc(max_order*nbinsz, sizeof(double));
         
         gen_fac_table(max_order, factorials);
         gen_fac_table(max_order+nbinsz, factorials_zcombis);
@@ -534,9 +538,11 @@ void MapnSingleEonlyDisc(
             //if (elthread==0){printf("Allocating zcombis for ap %d on thread %d\n",ind_ap,elthread);}
             int elzbin, tmpzbin, tmporder, thisind;
             int cumzcombi = 0;
-            double toadd_Mapn, toadd_Mapn_var, toadd_Mapn_w;
+            // The weight is assigned per weight_method below; the zero default drops the
+            // contribution for any value that is not covered there
+            double toadd_Mapn, toadd_Mapn_var, toadd_Mapn_w = 0.;
             for (order=1; order<=max_order; order++){
-                int *thiszcombi = calloc(order, sizeof(int));
+                int *thiszcombi = orpheus_calloc(order, sizeof(int));
                 //if (ind_ap==ncenters/3){printf("\nNow doing order %d\n",order);}
                 for (elzcombi=0; elzcombi<zcombis_order(nbinsz,order,factorials_zcombis); elzcombi++){
                     //printf("Building zcombis at order %d (combi %d) ",order,elzcombi);
@@ -826,8 +832,10 @@ void Map3MultiEonlyDisc(
 
 
     // shape (nthreads, nfrac_cuts, nzcombis)
-    double *tmpMap3 = calloc(nthreads*nfrac_cuts*nzrcombis, sizeof(double));
-    double *tmpwtot_Map3 = calloc(nthreads*nfrac_cuts*nzrcombis, sizeof(double));
+    double *tmpMap3 = orpheus_calloc(nthreads*nfrac_cuts*nzrcombis, sizeof(double));
+    double *tmpwtot_Map3 = orpheus_calloc(nthreads*nfrac_cuts*nzrcombis, sizeof(double));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){free(tmpMap3); free(tmpwtot_Map3); return;}
     //printf("Now entering parallel region\n");
     
     #pragma omp parallel for num_threads(nthreads)
@@ -835,15 +843,15 @@ void Map3MultiEonlyDisc(
         //printf("Entered parallel region %d\n",elthread);
         int ind_ap, elbinz, elzcombi, elcov_cut, order;
         int nbinszr = nbinsz*nbinsr;
-        double *nextcounts = calloc(3*nbinszr, sizeof(double));
-        double *nextcovs = calloc(2*nbinsr, sizeof(double));
-        double *nextMsn = calloc(nbinszr, sizeof(double));
-        double *nextSn = calloc(nbinszr, sizeof(double));
-        double *nextSn_w = calloc(nbinszr, sizeof(double));
-        double *nextS2n_w = calloc(nbinszr, sizeof(double));
+        double *nextcounts = orpheus_calloc(3*nbinszr, sizeof(double));
+        double *nextcovs = orpheus_calloc(2*nbinsr, sizeof(double));
+        double *nextMsn = orpheus_calloc(nbinszr, sizeof(double));
+        double *nextSn = orpheus_calloc(nbinszr, sizeof(double));
+        double *nextSn_w = orpheus_calloc(nbinszr, sizeof(double));
+        double *nextS2n_w = orpheus_calloc(nbinszr, sizeof(double));
         
-        //double *nextMapn = calloc(nfrac_cuts*nzrcombis, sizeof(double));
-        //double *nextMapn_var = calloc(nfrac_cuts*nzrcombis, sizeof(double));
+        //double *nextMapn = orpheus_calloc(nfrac_cuts*nzrcombis, sizeof(double));
+        //double *nextMapn_var = orpheus_calloc(nfrac_cuts*nzrcombis, sizeof(double));
         
         int thisthreadshift = elthread*nfrac_cuts*nzrcombis;
         
@@ -864,10 +872,10 @@ void Map3MultiEonlyDisc(
             double center_1 = centers_1[ind_ap];
             double center_2 = centers_2[ind_ap];
 
-            double *npix_m = calloc(nbinsr, sizeof(double));
-            double *npix_t = calloc(nbinsr, sizeof(double));
-            double *Qpix_m = calloc(nbinsr, sizeof(double));
-            double *Qpix_t = calloc(nbinsr, sizeof(double));
+            double *npix_m = orpheus_calloc(nbinsr, sizeof(double));
+            double *npix_t = orpheus_calloc(nbinsr, sizeof(double));
+            double *Qpix_m = orpheus_calloc(nbinsr, sizeof(double));
+            double *Qpix_t = orpheus_calloc(nbinsr, sizeof(double));
 
             for (int indr=0; indr<2*nbinsr; indr++){nextcovs[indr]=0;}
             for (int indr=0; indr<nbinszr; indr++){ nextMsn[indr]=0;nextSn[indr]=0;nextSn_w[indr]=0;nextS2n_w[indr]=0;}
@@ -1001,7 +1009,7 @@ void Map3MultiEonlyDisc(
 
             // Transform to Mapn(zi)
             int zrcindex, zrbin1, zrbin2, zrbin3, thisind;
-            double cov0max, cov1max, Map3nom, Map3denom, Map3varnom, Map3vardenom, Map3_w;
+            double cov0max, cov1max, Map3nom, Map3denom, Map3varnom, Map3vardenom, Map3_w = 0.;
             zrcindex=0; 
             for (int zbin1=0; zbin1<nbinsz; zbin1++){
                 for (int zbin2=zbin1; zbin2<nbinsz; zbin2++){
@@ -1076,29 +1084,35 @@ void NapnSingleDisc(
     int *index_matcher, int *pixs_galind_bounds, int *pix_gals, 
     int nthreads, double *Napn, double *wtot_Napn){
     
-    double *fac_zcombis = calloc(max_order+nbinsz+1, sizeof(double));
+    double *fac_zcombis = orpheus_calloc(max_order+nbinsz+1, sizeof(double));
     gen_fac_table(max_order+nbinsz, fac_zcombis);
     int nzcombis = zcombis_tot(nbinsz, max_order, fac_zcombis);
-    double *tmpNapn = calloc(nthreads*nfrac_cuts*nzcombis, sizeof(double));
-    double *tmpwtot_Napn = calloc(nthreads*nfrac_cuts*nzcombis, sizeof(double));
-    double *tmpcountstot_Napn = calloc(nthreads*nfrac_cuts*nbinsz, sizeof(double)); // Helper for allocating global Nbar
-    double *countstot_Napn = calloc(nfrac_cuts*nbinsz, sizeof(double)); // Helper for allocating global Nbar
+    double *tmpNapn = orpheus_calloc(nthreads*nfrac_cuts*nzcombis, sizeof(double));
+    double *tmpwtot_Napn = orpheus_calloc(nthreads*nfrac_cuts*nzcombis, sizeof(double));
+    double *tmpcountstot_Napn = orpheus_calloc(nthreads*nfrac_cuts*nbinsz, sizeof(double)); // Helper for allocating global Nbar
+    double *countstot_Napn = orpheus_calloc(nfrac_cuts*nbinsz, sizeof(double)); // Helper for allocating global Nbar
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(fac_zcombis); free(tmpNapn); free(tmpwtot_Napn); free(tmpcountstot_Napn);
+        free(countstot_Napn);
+        return;
+    }
     
     #pragma omp parallel for num_threads(nthreads)
     for (int elthread=0; elthread<nthreads; elthread++){
         int ind_ap, elbinz, elzcombi, elcov_cut, order;
-        double *nextcounts = calloc(3*nbinsz, sizeof(double));
-        double *nextcovs = calloc(2, sizeof(double));
-        double *nextMsn = calloc(max_order*nbinsz, sizeof(double));
-        double *nextSn = calloc(max_order*nbinsz, sizeof(double));
+        double *nextcounts = orpheus_calloc(3*nbinsz, sizeof(double));
+        double *nextcovs = orpheus_calloc(2, sizeof(double));
+        double *nextMsn = orpheus_calloc(max_order*nbinsz, sizeof(double));
+        double *nextSn = orpheus_calloc(max_order*nbinsz, sizeof(double));
         
-        double *factorials_zcombis = calloc(max_order+nbinsz+1, sizeof(double));
-        double *factorials = calloc(max_order+1, sizeof(double));
-        double *bellargs_Msn = calloc(max_order, sizeof(double));
-        double *bellargs_Sn = calloc(max_order, sizeof(double));
-        double *nextNapn_singlez = calloc(max_order+1, sizeof(double));
-        double *nextNapn_norm_singlez = calloc(max_order+1, sizeof(double));
-        double *nextNapn = calloc(max_order*nbinsz, sizeof(double));
+        double *factorials_zcombis = orpheus_calloc(max_order+nbinsz+1, sizeof(double));
+        double *factorials = orpheus_calloc(max_order+1, sizeof(double));
+        double *bellargs_Msn = orpheus_calloc(max_order, sizeof(double));
+        double *bellargs_Sn = orpheus_calloc(max_order, sizeof(double));
+        double *nextNapn_singlez = orpheus_calloc(max_order+1, sizeof(double));
+        double *nextNapn_norm_singlez = orpheus_calloc(max_order+1, sizeof(double));
+        double *nextNapn = orpheus_calloc(max_order*nbinsz, sizeof(double));
         
         gen_fac_table(max_order, factorials);
         gen_fac_table(max_order+nbinsz, factorials_zcombis);
@@ -1153,7 +1167,7 @@ void NapnSingleDisc(
             //double area_ap = getFilterSuppU(ind_filter)*getFilterSuppU(ind_filter)*R_ap*R_ap*M_PI;
             double area_ap = pow(getFilterSuppU(ind_filter),2)*R_ap*R_ap*M_PI;
             for (order=1; order<=max_order; order++){
-                int *thiszcombi = calloc(order, sizeof(int));
+                int *thiszcombi = orpheus_calloc(order, sizeof(int));
                 for (elzcombi=0; elzcombi<zcombis_order(nbinsz,order,factorials_zcombis); elzcombi++){
                     // Compute Nap^n and its weight for this zcombi 
                     // Do double counting corrs
@@ -1235,7 +1249,7 @@ void NapnSingleDisc(
     int cumzcombi = 0;
     int thread_nzcombis = zcombis_tot(nbinsz, max_order, fac_zcombis);
     for (int order=1; order<=max_order; order++){
-        int *thiszcombi = calloc(order, sizeof(int));
+        int *thiszcombi = orpheus_calloc(order, sizeof(int));
         for (int elzcombi=0; elzcombi<zcombis_order(nbinsz,order,fac_zcombis); elzcombi++){
             for (int elcov_cut=1;elcov_cut<=nfrac_cuts;elcov_cut++){ 
                 int fzcombi = (nfrac_cuts-elcov_cut)*thread_nzcombis + cumzcombi;
@@ -1407,6 +1421,9 @@ void singleAp_NapnSingleDisc(
         if ((Nbar_policy==0) && (counts[zbin*3+1]>0)){inv_Nbar = M_PI*supp_U2*R2_ap/counts[zbin*3+1];}
         else if ((Nbar_policy==0) && (counts[zbin*3+1]==0)){inv_Nbar=0;}
         else if ((Nbar_policy==1) || (Nbar_policy==2)){inv_Nbar=1;}
+        // inv_Nbar lives outside the loop, so without this an uncovered policy would
+        // silently reuse the previous tomographic bin's value
+        else{inv_Nbar = 0.;}
         fac_norm = 1;
         fac_normvol = inv_Nbar;
         tmp_norm = 1;
