@@ -379,7 +379,7 @@ void fourpcfmultipoles2M4correlators(
                                   phis1, phis2, dphis1, dphis2, nbinsphi1, nbinsphi2,
                                   thisnpcf, nextm4corr);
             for (int elcomp=0;elcomp<8;elcomp++){
-                if (isnan(cabs(nextm4corr[elcomp]))==false){
+                if (isfinite(cabs(nextm4corr[elcomp]))){
                     allm4corr[map4threadshift+elcomp*nmapradii+elmapr] += nextm4corr[elcomp];
                 }
                 nextm4corr[elcomp] = 0;
@@ -691,7 +691,7 @@ void alloc_notomoMap4_analytic(
                                       thisnpcf, nextM4correlators);
                 for (int elcomp=0;elcomp<8;elcomp++){
                     map4ind = elcomp*nmapradii+elmapr;
-                    if (isnan(cabs(nextM4correlators[elcomp]))==false){
+                    if (isfinite(cabs(nextM4correlators[elcomp]))){
                         allM4correlators[map4threadshift+map4ind] += nextM4correlators[elcomp];
                     }
                     nextM4correlators[elcomp] = 0;
@@ -865,7 +865,7 @@ void gauss4pcf_analytic(double theta1, double theta2, double theta3, double *phi
                 gaussfourpcf[7*nphis_2+phishift] = conj(xprojs[7]) * (
                     xip_1*xip_23 + xip_2*xip_13 + conj(ang3_4)*ang12_4*xim_3*xim_12);
                 for (int elcomp=0;elcomp<8;elcomp++){
-                    if (isnan(cabs(gaussfourpcf[elcomp*nphis_2+phishift]))){gaussfourpcf[elcomp*nphis_2+phishift]=0;}
+                    if (!isfinite(cabs(gaussfourpcf[elcomp*nphis_2+phishift]))){gaussfourpcf[elcomp*nphis_2+phishift]=0;}
                 }
             }
         }
@@ -1260,7 +1260,7 @@ void fourpcfmultipoles2MN3correlators(
                                     phis1, phis2, dphis1, dphis2, nbinsphi1, nbinsphi2,
                                     thisnpcf, nextmn3corr);
             for (int elcomp=0;elcomp<n_cfs;elcomp++){
-                if (isnan(cabs(nextmn3corr[elcomp]))==false){
+                if (isfinite(cabs(nextmn3corr[elcomp]))){
                     allmn3corr[mn3threadshift+elcomp*napradii+elapr] += nextmn3corr[elcomp];
                 }
                 nextmn3corr[elcomp] = 0;
@@ -1282,7 +1282,7 @@ void fourpcfmultipoles2MN3correlators(
                                   phis1, phis2, dphis1, dphis2, nbinsphi1, nbinsphi2,
                                   thisnpcf, nextmn3corr);
             for (int elcomp=0;elcomp<n_cfs;elcomp++){
-                if (isnan(cabs(nextmn3corr[elcomp]))==false){
+                if (isfinite(cabs(nextmn3corr[elcomp]))){
                     allmn3corr[mn3threadshift+elcomp*napradii+elmapr] += nextmn3corr[elcomp];
                 }
                 nextmn3corr[elcomp] = 0;
@@ -1444,7 +1444,7 @@ void alloc_notomoMapNap3_corrections(
                                     thisnpcf, nextMN3correlators);
             for (int elcomp=0;elcomp<n_cfs;elcomp++){
                 mapnap3ind = elcomp*napradii+elapr;
-                if (isnan(cabs(nextMN3correlators[elcomp]))==false){
+                if (isfinite(cabs(nextMN3correlators[elcomp]))){
                     allMN3correlators[mapnap3threadshift+mapnap3ind] += nextMN3correlators[elcomp];
                 }
                 nextMN3correlators[elcomp] = 0;
@@ -1575,7 +1575,7 @@ void alloc_notomoMapNap3_analytic(
                                       thisnpcf, nextMN3correlators);
                 for (int elcomp=0;elcomp<n_cfs;elcomp++){
                     mapnap3ind = elcomp*napradii+elapr;
-                    if (isnan(cabs(nextMN3correlators[elcomp]))==false){
+                    if (isfinite(cabs(nextMN3correlators[elcomp]))){
                         allMN3correlators[mapnap3threadshift+mapnap3ind] += nextMN3correlators[elcomp];
                     }
                     nextMN3correlators[elcomp] = 0;
@@ -1701,7 +1701,7 @@ void gtilde4pcf_analytic(
             xinn_23 = linint(xinn, absy23, thetamin_xis, thetamax_xis, dtheta_xis);
             gaussfourpcf[phishift] = xinn_12*xing_3*ang13 + xinn_13*xing_2*ang12*conj(ang23) + xinn_23*xing_1*conj(ang13);
             //gaussfourpcf[phishift] = xing_1*conj(ang13) +  xing_2*ang12*conj(ang23) +  xing_3*ang13; //2pt correction
-            if (isnan(cabs(gaussfourpcf[phishift]))){gaussfourpcf[phishift]=0;}
+            if (!isfinite(cabs(gaussfourpcf[phishift]))){gaussfourpcf[phishift]=0;}
         }
     }
 }

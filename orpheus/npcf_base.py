@@ -122,10 +122,11 @@ class BinnedNPCF:
         Flag signifying on whether the NPCF multipoles have been edge-corrected. Defaults to ``False``.
     norm_divisionmask: float
         If the absolute value of the normalisation is smaller the NPCF is set to zero.
-    filter_ringing: bool, optional
-        Flag on whether to set those bins to zero in which the multipole reconstruction of
-        the multiplet counts is consistent with zero. Bins without any multiplets are always
-        set to zero, independently of this flag. Defaults to ``True``.
+    apodization: {'rect', 'fejer'}, optional
+        Window applied to the multipoles before the transform to real space. 
+        Right now we default to the plain band limit, alternatively we allow for application 
+        of the Fejer kernel which forces the reconstructed counts to be positive and reduces 
+        their ringing at the cost of a slower convergence.
     """
         
     def __init__(self, order, spins, n_cfs, min_sep, max_sep, nbinsr=None, binsize=None, sep_units="arcmin", nbinsphi=100, 
@@ -133,7 +134,7 @@ class BinnedNPCF:
                  tree_alpha=None, tree_mincellsize=0.1, tree_maxcellsize=4., tree_resos=[0,0.25,0.5,1.,2.], tree_redges=None, rmin_pixsize=20, 
                  resoshift_leafs=0, minresoind_leaf=None, maxresoind_leaf=None,  
                  methods_avail=["Discrete", "Tree", "BaseTree", "DoubleTree"], verbosity=0, nthreads=16,
-                 norm_divisionmask=1e-2, filter_ringing=True):
+                 norm_divisionmask=1e-2, apodization="rect"):
 
         self.order = int(order)
         self.n_cfs = int(n_cfs)
@@ -162,7 +163,8 @@ class BinnedNPCF:
         self.verbosity = np.int32(verbosity)
         self.nthreads = np.int32(max(1,nthreads))
         self.norm_divisionmask = float(norm_divisionmask)
-        self.filter_ringing = bool(filter_ringing)
+        self.apodization = apodization
+        self._sigma = None
 
         self.tree_resosatr = None
         self.bin_centers = None
@@ -209,6 +211,8 @@ class BinnedNPCF:
         assert self.tree_resos[0] == 0., (
             "tree_resos must start with 0., the discrete resolution; got %s"
             %str(self.tree_resos))
+        assert self.apodization in ('rect', 'fejer'), \
+              "apodization must be one of 'rect', 'fejer'"
         
         # Setup radial bins
         # Note that we always have self.binsize <= binsize
@@ -861,38 +865,35 @@ class BinnedNPCF:
         _cmp = np.abs(npcf_norm) if use_abs else npcf_norm
         return np.divide(npcf, npcf_norm, out=np.full_like(npcf, fill), where=_cmp > _thr)
 
-    def ringing_sigma(self, norm_multipoles, modeweight, nmaxs, full_range=False):
-        """Shot-noise level of the multipole reconstruction of the multiplet counts.
+    def mode_window(self, nmax, full_range=False):
+        """Returns multipole window, indexed the way the multipoles are stored. Note that 
+        Numerator and denominator always carry the same window"""
 
-        The phi-dependence of the counts sits at low multipoles, so the upper half of the
-        band measures the noise floor, which scales as ``sqrt(2 nmax/nmultiplets)``. One
-        leading axis of ``norm_multipoles`` is collapsed per entry of ``nmaxs``.
-        """
-        acc = np.abs(modeweight*np.asarray(norm_multipoles))**2
-        nmodes = 1
-        for nmax in np.atleast_1d(nmaxs):
-            orders = np.abs(np.arange(2*nmax+1) - nmax) if full_range else np.arange(nmax+1)
-            acc = acc[orders > nmax//2].mean(axis=0)
-            nmodes *= 2*nmax + 1
-        return np.sqrt(nmodes*acc)
+        orders = np.abs(np.arange(2*nmax+1) - nmax) if full_range else np.arange(nmax+1)
+        if self.apodization == 'rect':
+            window = np.ones(len(orders))
+        elif self.apodization == 'fejer':
+            window = 1. - orders/(nmax+1.)
+        return window
+        
+    def set_ringing_sigma(self, modeweight, nmaxs, full_range=False):
+        """Noise level of the band-limited reconstruction of the multiplet counts.
 
-    def apply_ringing_filter(self, modeweight, nmaxs, nsigma=1., edge_corrected=False,
-                             full_range=False):
-        """Set those bins to zero whose reconstructed counts are consistent with zero.
-
-        Bins without any multiplets are already zero on the C side and are only reported
-        here. Both are recorded in ``npcf_norm``, which is never masked. An edge-corrected
-        divisor is a single multipole and cannot ring, so it is left alone.
+        The phi-dependence of the counts sits at low multipole order, so the upper half of
+        the band measures the noise. The noise level is stored in ``_sigma`` and this
+        is intended to serve as a diagnostic how many bins are in the ringing regime.
         """
         nempty = int(np.count_nonzero(self.npcf_norm == 0))
         if self._verbose_python and nempty:
             print('Warning: %.2f%% of the npcf bins carry no multiplets'%(
                 100.*nempty/np.size(self.npcf_norm)))
-        if not self.filter_ringing or edge_corrected:
-            return
-        sigma = self.ringing_sigma(self.npcf_multipoles_norm, modeweight, nmaxs, full_range)
-        sigma = sigma[(Ellipsis,) + (None,)*(self.order-2)]
-        self.npcf[:, np.real(self.npcf_norm) < nsigma*sigma] = 0.
+        acc = np.abs(modeweight*np.asarray(self.npcf_multipoles_norm))**2
+        nmodes = 1
+        for nmax in np.atleast_1d(nmaxs):
+            orders = np.abs(np.arange(2*nmax+1) - nmax) if full_range else np.arange(nmax+1)
+            acc = acc[orders > nmax//2].mean(axis=0)
+            nmodes *= 2*nmax + 1
+        self._sigma = np.sqrt(nmodes*acc)[(Ellipsis,) + (None,)*(self.order-2)]
 
     def save_divide_bins(self, rsum, norm):
         """Masked division for obtaining the bin centers. Falls back to 
