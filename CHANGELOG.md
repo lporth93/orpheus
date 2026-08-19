@@ -59,24 +59,27 @@ These change the numbers that existing scripts get back.
 * **A spatial hash of more than 1e9 cells raises.** A cell size far finer than the
   footprint asks for an allocation that fails inside C; the number of cells is now
   checked against the extent first, and the message names both.
-* **Bins whose multiplet count is consistent with zero are now set to zero**, controlled
-  by the new `filter_ringing` flag which defaults to `True`. Reconstructing the counts
-  from a truncated multipole series makes them ring, and where the reconstruction passes
-  near zero the division that turns `Upsilon` into the NPCF amplifies without bound. The
-  threshold is the shot noise of the reconstruction itself, measured from the upper half
-  of the multipole band, so it carries no absolute scale. It is inert where the sampling
-  is adequate and only bites as bins thin out: on a test configuration it touched no bin
-  at `ngal=4000`, 4.9 per cent at 2000 and 45 per cent at 400, while the largest `|npcf|`
-  fell from 2.8e3 to 3.7e-1 at the sparse end. Pass `filter_ringing=False` for the
-  previous behaviour.
+* **The multipole window is now selectable, and no bin is masked on the strength of its
+  reconstructed count.** Reconstructing the counts from a truncated multipole series makes
+  them ring, and where the reconstruction passes near zero the division that turns
+  `Upsilon` into the NPCF amplifies without bound. Cutting the offending bins treats the
+  symptom: it is a one-sided selection on the divisor, so the bins surviving near the
+  threshold are biased high and their correlator low, and the noise level being cut
+  against is itself overestimated wherever a sharp mask puts real power at high multipole
+  order -- that is, in the sparse regime the cut exists for. The window addresses the
+  cause instead. `apodization='fejer'` tapers the multipoles before the transform; the
+  Fejer kernel is non-negative, so the reconstructed counts inherit the positivity of the
+  true ones and cannot cross zero, and the estimator becomes a weighted mean of the
+  correlator over the window rather than an unbounded ratio. The default `'rect'` is the
+  plain band limit and reproduces the previous reconstruction.
 * **`GGGCorrelation` no longer applies a hardcoded count floor of `0.1`.** It was absolute
   rather than relative, so it depended on the weight normalisation: a triplet count scales
   as `w^3`, and rescaling the weights by 0.01 took it from masking nothing to masking three
   quarters of the grid. `GNNNCorrelation_NoTomo.multipoles2npcf` defaults `count_floor` to
-  `0.` for the same reason. Both are superseded by `filter_ringing`.
+  `0.` for the same reason. Neither is replaced by another cut; see `apodization` above.
 * **The NPCF is divided by the real part of the reconstructed counts, not by its modulus.**
   A bin whose count reconstructs negative previously had the sign of its correlator
-  flipped; it now keeps it, and is removed by `filter_ringing` instead. `GNN` and `NGG`
+  flipped; it now keeps it, and is identifiable through `npcf_norm`. `GNN` and `NGG`
   already used the real part, so this aligns `GGG` and the fourth-order kernels with them.
 
 #### Added
@@ -89,13 +92,37 @@ These change the numbers that existing scripts get back.
 * A readable error when a direct estimator is handed a catalog without an angular
   mask, which is where the aperture centers are drawn from. This previously failed
   with an `AttributeError` inside the regridding.
-* `filter_ringing` on `BinnedNPCF`, together with the helpers `ringing_sigma` and
-  `apply_ringing_filter` that implement it. Bins carrying no multiplets at all are
-  always set to zero, independently of the flag, and are reported at `verbosity > 0`.
-  `npcf_norm` is never masked, so both classes of bin remain identifiable afterwards.
+* `apodization` on `BinnedNPCF`, together with the helper `mode_window` that builds the
+  taper. It is applied to numerator and denominator alike, which leaves the estimator
+  intact but halves the angular resolution, so at fixed `nmax` the Fejer window measures a
+  known windowed correlator that has to be forward-modelled accordingly.
+* `set_ringing_sigma` on `BinnedNPCF`, which records in `_sigma` the noise level of the
+  band-limited count reconstruction -- the scale at which the divisor stops being
+  informative, and hence the criterion for reaching for `apodization`. It is a diagnostic
+  only and masks nothing. Bins carrying no multiplets at all are still set to zero on the
+  C side and are reported at `verbosity > 0`; `npcf_norm` is never masked, so both classes
+  of bin remain identifiable afterwards.
 
 #### Fixed
 
+* **`computeMap3` returned `NaN` for every odd `nbinsphi`.** The angular bin centres are
+  `(k+1/2)*2*pi/nbinsphi`, so `phi = pi` is a bin centre exactly when `nbinsphi` is odd.
+  There the filter's `|q_3|^2 = (y1-y2)^2/9` vanishes on the diagonal radial bins, and both
+  divisions it appears in evaluate `0/0`. The singularity is removable -- numerator and
+  denominator vanish together and the limit is `2*y^2/(27*R^2)` times the exponential --
+  so the filters now step `phi` off the degenerate point, which recovers the limit to
+  `5e-9` and never triggers otherwise. Affects `map3_filter_singleR_ggg` and
+  `map3_filter_multiR_ggg`; the GNN and NGG filters divide only by aperture scales and were
+  never exposed. Even values of `nbinsphi`, including every setting used by the test suite,
+  were unaffected.
+* **The `NaN` guards in the derived-statistics kernels never ran.** Nineteen accumulation
+  loops across `corrfunc_third_derived.c`, `corrfunc_fourth_derived.c` and
+  `corrfunc_fourth.c` skipped non-finite contributions with `isnan(cabs(...))`, but the
+  library is built with `-ffast-math`, which implies `-ffinite-math-only` and folds those
+  classifications to constants -- as it does for `isfinite`, for `v == v` and for magnitude
+  comparisons. The predicate is now `isfinite`, which is the correct one for a build that
+  keeps IEEE semantics, but no runtime guard can be relied on while `-ffast-math` is set;
+  the fix above therefore removes the cause rather than trapping the symptom.
 * **`GGGCorrelation.multipoles2npcf` ignored `is_edge_corrected`.** It passed a hardcoded
   `0` to the C kernel, so after `edge_correction()` the estimator kept dividing by the
   angle-dependent counts `N(phi)` where it should have used the monopole `N_0`. The result

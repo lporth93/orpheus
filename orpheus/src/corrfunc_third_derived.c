@@ -193,11 +193,25 @@ void multipoles2npcf_third_z1z23(double complex *Upsilon_n, double complex *N_n,
 // phi --> apradii_combis --> zcombi. With this we can perform the heavy step
 // i.e. the filter allocation before to the innermost loop.
 
+// The Map3 filters divide by the |q_i|^2, each of which vanishes on a degenerate triangle;
+// the same is true for the numerators which is why we get a 0/0 with an actual true finite
+// limit. To recover this we nudge the phi-offset by small margin.
+static inline double map3_safe_phi(double y1, double y2, double phi){
+    double cphi = cos(phi);
+    double thr = 1e-10/9.*(y1*y1 + y2*y2);
+    double absq1s = 1./9.*(4*y1*y1 - 4*y1*y2*cphi + y2*y2);
+    double absq2s = 1./9.*(y1*y1 - 4*y1*y2*cphi + 4*y2*y2);
+    double absq3s = 1./9.*(y1*y1 + 2*y1*y2*cphi + y2*y2);
+    if (absq1s < thr || absq2s < thr || absq3s < thr){ return phi + 1e-4; }
+    return phi;
+}
+
 // Filter functions F_mu that convert between 3pcf and Map3 (single scale)
 static inline void map3_filter_singleR_ggg(double y1, double y2, double dy1, double dy2,
     double phi, double dphi, double R_ap,
     double complex *T0, double complex *T3_123, double complex *T3_231, double complex *T3_312){
 
+    phi = map3_safe_phi(y1, y2, phi);
     double cphi = cos(phi);
     double c2phi = cos(2*phi);
     double sphi = sin(phi);
@@ -248,6 +262,7 @@ static inline void map3_filter_multiR_ggg(double y1, double y2, double dy1, doub
     double phi, double dphi, double R1, double R2, double R3,
     double complex *T0, double complex *T3_123, double complex *T3_231, double complex *T3_312){
 
+    phi = map3_safe_phi(y1, y2, phi);
     double cphi = cos(phi);
     double c2phi = cos(2*phi);
     double sphi = sin(phi);
@@ -372,10 +387,10 @@ void threepcf2M3correlators_ggg(double complex *npcf,
                     double complex term1 = T3_123*npcf[1*gam_compshift+ind_npcf];
                     double complex term2 = T3_231*npcf[2*gam_compshift+ind_npcf];
                     double complex term3 = T3_312*npcf[3*gam_compshift+ind_npcf];
-                    if (!isnan(cabs(term0))){ buf[0*buf_compshift+ind_buf] += term0; }
-                    if (!isnan(cabs(term1))){ buf[1*buf_compshift+ind_buf] += term1; }
-                    if (!isnan(cabs(term2))){ buf[2*buf_compshift+ind_buf] += term2; }
-                    if (!isnan(cabs(term3))){ buf[3*buf_compshift+ind_buf] += term3; }
+                    if (isfinite(cabs(term0))){ buf[0*buf_compshift+ind_buf] += term0; }
+                    if (isfinite(cabs(term1))){ buf[1*buf_compshift+ind_buf] += term1; }
+                    if (isfinite(cabs(term2))){ buf[2*buf_compshift+ind_buf] += term2; }
+                    if (isfinite(cabs(term3))){ buf[3*buf_compshift+ind_buf] += term3; }
                 }
             }
         }
@@ -449,7 +464,7 @@ void threepcf2NNMcorrelators_gnn(double complex *npcf,
                 for (int zcombi=0; zcombi<nzcombis; zcombi++){
                     int ind_npcf = zcombi*gam_zshift+thetcombi*gam_thetshift+elphi;
                     double complex term = A*npcf[ind_npcf];
-                    if (!isnan(cabs(term))){
+                    if (isfinite(cabs(term))){
                         buf[thisthread*gam_compshift+zcombi*nrcombis+elr] += term;
                     }
                 }
@@ -533,8 +548,8 @@ void threepcf2NMMcorrelators_ngg(double complex *npcf,
                     int ind_buf = thisthread*gam_threadshift+zcombi*nrcombis+elr;
                     double complex term0 = A_MMN*npcf[0*gam_compshift+ind_npcf];
                     double complex term1 = A_MMstarN*npcf[1*gam_compshift+ind_npcf];
-                    if (!isnan(cabs(term0))){ buf[0*buf_compshift+ind_buf] += term0; }
-                    if (!isnan(cabs(term1))){ buf[1*buf_compshift+ind_buf] += term1; }
+                    if (isfinite(cabs(term0))){ buf[0*buf_compshift+ind_buf] += term0; }
+                    if (isfinite(cabs(term1))){ buf[1*buf_compshift+ind_buf] += term1; }
                 }
             }
         }

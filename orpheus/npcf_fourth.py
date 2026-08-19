@@ -771,7 +771,11 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
         bin_s = build_binning_struct(self, nmax=int(self.nmaxs[0]), dccorr=int(self.multicountcorr))
         fourth_s, _keep_f = build_fourth_params(phibins1=_phis1, phibins2=_phis2,
                                                 nbinsphi1=_nphis1, nbinsphi2=_nphis2)
-        self.clib.multipoles2npcf_gggg(self.npcf_multipoles.flatten(), self.npcf_multipoles_norm.flatten(),
+        # The fourth-order kernels carry no mode weight, so the window is applied here
+        _win = self.mode_window(_nzero1, full_range=True)
+        _win = (_win[:, None]*_win)[..., None, None, None, None]
+        self.clib.multipoles2npcf_gggg((self.npcf_multipoles*_win).ravel(),
+                                       (self.npcf_multipoles_norm*_win).ravel(),
                                        self.bin_centers_mean.astype(np.float64),
                                        ct.byref(bin_s), ct.byref(fourth_s),
                                        np.int32(self.proj_dict[projection]), np.int32(self.n_cfs),
@@ -779,7 +783,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
         self.npcf = self.npcf.reshape(shape_npcf)
         self.npcf_norm = self.npcf_norm.reshape(shape_npcf_norm)
         self.projection = projection
-        self.apply_ringing_filter(1./(2*np.pi), self.nmaxs[:2], full_range=True)
+        self.set_ringing_sigma(1./(2*np.pi), self.nmaxs[:2], full_range=True)
         
         
     def multipoles2npcf_singlethetcombi(self, elthet1, elthet2, elthet3, projection="X"):
@@ -1487,15 +1491,18 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
         fourth_s, _keep_f = build_fourth_params(phibins1=self.phis[0], phibins2=self.phis[1],
                                                 nbinsphi1=_nphis1, nbinsphi2=_nphis2)
         cc_s, _keep_cc = build_clustcorr(self, xi, nnn, count_floor)
+        # The fourth-order kernels carry no mode weight, so the window is applied here
+        _win = self.mode_window(self.nmaxs[0], full_range=True)
+        _win = (_win[:, None]*_win)[..., None, None, None, None]
         self.clib.multipoles2npcf_gnnn(
-            self.npcf_multipoles.flatten(), self.npcf_multipoles_norm.flatten(),
+            (self.npcf_multipoles*_win).ravel(), (self.npcf_multipoles_norm*_win).ravel(),
             ct.byref(bin_s), ct.byref(fourth_s), ct.byref(cc_s),
             np.int32(self.nthreads), npcf_out, npcf_norm_out)
 
         self.npcf = npcf_out.reshape((self.n_cfs, self.nzcombis, self.nbinsr, self.nbinsr, self.nbinsr, _nphis1, _nphis2))
         self.npcf_norm = npcf_norm_out.reshape((self.nzcombis, self.nbinsr, self.nbinsr, self.nbinsr, _nphis1, _nphis2))
         self.projection = projection
-        self.apply_ringing_filter(1./(2*np.pi), self.nmaxs[:2], full_range=True)
+        self.set_ringing_sigma(1./(2*np.pi), self.nmaxs[:2], full_range=True)
         return self.npcf, self.npcf_norm
 
     def multipoles2npcf_singlethetcombi(self, elthet1, elthet2, elthet3, xi=None, nnn=None, count_floor=0.1):

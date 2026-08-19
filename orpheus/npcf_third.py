@@ -179,7 +179,7 @@ class NNNCorrelation(BinnedNPCF):
         dummy = np.zeros(self.n_cfs*nzcombis*rbins*rbins*nbinsphi, dtype=np.complex128)
         correlator_real = np.zeros(nzcombis*rbins*rbins*nbinsphi, dtype=np.complex128)
         conjmap = np.array([0], dtype=np.int32)
-        modeweight = np.full(self.nmax+1, 1./nbinsphi, dtype=np.float64)
+        modeweight = self.mode_window(self.nmax)/nbinsphi
         self.clib.multipoles2npcf_third_z1z23(
             correlator_f, correlator_f,
             np.int32(self.nmax), np.int32(self.n_cfs), np.int32(nbinsz1), np.int32(nbinsz23),
@@ -720,7 +720,7 @@ class GGGCorrelation(BinnedNPCF):
         thisnpcf_norm = np.zeros(nzcombis*rbins*rbins*nbinsphi, dtype=np.complex128)
         # This is how the 3pcf components need to ber permuted for n-->-n, see A.6 in Porth+23.
         conjmap = np.array([0, 1, 3, 2], dtype=np.int32)
-        modeweight = np.full(self.nmax+1, 1./nbinsphi, dtype=np.float64)
+        modeweight = self.mode_window(self.nmax)/nbinsphi
         floor_thr = np.zeros(nzcombis, dtype=np.float64)
         self.clib.multipoles2npcf_third_z1z23(
             self.npcf_multipoles.flatten(), self.npcf_multipoles_norm.flatten(),
@@ -739,7 +739,7 @@ class GGGCorrelation(BinnedNPCF):
         self.npcf = thisnpcf.reshape((self.n_cfs, nzcombis, rbins, rbins, nbinsphi))
         self.npcf_norm = thisnpcf_norm.reshape((nzcombis, rbins, rbins, nbinsphi))
         self.projection = projection
-        self.apply_ringing_filter(modeweight[0], self.nmax)
+        self.set_ringing_sigma(modeweight[0], self.nmax)
             
     ## PROJECTIONS ##
     def projectnpcf(self, projection):
@@ -1300,7 +1300,7 @@ class GNNCorrelation(BinnedNPCF):
         thisnpcf = np.zeros(self.n_cfs*nzcombis*rbins*rbins*nbinsphi, dtype=np.complex128)
         thisnpcf_norm = np.zeros(nzcombis*rbins*rbins*nbinsphi, dtype=np.complex128)
         conjmap = np.array([0], dtype=np.int32)
-        modeweight = np.full(self.nmax+1, 1./(2*np.pi), dtype=np.float64)
+        modeweight = self.mode_window(self.nmax)/(2*np.pi)
         _scale = getattr(self, '_normcountscale', None)
         floor_thr = np.zeros(nzcombis, dtype=np.float64) if \
             (count_floor_rtol is None or _scale is None) else \
@@ -1317,8 +1317,7 @@ class GNNCorrelation(BinnedNPCF):
         self.npcf = thisnpcf.reshape((self.n_cfs, nzcombis, rbins, rbins, nbinsphi))
         self.npcf_norm = thisnpcf_norm.reshape((nzcombis, rbins, rbins, nbinsphi)).real
         self.projection = "X"
-        self.apply_ringing_filter(modeweight[0], self.nmax,
-                                  edge_corrected=self.is_edge_corrected)
+        self.set_ringing_sigma(modeweight[0], self.nmax)
 
         # Optionally correct by clustering correlation function
         # Assume
@@ -1836,7 +1835,7 @@ class NGGCorrelation(BinnedNPCF):
             modeweight[1:] = 2./korder * np.sin(korder*dphi/2.)
         else:
             modeweight = np.full(self.nmax+1, dphi, dtype=np.float64)
-        modeweight = (modeweight/(2*np.pi)).astype(np.float64)
+        modeweight = (self.mode_window(self.nmax)*modeweight/(2*np.pi)).astype(np.float64)
         _scale = getattr(self, '_normcountscale', None)
         floor_thr = np.zeros(nzcombis, dtype=np.float64) if \
             (count_floor_rtol is None or _scale is None) else \
@@ -1853,8 +1852,7 @@ class NGGCorrelation(BinnedNPCF):
         self.npcf = thisnpcf.reshape((self.n_cfs, nzcombis, rbins, rbins, nbinsphi))
         self.npcf_norm = thisnpcf_norm.reshape((nzcombis, rbins, rbins, nbinsphi)).real
         self.projection = "X"
-        self.apply_ringing_filter(modeweight[0], self.nmax, full_range=True,
-                                  edge_corrected=self.is_edge_corrected)
+        self.set_ringing_sigma(modeweight[0], self.nmax, full_range=True)
 
     ## PROJECTIONS ##
     def projectnpcf(self, projection):

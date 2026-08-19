@@ -450,7 +450,7 @@ static void nnnn_reconstruct_batch(
                                       phibins, phibins, dbinsphi, dbinsphi, nbinsphi, nbinsphi,
                                       thisnpcf, nextN4correlators);
 
-                if (isnan(cabs(nextN4correlators[0]))==false){
+                if (isfinite(cabs(nextN4correlators[0]))){
                     allN4correlators[nap4threadshift+elnapr] += nextN4correlators[0];
                 }
                 nextN4correlators[0] = 0;
@@ -1651,7 +1651,7 @@ void alloc_notomoMap4_disc_gggg(const MultiresoCatalog *cat, const NavHash *nav,
                                       thisnpcf, nextM4correlators);
                 for (int elcomp=0;elcomp<8;elcomp++){
                     map4ind = elcomp*nmapradii+elmapr;
-                    if (isnan(cabs(nextM4correlators[elcomp]))==false){
+                    if (isfinite(cabs(nextM4correlators[elcomp]))){
                         allM4correlators[map4threadshift+map4ind] += nextM4correlators[elcomp];
                     }
                     nextM4correlators[elcomp] = 0;
@@ -2094,7 +2094,7 @@ void alloc_notomoMap4_tree_gggg(const MultiresoCatalog *cat_base, const Multires
                                           thisnpcf, nextM4correlators);
                     for (int elcomp=0;elcomp<8;elcomp++){
                         map4ind = elcomp*nmapradii+elmapr;
-                        if (isnan(cabs(nextM4correlators[elcomp]))==false){
+                        if (isfinite(cabs(nextM4correlators[elcomp]))){
                             allM4correlators[map4threadshift+map4ind] += nextM4correlators[elcomp];
                         }
                         nextM4correlators[elcomp] = 0;
@@ -3125,7 +3125,7 @@ void alloc_notomoMapNap3_tree_gnnn(const MultiresoCatalog *cat_source, const Nav
                     fourpcf2MN3correlator(
                          1, y1, y2, y3, dy1, dy2, dy3,
                          phibins, phibins, dbinsphi, dbinsphi, nbinsphi, nbinsphi, thisnpcf, nextNM3correlator);
-                    if (isnan(cabs(nextNM3correlator[0]))==false){
+                    if (isfinite(cabs(nextNM3correlator[0]))){
                         allNM3correlator[mapnap3threadshift+elapr] += nextNM3correlator[0];
                     }
                     //if (true){printf("\nthread %d, elr %d, allMN3cont=%.20f ", thisthread, elapr, creal(nextNM3correlator[0]));}
