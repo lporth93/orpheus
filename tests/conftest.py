@@ -314,7 +314,7 @@ NTHREADS_SLOW = int(os.environ.get("ORPHEUS_TEST_NTHREADS",
 THIRD_ORDER_EXACT = dict(method='DoubleTree', tree_resos=[0.])
 
 # Recommended setup for running tests, see sec. 7.1.2 in the notes. Separations and
-# aperture radii are in units of r0.
+# aperture radii are in units of r0. aperture_radii is lower/upper range
 RECOMMENDED = dict(boxsize=16., min_sep_second=.05, min_sep_third=.1, max_sep=8.,
                    binsize=.05, aperture_radii=(.75, 3.), ngal=1_000_000)
 
@@ -401,7 +401,7 @@ def _third_mixed(cls, cat_shape, cat_lens):
 @pytest.fixture(scope="session")
 def gnn_measured(field):
     """Get GNN via measurement and binned theory.
-    Note that we apply the resummation scheme described in sect 7.3 in the notes
+    Note that we apply the parity construction described in sect 7.6.1 in the notes
     that helps to kill the lower-order contributions."""
 
     cat_shape, cat_lens_p = field.catalogs(NGAL_GNN, delta_sign=1.)
@@ -422,7 +422,7 @@ def gnn_measured(field):
 @pytest.fixture(scope="session")
 def ngg_measured(field):
     """Get NGG via measurement and binned theory.
-    Note that we apply the resummation scheme described in sect 7.3 in the notes
+    Note that we apply the parity construction described in sect 7.6.1 in the notes
     that helps to kill the lower-order contributions."""
 
     cat_shape, cat_lens_p = field.catalogs(NGAL_NGG, delta_sign=1.)

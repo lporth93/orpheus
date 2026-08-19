@@ -52,7 +52,7 @@ class AnalyticField:
     ##########
     # FIELDS #
     ##########
-    # Sect 2.1, Eq (9) in notes, with the phase of sect 6.1 eq (59)
+    # Sect 2.1, Eq (9) in notes, with the phase of sect 6.1 eq (56)
     def shear(self, x, y):
         z = x + 1j*y
         return (-self.gamma0*np.exp(1j*self.chi)/self.r0**2*z**2
@@ -77,7 +77,7 @@ class AnalyticField:
         """Sample the footprint, centred on the origin.
 
         Note that we use stratified sampling instead of poisson as this yields
-        better convergence properties, see notes sect. 7.1.1 for details.
+        better convergence properties, see notes sect. 7.2 for details.
         """
         rng = np.random.default_rng(seed)
         # Uniform sampling
@@ -95,7 +95,7 @@ class AnalyticField:
         """Mean tracer spacing, which for a stratified sample is the cell size."""
         return self.boxsize/np.sqrt(ngal)
 
-    # Notes sect. 7.1.1 for details
+    # Notes sect. 7.2 for details
     def min_usable_sep(self, ngal, cells=5.):
         """Smallest separation that measures the field rather than the sampling."""
         return cells*self.grid_step(ngal)
@@ -468,7 +468,7 @@ class AnalyticField:
         fac = np.array([float(factorial(int(k))) for k in m])
         return np.pi/self.area*pref*np.sum(c*fac/mu**(m + 1.))
 
-    # Sect 6.2 Eq (63) in notes
+    # Sect 6.2 Eq (60) in notes
     def map_n_ebmodes(self, n, theta0):
         """The n+1 components ``<Map^(n-j) Mx^j>``, indexed by the number j of Mx legs."""
         j = np.arange(n + 1)
@@ -476,7 +476,7 @@ class AnalyticField:
         fac = c**(n - j)*s**j
         return fac.reshape((n + 1,) + (1,)*np.ndim(theta0))*self.map_n(n, theta0)
 
-    # Sect 6.2 Eq (64) in notes
+    # Sect 6.2 Eq (61) in notes
     def nap_map_n(self, n_nap, n_map, theta0, ncross=0):
         """Mixed ``<Nap^m Map^(n-k) Mx^k>`` correlator, with ``k = ncross``."""
         c, s = self.ebmix
@@ -487,13 +487,13 @@ class AnalyticField:
     # EDGE WINDOWS #
     ################
 
-    # Sect 7.1 Eq (67) in notes
+    # Sect 7.1 Eq (65) in notes
     def f_pair(self, theta):
         """Fraction of the box available to a pair of separation ``theta``."""
         return np.clip(1. - 4.*theta/(np.pi*self.boxsize)
                        + theta**2/(np.pi*self.boxsize**2), 1e-12, None)
 
-    # Sect 7.1 Eq (69) in notes
+    # Sect 7.1 Eq (67) in notes
     def _f_window(self, b, nalpha=32):
         """Bounding-box overlap of the offsets ``b``, averaged over orientation."""
         acc = np.zeros(b.shape[1:])

@@ -14,6 +14,7 @@ from conftest import (NGAL_SECOND, NTHREADS_SLOW, R0_SLOW, RTOL_LOOSE, RTOL_NORM
 
 R0 = R0_SLOW
 APR = np.geomspace(*RECOMMENDED['aperture_radii'], 6)*R0
+APR_MULTI = np.geomspace(*RECOMMENDED['aperture_radii'], 3)*R0
 AP_FLOOR = .1 # Only consider statistics which are not too far off the peak
 
 
@@ -101,15 +102,14 @@ def test_map3_reproduces_the_closed_form_at_unequal_aperture_scales(field, ggg_m
     # Get map3 from measured npcf, corrected by finite-field window
     npcf_orig = np.asarray(ggg.npcf).copy()
     ggg.npcf = npcf_orig*window[None, None]
-    radii = np.geomspace(*RECOMMENDED['aperture_radii'], 3)*R0
-    map3 = np.asarray(ggg.computeMap3(radii, do_multiscale=True, basis='MapMx'))[:, 0]
+    map3 = np.asarray(ggg.computeMap3(APR_MULTI, do_multiscale=True, basis='MapMx'))[:, 0]
     ggg.npcf = npcf_orig
     cos3 = np.cos(field.chi)**3
     meas, theo = [], []
     idx = 0
-    for R1 in radii:
-        for R2 in radii:
-            for R3 in radii:
+    for R1 in APR_MULTI:
+        for R2 in APR_MULTI:
+            for R3 in APR_MULTI:
                 theo.append(np.ravel(field.map_unequal([R1, R2, R3])*cos3)[0])
                 meas.append(map3[0, idx])
                 idx += 1

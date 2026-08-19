@@ -9,8 +9,8 @@ from orpheus.catalog import SpinTracerCatalog
 from orpheus.npcf_second import GGCorrelation
 from orpheus.npcf_third import GGGCorrelation
 
-from conftest import (CHI, RECOMMENDED, RTOL_EXACT, NTHREADS_SLOW as NTHREADS,
-                      masked_ratio_deviation)
+from conftest import (CHI, RECOMMENDED, RTOL_EXACT, THIRD_ORDER_EXACT,
+                      NTHREADS_SLOW as NTHREADS, masked_ratio_deviation)
 from reference import AnalyticField
 
 R0 = 3.
@@ -73,6 +73,43 @@ def test_third_order_approximations_converge_to_discrete(method, small_catalog):
     assert devs[1] < devs[0], devs
     # Assert that the finest doubletree has converged well to the discrete estimator
     assert devs[1] < 2e-3, devs
+
+
+####################
+# MULTIPOLE WINDOW #
+####################
+
+# The estimator holds the triplet counts as multipoles and reconstructs them from a
+# truncated sum at the moment it divides. What it reconstructs is a sum of delta functions,
+# and the Dirichlet kernel of a plain band limit is signed, so wherever the counts are
+# sparse the divisor oscillates through zero and the quotient is unbounded. The Fejer
+# kernel is non-negative, so the reconstruction inherits the positivity of the measure.
+#
+# The taper halves the effective band, so it does not improve the typical configuration:
+# integrated statistics get worse, and even here the rms is barely moved. What it removes
+# is the tail. At ngal=2000 the counts go negative in 2.0% of the bins under 'rect' and in
+# none under 'fejer', while the worst |Gamma/theory - 1| falls from 2.1e2 to 1.2e2.
+def test_fejer_window_bounds_the_npcf_error_tail():
+    cat = FIELD.catalogs(2000)[0]
+    common = dict(n_cfs=4, min_sep=MIN_SEP, max_sep=MAX_SEP, binsize=.1, nmaxs=10,
+                  nbinsphi=100, nthreads=NTHREADS, **THIRD_ORDER_EXACT)
+    worst = {}
+    for apodization in ('rect', 'fejer'):
+        corr = GGGCorrelation(apodization=apodization, **common)
+        corr.process(cat, dotomo=False)
+        corr.multipoles2npcf(projection='Centroid')
+        theory, window = FIELD.gamma_binned(corr.bin_edges, np.asarray(corr.phi),
+                                            centers=corr.bin_centers_mean)
+        theo = np.asarray(theory)[0]
+        meas = np.asarray(corr.npcf)[0, 0]*window
+        keep = np.isfinite(theo) & np.isfinite(meas)
+        keep &= np.abs(theo) > .05*np.nanmax(np.abs(theo))
+        worst[apodization] = np.max(np.abs(meas[keep]/theo[keep] - 1.))
+        norm = np.real(np.asarray(corr.npcf_norm))
+        # Empty configurations reconstruct to zero either way, so allow rounding only
+        if apodization == 'fejer':
+            assert norm.min() > -1e-12*norm.max(), norm.min()
+    assert worst['fejer'] < .9*worst['rect'], worst
 
 
 #######################
