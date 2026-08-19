@@ -79,7 +79,7 @@ def test_nn_runs_the_full_pipeline(scalar_catalog):
 
 
 def test_gg_runs_the_full_pipeline(shear_catalog):
-    """xi_pm, map2, cosebis, pure-mode"""
+    """xi_pm, map2, pure-mode"""
     gg = GGCorrelation(**SEPS, **TREE)
 
     gg.process(shear_catalog, dotomo=True)
@@ -90,13 +90,21 @@ def test_gg_runs_the_full_pipeline(shear_catalog):
     map2 = np.asarray(gg.computeMap2(RADII))
     assert map2.shape == (4, NZ2, NRADII) and _finite(map2)
 
-    nmodes = 3
-    cosebi = np.asarray(gg.computecosebi(nmodes))
-    assert cosebi.shape == (4, NZ2, nmodes) and _finite(cosebi)
-
     xip_pure, xim_pure = gg.computepuremode()
     for arr in (xip_pure, xim_pure):
         assert np.shape(arr) == (3, NZ2, NBINSR) and _finite(arr)
+
+
+# The log-COSEBI roots are built with mpmath, which the library imports lazily and does not
+# declare as a dependency, so this is the one statistic a minimal install cannot compute.
+def test_gg_computes_cosebis(shear_catalog):
+    """cosebis, on installations that carry mpmath"""
+    pytest.importorskip("mpmath", reason="mpmath is optional, only log-COSEBIs need it")
+    gg = GGCorrelation(**SEPS, **TREE)
+    gg.process(shear_catalog, dotomo=True)
+    nmodes = 3
+    cosebi = np.asarray(gg.computecosebi(nmodes))
+    assert cosebi.shape == (4, NZ2, nmodes) and _finite(cosebi)
 
 
 def test_ng_runs_the_full_pipeline(shear_catalog, scalar_catalog):
