@@ -468,3 +468,47 @@ def test_direct_napn_equal_is_finite():
                    Direct_NapnEqual(**DIRECT).process(cat, dotomo=False))
     assert napn.size and np.isfinite(napn).any()
     assert not np.all(napn == 0)
+
+
+# The tree cell sizes come from an estimate of the catalog's number density. That estimate
+# counts occupied cells on a helper grid, so unless the grid is tied to the catalog it
+# saturates at one galaxy per cell and a sparse catalog is handed the same ladder as a dense
+# one -- tree overhead with nothing to group.
+@pytest.mark.parametrize("nbar_sparse,nbar_dense", [(.05, 20.)])
+def test_autoset_tree_follows_the_number_density(nbar_sparse, nbar_dense):
+    box = 100.
+    finest = {}
+    for nbar in (nbar_sparse, nbar_dense):
+        ngal = int(nbar*box*box)
+        rng = np.random.default_rng(3)
+        cat = SpinTracerCatalog(spin=2, pos1=rng.uniform(0., box, ngal),
+                                pos2=rng.uniform(0., box, ngal),
+                                tracer_1=rng.normal(0., .3, ngal),
+                                tracer_2=rng.normal(0., .3, ngal), geometry='flat2d')
+        inst = GGGCorrelation(n_cfs=4, min_sep=MIN_SEP, max_sep=MAX_SEP, nbinsr=NBINSR,
+                              nbinsphi=NBINSPHI, nmaxs=NMAX, nthreads=NTHREADS)
+        inst.autoset_tree(cat)
+        resos = np.atleast_1d(inst.tree_resos)
+        nonzero = resos[resos > 0.]
+        finest[nbar] = nonzero.min() if len(nonzero) else np.inf
+
+    assert finest[nbar_dense] < finest[nbar_sparse], (
+        "the denser catalog was given cells of %g, no finer than the %g of the sparse one"%(
+            finest[nbar_dense], finest[nbar_sparse]))
+
+
+# The tree's radial edges are rmin_pixsize*reso, so a ladder chosen without reference to
+# max_sep can put its coarse levels beyond it and leave tree_redges non-monotonic. The
+# negative shell widths that follow reach the kernels as negative allocation sizes.
+@pytest.mark.parametrize("max_sep", [15., 40., 100.])
+def test_autoset_tree_keeps_the_radial_edges_monotonic(max_sep, shear_catalog):
+    inst = GGGCorrelation(n_cfs=4, min_sep=MIN_SEP, max_sep=max_sep, nbinsr=NBINSR,
+                          nbinsphi=NBINSPHI, nmaxs=NMAX, nthreads=NTHREADS)
+    inst.autoset_tree(shear_catalog)
+    redges = np.atleast_1d(inst.tree_redges)
+    assert np.all(np.diff(redges) >= 0.), (
+        "max_sep=%g leaves tree_redges non-monotonic: %s"%(max_sep, redges))
+    assert redges[-1] == max_sep
+    # Every shell has to carry a non-negative number of radial bins
+    resosatr = np.atleast_1d(inst.tree_resosatr)
+    assert resosatr[-1] < inst.tree_nresos

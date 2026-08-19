@@ -723,13 +723,26 @@ class BinnedNPCF:
                 np.ctypeslib.ndpointer(dtype=np.complex128)]
             
 
-    def autoset_tree(self, cat, dpix_grid=2., nside_grid=2048, max_increase=0.1, set_resoshiftleafs=True, set_maxresoindleaf=True):
+    def autoset_tree(self, cat, dpix_grid=None, nside_grid=None, max_increase=0.1, set_resoshiftleafs=True, set_maxresoindleaf=True):
         """Sets the pixel-sizes for the (multi)hashes given a catalog.
 
         Sets the smallest pixelsize based on an estimate of the nbar of the catalog.
         """
 
         assert(isinstance(cat, Catalog))
+
+        # The grid has to be coarse enough that its cells hold several galaxies: once most galaxies sit
+        # alone in a cell, nfilled counts galaxies rather than area and the estimate below saturates at
+        # one per cell, i.e. at 1/dpix_grid**2. Taking the cell from the bounding box and ngal fixes the
+        # mean occupancy at GRIDOCC**2 regardless of how sparse the catalog is.
+        GRIDOCC = 3.
+        if dpix_grid is None:
+            dpix_grid = GRIDOCC * np.sqrt(cat.len1*cat.len2/cat.ngal)
+        if nside_grid is None:
+            # The same cell area, at the closest HEALPix resolution that is not finer. Here the
+            # positions are in degrees, so dpix_grid**2 and the sphere's 41253 deg^2 are consistent.
+            nside_target = np.sqrt(41252.96/(12.*dpix_grid**2))
+            nside_grid = int(min(2048, max(1, 2**np.floor(np.log2(max(nside_target, 1.))))))
 
         # Crude estimate of nbar: Pixelize sky on coarse grid and estimate area by counting nonempty pixels
         if cat.geometry=="flat2d":
@@ -778,6 +791,15 @@ class BinnedNPCF:
         # Update the tree
         self._updatetree(autotree_resos, include_shifts=True)
 
+        # Drop the levels whose radial edge would sit beyond max_sep. Their edges are
+        # rmin_pixsize*reso, so a coarse ladder on a small max_sep leaves tree_redges
+        # non-monotonic, and the negative shell widths that follow from it end up as
+        # negative allocation sizes in the kernels. __init__ trims a user-supplied ladder
+        # the same way.
+        _resomax = self.tree_resosatr[-1]
+        if _resomax+1 < self.tree_nresos:
+            self._updatetree(self.tree_resos[:_resomax+1], include_shifts=True)
+
         if self.verbosity>2:
             print("Autosetting tree parameters to")
             print("Tree resolutions:", self.tree_resos, "(alpha: %.4f)"%self.tree_alpha)
@@ -789,7 +811,12 @@ class BinnedNPCF:
         # sure to not add much more than 10% overhead...
         if set_resoshiftleafs:
             _areashells = np.pi*(self.tree_redges[1:]**2-self.tree_redges[:-1]**2)
-            _nupdateGn = lambda resos: 6*cat.nbinsz*(self.nmaxs[0]+5)*np.sum(_areashells*np.minimum(nbar_z*np.ones_like(resos),1./resos**2))
+            # resos[0] is the discrete level, where the cell count is infinite and the minimum
+            # below picks nbar_z. np.divide keeps that without dividing by zero to get there.
+            _percell = lambda resos: np.divide(1., resos**2, where=resos > 0,
+                                               out=np.full_like(resos, np.inf, dtype=float))
+            _nupdateGn = lambda resos: 6*cat.nbinsz*(self.nmaxs[0]+5)*np.sum(
+                _areashells*np.minimum(nbar_z, _percell(resos)))
             _nupdateUpsN = (self.n_cfs+1)*(2*self.nmaxs[0]+1)**(self.order-2)*self.nbinsr**(self.order-1)*cat.nbinsz**self.order
             _nupdatebase = _nupdateGn(self.tree_resos) + _nupdateUpsN
             leafresos = 1.*self.tree_resos
