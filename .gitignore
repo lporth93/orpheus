@@ -11,6 +11,18 @@ orpheus/covariance.py
 orpheus/covariance_old.py
 orpheus/src/cov_postq.c
 
+# Only keep pdf of latex
+*.tex
+*.aux
+*.log
+*.out
+*.toc
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.synctex.gz
+
 #################################################################################
 ############################ GENERIC GITIGNORE ##################################
 ##(stolen from https://github.com/github/gitignore/blob/main/Python.gitignore) ## 
