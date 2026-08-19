@@ -6,6 +6,20 @@ went into every version.
 
 ## Release highlights
 
+### 0.4
+
+Validation and correctness. The estimators are now checked end to end against a shear
+field whose correlation functions and aperture statistics are known in closed form, which
+turned up a number of bugs and pinned down the accuracy each configuration reaches.
+
+* A two-tier test suite comparing every correlator against closed-form expressions, with
+  the error budget setting its tolerances written up in
+  `docs/source/notes/analytic_shear_field.pdf`
+* `apodization`, which selects the window applied to the multipoles before the transform
+  to real space
+* Fixes to the third-order edge correction, the multiple-counting corrections of the GGGG
+  and GNNN kernels, a data race in discrete GGGG, and the `NGCorrelation` flat2d sign
+
 ### 0.3
 
 Estimation of second-, third- and fourth-order correlation functions of scalar
@@ -25,7 +39,7 @@ parallelised C kernels.
 
 ## Detailed changelog
 
-### Unreleased
+### 0.4.0 — 2026-08-19
 
 #### Changed — please read before upgrading
 
