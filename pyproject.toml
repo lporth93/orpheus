@@ -1,3 +1,53 @@
 [build-system]
 requires = ["setuptools>=61.0", "wheel", "numpy"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "orpheus-npcf"
+description = "Compute N-point correlation functions of spin-s fields."
+readme = "README.md"
+license = {text = "GPL-3.0-or-later"}
+requires-python = ">=3.10"
+authors = [{name = "Lucas Porth"}]
+dynamic = ["version"]
+dependencies = [
+    "astropy>=6",
+    "healpy>=1.18",
+    "numpy>=1.24",
+    "scipy>=1.15",
+    "scikit-learn",]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",]
+keywords = ["cosmology", "weak gravitational lensing", "correlation functions"]
+
+# mpmath is imported lazily and only the log-COSEBI roots need it, so it stays an extra
+# rather than a hard requirement.
+[project.optional-dependencies]
+cosebis = ["mpmath"]
+test = ["pytest"]
+docs = [
+    "sphinx==5.3.0",
+    "sphinx_rtd_theme==1.1.1",
+    "readthedocs-sphinx-search==0.1.1",
+    "myst-parser",
+    "nbsphinx",
+    "numpydoc",]
+
+[project.urls]
+Homepage = "https://github.com/lporth93/orpheus"
+Documentation = "https://orpheus.readthedocs.io/"
+Repository = "https://github.com/lporth93/orpheus"
+Changelog = "https://github.com/lporth93/orpheus/blob/main/CHANGELOG.md"
+
+[tool.setuptools]
+packages = ["orpheus"]
+include-package-data = false
+zip-safe = false
+license-files = ["LICENSE"]
+
+# Read statically from the literal in orpheus/_version.py, so that importing the package
+# -- and with it its runtime dependencies -- is not needed at build time.
+[tool.setuptools.dynamic]
+version = {attr = "orpheus._version.__version__"}

@@ -1,0 +1,5 @@
+astropy>=6
+healpy>=1.18
+numpy>=1.24
+scipy>=1.15
+scikit-learn
