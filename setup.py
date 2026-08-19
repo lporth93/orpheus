@@ -5,6 +5,18 @@ import subprocess
 from setuptools import setup, Extension
 from setuptools.command.build_ext import build_ext
 
+# IEEE-safe optimisation defaults
+OPT_CFLAGS = ["-O3", "-fno-math-errno", "-fno-trapping-math", "-fcx-limited-range"]
+WARN_CFLAGS = ["-Wall", "-Wextra"]
+
+# Optional faster, less reproducible math mode. For GGG DoubleTree this can save about
+# 5%-10% of copute time
+if os.environ.get("ORPHEUS_FAST_MATH", "0") not in ("", "0", "false", "False"):
+    print("ORPHEUS_FAST_MATH is set: building with -ffast-math. Runtime isnan/isfinite "
+          "guards in the kernels are folded to constants and OpenMP reductions become "
+          "dependent on the thread count.")
+    OPT_CFLAGS = OPT_CFLAGS + ["-ffast-math"]
+
 # Helper to see if some compiler setup works (small test compile+link)
 def try_compile(code, compiler, cflags=None, lflags=None, include_dirs=None, library_dirs=None,
                 suffix=".c"):
@@ -110,7 +122,6 @@ def detect_compiler(preferred=("gcc-15", "gcc-14", "gcc-13", "gcc-12", "gcc-11",
 
 class BuildExtWithDetect(build_ext):
     def build_extensions(self):
-        # Prefer Apple clang on macOS to avoid mixing Homebrew GCC with Xcode SDK headers
         if sys.platform == "darwin":
             clang = shutil.which("clang")
             clangpp = shutil.which("clang++") or clang
@@ -146,10 +157,8 @@ class BuildExtWithDetect(build_ext):
                     pass
 
         # Check whether the selected compiler supports OpenMP.
-        # macOS links extensions as bundles, and setuptools passes -bundle itself;
-        # adding -shared there means -dynamiclib, which conflicts with it.
         link_shared = [] if sys.platform == "darwin" else ["-shared"]
-        omp_cflags = ["-fopenmp", "-O3", "-ffast-math", "-std=c99", "-fPIC"]
+        omp_cflags = ["-fopenmp"] + OPT_CFLAGS + WARN_CFLAGS + ["-std=c99", "-fPIC"]
         omp_lflags = link_shared + ["-fopenmp", "-lm"]
         use_openmp = False
         applied_alternative_clang_flags = False
@@ -162,7 +171,7 @@ class BuildExtWithDetect(build_ext):
                 # An active conda environment takes precedence over homebrew: its libomp
                 # is the one the conda-forge builds of healpy and scikit-learn link
                 # against, and a single OpenMP runtime per process is what keeps the
-                # kernels from crashing (see the macOS section of the installation docs).
+                # kernels from crashing.
                 prefixes = []
                 if os.environ.get("CONDA_PREFIX"):
                     prefixes.append(os.environ["CONDA_PREFIX"])
@@ -181,7 +190,8 @@ class BuildExtWithDetect(build_ext):
                         break
 
                 if libomp_include and libomp_lib:
-                    clang_alt_cflags = ["-Xpreprocessor", "-fopenmp", "-O3", "-ffast-math", "-std=c99", "-fPIC"]
+                    clang_alt_cflags = (["-Xpreprocessor", "-fopenmp"] + OPT_CFLAGS + WARN_CFLAGS
+                                        + ["-std=c99", "-fPIC"])
                     clang_alt_lflags = ["-lomp", "-lm"]
                     if try_compile(omp_test_code, cc_path, cflags=clang_alt_cflags, lflags=clang_alt_lflags,
                                    include_dirs=[libomp_include], library_dirs=[libomp_lib]):
@@ -194,14 +204,7 @@ class BuildExtWithDetect(build_ext):
                 else:
                     use_openmp = False
 
-        # Whichever compiler was picked, libomp ends up resolved through @rpath (see
-        # the install_name_tool pass below) against this list, in order. healpy and
-        # scikit-learn are hard dependencies whose macOS wheels each vendor a copy, so
-        # reusing one of those keeps another OpenMP runtime out of the process, which
-        # is what segfaults the kernels. Environments providing a shared libomp
-        # instead -- conda-forge puts it in <prefix>/lib, three levels above the
-        # package -- fall through to the third entry, and the directory the extension
-        # was linked against is appended last as a fallback.
+        # Prefer a single shared libomp on macOS.
         if sys.platform == "darwin" and use_openmp:
             omp_lflags = omp_lflags + ["-Wl,-rpath,@loader_path/../healpy/.dylibs",
                                        "-Wl,-rpath,@loader_path/../sklearn/.dylibs",
@@ -209,6 +212,13 @@ class BuildExtWithDetect(build_ext):
 
         if not use_openmp:
             print("WARNING: OpenMP support not detected for the selected compiler.")
+
+        # Blueprint to add additional extra flags for testing purposes
+        extra_cflags = os.environ.get("ORPHEUS_EXTRA_CFLAGS", "").split()
+        extra_lflags = os.environ.get("ORPHEUS_EXTRA_LDFLAGS", "").split()
+        if extra_cflags or extra_lflags:
+            print("Appending ORPHEUS_EXTRA_CFLAGS=%s ORPHEUS_EXTRA_LDFLAGS=%s"%(
+                extra_cflags, extra_lflags))
 
         # Configure the build flags for each extension.
         for ext in self.extensions:
@@ -219,19 +229,15 @@ class BuildExtWithDetect(build_ext):
                     ext.include_dirs = list(ext.include_dirs or []) + [libomp_include]
                     ext.library_dirs = list(getattr(ext, "library_dirs", []) or []) + [libomp_lib]
             else:
-                ext.extra_compile_args = ["-O3", "-ffast-math", "-std=c99", "-fPIC"]
+                ext.extra_compile_args = OPT_CFLAGS + WARN_CFLAGS + ["-std=c99", "-fPIC"]
                 ext.extra_link_args = link_shared + ["-lm"]
+            ext.extra_compile_args = ext.extra_compile_args + extra_cflags
+            ext.extra_link_args = ext.extra_link_args + extra_lflags
 
-        # Most files are C; healpix_utils.cpp and the vendored HEALPix sources need
-        # C++ flags instead. setuptools compiles those with its own driver, which need
-        # not be the OpenMP-capable compiler picked for the C sources, and Apple clang
-        # rejects -fopenmp outright. No C++ source here uses OpenMP, so the flag is
-        # simply dropped for them.
+        # C++ sources need their own driver and C++ standard flag.
         cxx_path = detect_cxx(cc_path)
         orig_compile = self.compiler._compile
 
-        # The C++ sources are compiled with the C++ driver rather than with the
-        # compiler_so set above, which may be a gcc without a C++ frontend.
         def _compile_per_lang(obj, src, ext, cc_args, extra_postargs, pp_opts):
             if os.path.splitext(src)[1] in (".cpp", ".cc", ".cxx"):
                 postargs = [a for a in extra_postargs
@@ -246,18 +252,13 @@ class BuildExtWithDetect(build_ext):
             return orig_compile(obj, src, ext, cc_args, extra_postargs, pp_opts)
 
         self.compiler._compile = _compile_per_lang
-        # macOS links C++ through clang, whose runtime is libc++; recent SDKs no
-        # longer ship libstdc++ at all.
         cxx_runtime = "-lc++" if sys.platform == "darwin" else "-lstdc++"
         for ext in self.extensions:
             ext.extra_link_args = list(ext.extra_link_args or []) + [cxx_runtime]
 
         super().build_extensions()
 
-        # A libomp recorded by absolute path pins the extension to one specific copy,
-        # and delocate would then bundle it into the wheel as a third OpenMP runtime
-        # next to the ones healpy and scikit-learn ship. Point the dependency at
-        # @rpath instead so it binds to whichever copy the rpath list finds first.
+        # Replace absolute libomp paths with @rpath so the runtime can be shared.
         if sys.platform == "darwin" and use_openmp:
             for ext in self.extensions:
                 so_path = self.get_ext_fullpath(ext.name)
@@ -308,8 +309,8 @@ ext_modules = [
     ),
 ]
 
-# All package metadata lives in pyproject.toml. What is left here is the extension
-# itself, which needs the compiler detection above to be resolved at build time.
+# All package metadata lives in pyproject.toml. Here we only leave the extension
+# itself, which requires the compiler detection to be working at build time.
 setup(
     ext_modules=ext_modules,
     cmdclass={"build_ext": BuildExtWithDetect},

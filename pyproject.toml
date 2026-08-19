@@ -22,8 +22,7 @@ classifiers = [
     "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",]
 keywords = ["cosmology", "weak gravitational lensing", "correlation functions"]
 
-# mpmath is imported lazily and only the log-COSEBI roots need it, so it stays an extra
-# rather than a hard requirement.
+# mpmath is imported lazily and only the log-COSEBI roots need it
 [project.optional-dependencies]
 cosebis = ["mpmath"]
 test = ["pytest"]
@@ -47,7 +46,5 @@ include-package-data = false
 zip-safe = false
 license-files = ["LICENSE"]
 
-# Read statically from the literal in orpheus/_version.py, so that importing the package
-# -- and with it its runtime dependencies -- is not needed at build time.
 [tool.setuptools.dynamic]
 version = {attr = "orpheus._version.__version__"}

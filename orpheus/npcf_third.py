@@ -5,7 +5,7 @@ from scipy.interpolate import interp1d
 
 from .npcf_base import BinnedNPCF
 from .catalog import ScalarTracerCatalog
-from .utils import convertunits
+from .utils import check_clib_error, convertunits
 from .multires_structs import (build_catalog_struct, build_navhash_struct,
                                build_flat_catalog_struct, build_flat_navhash_struct,
                                build_slab_catalog_struct, build_slab_navhash_struct,
@@ -153,6 +153,7 @@ class NNNCorrelation(BinnedNPCF):
             ct.byref(cat_s), ct.byref(nav_s), ct.byref(tree_s), ct.byref(bin_s),
             int(self.nthreads), int(self._verbose_c)+int(self._verbose_debug),
             ct.byref(out_s))
+        check_clib_error(self.clib)
 
         if native_spherical:
             bin_centers = bin_centers / convertunits(self.sep_units, 'rad')
@@ -529,6 +530,7 @@ class GGGCorrelation(BinnedNPCF):
                     ct.byref(cat_s), ct.byref(nav_s), ct.byref(tree_s), ct.byref(bin_s),
                     int(self.nthreads), int(self._verbose_c)+int(self._verbose_debug),
                     ct.byref(out_s))
+                check_clib_error(self.clib)
 
                 # bin_centers carries a length unit; multipoles are dimensionless.
                 if native_spherical:
@@ -551,6 +553,7 @@ class GGGCorrelation(BinnedNPCF):
                     self.clib.alloc_Gammans_discrete_ggg(
                         ct.byref(cat_s), ct.byref(nav_s), ct.byref(bin_s),
                         int(self.nthreads), int(self._verbose_c), ct.byref(out_s))
+                    check_clib_error(self.clib)
                 elif self.method in ["Tree", "BaseTree"]:
                     cutfirst = np.int32(self.tree_resos[0]==0.)
                     mh = cat.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.dpix_hash,
@@ -575,11 +578,13 @@ class GGGCorrelation(BinnedNPCF):
                         self.clib.alloc_Gammans_tree_ggg(
                             ct.byref(cat_s), ct.byref(catf_s), ct.byref(nav_s), ct.byref(tree_s),
                             ct.byref(bin_s), int(self.nthreads), int(self._verbose_c), ct.byref(out_s))
+                        check_clib_error(self.clib)
                     else:
                         _alive = keep_catf + keep_nav + keep_tree   # noqa: F841
                         self.clib.alloc_Gammans_basetree_ggg(
                             ct.byref(catf_s), ct.byref(nav_s), ct.byref(tree_s),
                             ct.byref(bin_s), int(self.nthreads), int(self._verbose_c), ct.byref(out_s))
+                        check_clib_error(self.clib)
 
             self.bin_centers = bin_centers.reshape(szr)
             self.bin_centers_mean = np.mean(self.bin_centers, axis=0)
@@ -644,6 +649,7 @@ class GGGCorrelation(BinnedNPCF):
         self.clib.alloc_Gammans_slab_GGG(
             ct.byref(cat_c), ct.byref(nav_c), ct.byref(cat_R), ct.byref(nav_R),
             ct.byref(bin_s), int(self.nthreads), int(self._verbose_c), ct.byref(out_s))
+        check_clib_error(self.clib)
 
         # Retrieve output and rescale to get the appropriate multipoles
         self._SSS = np.nan_to_num(Comp_n.reshape(scomp))
@@ -1105,6 +1111,7 @@ class GNNCorrelation(BinnedNPCF):
                 self.clib.alloc_Gammans_discrete_GNN(
                     ct.byref(cats_s), ct.byref(navs_s), ct.byref(catl_s), ct.byref(navl_s),
                     ct.byref(bin_s), int(self.nthreads), int(self._verbose_c), ct.byref(out_s))
+                check_clib_error(self.clib)
             if self.method == "DoubleTree":
                 cutfirst = np.int32(self.tree_resos[0]==0.)
                 mhs = cat_source.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.dpix_hash,
@@ -1128,6 +1135,7 @@ class GNNCorrelation(BinnedNPCF):
                     ct.byref(cats_s), ct.byref(navs_s), ct.byref(catl_s), ct.byref(navl_s),
                     ct.byref(tree_s), ct.byref(bin_s), int(self.nthreads), int(self._verbose_c),
                     ct.byref(out_s))
+                check_clib_error(self.clib)
             
             self.bin_centers = bin_centers.reshape(szr)
             self.bin_centers_mean = np.mean(self.bin_centers, axis=(0,1))
@@ -1218,6 +1226,7 @@ class GNNCorrelation(BinnedNPCF):
             ct.byref(cat_c), ct.byref(cat_D), ct.byref(nav_D), ct.byref(cat_R), ct.byref(nav_R),
             ct.byref(bin_s), ct.c_int32(self.nthreads), ct.c_int32(self._verbose_c),
             ct.byref(out_s))
+        check_clib_error(self.clib)
 
         # Unpack output
         self._SDD, self._SDR, self._SRD, self._SRR = np.nan_to_num(Comp_n.reshape(scomp))
@@ -1587,6 +1596,7 @@ class NGGCorrelation(BinnedNPCF):
             ct.byref(catlD), ct.byref(catlR), ct.byref(catsD), ct.byref(navsD),
             ct.byref(navlR), ct.byref(bin_s),
             int(self.nthreads), int(self._verbose_c), ct.byref(out_s))
+        check_clib_error(self.clib)
 
         # Raw f-free sub-correlators (private, for further analysis).
         _DSS, _RSS = np.nan_to_num(Comp_n.reshape(scomp))
@@ -1731,6 +1741,7 @@ class NGGCorrelation(BinnedNPCF):
                 self.clib.alloc_Gammans_discrete_NGG(
                     ct.byref(cats_s), ct.byref(navs_s), ct.byref(catl_s), ct.byref(navl_s),
                     ct.byref(bin_s), int(self.nthreads), int(self._verbose_c), ct.byref(out_s))
+                check_clib_error(self.clib)
             if self.method=="Tree" or self.method == "DoubleTree":
                 cutfirst = np.int32(self.tree_resos[0]==0.)
                 mhs = cat_source.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.dpix_hash,
@@ -1755,6 +1766,7 @@ class NGGCorrelation(BinnedNPCF):
                     ct.byref(cats_s), ct.byref(navs_s), ct.byref(catl_s), ct.byref(navl_s),
                     ct.byref(tree_s), ct.byref(bin_s), int(self.nthreads), int(self._verbose_c),
                     ct.byref(out_s))
+                check_clib_error(self.clib)
             if self.method == "DoubleTree":
                 catl_s, keep_cl = build_catalog_struct(mhl, self.nbinsz_lens)
                 catl_s.nresos = int(self.tree_nresos)
@@ -1765,6 +1777,7 @@ class NGGCorrelation(BinnedNPCF):
                     ct.byref(cats_s), ct.byref(navs_s), ct.byref(catl_s), ct.byref(navl_s),
                     ct.byref(tree_s), ct.byref(bin_s), int(self.nthreads), int(self._verbose_c),
                     ct.byref(out_s))
+                check_clib_error(self.clib)
             
             # Components of npcf are ordered as (Ups_-, Ups_+)
             self.bin_centers = bin_centers.reshape(szr)

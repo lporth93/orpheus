@@ -5,7 +5,7 @@ import copy
 
 from .catalog import ScalarTracerCatalog, SpinTracerCatalog
 from .npcf_base import BinnedNPCF
-from .utils import convertunits
+from .utils import check_clib_error, convertunits
 from .multires_structs import (build_catalog_struct, build_navhash_struct,
                                build_tree_params_struct, build_binning_struct,
                                build_npcf_output, build_slab_catalog_struct,
@@ -240,6 +240,7 @@ class NNCorrelation(BinnedNPCF):
             int(self.nthreads),
             int(self._verbose_c)+int(self._verbose_debug),
             ct.byref(out_s))
+        check_clib_error(self.clib)
 
         # Unpack results
         if native_spherical:
@@ -554,6 +555,7 @@ class GGCorrelation(BinnedNPCF):
             int(self.nthreads),
             int(self._verbose_c)+int(self._verbose_debug),
             ct.byref(out_s))
+        check_clib_error(self.clib)
 
         # Transform to sep-units for spherical computation done in rad per default
         if native_spherical:
@@ -1154,6 +1156,7 @@ class NGCorrelation(BinnedNPCF):
             ct.byref(tree_s), ct.byref(bin_s),
             int(self.nthreads), int(self._verbose_c)+int(self._verbose_debug),
             ct.byref(out_s))
+        check_clib_error(self.clib)
         
         # Unpack results
         # The kernel accumulates e_c*exp(-2i*phi); the minus turns this into the

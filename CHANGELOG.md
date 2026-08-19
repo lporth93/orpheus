@@ -39,6 +39,55 @@ parallelised C kernels.
 
 ## Detailed changelog
 
+### Unreleased
+
+#### Changed — please read before upgrading
+
+* **`-ffast-math` is no longer used by default.** The 0.4.0 notes observed that no runtime
+  guard can be relied on while it is set; this removes the cause. The kernels now build with
+  `-O3 -fno-math-errno -fno-trapping-math -fcx-limited-range`, which keeps IEEE semantics for
+  `NaN` and `Inf` -- so the `isfinite` guards in the derived-statistics kernels actually run --
+  and stops the compiler reassociating OpenMP reductions, which makes results independent of
+  the thread count. Measured cost against the old build is 4% on `GGCorrelation` and 9% on
+  `GGGCorrelation` with `DoubleTree`; the analytic test tier is unchanged. `-ffast-math` can be
+  restored with `ORPHEUS_FAST_MATH=1 pip install .`.
+* **`numba` is no longer a dependency.** It was declared but never imported, and its upper pin
+  constrained `numpy` in unrelated environments. `mpmath`, which is imported lazily by the
+  log-COSEBI construction, is now declared as the `cosebis` extra.
+
+#### Fixed
+
+* **Four variables could be read before being assigned.** `inv_Nbar` in `directestimator.c` is
+  declared outside the tomographic loop but assigned inside it, so an `Nbar_policy` outside the
+  handled set would silently reuse the previous bin's value; `toadd_Mapn_w` and `Map3_w` are
+  likewise only assigned for the `weight_method` values that are handled; and the `zeta`
+  interpolation in `corrfunc_fourth_derived.c` ignored the return value of `locate_lin`, which
+  leaves its outputs untouched on failure. None is reachable through the python layer today.
+  Found by building with `-Wall -Wextra`, which is now on.
+* **Radial bin indices are bounds-checked in the third-order tree kernels.** The shell guard
+  there is on squared or geodesic distance while the bin index goes through `sqrt` and `log`;
+  the two roundings can disagree by one bin at a shell edge, which the 0.4.0 notes flagged as
+  able to corrupt the accumulators silently.
+
+#### Added
+
+* Allocation failures are reported instead of segfaulting. The kernels allocate through
+  wrappers that name the size that failed on stderr and set an error flag, the entry points
+  return early rather than dereferencing a null pointer, and the python layer raises
+  `MemoryError`.
+* `tests/test_fast_abi.py` checks the seven `ctypes` mirrors in `multires_structs.py` against
+  the layout the compiler produced, comparing field names as well as offsets -- swapping two
+  fields of equal type leaves every offset intact and is otherwise invisible.
+* Smoke tests for `Direct_MapnEqual` and `Direct_NapnEqual`, which had no tests at all: the
+  direct estimators went from 8% statement coverage, all of it import-time, to 54%, and the
+  fast tier as a whole from 53% to 60%.
+* A sanitizer workflow building the kernels under ASan and UBSan, plus a weekly valgrind run.
+  Advisory for now. Coverage is reported by the CI job.
+* `pyproject.toml` carries the package metadata (PEP 621); `setup.py` retains only the
+  extension build. `CITATION.cff` added.
+* The tutorial notebooks download their own input data instead of reading it from a hardcoded
+  institute path.
+
 ### 0.4.0 — 2026-08-19
 
 #### Changed — please read before upgrading

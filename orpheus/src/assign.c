@@ -8,6 +8,7 @@
 #include <time.h>
 #include <omp.h>
 #include "assign.h"
+#include "utils.h"
 
 #define mymin(x,y) ((x) <= (y)) ? (x) : (y)
 
@@ -29,7 +30,7 @@ void assign_fields(
         i2 = (int) floor((pos2[ind_gal]-min2)/dpix);
         wgal = weight[ind_gal];
         zbin = zbins[ind_gal];
-        double *fieldvals = calloc(nfields, sizeof(double));
+        double *fieldvals = orpheus_calloc(nfields, sizeof(double));
         for (elfield=0; elfield<nfields; elfield++){
             fieldvals[elfield] = fields[elfield*ngal+ind_gal];
         }

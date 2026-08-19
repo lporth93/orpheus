@@ -35,8 +35,8 @@ static void build_radial_helpers(
     double rmin = bin->rmin, rmax = bin->rmax;
     double drbin = (log(rmax)-log(rmin))/nbinsr;
 
-    int *reso_rindedges = calloc(nresos+1, sizeof(int));
-    double *binedges = calloc(nbinsr+2, sizeof(double));
+    int *reso_rindedges = orpheus_calloc(nresos+1, sizeof(int));
+    double *binedges = orpheus_calloc(nbinsr+2, sizeof(double));
     int tmpreso = 0;
     double thisredge = 0, tmpr = rmin;
     for (int elr=0; elr<nbinsr; elr++){
@@ -56,7 +56,7 @@ static void build_radial_helpers(
     double dbin_lin = 0.9*rmin*(exp(drbin)-1);
     double dbin_lin_inv = 1./dbin_lin;
     int nbinsr_lin = (int) ceil(binedges[nbinsr]/dbin_lin);
-    int *linarr_bins = calloc(nbinsr_lin+1, sizeof(int));
+    int *linarr_bins = orpheus_calloc(nbinsr_lin+1, sizeof(int));
     int tmplogbin = 0;
     tmpr = rmin;
     for (int elr=0; elr<=nbinsr_lin; elr++){
@@ -81,9 +81,9 @@ static void build_flat_rshifts(
 
     int nresos = cat->nresos;
     int npix_hash = nav->pix1_n * nav->pix2_n;
-    int *rshift_index_matcher = calloc(nresos, sizeof(int));
-    int *rshift_pixs_galind_bounds = calloc(nresos, sizeof(int));
-    int *rshift_pix_gals = calloc(nresos, sizeof(int));
+    int *rshift_index_matcher = orpheus_calloc(nresos, sizeof(int));
+    int *rshift_pixs_galind_bounds = orpheus_calloc(nresos, sizeof(int));
+    int *rshift_pix_gals = orpheus_calloc(nresos, sizeof(int));
     for (int elreso=1; elreso<nresos; elreso++){
         rshift_index_matcher[elreso] = rshift_index_matcher[elreso-1] + npix_hash;
         rshift_pixs_galind_bounds[elreso] = rshift_pixs_galind_bounds[elreso-1] + cat->ngal_resos[elreso-1]+1;
@@ -153,10 +153,10 @@ static void _nn_flat(const MultiresoCatalog *cat, const NavHash *nav,
                       int nthreads, int verbose, NPCFOutput *out){
 
     int nbinsz = cat->nbinsz, nbinsr = bin->nbinsr, nresos = tree->nresos;
-    double *totcount = calloc(nbinsz*nbinsz*nbinsr, sizeof(double));
-    int *tmpnpair = calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(int));
-    double *tmpwcount = calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(double));
-    double *tmpwnorm = calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(double));
+    double *totcount = orpheus_calloc(nbinsz*nbinsz*nbinsr, sizeof(double));
+    int *tmpnpair = orpheus_calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(int));
+    double *tmpwcount = orpheus_calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(double));
+    double *tmpwnorm = orpheus_calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(double));
 
     // Setup binning and shift vectors
     double drbin, dbin_lin_inv;
@@ -164,6 +164,13 @@ static void _nn_flat(const MultiresoCatalog *cat, const NavHash *nav,
     build_radial_helpers(tree, bin, &binedges, &linarr_bins, &reso_rindedges_base, &drbin, &dbin_lin_inv);
     int *rshift_index_matcher, *rshift_pixs_galind_bounds, *rshift_pix_gals;
     build_flat_rshifts(cat, nav, &rshift_index_matcher, &rshift_pixs_galind_bounds, &rshift_pix_gals);
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(totcount); free(tmpnpair); free(tmpwcount); free(tmpwnorm); free(binedges);
+        free(linarr_bins); free(reso_rindedges_base); free(rshift_index_matcher);
+        free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
+        return;
+    }
 
     // Prepare vars for parallel region
     int nfilledregions = nav->nfilledregions;
@@ -265,14 +272,20 @@ static void _nn_spherical(const MultiresoCatalog *cat, const NavHash *nav,
                            int nthreads, int verbose, NPCFOutput *out){
 
     int nbinsz = cat->nbinsz, nbinsr = bin->nbinsr, nresos = tree->nresos;
-    double *totcount = calloc(nbinsz*nbinsz*nbinsr, sizeof(double));
-    int *tmpnpair = calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(int));
-    double *tmpwcount = calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(double));
-    double *tmpwnorm = calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(double));
+    double *totcount = orpheus_calloc(nbinsz*nbinsz*nbinsr, sizeof(double));
+    int *tmpnpair = orpheus_calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(int));
+    double *tmpwcount = orpheus_calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(double));
+    double *tmpwnorm = orpheus_calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(double));
 
     double drbin, dbin_lin_inv;
     double *binedges; int *linarr_bins; int *reso_rindedges;
     build_radial_helpers(tree, bin, &binedges, &linarr_bins, &reso_rindedges, &drbin, &dbin_lin_inv);
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(totcount); free(tmpnpair); free(tmpwcount); free(tmpwnorm); free(binedges);
+        free(linarr_bins); free(reso_rindedges);
+        return;
+    }
 
     // Progress is tracked per central galaxy across all processed resolutions
     int nregionsdone = 0, progtot = 0;
@@ -301,7 +314,7 @@ static void _nn_spherical(const MultiresoCatalog *cat, const NavHash *nav,
         {
             int thread = omp_get_thread_num();
             long cap = 2048;
-            long *ranges = malloc(2*cap*sizeof(long));
+            long *ranges = orpheus_malloc(2*cap*sizeof(long));
             #pragma omp for schedule(dynamic, 64)
             for (int i1=0; i1<n1; i1++){
                 #pragma omp atomic
@@ -378,17 +391,24 @@ static void _gg_flat(const MultiresoCatalog *cat, const NavHash *nav,
                      int nthreads, int verbose, NPCFOutput *out){
 
     int nbinsz = cat->nbinsz, nbinsr = bin->nbinsr, nresos = tree->nresos;
-    double *totcount = calloc(nbinsz*nbinsz*nbinsr, sizeof(double));
-    int *tmpnpair = calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(int));
-    double *tmpwcount = calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(double));
-    double *tmpwnorm = calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(double));
-    double complex *tmpcomp = calloc(nthreads*2*nbinsz*nbinsz*nbinsr, sizeof(double complex));
+    double *totcount = orpheus_calloc(nbinsz*nbinsz*nbinsr, sizeof(double));
+    int *tmpnpair = orpheus_calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(int));
+    double *tmpwcount = orpheus_calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(double));
+    double *tmpwnorm = orpheus_calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(double));
+    double complex *tmpcomp = orpheus_calloc(nthreads*2*nbinsz*nbinsz*nbinsr, sizeof(double complex));
 
     double drbin, dbin_lin_inv;
     double *binedges; int *linarr_bins; int *reso_rindedges_base;
     build_radial_helpers(tree, bin, &binedges, &linarr_bins, &reso_rindedges_base, &drbin, &dbin_lin_inv);
     int *rshift_index_matcher, *rshift_pixs_galind_bounds, *rshift_pix_gals;
     build_flat_rshifts(cat, nav, &rshift_index_matcher, &rshift_pixs_galind_bounds, &rshift_pix_gals);
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(totcount); free(tmpnpair); free(tmpwcount); free(tmpwnorm); free(tmpcomp);
+        free(binedges); free(linarr_bins); free(reso_rindedges_base); free(rshift_index_matcher);
+        free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
+        return;
+    }
 
     int nfilledregions = nav->nfilledregions;
     int *filledregions = nav->filledregions;
@@ -490,15 +510,21 @@ static void _gg_spherical(const MultiresoCatalog *cat, const NavHash *nav,
                           int nthreads, int verbose, NPCFOutput *out){
 
     int nbinsz = cat->nbinsz, nbinsr = bin->nbinsr, nresos = tree->nresos;
-    double *totcount = calloc(nbinsz*nbinsz*nbinsr, sizeof(double));
-    int *tmpnpair = calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(int));
-    double *tmpwcount = calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(double));
-    double *tmpwnorm = calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(double));
-    double complex *tmpcomp = calloc(nthreads*2*nbinsz*nbinsz*nbinsr, sizeof(double complex));
+    double *totcount = orpheus_calloc(nbinsz*nbinsz*nbinsr, sizeof(double));
+    int *tmpnpair = orpheus_calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(int));
+    double *tmpwcount = orpheus_calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(double));
+    double *tmpwnorm = orpheus_calloc(nthreads*nbinsz*nbinsz*nbinsr, sizeof(double));
+    double complex *tmpcomp = orpheus_calloc(nthreads*2*nbinsz*nbinsz*nbinsr, sizeof(double complex));
 
     double drbin, dbin_lin_inv;
     double *binedges; int *linarr_bins; int *reso_rindedges;
     build_radial_helpers(tree, bin, &binedges, &linarr_bins, &reso_rindedges, &drbin, &dbin_lin_inv);
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(totcount); free(tmpnpair); free(tmpwcount); free(tmpwnorm); free(tmpcomp);
+        free(binedges); free(linarr_bins); free(reso_rindedges);
+        return;
+    }
 
     // Progress is tracked per central galaxy across all processed resolutions
     int nregionsdone = 0, progtot = 0;
@@ -527,7 +553,7 @@ static void _gg_spherical(const MultiresoCatalog *cat, const NavHash *nav,
         {
             int thread = omp_get_thread_num();
             long cap = 2048;
-            long *ranges = malloc(2*cap*sizeof(long));
+            long *ranges = orpheus_malloc(2*cap*sizeof(long));
             #pragma omp for schedule(dynamic, 64)
             for (int i1=0; i1<n1; i1++){
                 #pragma omp atomic
@@ -617,11 +643,11 @@ static void _ng_flat(const MultiresoCatalog *cat_lens, const NavHash *nav_lens,
     int nbinsz_l = cat_lens->nbinsz, nbinsz_s = cat_source->nbinsz;
     int nbinsr = bin->nbinsr, nresos = tree->nresos;
     int nzzr = nbinsz_l*nbinsz_s*nbinsr;
-    double *totcount = calloc(nzzr, sizeof(double));
-    int *tmpnpair = calloc(nthreads*nzzr, sizeof(int));
-    double *tmpwcount = calloc(nthreads*nzzr, sizeof(double));
-    double *tmpwnorm = calloc(nthreads*nzzr, sizeof(double));
-    double complex *tmpcomp = calloc(nthreads*1*nzzr, sizeof(double complex));
+    double *totcount = orpheus_calloc(nzzr, sizeof(double));
+    int *tmpnpair = orpheus_calloc(nthreads*nzzr, sizeof(int));
+    double *tmpwcount = orpheus_calloc(nthreads*nzzr, sizeof(double));
+    double *tmpwnorm = orpheus_calloc(nthreads*nzzr, sizeof(double));
+    double complex *tmpcomp = orpheus_calloc(nthreads*1*nzzr, sizeof(double complex));
 
     double drbin, dbin_lin_inv;
     double *binedges; int *linarr_bins; int *reso_rindedges_base;
@@ -630,6 +656,13 @@ static void _ng_flat(const MultiresoCatalog *cat_lens, const NavHash *nav_lens,
     build_flat_rshifts(cat_lens, nav_lens, &rsim_l, &rspgb_l, &rspg_l);
     int *rsim_s, *rspgb_s, *rspg_s;
     build_flat_rshifts(cat_source, nav_source, &rsim_s, &rspgb_s, &rspg_s);
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(totcount); free(tmpnpair); free(tmpwcount); free(tmpwnorm); free(tmpcomp);
+        free(binedges); free(linarr_bins); free(reso_rindedges_base); free(rsim_l); free(rspgb_l);
+        free(rspg_l); free(rsim_s); free(rspgb_s); free(rspg_s);
+        return;
+    }
 
     int nfilledregions = nav_lens->nfilledregions;
     int *filledregions = nav_lens->filledregions;
@@ -766,11 +799,16 @@ void ng_slab(const MultiresoCatalog *cat_lens, const MultiresoCatalog *cat_sourc
     double dlnr_inv = nbinsr / log(rmax / rmin);
 
     // Per-thread accumulators.
-    double *tmp_xs_re = calloc((size_t)nthreads * nout, sizeof(double));
-    double *tmp_xs_im = calloc((size_t)nthreads * nout, sizeof(double));
-    double *tmp_wnorm = calloc((size_t)nthreads * nout, sizeof(double));
-    double *tmp_rsum  = calloc((size_t)nthreads * nout, sizeof(double));
-    long   *tmp_npair = calloc((size_t)nthreads * nout, sizeof(long));
+    double *tmp_xs_re = orpheus_calloc((size_t)nthreads * nout, sizeof(double));
+    double *tmp_xs_im = orpheus_calloc((size_t)nthreads * nout, sizeof(double));
+    double *tmp_wnorm = orpheus_calloc((size_t)nthreads * nout, sizeof(double));
+    double *tmp_rsum  = orpheus_calloc((size_t)nthreads * nout, sizeof(double));
+    long   *tmp_npair = orpheus_calloc((size_t)nthreads * nout, sizeof(long));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(tmp_xs_re); free(tmp_xs_im); free(tmp_wnorm); free(tmp_rsum); free(tmp_npair);
+        return;
+    }
 
     int nregionsdone = 0;
     reset_progress();

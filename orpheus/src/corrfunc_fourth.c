@@ -495,20 +495,27 @@ void alloc_notomoGammans_discrete_gggg(const MultiresoCatalog *cat, const NavHas
     int _ups_nshift = nbinsr*nbinsr*nbinsr;
     int _n2n3combis = _nnvals_Upsn*_nnvals_Upsn;
     int _ups_compshift = _n2n3combis*_ups_nshift;
-    double *tmpwcounts = calloc(nthreads*nbinsr, sizeof(double));
-    double *tmpwnorms = calloc(nthreads*nbinsr, sizeof(double));
-    double complex *tmpUpsilon0_n = calloc(nthreads*_ups_compshift, sizeof(double complex));
-    double complex *tmpUpsilon1_n = calloc(nthreads*_ups_compshift, sizeof(double complex));
-    double complex *tmpUpsilon2_n = calloc(nthreads*_ups_compshift, sizeof(double complex));
-    double complex *tmpUpsilon3_n = calloc(nthreads*_ups_compshift, sizeof(double complex));
-    double complex *tmpUpsilon4_n = calloc(nthreads*_ups_compshift, sizeof(double complex));
-    double complex *tmpUpsilon5_n = calloc(nthreads*_ups_compshift, sizeof(double complex));
-    double complex *tmpUpsilon6_n = calloc(nthreads*_ups_compshift, sizeof(double complex));
-    double complex *tmpUpsilon7_n = calloc(nthreads*_ups_compshift, sizeof(double complex));
-    double complex *tmpN_n = calloc(nthreads*_ups_compshift, sizeof(double complex));
+    double *tmpwcounts = orpheus_calloc(nthreads*nbinsr, sizeof(double));
+    double *tmpwnorms = orpheus_calloc(nthreads*nbinsr, sizeof(double));
+    double complex *tmpUpsilon0_n = orpheus_calloc(nthreads*_ups_compshift, sizeof(double complex));
+    double complex *tmpUpsilon1_n = orpheus_calloc(nthreads*_ups_compshift, sizeof(double complex));
+    double complex *tmpUpsilon2_n = orpheus_calloc(nthreads*_ups_compshift, sizeof(double complex));
+    double complex *tmpUpsilon3_n = orpheus_calloc(nthreads*_ups_compshift, sizeof(double complex));
+    double complex *tmpUpsilon4_n = orpheus_calloc(nthreads*_ups_compshift, sizeof(double complex));
+    double complex *tmpUpsilon5_n = orpheus_calloc(nthreads*_ups_compshift, sizeof(double complex));
+    double complex *tmpUpsilon6_n = orpheus_calloc(nthreads*_ups_compshift, sizeof(double complex));
+    double complex *tmpUpsilon7_n = orpheus_calloc(nthreads*_ups_compshift, sizeof(double complex));
+    double complex *tmpN_n = orpheus_calloc(nthreads*_ups_compshift, sizeof(double complex));
     
-    double *totcounts = calloc(nbinsr, sizeof(double));
-    double *totnorms = calloc(nbinsr, sizeof(double));
+    double *totcounts = orpheus_calloc(nbinsr, sizeof(double));
+    double *totnorms = orpheus_calloc(nbinsr, sizeof(double));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(tmpwcounts); free(tmpwnorms); free(tmpUpsilon0_n); free(tmpUpsilon1_n);
+        free(tmpUpsilon2_n); free(tmpUpsilon3_n); free(tmpUpsilon4_n); free(tmpUpsilon5_n);
+        free(tmpUpsilon6_n); free(tmpUpsilon7_n); free(tmpN_n); free(totcounts); free(totnorms);
+        return;
+    }
     
     int nregionsdone = 0;
     reset_progress();
@@ -531,14 +538,14 @@ void alloc_notomoGammans_discrete_gggg(const MultiresoCatalog *cat, const NavHas
         int ups_compshift = n2n3combis*ups_nshift;
 
         int nbinszr = nbinsz*nbinsr;
-        double complex *nextGns =  calloc(nnvals_Gn*nbinszr, sizeof(double complex));
-        double complex *nextG2ns_gg =  calloc(nnvals_G2n*nbinszr, sizeof(double complex));
-        double complex *nextG2ns_ggc =  calloc(nnvals_G2n*nbinszr, sizeof(double complex));
-        double complex *nextG3ns_ggg = calloc(2*nbinszr, sizeof(double complex));
-        double complex *nextG3ns_gggc = calloc(2*nbinszr, sizeof(double complex));
-        double complex *nextWns = calloc(nnvals_Wn*nbinszr, sizeof(double complex));
-        double complex *nextW2ns = calloc(nnvals_Wn*nbinszr, sizeof(double complex));
-        double complex *nextW3ns = calloc(nbinszr, sizeof(double complex));
+        double complex *nextGns =  orpheus_calloc(nnvals_Gn*nbinszr, sizeof(double complex));
+        double complex *nextG2ns_gg =  orpheus_calloc(nnvals_G2n*nbinszr, sizeof(double complex));
+        double complex *nextG2ns_ggc =  orpheus_calloc(nnvals_G2n*nbinszr, sizeof(double complex));
+        double complex *nextG3ns_ggg = orpheus_calloc(2*nbinszr, sizeof(double complex));
+        double complex *nextG3ns_gggc = orpheus_calloc(2*nbinszr, sizeof(double complex));
+        double complex *nextWns = orpheus_calloc(nnvals_Wn*nbinszr, sizeof(double complex));
+        double complex *nextW2ns = orpheus_calloc(nnvals_Wn*nbinszr, sizeof(double complex));
+        double complex *nextW3ns = orpheus_calloc(nbinszr, sizeof(double complex));
         
         for (int elregion=0; elregion<nregions; elregion++){
             int region_debug = mymin(500,nregions-1);
@@ -860,23 +867,31 @@ void alloc_notomoGammans_tree_gggg(const MultiresoCatalog *cat_base, const Multi
     double complex *Upsilon_n = out->npcf, *N_n = out->norm_mp;
     
     // Temporary arrays that are allocated in parallel and later reduced
-    double *tmpwcounts = calloc(nthreads*nbinsr, sizeof(double));
-    double *tmpwnorms = calloc(nthreads*nbinsr, sizeof(double));
-    double complex *tmpUpsilon0_n = calloc(nthreads*len_nindices*nthetacombis, sizeof(double complex));
-    double complex *tmpUpsilon1_n = calloc(nthreads*len_nindices*nthetacombis, sizeof(double complex));
-    double complex *tmpUpsilon2_n = calloc(nthreads*len_nindices*nthetacombis, sizeof(double complex));
-    double complex *tmpUpsilon3_n = calloc(nthreads*len_nindices*nthetacombis, sizeof(double complex));
-    double complex *tmpUpsilon4_n = calloc(nthreads*len_nindices*nthetacombis, sizeof(double complex));
-    double complex *tmpUpsilon5_n = calloc(nthreads*len_nindices*nthetacombis, sizeof(double complex));
-    double complex *tmpUpsilon6_n = calloc(nthreads*len_nindices*nthetacombis, sizeof(double complex));
-    double complex *tmpUpsilon7_n = calloc(nthreads*len_nindices*nthetacombis, sizeof(double complex));
-    double complex *tmpN_n = calloc(nthreads*len_nindices*nthetacombis, sizeof(double complex));
+    double *tmpwcounts = orpheus_calloc(nthreads*nbinsr, sizeof(double));
+    double *tmpwnorms = orpheus_calloc(nthreads*nbinsr, sizeof(double));
+    double complex *tmpUpsilon0_n = orpheus_calloc(nthreads*len_nindices*nthetacombis, sizeof(double complex));
+    double complex *tmpUpsilon1_n = orpheus_calloc(nthreads*len_nindices*nthetacombis, sizeof(double complex));
+    double complex *tmpUpsilon2_n = orpheus_calloc(nthreads*len_nindices*nthetacombis, sizeof(double complex));
+    double complex *tmpUpsilon3_n = orpheus_calloc(nthreads*len_nindices*nthetacombis, sizeof(double complex));
+    double complex *tmpUpsilon4_n = orpheus_calloc(nthreads*len_nindices*nthetacombis, sizeof(double complex));
+    double complex *tmpUpsilon5_n = orpheus_calloc(nthreads*len_nindices*nthetacombis, sizeof(double complex));
+    double complex *tmpUpsilon6_n = orpheus_calloc(nthreads*len_nindices*nthetacombis, sizeof(double complex));
+    double complex *tmpUpsilon7_n = orpheus_calloc(nthreads*len_nindices*nthetacombis, sizeof(double complex));
+    double complex *tmpN_n = orpheus_calloc(nthreads*len_nindices*nthetacombis, sizeof(double complex));
     
-    double *totcounts = calloc(nbinsr, sizeof(double));
-    double *totnorms = calloc(nbinsr, sizeof(double));
+    double *totcounts = orpheus_calloc(nbinsr, sizeof(double));
+    double *totnorms = orpheus_calloc(nbinsr, sizeof(double));
 
     // Helper array that checks how many regions have been already computed
-    int *regionsdone = calloc(nregions, sizeof(int));
+    int *regionsdone = orpheus_calloc(nregions, sizeof(int));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(tmpwcounts); free(tmpwnorms); free(tmpUpsilon0_n); free(tmpUpsilon1_n);
+        free(tmpUpsilon2_n); free(tmpUpsilon3_n); free(tmpUpsilon4_n); free(tmpUpsilon5_n);
+        free(tmpUpsilon6_n); free(tmpUpsilon7_n); free(tmpN_n); free(totcounts); free(totnorms);
+        free(regionsdone);
+        return;
+    }
     int nregionsdone = 0;
     reset_progress();
     
@@ -897,19 +912,19 @@ void alloc_notomoGammans_tree_gggg(const MultiresoCatalog *cat_base, const Multi
         int ups_compshift = len_nindices*nthetacombis;
 
         int nbinszr = nbinsz*nbinsr;
-        double complex *nextGns =  calloc(nnvals_Gn*nbinszr, sizeof(double complex));
-        double complex *nextG2ns_gg =  calloc(nnvals_G2n*nbinszr, sizeof(double complex));
-        double complex *nextG2ns_ggc =  calloc(nnvals_G2n*nbinszr, sizeof(double complex));
-        double complex *nextG3ns_ggg = calloc(2*nbinszr, sizeof(double complex));
-        double complex *nextG3ns_gggc = calloc(2*nbinszr, sizeof(double complex));
-        double complex *nextWns = calloc(nnvals_Wn*nbinszr, sizeof(double complex));
-        double complex *nextW2ns = calloc(nnvals_Wn*nbinszr, sizeof(double complex));
-        double complex *nextW3ns = calloc(nbinszr, sizeof(double complex));
+        double complex *nextGns =  orpheus_calloc(nnvals_Gn*nbinszr, sizeof(double complex));
+        double complex *nextG2ns_gg =  orpheus_calloc(nnvals_G2n*nbinszr, sizeof(double complex));
+        double complex *nextG2ns_ggc =  orpheus_calloc(nnvals_G2n*nbinszr, sizeof(double complex));
+        double complex *nextG3ns_ggg = orpheus_calloc(2*nbinszr, sizeof(double complex));
+        double complex *nextG3ns_gggc = orpheus_calloc(2*nbinszr, sizeof(double complex));
+        double complex *nextWns = orpheus_calloc(nnvals_Wn*nbinszr, sizeof(double complex));
+        double complex *nextW2ns = orpheus_calloc(nnvals_Wn*nbinszr, sizeof(double complex));
+        double complex *nextW3ns = orpheus_calloc(nbinszr, sizeof(double complex));
 
         int npix_hash = pix1_n*pix2_n;
-        int *rshift_index_matcher_hash = calloc(nresos, sizeof(int));
-        int *rshift_pixs_galind_bounds = calloc(nresos, sizeof(int));
-        int *rshift_pix_gals = calloc(nresos, sizeof(int));
+        int *rshift_index_matcher_hash = orpheus_calloc(nresos, sizeof(int));
+        int *rshift_pixs_galind_bounds = orpheus_calloc(nresos, sizeof(int));
+        int *rshift_pix_gals = orpheus_calloc(nresos, sizeof(int));
         build_rshift_offsets(nresos, npix_hash, ngal_resos,
                              rshift_index_matcher_hash, rshift_pixs_galind_bounds, rshift_pix_gals);
 
@@ -1203,9 +1218,17 @@ void alloc_notomoGammans_tree_gggg(const MultiresoCatalog *cat_base, const Multi
 
     // 1)
     int elbcombi = 0;
-    int *elb1_inds = calloc(nthetacombis, sizeof(int));
-    int *elb2_inds = calloc(nthetacombis, sizeof(int));
-    int *elb3_inds = calloc(nthetacombis, sizeof(int));
+    int *elb1_inds = orpheus_calloc(nthetacombis, sizeof(int));
+    int *elb2_inds = orpheus_calloc(nthetacombis, sizeof(int));
+    int *elb3_inds = orpheus_calloc(nthetacombis, sizeof(int));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(tmpwcounts); free(tmpwnorms); free(tmpUpsilon0_n); free(tmpUpsilon1_n);
+        free(tmpUpsilon2_n); free(tmpUpsilon3_n); free(tmpUpsilon4_n); free(tmpUpsilon5_n);
+        free(tmpUpsilon6_n); free(tmpUpsilon7_n); free(tmpN_n); free(totcounts); free(totnorms);
+        free(regionsdone); free(elb1_inds); free(elb2_inds); free(elb3_inds);
+        return;
+    }
     for (int elb1=0;elb1<nbinsr;elb1++){
         for (int elb2=elb1;elb2<nbinsr;elb2++){
             for (int elb3=elb2;elb3<nbinsr;elb3++){
@@ -1231,10 +1254,10 @@ void alloc_notomoGammans_tree_gggg(const MultiresoCatalog *cat_base, const Multi
         int n2n3combis_rec = nnvals_Upsn_rec*nnvals_Upsn_rec;
         int ups_rec_compshift = n2n3combis_rec*ups_nshift;
 
-        double complex *thisUpsilon_n = calloc(8*n2n3combis, sizeof(double complex));
-        double complex *thisN_n = calloc(n2n3combis, sizeof(double complex));
-        double complex *thisUpsilon_n_rec = calloc(8*n2n3combis_rec, sizeof(double complex));
-        double complex *thisN_n_rec = calloc(n2n3combis_rec, sizeof(double complex));
+        double complex *thisUpsilon_n = orpheus_calloc(8*n2n3combis, sizeof(double complex));
+        double complex *thisN_n = orpheus_calloc(n2n3combis, sizeof(double complex));
+        double complex *thisUpsilon_n_rec = orpheus_calloc(8*n2n3combis_rec, sizeof(double complex));
+        double complex *thisN_n_rec = orpheus_calloc(n2n3combis_rec, sizeof(double complex));
 
         // 2)
         elb1 = elb1_inds[elb];
@@ -1363,7 +1386,9 @@ void alloc_notomoMap4_disc_gggg(const MultiresoCatalog *cat, const NavHash *nav,
     int *thetacombis_batches = fourth->thetacombis_batches, *nthetacombis_batches = fourth->nthetacombis_batches;
     int *cumthetacombis_batches = fourth->cumthetacombis_batches; int nthetbatches = fourth->nthetbatches;
                
-    double complex *allM4correlators = calloc(nthreads*8*1*nmapradii, sizeof(double complex));
+    double complex *allM4correlators = orpheus_calloc(nthreads*8*1*nmapradii, sizeof(double complex));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){free(allM4correlators); return;}
     int nregionsdone = 0;
     reset_progress();
     #pragma omp parallel for num_threads(nthreads)
@@ -1392,32 +1417,32 @@ void alloc_notomoMap4_disc_gggg(const MultiresoCatalog *cat, const NavHash *nav,
         int batchups_compshift = n2n3combis*batchups_nshift;
         int batchgamma_thetshift = nbinsphi*nbinsphi;
         
-        double *totcounts = calloc(nbinsr, sizeof(double));
-        double *totnorms = calloc(nbinsr, sizeof(double));
-        double *bin_centers_batch = calloc(nbinsr, sizeof(double));
-        double complex *batchUpsilon_n = calloc(ncomp*batchups_compshift, sizeof(double complex));
-        double complex *batchN_n = calloc(batchups_compshift, sizeof(double complex));
-        double complex *batchfourpcf = calloc(ncomp*batchups_compshift, sizeof(double complex));
-        double complex *batchfourpcf_norm = calloc(batchups_compshift, sizeof(double complex));
-        double *batch_thetas1 = calloc(batch_nthetas, sizeof(double));
-        double *batch_thetas2 = calloc(batch_nthetas, sizeof(double));
-        double *batch_thetas3 = calloc(batch_nthetas, sizeof(double));
+        double *totcounts = orpheus_calloc(nbinsr, sizeof(double));
+        double *totnorms = orpheus_calloc(nbinsr, sizeof(double));
+        double *bin_centers_batch = orpheus_calloc(nbinsr, sizeof(double));
+        double complex *batchUpsilon_n = orpheus_calloc(ncomp*batchups_compshift, sizeof(double complex));
+        double complex *batchN_n = orpheus_calloc(batchups_compshift, sizeof(double complex));
+        double complex *batchfourpcf = orpheus_calloc(ncomp*batchups_compshift, sizeof(double complex));
+        double complex *batchfourpcf_norm = orpheus_calloc(batchups_compshift, sizeof(double complex));
+        double *batch_thetas1 = orpheus_calloc(batch_nthetas, sizeof(double));
+        double *batch_thetas2 = orpheus_calloc(batch_nthetas, sizeof(double));
+        double *batch_thetas3 = orpheus_calloc(batch_nthetas, sizeof(double));
         
         int nbinszr = nbinsz*nbinsr;
-        double complex *nextGns =  calloc(nnvals_Gn*nbinszr, sizeof(double complex));
-        double complex *nextG2ns_gg =  calloc(nnvals_G2n*nbinszr, sizeof(double complex));
-        double complex *nextG2ns_ggc =  calloc(nnvals_G2n*nbinszr, sizeof(double complex));
-        double complex *nextG3ns_ggg = calloc(2*nbinszr, sizeof(double complex));
-        double complex *nextG3ns_gggc = calloc(2*nbinszr, sizeof(double complex));
-        double complex *nextWns = calloc(nnvals_Wn*nbinszr, sizeof(double complex));
-        double complex *nextW2ns = calloc(nnvals_Wn*nbinszr, sizeof(double complex));
-        double complex *nextW3ns = calloc(nbinszr, sizeof(double complex));
+        double complex *nextGns =  orpheus_calloc(nnvals_Gn*nbinszr, sizeof(double complex));
+        double complex *nextG2ns_gg =  orpheus_calloc(nnvals_G2n*nbinszr, sizeof(double complex));
+        double complex *nextG2ns_ggc =  orpheus_calloc(nnvals_G2n*nbinszr, sizeof(double complex));
+        double complex *nextG3ns_ggg = orpheus_calloc(2*nbinszr, sizeof(double complex));
+        double complex *nextG3ns_gggc = orpheus_calloc(2*nbinszr, sizeof(double complex));
+        double complex *nextWns = orpheus_calloc(nnvals_Wn*nbinszr, sizeof(double complex));
+        double complex *nextW2ns = orpheus_calloc(nnvals_Wn*nbinszr, sizeof(double complex));
+        double complex *nextW3ns = orpheus_calloc(nbinszr, sizeof(double complex));
         
         double drbin = (log(rmax)-log(rmin))/(nbinsr);
-        int *elb1s_batch = calloc(batch_nthetas, sizeof(int));
-        int *elb2s_batch = calloc(batch_nthetas, sizeof(int));
-        int *elb3s_batch = calloc(batch_nthetas, sizeof(int));
-        double *bin_edges = calloc(nbinsr+1, sizeof(double));
+        int *elb1s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
+        int *elb2s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
+        int *elb3s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
+        double *bin_edges = orpheus_calloc(nbinsr+1, sizeof(double));
         #pragma omp critical
         {
         for (int elb=0;elb<batch_nthetas;elb++){
@@ -1584,11 +1609,11 @@ void alloc_notomoMap4_disc_gggg(const MultiresoCatalog *cat, const NavHash *nav,
         // 2) Get the Gamma_mu(theta1,theta2,theta3,phi12,phi13)
         // 3) Transform the Gamma_mu to the target basis
         // 4) Update the aperture Map^4 integral
-        double complex *nextM4correlators = calloc(8, sizeof(double complex));
-        double complex *thisUpsilon_n = calloc(8*n2n3combis, sizeof(double complex));
-        double complex *thisN_n = calloc(n2n3combis, sizeof(double complex));
-        double complex *thisnpcf = calloc(8*batchgamma_thetshift, sizeof(double complex));
-        double complex *thisnpcf_norm = calloc(batchgamma_thetshift, sizeof(double complex));
+        double complex *nextM4correlators = orpheus_calloc(8, sizeof(double complex));
+        double complex *thisUpsilon_n = orpheus_calloc(8*n2n3combis, sizeof(double complex));
+        double complex *thisN_n = orpheus_calloc(n2n3combis, sizeof(double complex));
+        double complex *thisnpcf = orpheus_calloc(8*batchgamma_thetshift, sizeof(double complex));
+        double complex *thisnpcf_norm = orpheus_calloc(batchgamma_thetshift, sizeof(double complex));
         for (int elb=0;elb<batch_nthetas;elb++){
             // 1)
             int nbshift, elb1, elb2, elb3;
@@ -1765,7 +1790,9 @@ void alloc_notomoMap4_tree_gggg(const MultiresoCatalog *cat_base, const Multires
     int *thetacombis_batches = fourth->thetacombis_batches, *nthetacombis_batches = fourth->nthetacombis_batches;
     int *cumthetacombis_batches = fourth->cumthetacombis_batches; int nthetbatches = fourth->nthetbatches;
                
-    double complex *allM4correlators = calloc(nthreads*8*1*nmapradii, sizeof(double complex));
+    double complex *allM4correlators = orpheus_calloc(nthreads*8*1*nmapradii, sizeof(double complex));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){free(allM4correlators); return;}
     int nregionsdone = 0;
     reset_progress();
     #pragma omp parallel for num_threads(nthreads)
@@ -1803,40 +1830,40 @@ void alloc_notomoMap4_tree_gggg(const MultiresoCatalog *cat_base, const Multires
         int batchgamma_thetshift = nbinsphi*nbinsphi;
         
         int npix_hash = pix1_n*pix2_n;
-        int *rshift_index_matcher_hash = calloc(nresos, sizeof(int));
-        int *rshift_pixs_galind_bounds = calloc(nresos, sizeof(int));
-        int *rshift_pix_gals = calloc(nresos, sizeof(int));
+        int *rshift_index_matcher_hash = orpheus_calloc(nresos, sizeof(int));
+        int *rshift_pixs_galind_bounds = orpheus_calloc(nresos, sizeof(int));
+        int *rshift_pix_gals = orpheus_calloc(nresos, sizeof(int));
         build_rshift_offsets(nresos, npix_hash, ngal_resos,
                              rshift_index_matcher_hash, rshift_pixs_galind_bounds, rshift_pix_gals);
 
-        double *totcounts = calloc(nbinsr, sizeof(double));
-        double *totnorms = calloc(nbinsr, sizeof(double));
-        double *bin_centers_batch = calloc(nbinsr, sizeof(double));
-        double complex *batchUpsilon_n = calloc(ncomp*batchups_compshift, sizeof(double complex));
-        double complex *batchN_n = calloc(batchups_compshift, sizeof(double complex));
-        double complex *batchfourpcf = calloc(ncomp*batchups_compshift, sizeof(double complex));
-        double complex *batchfourpcf_norm = calloc(batchups_compshift, sizeof(double complex));
-        double *batch_thetas1 = calloc(batch_nthetas, sizeof(double));
-        double *batch_thetas2 = calloc(batch_nthetas, sizeof(double));
-        double *batch_thetas3 = calloc(batch_nthetas, sizeof(double));
+        double *totcounts = orpheus_calloc(nbinsr, sizeof(double));
+        double *totnorms = orpheus_calloc(nbinsr, sizeof(double));
+        double *bin_centers_batch = orpheus_calloc(nbinsr, sizeof(double));
+        double complex *batchUpsilon_n = orpheus_calloc(ncomp*batchups_compshift, sizeof(double complex));
+        double complex *batchN_n = orpheus_calloc(batchups_compshift, sizeof(double complex));
+        double complex *batchfourpcf = orpheus_calloc(ncomp*batchups_compshift, sizeof(double complex));
+        double complex *batchfourpcf_norm = orpheus_calloc(batchups_compshift, sizeof(double complex));
+        double *batch_thetas1 = orpheus_calloc(batch_nthetas, sizeof(double));
+        double *batch_thetas2 = orpheus_calloc(batch_nthetas, sizeof(double));
+        double *batch_thetas3 = orpheus_calloc(batch_nthetas, sizeof(double));
         
         int nbinszr = nbinsz*nbinsr;
-        double complex *nextGns =  calloc(nnvals_Gn*nbinszr, sizeof(double complex));
-        double complex *nextG2ns_gg =  calloc(nnvals_G2n*nbinszr, sizeof(double complex));
-        double complex *nextG2ns_ggc =  calloc(nnvals_G2n*nbinszr, sizeof(double complex));
-        double complex *nextG3ns_ggg = calloc(2*nbinszr, sizeof(double complex));
-        double complex *nextG3ns_gggc = calloc(2*nbinszr, sizeof(double complex));
-        double complex *nextWns = calloc(nnvals_Wn*nbinszr, sizeof(double complex));
-        double complex *nextW2ns = calloc(nnvals_Wn*nbinszr, sizeof(double complex));
-        double complex *nextW3ns = calloc(nbinszr, sizeof(double complex));
+        double complex *nextGns =  orpheus_calloc(nnvals_Gn*nbinszr, sizeof(double complex));
+        double complex *nextG2ns_gg =  orpheus_calloc(nnvals_G2n*nbinszr, sizeof(double complex));
+        double complex *nextG2ns_ggc =  orpheus_calloc(nnvals_G2n*nbinszr, sizeof(double complex));
+        double complex *nextG3ns_ggg = orpheus_calloc(2*nbinszr, sizeof(double complex));
+        double complex *nextG3ns_gggc = orpheus_calloc(2*nbinszr, sizeof(double complex));
+        double complex *nextWns = orpheus_calloc(nnvals_Wn*nbinszr, sizeof(double complex));
+        double complex *nextW2ns = orpheus_calloc(nnvals_Wn*nbinszr, sizeof(double complex));
+        double complex *nextW3ns = orpheus_calloc(nbinszr, sizeof(double complex));
         
         double drbin = (log(rmax)-log(rmin))/(nbinsr);
         int rbin_min_batch=nbinsr;int rbin_max_batch=0;
         int reso_min_batch=0; int reso_max_batch=0;
-        int *elb1s_batch = calloc(batch_nthetas, sizeof(int));
-        int *elb2s_batch = calloc(batch_nthetas, sizeof(int));
-        int *elb3s_batch = calloc(batch_nthetas, sizeof(int));
-        double *bin_edges = calloc(nbinsr+1, sizeof(double));
+        int *elb1s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
+        int *elb2s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
+        int *elb3s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
+        double *bin_edges = orpheus_calloc(nbinsr+1, sizeof(double));
         #pragma omp critical
         {
             build_thetabatch(elthetbatch, batch_nthetas, nbinsr, nresos, rmin, rmax,
@@ -2011,13 +2038,13 @@ void alloc_notomoMap4_tree_gggg(const MultiresoCatalog *cat_base, const Multires
         //   2b) Transform the Gamma_mu to the target basis
         //   2c) Update the aperture Map^4 integral
         int ntrafos;
-        double complex *nextM4correlators = calloc(8, sizeof(double complex));
-        double complex *thisUpsilon_n = calloc(8*n2n3combis, sizeof(double complex));
-        double complex *thisN_n = calloc(n2n3combis, sizeof(double complex));
-        double complex *thisUpsilon_n_rec = calloc(8*n2n3combis_rec, sizeof(double complex));
-        double complex *thisN_n_rec = calloc(n2n3combis_rec, sizeof(double complex));
-        double complex *thisnpcf = calloc(8*batchgamma_thetshift, sizeof(double complex));
-        double complex *thisnpcf_norm = calloc(batchgamma_thetshift, sizeof(double complex));
+        double complex *nextM4correlators = orpheus_calloc(8, sizeof(double complex));
+        double complex *thisUpsilon_n = orpheus_calloc(8*n2n3combis, sizeof(double complex));
+        double complex *thisN_n = orpheus_calloc(n2n3combis, sizeof(double complex));
+        double complex *thisUpsilon_n_rec = orpheus_calloc(8*n2n3combis_rec, sizeof(double complex));
+        double complex *thisN_n_rec = orpheus_calloc(n2n3combis_rec, sizeof(double complex));
+        double complex *thisnpcf = orpheus_calloc(8*batchgamma_thetshift, sizeof(double complex));
+        double complex *thisnpcf_norm = orpheus_calloc(batchgamma_thetshift, sizeof(double complex));
         for (int elb=0;elb<batch_nthetas;elb++){
             if ((verbose>1) && (thisthread==0)){
                 printf("Done %.4f per cent of multipole-to-Map4 conversion\r",100.* (float) elb/batch_nthetas);}
@@ -2215,12 +2242,18 @@ void alloc_notomoGammans_discrete_gnnn(const MultiresoCatalog *cat_source, const
     int _nnvals_Upsn = 2*nmax+1;
     int _threadshift = _nnvals_Upsn*_nnvals_Upsn*nbinsr*nbinsr*nbinsr;
 
-    double complex *allGtilden = calloc(nthreads*_threadshift, sizeof(double complex));
-    double complex *allNormn = calloc(nthreads*_threadshift, sizeof(double complex));
-    double *allcounts = calloc(nthreads*nbinsr, sizeof(double));
-    double *allnorms = calloc(nthreads*nbinsr, sizeof(double));
-    double *totcounts = calloc(nbinsr, sizeof(double));
-    double *totnorms = calloc(nbinsr, sizeof(double));
+    double complex *allGtilden = orpheus_calloc(nthreads*_threadshift, sizeof(double complex));
+    double complex *allNormn = orpheus_calloc(nthreads*_threadshift, sizeof(double complex));
+    double *allcounts = orpheus_calloc(nthreads*nbinsr, sizeof(double));
+    double *allnorms = orpheus_calloc(nthreads*nbinsr, sizeof(double));
+    double *totcounts = orpheus_calloc(nbinsr, sizeof(double));
+    double *totnorms = orpheus_calloc(nbinsr, sizeof(double));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(allGtilden); free(allNormn); free(allcounts); free(allnorms); free(totcounts);
+        free(totnorms);
+        return;
+    }
 
     int nregionsdone = 0;
     reset_progress();
@@ -2265,9 +2298,9 @@ void alloc_notomoGammans_discrete_gnnn(const MultiresoCatalog *cat_source, const
         // Gns have shape (nnvals, nbinsz, nbinsr)
         // where the ns are ordered as 
         // [-nmax_1-nmax_2-3, ..., nmax_1+nmax_2+3]
-        double complex *nextWns =  calloc(nnvals_Wn*nbinszr, sizeof(double complex));
-        double complex *nextW2ns = calloc(nnvals_W2n*nbinszr, sizeof(double complex));
-        double complex *nextW3ns = calloc(2*nbinszr, sizeof(double complex)); // [W3n_gtilde, W3n_norm]
+        double complex *nextWns =  orpheus_calloc(nnvals_Wn*nbinszr, sizeof(double complex));
+        double complex *nextW2ns = orpheus_calloc(nnvals_W2n*nbinszr, sizeof(double complex));
+        double complex *nextW3ns = orpheus_calloc(2*nbinszr, sizeof(double complex)); // [W3n_gtilde, W3n_norm]
         //for (int i=0;i<nnvals_Wn*nbinszr;i++){nextWns[i]=0;}
         //for (int i=0;i<nnvals_W2n*nbinszr;i++){nextW2ns[i]=0;}
         //for (int i=0;i<nnvals_W3n*nbinszr;i++){nextW3ns[i]=0;}
@@ -2442,15 +2475,21 @@ void alloc_notomoGammans_tree_gnnn(const MultiresoCatalog *cat_source, const Nav
 
     int n_cfs = 1;
     // Temporary arrays that are allocated in parallel and later reduced
-    double *tmpwcounts = calloc(nthreads*nbinsr, sizeof(double));
-    double *tmpwnorms = calloc(nthreads*nbinsr, sizeof(double));
-    double complex *tmpUpsilon_n = calloc(nthreads*len_nindices*nthetacombis, sizeof(double complex));
-    double complex *tmpN_n = calloc(nthreads*len_nindices*nthetacombis, sizeof(double complex));
-    double *totcounts = calloc(nbinsr, sizeof(double));
-    double *totnorms = calloc(nbinsr, sizeof(double));
+    double *tmpwcounts = orpheus_calloc(nthreads*nbinsr, sizeof(double));
+    double *tmpwnorms = orpheus_calloc(nthreads*nbinsr, sizeof(double));
+    double complex *tmpUpsilon_n = orpheus_calloc(nthreads*len_nindices*nthetacombis, sizeof(double complex));
+    double complex *tmpN_n = orpheus_calloc(nthreads*len_nindices*nthetacombis, sizeof(double complex));
+    double *totcounts = orpheus_calloc(nbinsr, sizeof(double));
+    double *totnorms = orpheus_calloc(nbinsr, sizeof(double));
 
     // Helper array that checks how many regions have been already computed
-    int *regionsdone = calloc(nregions, sizeof(int));
+    int *regionsdone = orpheus_calloc(nregions, sizeof(int));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(tmpwcounts); free(tmpwnorms); free(tmpUpsilon_n); free(tmpN_n); free(totcounts);
+        free(totnorms); free(regionsdone);
+        return;
+    }
     int nregionsdone = 0;
     reset_progress();
     
@@ -2473,14 +2512,14 @@ void alloc_notomoGammans_tree_gnnn(const MultiresoCatalog *cat_source, const Nav
         int ups_compshift = len_nindices*nthetacombis;
 
         int nbinszr = nbinsz*nbinsr;
-        double complex *nextWns =  calloc(nnvals_Wn*nbinszr, sizeof(double complex));
-        double complex *nextW2ns = calloc(nnvals_W2n*nbinszr, sizeof(double complex));
-        double complex *nextW3ns = calloc(2*nbinszr, sizeof(double complex)); // [W3n_gtilde, W3n_norm]
+        double complex *nextWns =  orpheus_calloc(nnvals_Wn*nbinszr, sizeof(double complex));
+        double complex *nextW2ns = orpheus_calloc(nnvals_W2n*nbinszr, sizeof(double complex));
+        double complex *nextW3ns = orpheus_calloc(2*nbinszr, sizeof(double complex)); // [W3n_gtilde, W3n_norm]
 
         int npix_hash = pix1_n*pix2_n;
-        int *rshift_index_matcher = calloc(nresos, sizeof(int));
-        int *rshift_pixs_galind_bounds = calloc(nresos, sizeof(int));
-        int *rshift_pix_gals = calloc(nresos, sizeof(int));
+        int *rshift_index_matcher = orpheus_calloc(nresos, sizeof(int));
+        int *rshift_pixs_galind_bounds = orpheus_calloc(nresos, sizeof(int));
+        int *rshift_pix_gals = orpheus_calloc(nresos, sizeof(int));
         for (int elreso=1;elreso<nresos;elreso++){
             rshift_index_matcher[elreso] = rshift_index_matcher[elreso-1] + npix_hash;
             rshift_pixs_galind_bounds[elreso] = rshift_pixs_galind_bounds[elreso-1] + ngal_lens_resos[elreso-1]+1;
@@ -2669,9 +2708,15 @@ void alloc_notomoGammans_tree_gnnn(const MultiresoCatalog *cat_source, const Nav
     // 4) Get the Gamma_mu(theta1,theta2,theta3,phi12,phi13)
     // 1)
     int elbcombi = 0;
-    int *elb1_inds = calloc(nthetacombis, sizeof(int));
-    int *elb2_inds = calloc(nthetacombis, sizeof(int));
-    int *elb3_inds = calloc(nthetacombis, sizeof(int));
+    int *elb1_inds = orpheus_calloc(nthetacombis, sizeof(int));
+    int *elb2_inds = orpheus_calloc(nthetacombis, sizeof(int));
+    int *elb3_inds = orpheus_calloc(nthetacombis, sizeof(int));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(tmpwcounts); free(tmpwnorms); free(tmpUpsilon_n); free(tmpN_n); free(totcounts);
+        free(totnorms); free(regionsdone); free(elb1_inds); free(elb2_inds); free(elb3_inds);
+        return;
+    }
     for (int elb1=0;elb1<nbinsr;elb1++){
         for (int elb2=elb1;elb2<nbinsr;elb2++){
             for (int elb3=elb2;elb3<nbinsr;elb3++){
@@ -2697,10 +2742,10 @@ void alloc_notomoGammans_tree_gnnn(const MultiresoCatalog *cat_source, const Nav
         int n2n3combis_rec = nnvals_Upsn_rec*nnvals_Upsn_rec;
         int ups_rec_compshift = n2n3combis_rec*ups_nshift;
 
-        double complex *thisUpsilon_n = calloc(n_cfs*n2n3combis, sizeof(double complex));
-        double complex *thisN_n = calloc(n2n3combis, sizeof(double complex));
-        double complex *thisUpsilon_n_rec = calloc(n_cfs*n2n3combis_rec, sizeof(double complex));
-        double complex *thisN_n_rec = calloc(n2n3combis_rec, sizeof(double complex));
+        double complex *thisUpsilon_n = orpheus_calloc(n_cfs*n2n3combis, sizeof(double complex));
+        double complex *thisN_n = orpheus_calloc(n2n3combis, sizeof(double complex));
+        double complex *thisUpsilon_n_rec = orpheus_calloc(n_cfs*n2n3combis_rec, sizeof(double complex));
+        double complex *thisN_n_rec = orpheus_calloc(n2n3combis_rec, sizeof(double complex));
 
         // 2)
         elb1 = elb1_inds[elb];
@@ -2816,7 +2861,9 @@ void alloc_notomoMapNap3_tree_gnnn(const MultiresoCatalog *cat_source, const Nav
     int *thetacombis_batches = fourth->thetacombis_batches, *nthetacombis_batches = fourth->nthetacombis_batches;
     int *cumthetacombis_batches = fourth->cumthetacombis_batches; int nthetbatches = fourth->nthetbatches;
 
-    double complex *allNM3correlator = calloc(nthreads*1*1*napradii, sizeof(double complex));
+    double complex *allNM3correlator = orpheus_calloc(nthreads*1*1*napradii, sizeof(double complex));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){free(allNM3correlator); return;}
     int nregionsdone = 0;
     reset_progress();
     #pragma omp parallel for num_threads(nthreads)
@@ -2852,36 +2899,36 @@ void alloc_notomoMapNap3_tree_gnnn(const MultiresoCatalog *cat_source, const Nav
         int batchGtilde_thetshift = nbinsphi*nbinsphi;
         
         int npix_hash = pix1_n*pix2_n;
-        int *rshift_index_matcher = calloc(nresos, sizeof(int));
-        int *rshift_pixs_galind_bounds = calloc(nresos, sizeof(int));
-        int *rshift_pix_gals = calloc(nresos, sizeof(int));
+        int *rshift_index_matcher = orpheus_calloc(nresos, sizeof(int));
+        int *rshift_pixs_galind_bounds = orpheus_calloc(nresos, sizeof(int));
+        int *rshift_pix_gals = orpheus_calloc(nresos, sizeof(int));
         for (int elreso=1;elreso<nresos;elreso++){
             rshift_index_matcher[elreso] = rshift_index_matcher[elreso-1] + npix_hash;
             rshift_pixs_galind_bounds[elreso] = rshift_pixs_galind_bounds[elreso-1] + ngal_lens_resos[elreso-1]+1;
             rshift_pix_gals[elreso] = rshift_pix_gals[elreso-1] + ngal_lens_resos[elreso-1];
         }
 
-        double *totcounts = calloc(nbinsr, sizeof(double));
-        double *totnorms = calloc(nbinsr, sizeof(double));
-        double *bin_centers_batch = calloc(nbinsr, sizeof(double));
-        double complex *batchGtilde_n = calloc(batchGtilde_compshift, sizeof(double complex));
-        double complex *batchN_n = calloc(batchGtilde_compshift, sizeof(double complex));
-        double *batch_thetas1 = calloc(batch_nthetas, sizeof(double));
-        double *batch_thetas2 = calloc(batch_nthetas, sizeof(double));
-        double *batch_thetas3 = calloc(batch_nthetas, sizeof(double));
+        double *totcounts = orpheus_calloc(nbinsr, sizeof(double));
+        double *totnorms = orpheus_calloc(nbinsr, sizeof(double));
+        double *bin_centers_batch = orpheus_calloc(nbinsr, sizeof(double));
+        double complex *batchGtilde_n = orpheus_calloc(batchGtilde_compshift, sizeof(double complex));
+        double complex *batchN_n = orpheus_calloc(batchGtilde_compshift, sizeof(double complex));
+        double *batch_thetas1 = orpheus_calloc(batch_nthetas, sizeof(double));
+        double *batch_thetas2 = orpheus_calloc(batch_nthetas, sizeof(double));
+        double *batch_thetas3 = orpheus_calloc(batch_nthetas, sizeof(double));
         
         int nbinszr = nbinsz*nbinsr;
-        double complex *nextWns =  calloc(nnvals_Wn*nbinszr, sizeof(double complex));
-        double complex *nextW2ns = calloc(nnvals_W2n*nbinszr, sizeof(double complex));
-        double complex *nextW3ns = calloc(2*nbinszr, sizeof(double complex)); // [W3n_gtilde, W3n_norm]
+        double complex *nextWns =  orpheus_calloc(nnvals_Wn*nbinszr, sizeof(double complex));
+        double complex *nextW2ns = orpheus_calloc(nnvals_W2n*nbinszr, sizeof(double complex));
+        double complex *nextW3ns = orpheus_calloc(2*nbinszr, sizeof(double complex)); // [W3n_gtilde, W3n_norm]
         
         double drbin = (log(rmax)-log(rmin))/(nbinsr);
         int rbin_min_batch=nbinsr;int rbin_max_batch=0;
         int reso_min_batch=0; int reso_max_batch=0;
-        int *elb1s_batch = calloc(batch_nthetas, sizeof(int));
-        int *elb2s_batch = calloc(batch_nthetas, sizeof(int));
-        int *elb3s_batch = calloc(batch_nthetas, sizeof(int));
-        double *bin_edges = calloc(nbinsr+1, sizeof(double));
+        int *elb1s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
+        int *elb2s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
+        int *elb3s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
+        double *bin_edges = orpheus_calloc(nbinsr+1, sizeof(double));
         #pragma omp critical
         {
             build_thetabatch(elthetbatch, batch_nthetas, nbinsr, nresos, rmin, rmax,
@@ -3052,13 +3099,13 @@ void alloc_notomoMapNap3_tree_gnnn(const MultiresoCatalog *cat_source, const Nav
         //   2b) Transform the Gammatilde to the target basis & apply clustering correction
         //   2c) Update the aperture MapNap3 integral
         int ntrafos;
-        double complex *nextNM3correlator = calloc(1, sizeof(double complex));
-        double complex *thisGtilde_n = calloc(1*n2n3combis, sizeof(double complex));
-        double complex *thisN_n = calloc(n2n3combis, sizeof(double complex));
-        double complex *thisGtilde_n_rec = calloc(1*n2n3combis_rec, sizeof(double complex));
-        double complex *thisN_n_rec = calloc(n2n3combis_rec, sizeof(double complex));
-        double complex *thisnpcf = calloc(1*batchGtilde_thetshift, sizeof(double complex));
-        double complex *thisnpcf_norm = calloc(batchGtilde_thetshift, sizeof(double complex));
+        double complex *nextNM3correlator = orpheus_calloc(1, sizeof(double complex));
+        double complex *thisGtilde_n = orpheus_calloc(1*n2n3combis, sizeof(double complex));
+        double complex *thisN_n = orpheus_calloc(n2n3combis, sizeof(double complex));
+        double complex *thisGtilde_n_rec = orpheus_calloc(1*n2n3combis_rec, sizeof(double complex));
+        double complex *thisN_n_rec = orpheus_calloc(n2n3combis_rec, sizeof(double complex));
+        double complex *thisnpcf = orpheus_calloc(1*batchGtilde_thetshift, sizeof(double complex));
+        double complex *thisnpcf_norm = orpheus_calloc(batchGtilde_thetshift, sizeof(double complex));
         for (int elb=0;elb<batch_nthetas;elb++){
             // 1)
             int nbshift, elb1, elb2, elb3, elb1t, elb2t, elb3t;
@@ -3221,7 +3268,9 @@ void alloc_notomoNap4_tree_nnnn(const MultiresoCatalog *cat_base, const Multires
     int *thetacombis_batches = fourth->thetacombis_batches, *nthetacombis_batches = fourth->nthetacombis_batches;
     int *cumthetacombis_batches = fourth->cumthetacombis_batches; int nthetbatches = fourth->nthetbatches;
                
-    double complex *allN4correlators = calloc(nthreads*1*nnapradii, sizeof(double complex));
+    double complex *allN4correlators = orpheus_calloc(nthreads*1*nnapradii, sizeof(double complex));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){free(allN4correlators); return;}
     int nregionsdone = 0;
     reset_progress();
     #pragma omp parallel for num_threads(nthreads)
@@ -3254,32 +3303,32 @@ void alloc_notomoNap4_tree_nnnn(const MultiresoCatalog *cat_base, const Multires
         int batchgamma_thetshift = nbinsphi*nbinsphi;
         
         int npix_hash = pix1_n*pix2_n;
-        int *rshift_index_matcher_hash = calloc(nresos, sizeof(int));
-        int *rshift_pixs_galind_bounds = calloc(nresos, sizeof(int));
-        int *rshift_pix_gals = calloc(nresos, sizeof(int));
+        int *rshift_index_matcher_hash = orpheus_calloc(nresos, sizeof(int));
+        int *rshift_pixs_galind_bounds = orpheus_calloc(nresos, sizeof(int));
+        int *rshift_pix_gals = orpheus_calloc(nresos, sizeof(int));
         build_rshift_offsets(nresos, npix_hash, ngal_resos,
                              rshift_index_matcher_hash, rshift_pixs_galind_bounds, rshift_pix_gals);
 
-        double *totcounts = calloc(nbinsr, sizeof(double));
-        double *totnorms = calloc(nbinsr, sizeof(double));
-        double *bin_centers_batch = calloc(nbinsr, sizeof(double));
-        double complex *batchN_n = calloc(batchN_compshift, sizeof(double complex));
-        double *batch_thetas1 = calloc(batch_nthetas, sizeof(double));
-        double *batch_thetas2 = calloc(batch_nthetas, sizeof(double));
-        double *batch_thetas3 = calloc(batch_nthetas, sizeof(double));
+        double *totcounts = orpheus_calloc(nbinsr, sizeof(double));
+        double *totnorms = orpheus_calloc(nbinsr, sizeof(double));
+        double *bin_centers_batch = orpheus_calloc(nbinsr, sizeof(double));
+        double complex *batchN_n = orpheus_calloc(batchN_compshift, sizeof(double complex));
+        double *batch_thetas1 = orpheus_calloc(batch_nthetas, sizeof(double));
+        double *batch_thetas2 = orpheus_calloc(batch_nthetas, sizeof(double));
+        double *batch_thetas3 = orpheus_calloc(batch_nthetas, sizeof(double));
         
         int nbinszr = nbinsz*nbinsr;
-        double complex *nextWns = calloc(nnvals_Wn*nbinszr, sizeof(double complex));
-        double complex *nextW2ns = calloc(nnvals_Wn*nbinszr, sizeof(double complex));
-        double complex *nextW3ns = calloc(nbinszr, sizeof(double complex));
+        double complex *nextWns = orpheus_calloc(nnvals_Wn*nbinszr, sizeof(double complex));
+        double complex *nextW2ns = orpheus_calloc(nnvals_Wn*nbinszr, sizeof(double complex));
+        double complex *nextW3ns = orpheus_calloc(nbinszr, sizeof(double complex));
         
         double drbin = (log(rmax)-log(rmin))/(nbinsr);
         int rbin_min_batch=nbinsr;int rbin_max_batch=0;
         int reso_min_batch=0; int reso_max_batch=0;
-        int *elb1s_batch = calloc(batch_nthetas, sizeof(int));
-        int *elb2s_batch = calloc(batch_nthetas, sizeof(int));
-        int *elb3s_batch = calloc(batch_nthetas, sizeof(int));
-        double *bin_edges = calloc(nbinsr+1, sizeof(double));
+        int *elb1s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
+        int *elb2s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
+        int *elb3s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
+        double *bin_edges = orpheus_calloc(nbinsr+1, sizeof(double));
         
         #pragma omp critical
         {
@@ -3404,10 +3453,10 @@ void alloc_notomoNap4_tree_nnnn(const MultiresoCatalog *cat_base, const Multires
         //   2a) Get the Gamma_mu(theta1,theta2,theta3,phi12,phi13)
         //   2b) Transform the Gamma_mu to the target basis
         //   2c) Update the aperture Map^4 integral
-        double complex *nextN4correlators = calloc(1, sizeof(double complex));
-        double complex *thisN_n = calloc(n2n3combis, sizeof(double complex));
-        double complex *thisN_n_rec = calloc(n2n3combis_rec, sizeof(double complex));
-        double complex *thisnpcf = calloc(batchgamma_thetshift, sizeof(double complex));
+        double complex *nextN4correlators = orpheus_calloc(1, sizeof(double complex));
+        double complex *thisN_n = orpheus_calloc(n2n3combis, sizeof(double complex));
+        double complex *thisN_n_rec = orpheus_calloc(n2n3combis_rec, sizeof(double complex));
+        double complex *thisnpcf = orpheus_calloc(batchgamma_thetshift, sizeof(double complex));
         nnnn_reconstruct_batch(batchN_n, batch_nthetas, batchN_nshift,
                               elb1s_batch, elb2s_batch, elb3s_batch,
                               nmax, nindices, len_nindices, n2n3combis, n2n3combis_rec,
@@ -3514,13 +3563,19 @@ void alloc_notomoNap4_tree_nnnn_highmem(const MultiresoCatalog *cat_base, const 
     double drbin = (log(rmax)-log(rmin))/(nbinsr);
     int npix_hash = pix1_n*pix2_n;
 
-    int *rshift_index_matcher_hash = calloc(nresos, sizeof(int));
-    int *rshift_pixs_galind_bounds = calloc(nresos, sizeof(int));
-    int *rshift_pix_gals = calloc(nresos, sizeof(int));
+    int *rshift_index_matcher_hash = orpheus_calloc(nresos, sizeof(int));
+    int *rshift_pixs_galind_bounds = orpheus_calloc(nresos, sizeof(int));
+    int *rshift_pix_gals = orpheus_calloc(nresos, sizeof(int));
     build_rshift_offsets(nresos, npix_hash, ngal_resos,
                          rshift_index_matcher_hash, rshift_pixs_galind_bounds, rshift_pix_gals);
 
-    double *bin_edges = calloc(nbinsr+1, sizeof(double));
+    double *bin_edges = orpheus_calloc(nbinsr+1, sizeof(double));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
+        free(bin_edges);
+        return;
+    }
     bin_edges[0] = rmin;
     for (int elb=0;elb<nbinsr;elb++){ bin_edges[elb+1] = bin_edges[elb]*exp(drbin); }
 
@@ -3530,19 +3585,32 @@ void alloc_notomoNap4_tree_nnnn_highmem(const MultiresoCatalog *cat_base, const 
     long wn_per_gal = (long) nnvals_Wn*nbinsr;
     int gal_per_chunk = (int)(1000000000L / wn_per_gal); if (gal_per_chunk<1){gal_per_chunk=1;}
     int nchunks = (int)((ncache + (long)gal_per_chunk - 1)/(long)gal_per_chunk);
-    double complex **Wncache  = malloc(nchunks*sizeof(double complex*));
-    double complex **W2ncache = malloc(nchunks*sizeof(double complex*));
-    double complex **W3ncache = malloc(nchunks*sizeof(double complex*));
+    double complex **Wncache  = orpheus_malloc(nchunks*sizeof(double complex*));
+    double complex **W2ncache = orpheus_malloc(nchunks*sizeof(double complex*));
+    double complex **W3ncache = orpheus_malloc(nchunks*sizeof(double complex*));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
+        free(bin_edges); free(Wncache); free(W2ncache); free(W3ncache);
+        return;
+    }
     for (int c=0;c<nchunks;c++){
         long chunkgals = gal_per_chunk;
         if ((long)(c+1)*gal_per_chunk > ncache){ chunkgals = ncache - (long)c*gal_per_chunk; }
-        Wncache[c]  = calloc(chunkgals*wn_per_gal, sizeof(double complex));
-        W2ncache[c] = calloc(chunkgals*wn_per_gal, sizeof(double complex));
-        W3ncache[c] = calloc(chunkgals*nbinsr, sizeof(double complex));
+        Wncache[c]  = orpheus_calloc(chunkgals*wn_per_gal, sizeof(double complex));
+        W2ncache[c] = orpheus_calloc(chunkgals*wn_per_gal, sizeof(double complex));
+        W3ncache[c] = orpheus_calloc(chunkgals*nbinsr, sizeof(double complex));
     }
 
-    double *tmp_totcounts = calloc(nthreads*nbinsr, sizeof(double));
-    double *tmp_totnorms  = calloc(nthreads*nbinsr, sizeof(double));
+    double *tmp_totcounts = orpheus_calloc(nthreads*nbinsr, sizeof(double));
+    double *tmp_totnorms  = orpheus_calloc(nthreads*nbinsr, sizeof(double));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
+        free(bin_edges); free(Wncache); free(W2ncache); free(W3ncache); free(tmp_totcounts);
+        free(tmp_totnorms);
+        return;
+    }
 
     // Fill the moment cache in parallel
     // Progress spans both the cache fill and the batch accumulation below, which reads
@@ -3607,8 +3675,15 @@ void alloc_notomoNap4_tree_nnnn_highmem(const MultiresoCatalog *cat_base, const 
     }
 
     // Reduce bin centers
-    double *totcounts = calloc(nbinsr, sizeof(double));
-    double *totnorms  = calloc(nbinsr, sizeof(double));
+    double *totcounts = orpheus_calloc(nbinsr, sizeof(double));
+    double *totnorms  = orpheus_calloc(nbinsr, sizeof(double));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
+        free(bin_edges); free(Wncache); free(W2ncache); free(W3ncache); free(tmp_totcounts);
+        free(tmp_totnorms); free(totcounts); free(totnorms);
+        return;
+    }
     for (int t=0;t<nthreads;t++){
         for (int b=0;b<nbinsr;b++){
             totcounts[b] += tmp_totcounts[t*nbinsr+b];
@@ -3618,7 +3693,14 @@ void alloc_notomoNap4_tree_nnnn_highmem(const MultiresoCatalog *cat_base, const 
     for (int b=0;b<nbinsr;b++){ if (totnorms[b]!=0){ bin_centers[b] = totcounts[b]/totnorms[b]; } }
 
     // Allocation of NNNN & optionally further transforms //
-    double complex *allN4correlators = calloc(nthreads*nnapradii, sizeof(double complex));
+    double complex *allN4correlators = orpheus_calloc(nthreads*nnapradii, sizeof(double complex));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
+        free(bin_edges); free(Wncache); free(W2ncache); free(W3ncache); free(tmp_totcounts);
+        free(tmp_totnorms); free(totcounts); free(totnorms); free(allN4correlators);
+        return;
+    }
     #pragma omp parallel for num_threads(nthreads)
     for (int elthetbatch=0; elthetbatch<nthetbatches; elthetbatch++){
         int thisthread = omp_get_thread_num();
@@ -3627,11 +3709,11 @@ void alloc_notomoNap4_tree_nnnn_highmem(const MultiresoCatalog *cat_base, const 
         long batchN_compshift = (long)n2n3combis*batchN_nshift;
         int batchgamma_thetshift = nbinsphi*nbinsphi;
 
-        double complex *batchN_n = calloc(batchN_compshift, sizeof(double complex));
-        int *elb1s_batch = calloc(batch_nthetas, sizeof(int));
-        int *elb2s_batch = calloc(batch_nthetas, sizeof(int));
-        int *elb3s_batch = calloc(batch_nthetas, sizeof(int));
-        double *bin_centers_batch = calloc(nbinsr, sizeof(double));
+        double complex *batchN_n = orpheus_calloc(batchN_compshift, sizeof(double complex));
+        int *elb1s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
+        int *elb2s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
+        int *elb3s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
+        double *bin_centers_batch = orpheus_calloc(nbinsr, sizeof(double));
         for (int b=0;b<nbinsr;b++){ bin_centers_batch[b] = bin_centers[b]; }
         for (int elb=0;elb<batch_nthetas;elb++){
             int thisrcombi = thetacombis_batches[cumthetacombis_batches[elthetbatch]+elb];
@@ -3664,10 +3746,10 @@ void alloc_notomoNap4_tree_nnnn_highmem(const MultiresoCatalog *cat_base, const 
         print_progress((int)(nregionsdone/progscale), (int)(progtot/progscale), verbose);
 
         // Reconstruct each theta combi via symmetries, optionally transform to Nap^4
-        double complex *nextN4correlators = calloc(1, sizeof(double complex));
-        double complex *thisN_n = calloc(n2n3combis, sizeof(double complex));
-        double complex *thisN_n_rec = calloc(n2n3combis_rec, sizeof(double complex));
-        double complex *thisnpcf = calloc(batchgamma_thetshift, sizeof(double complex));
+        double complex *nextN4correlators = orpheus_calloc(1, sizeof(double complex));
+        double complex *thisN_n = orpheus_calloc(n2n3combis, sizeof(double complex));
+        double complex *thisN_n_rec = orpheus_calloc(n2n3combis_rec, sizeof(double complex));
+        double complex *thisnpcf = orpheus_calloc(batchgamma_thetshift, sizeof(double complex));
         nnnn_reconstruct_batch(batchN_n, batch_nthetas, batchN_nshift,
                               elb1s_batch, elb2s_batch, elb3s_batch,
                               nmax, nindices, len_nindices, n2n3combis, n2n3combis_rec,
@@ -3758,22 +3840,39 @@ void alloc_nnnn_tree(const MultiresoCatalog *cat_base, const MultiresoCatalog *c
     double drbin = (log(rmax)-log(rmin))/(nbinsr);
     int npix_hash = pix1_n*pix2_n;
 
-    int *rshift_index_matcher_hash = calloc(nresos, sizeof(int));
-    int *rshift_pixs_galind_bounds = calloc(nresos, sizeof(int));
-    int *rshift_pix_gals = calloc(nresos, sizeof(int));
+    int *rshift_index_matcher_hash = orpheus_calloc(nresos, sizeof(int));
+    int *rshift_pixs_galind_bounds = orpheus_calloc(nresos, sizeof(int));
+    int *rshift_pix_gals = orpheus_calloc(nresos, sizeof(int));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
+        return;
+    }
     build_rshift_offsets(nresos, npix_hash, ngal_resos,
                          rshift_index_matcher_hash, rshift_pixs_galind_bounds, rshift_pix_gals);
 
 
-    double *tmp_totcounts = calloc(nthreads*nbinsr, sizeof(double));
-    double *tmp_totnorms  = calloc(nthreads*nbinsr, sizeof(double));
+    double *tmp_totcounts = orpheus_calloc(nthreads*nbinsr, sizeof(double));
+    double *tmp_totnorms  = orpheus_calloc(nthreads*nbinsr, sizeof(double));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
+        free(tmp_totcounts); free(tmp_totnorms);
+        return;
+    }
 
     // A: Compute how many iterations we need to process the full catalog //
 
     // Find length of cache (only inner galaxies count!) and how many galaxies fit in a single
     // iteration such that memory_bound is fulfilled.
     long ngal_all = (long) pixs_galind_bounds[nregions];
-    int *baseinds = malloc((ngal_all>0?ngal_all:1)*sizeof(int));
+    int *baseinds = orpheus_malloc((ngal_all>0?ngal_all:1)*sizeof(int));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
+        free(tmp_totcounts); free(tmp_totnorms); free(baseinds);
+        return;
+    }
     long ncache = 0;
     for (long ig=0; ig<ngal_all; ig++){
         if (isinner[pix_gals[(int)ig]] >= 1e-5){ baseinds[ncache++] = (int)ig; }
@@ -3804,15 +3903,22 @@ void alloc_nnnn_tree(const MultiresoCatalog *cat_base, const MultiresoCatalog *c
     int nchunks = (int)((gals_per_iter + (long)gal_per_chunk - 1)/(long)gal_per_chunk);
 
     // Allocate the cache once as a jagged array
-    double complex **Wncache  = malloc(nchunks*sizeof(double complex*));
-    double complex **W2ncache = malloc(nchunks*sizeof(double complex*));
-    double complex **W3ncache = malloc(nchunks*sizeof(double complex*));
+    double complex **Wncache  = orpheus_malloc(nchunks*sizeof(double complex*));
+    double complex **W2ncache = orpheus_malloc(nchunks*sizeof(double complex*));
+    double complex **W3ncache = orpheus_malloc(nchunks*sizeof(double complex*));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
+        free(tmp_totcounts); free(tmp_totnorms); free(baseinds); free(Wncache); free(W2ncache);
+        free(W3ncache);
+        return;
+    }
     for (int c=0;c<nchunks;c++){
         long chunkgals = gal_per_chunk;
         if ((long)(c+1)*gal_per_chunk > gals_per_iter){ chunkgals = gals_per_iter - (long)c*gal_per_chunk; }
-        Wncache[c]  = calloc(chunkgals*wn_per_gal, sizeof(double complex));
-        W2ncache[c] = calloc(chunkgals*wn_per_gal, sizeof(double complex));
-        W3ncache[c] = calloc(chunkgals*nbinsr, sizeof(double complex));
+        Wncache[c]  = orpheus_calloc(chunkgals*wn_per_gal, sizeof(double complex));
+        W2ncache[c] = orpheus_calloc(chunkgals*wn_per_gal, sizeof(double complex));
+        W3ncache[c] = orpheus_calloc(chunkgals*nbinsr, sizeof(double complex));
         if (Wncache[c]==NULL || W2ncache[c]==NULL || W3ncache[c]==NULL){
             fprintf(stderr, "alloc_nnnn_tree: FAILED to allocate moment cache chunk %d/%d "
                     "(~%.1f GiB/chunk, memory_bound=%.1f GiB). Lower memory_bound or the number "
@@ -3904,10 +4010,10 @@ void alloc_nnnn_tree(const MultiresoCatalog *cat_base, const MultiresoCatalog *c
             int batch_nthetas = nthetacombis_batches[elthetbatch];
             int batchN_nshift = batch_nthetas;
             long batchN_compshift = (long)n2n3combis*batchN_nshift;
-            double complex *batchN_n = calloc(batchN_compshift, sizeof(double complex));
-            int *elb1s_batch = calloc(batch_nthetas, sizeof(int));
-            int *elb2s_batch = calloc(batch_nthetas, sizeof(int));
-            int *elb3s_batch = calloc(batch_nthetas, sizeof(int));
+            double complex *batchN_n = orpheus_calloc(batchN_compshift, sizeof(double complex));
+            int *elb1s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
+            int *elb2s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
+            int *elb3s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
             for (int elb=0;elb<batch_nthetas;elb++){
                 int thisrcombi = thetacombis_batches[cumthetacombis_batches[elthetbatch]+elb];
                 elb1s_batch[elb] = thisrcombi/(nbinsr*nbinsr);
@@ -3937,8 +4043,8 @@ void alloc_nnnn_tree(const MultiresoCatalog *cat_base, const MultiresoCatalog *c
             print_progress((int)(nregionsdone/progscale), (int)(progtot/progscale), verbose);
 
             // C: Update the global Nn using the Nn from the current iteration //
-            double complex *thisN_n = calloc(n2n3combis, sizeof(double complex));
-            double complex *thisN_n_rec = calloc(n2n3combis_rec, sizeof(double complex));
+            double complex *thisN_n = orpheus_calloc(n2n3combis, sizeof(double complex));
+            double complex *thisN_n_rec = orpheus_calloc(n2n3combis_rec, sizeof(double complex));
             nnnn_reconstruct_batch(batchN_n, batch_nthetas, batchN_nshift,
                                   elb1s_batch, elb2s_batch, elb3s_batch,
                                   nmax, nindices, len_nindices, n2n3combis, n2n3combis_rec,
@@ -3957,8 +4063,15 @@ void alloc_nnnn_tree(const MultiresoCatalog *cat_base, const MultiresoCatalog *c
     }
 
     // Get bin centers
-    double *totcounts = calloc(nbinsr, sizeof(double));
-    double *totnorms  = calloc(nbinsr, sizeof(double));
+    double *totcounts = orpheus_calloc(nbinsr, sizeof(double));
+    double *totnorms  = orpheus_calloc(nbinsr, sizeof(double));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
+        free(tmp_totcounts); free(tmp_totnorms); free(baseinds); free(Wncache); free(W2ncache);
+        free(W3ncache); free(totcounts); free(totnorms);
+        return;
+    }
     for (int t=0;t<nthreads;t++){
         for (int b=0;b<nbinsr;b++){
             totcounts[b] += tmp_totcounts[t*nbinsr+b];
@@ -4024,7 +4137,9 @@ void alloc_nnnn_tree_spherical(const MultiresoCatalog *cat_base, const Multireso
 
     // Find length of cache (only inner galaxies count!) and how many galaxies fit in a single
     // iteration such that memory_bound is fulfilled.
-    int *baseinds = malloc((ngal>0?ngal:1)*sizeof(int));
+    int *baseinds = orpheus_malloc((ngal>0?ngal:1)*sizeof(int));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){free(baseinds); return;}
     long ncache = 0;
     for (int ig=0; ig<ngal; ig++){
         if (isinner[ig] >= 1e-5){ baseinds[ncache++] = ig; }
@@ -4055,15 +4170,17 @@ void alloc_nnnn_tree_spherical(const MultiresoCatalog *cat_base, const Multireso
     int nchunks = (int)((gals_per_iter + (long)gal_per_chunk - 1)/(long)gal_per_chunk);
 
     // Allocate the cache once as a jagged array
-    double complex **Wncache  = malloc(nchunks*sizeof(double complex*));
-    double complex **W2ncache = malloc(nchunks*sizeof(double complex*));
-    double complex **W3ncache = malloc(nchunks*sizeof(double complex*));
+    double complex **Wncache  = orpheus_malloc(nchunks*sizeof(double complex*));
+    double complex **W2ncache = orpheus_malloc(nchunks*sizeof(double complex*));
+    double complex **W3ncache = orpheus_malloc(nchunks*sizeof(double complex*));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){free(baseinds); free(Wncache); free(W2ncache); free(W3ncache); return;}
     for (int c=0;c<nchunks;c++){
         long chunkgals = gal_per_chunk;
         if ((long)(c+1)*gal_per_chunk > gals_per_iter){ chunkgals = gals_per_iter - (long)c*gal_per_chunk; }
-        Wncache[c]  = calloc(chunkgals*wn_per_gal, sizeof(double complex));
-        W2ncache[c] = calloc(chunkgals*wn_per_gal, sizeof(double complex));
-        W3ncache[c] = calloc(chunkgals*nbinsr, sizeof(double complex));
+        Wncache[c]  = orpheus_calloc(chunkgals*wn_per_gal, sizeof(double complex));
+        W2ncache[c] = orpheus_calloc(chunkgals*wn_per_gal, sizeof(double complex));
+        W3ncache[c] = orpheus_calloc(chunkgals*nbinsr, sizeof(double complex));
         if (Wncache[c]==NULL || W2ncache[c]==NULL || W3ncache[c]==NULL){
             fprintf(stderr, "alloc_nnnn_tree_spherical: FAILED to allocate moment cache chunk %d/%d "
                     "(~%.1f GiB/chunk, memory_bound=%.1f GiB). Lower memory_bound or the number "
@@ -4075,8 +4192,14 @@ void alloc_nnnn_tree_spherical(const MultiresoCatalog *cat_base, const Multireso
     if (verbose>1){ printf("alloc_nnnn_tree_spherical: %ld inner / %d total galaxies, %d block(s) of <=%ld gal (cache ~%.1f GiB), %d chunk(s)/block\n",
            ncache, ngal, n_iter, gals_per_iter, gals_per_iter*bytes_per_gal/1073741824.0, nchunks); }
 
-    double *tmp_totcounts = calloc(nthreads*nbinsr, sizeof(double));
-    double *tmp_totnorms  = calloc(nthreads*nbinsr, sizeof(double));
+    double *tmp_totcounts = orpheus_calloc(nthreads*nbinsr, sizeof(double));
+    double *tmp_totnorms  = orpheus_calloc(nthreads*nbinsr, sizeof(double));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(baseinds); free(Wncache); free(W2ncache); free(W3ncache); free(tmp_totcounts);
+        free(tmp_totnorms);
+        return;
+    }
 
     // B: Iterate over the catalog //
     // Progress spans both B1 and B2, the latter reading each block once per theta
@@ -4119,7 +4242,7 @@ void alloc_nnnn_tree_spherical(const MultiresoCatalog *cat_base, const Multireso
             // Helper arrays that hold the ranges returned by query_disc; usually 2048 ranges 
             // (i.e. 2*2048 entries) should be sufficient, but we allow a dynamic resizing
             long query_cap = 2048;
-            long *ranges = malloc(2*query_cap*sizeof(long));
+            long *ranges = orpheus_malloc(2*query_cap*sizeof(long));
             double bvec[3] = {bx, by, bz};
             for (int elreso=0;elreso<nresos;elreso++){
                 int rbin, zrshift, ind_Wn;
@@ -4190,10 +4313,10 @@ void alloc_nnnn_tree_spherical(const MultiresoCatalog *cat_base, const Multireso
             int batch_nthetas = nthetacombis_batches[elthetbatch];
             int batchN_nshift = batch_nthetas;
             long batchN_compshift = (long)n2n3combis*batchN_nshift;
-            double complex *batchN_n = calloc(batchN_compshift, sizeof(double complex));
-            int *elb1s_batch = calloc(batch_nthetas, sizeof(int));
-            int *elb2s_batch = calloc(batch_nthetas, sizeof(int));
-            int *elb3s_batch = calloc(batch_nthetas, sizeof(int));
+            double complex *batchN_n = orpheus_calloc(batchN_compshift, sizeof(double complex));
+            int *elb1s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
+            int *elb2s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
+            int *elb3s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
             for (int elb=0;elb<batch_nthetas;elb++){
                 int thisrcombi = thetacombis_batches[cumthetacombis_batches[elthetbatch]+elb];
                 elb1s_batch[elb] = thisrcombi/(nbinsr*nbinsr);
@@ -4222,8 +4345,8 @@ void alloc_nnnn_tree_spherical(const MultiresoCatalog *cat_base, const Multireso
             print_progress((int)(nregionsdone/progscale), (int)(progtot/progscale), verbose);
 
             // C: Update the global Nn using the Nn from the current iteration //
-            double complex *thisN_n = calloc(n2n3combis, sizeof(double complex));
-            double complex *thisN_n_rec = calloc(n2n3combis_rec, sizeof(double complex));
+            double complex *thisN_n = orpheus_calloc(n2n3combis, sizeof(double complex));
+            double complex *thisN_n_rec = orpheus_calloc(n2n3combis_rec, sizeof(double complex));
             nnnn_reconstruct_batch(batchN_n, batch_nthetas, batchN_nshift,
                                   elb1s_batch, elb2s_batch, elb3s_batch,
                                   nmax, nindices, len_nindices, n2n3combis, n2n3combis_rec,
@@ -4242,8 +4365,14 @@ void alloc_nnnn_tree_spherical(const MultiresoCatalog *cat_base, const Multireso
     }
 
     // Get bin centers
-    double *totcounts = calloc(nbinsr, sizeof(double));
-    double *totnorms  = calloc(nbinsr, sizeof(double));
+    double *totcounts = orpheus_calloc(nbinsr, sizeof(double));
+    double *totnorms  = orpheus_calloc(nbinsr, sizeof(double));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(baseinds); free(Wncache); free(W2ncache); free(W3ncache); free(tmp_totcounts);
+        free(tmp_totnorms); free(totcounts); free(totnorms);
+        return;
+    }
     for (int t=0;t<nthreads;t++){
         for (int b=0;b<nbinsr;b++){
             totcounts[b] += tmp_totcounts[t*nbinsr+b];
@@ -4308,14 +4437,25 @@ void alloc_nnnn_doubletree(const MultiresoCatalog *cat_leaf, const NavHash *nav,
     int npix_hash = pix1_n*pix2_n;
 
     // Per-reso offsets into the concatenated reso catalogues
-    int *rshift_index_matcher_hash = calloc(nresos, sizeof(int));
-    int *rshift_pixs_galind_bounds = calloc(nresos, sizeof(int));
-    int *rshift_pix_gals = calloc(nresos, sizeof(int));
+    int *rshift_index_matcher_hash = orpheus_calloc(nresos, sizeof(int));
+    int *rshift_pixs_galind_bounds = orpheus_calloc(nresos, sizeof(int));
+    int *rshift_pix_gals = orpheus_calloc(nresos, sizeof(int));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
+        return;
+    }
     build_rshift_offsets(nresos, npix_hash, ngal_resos,
                          rshift_index_matcher_hash, rshift_pixs_galind_bounds, rshift_pix_gals);
 
     // Map radial bin indices to resolution levels
-    int *reso_rindedges = calloc(nresos+1, sizeof(int));
+    int *reso_rindedges = orpheus_calloc(nresos+1, sizeof(int));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
+        free(reso_rindedges);
+        return;
+    }
     {
         int tmpreso = 0; double tmpr = rmin;
         for (int elr=0; elr<nbinsr; elr++){
@@ -4338,20 +4478,39 @@ void alloc_nnnn_doubletree(const MultiresoCatalog *cat_leaf, const NavHash *nav,
     }
 
     // Temporary accumulators for bin center computation
-    double *tmp_totcounts = calloc(nthreads*nbinsr, sizeof(double));
-    double *tmp_totnorms  = calloc(nthreads*nbinsr, sizeof(double));
+    double *tmp_totcounts = orpheus_calloc(nthreads*nbinsr, sizeof(double));
+    double *tmp_totnorms  = orpheus_calloc(nthreads*nbinsr, sizeof(double));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
+        free(reso_rindedges); free(tmp_totcounts); free(tmp_totnorms);
+        return;
+    }
      
     // B: Radial bin triplet bookkeeping //
 
     // Some small helpers
     int hasdiscrete = nresos - nresos_grid;
-    int *bin2reso = calloc(nbinsr, sizeof(int)); // inverse of reso_rindedges
+    int *bin2reso = orpheus_calloc(nbinsr, sizeof(int)); // inverse of reso_rindedges
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
+        free(reso_rindedges); free(tmp_totcounts); free(tmp_totnorms); free(bin2reso);
+        return;
+    }
     for (int r=0;r<nresos;r++){ for (int b=reso_rindedges[r]; b<reso_rindedges[r+1]; b++){ bin2reso[b]=r; } }
     long ntheta_tot = (long) cumthetacombis_batches[nthetbatches];
     long Nn_size = (long)n2n3combis_rec * N_nshift;
 
     // Membership mask of the wanted ordered radial triplets
-    char *wanted = calloc((long)N_nshift, 1);
+    char *wanted = orpheus_calloc((long)N_nshift, 1);
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
+        free(reso_rindedges); free(tmp_totcounts); free(tmp_totnorms); free(bin2reso);
+        free(wanted);
+        return;
+    }
     for (long elt=0; elt<ntheta_tot; elt++){ wanted[thetacombis_batches[elt]] = 1; }
 
     // Get number of radial triplets within the same reso bin and allocate some helpers needed lateron
@@ -4361,11 +4520,19 @@ void alloc_nnnn_doubletree(const MultiresoCatalog *cat_leaf, const NavHash *nav,
         int e1=c/(nbinsr*nbinsr), e2=(c-e1*nbinsr*nbinsr)/nbinsr, e3=c-e1*nbinsr*nbinsr-e2*nbinsr;
         if (bin2reso[e1]==bin2reso[e2] && bin2reso[e1]==bin2reso[e3]){ n_samereso++; }
     }
-    int *samereso_e1 = malloc((n_samereso>0?n_samereso:1)*sizeof(int));
-    int *samereso_e2 = malloc((n_samereso>0?n_samereso:1)*sizeof(int));
-    int *samereso_e3 = malloc((n_samereso>0?n_samereso:1)*sizeof(int));
-    int *samereso_lo = calloc(nresos, sizeof(int));
-    int *samereso_hi = calloc(nresos, sizeof(int));
+    int *samereso_e1 = orpheus_malloc((n_samereso>0?n_samereso:1)*sizeof(int));
+    int *samereso_e2 = orpheus_malloc((n_samereso>0?n_samereso:1)*sizeof(int));
+    int *samereso_e3 = orpheus_malloc((n_samereso>0?n_samereso:1)*sizeof(int));
+    int *samereso_lo = orpheus_calloc(nresos, sizeof(int));
+    int *samereso_hi = orpheus_calloc(nresos, sizeof(int));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
+        free(reso_rindedges); free(tmp_totcounts); free(tmp_totnorms); free(bin2reso);
+        free(wanted); free(samereso_e1); free(samereso_e2); free(samereso_e3); free(samereso_lo);
+        free(samereso_hi);
+        return;
+    }
     {
         long k = 0;
         for (int r=0;r<nresos;r++){
@@ -4417,7 +4584,15 @@ void alloc_nnnn_doubletree(const MultiresoCatalog *cat_leaf, const NavHash *nav,
         if (cap < 1){ cap = 1; }
         if (cap < nthreads_cross){ nthreads_cross = (int)cap; }
     }
-    double complex *tmpN_n = calloc((long)nthreads_cross*Nn_size, sizeof(double complex));
+    double complex *tmpN_n = orpheus_calloc((long)nthreads_cross*Nn_size, sizeof(double complex));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
+        free(reso_rindedges); free(tmp_totcounts); free(tmp_totnorms); free(bin2reso);
+        free(wanted); free(samereso_e1); free(samereso_e2); free(samereso_e3); free(samereso_lo);
+        free(samereso_hi); free(tmpN_n);
+        return;
+    }
     if (tmpN_n==NULL){
         fprintf(stderr,"alloc_nnnn_doubletree: cross-reso N_n accumulator alloc failed "
                 "(%d threads x %.2f GiB). Lower memory_bound/threads.\n",
@@ -4433,11 +4608,20 @@ void alloc_nnnn_doubletree(const MultiresoCatalog *cat_leaf, const NavHash *nav,
 
     // Per-(thread,reso) timers: aperture scan, cell aggregation, same-reso combine; plus
     // per-thread same-reso reconstruct and cross-reso combine. 
-    double *t_scan = calloc((long)nthreads_cross*nresos, sizeof(double));
-    double *t_agg  = calloc((long)nthreads_cross*nresos, sizeof(double));
-    double *t_samereso = calloc((long)nthreads_cross*nresos, sizeof(double));
-    double *t_samereso_rec = calloc(nthreads_cross, sizeof(double));
-    double *t_crossreso = calloc(nthreads_cross, sizeof(double));
+    double *t_scan = orpheus_calloc((long)nthreads_cross*nresos, sizeof(double));
+    double *t_agg  = orpheus_calloc((long)nthreads_cross*nresos, sizeof(double));
+    double *t_samereso = orpheus_calloc((long)nthreads_cross*nresos, sizeof(double));
+    double *t_samereso_rec = orpheus_calloc(nthreads_cross, sizeof(double));
+    double *t_crossreso = orpheus_calloc(nthreads_cross, sizeof(double));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
+        free(reso_rindedges); free(tmp_totcounts); free(tmp_totnorms); free(bin2reso);
+        free(wanted); free(samereso_e1); free(samereso_e2); free(samereso_e3); free(samereso_lo);
+        free(samereso_hi); free(tmpN_n); free(t_scan); free(t_agg); free(t_samereso);
+        free(t_samereso_rec); free(t_crossreso);
+        return;
+    }
     double t_cb_wall0 = omp_get_wtime(); clock_t t_cb_cpu0 = clock();
 
     // D: Main loop over regions //
@@ -4457,13 +4641,13 @@ void alloc_nnnn_doubletree(const MultiresoCatalog *cat_leaf, const NavHash *nav,
         // D.1 BaseTree bookkeeping within the region //
 
         // Per-reso galaxies in region
-        int *ngal_in_pix = calloc(nresos, sizeof(int));
+        int *ngal_in_pix = orpheus_calloc(nresos, sizeof(int));
         for (int r=0;r<nresos;r++){
             ngal_in_pix[r] = pixs_galind_bounds[rshift_pixs_galind_bounds[r]+elregion+1]
                            - pixs_galind_bounds[rshift_pixs_galind_bounds[r]+elregion];
         }
         // Per-grid-reso offsets into the flat pix->cell matcher (grid resolutions only)
-        int *rshift_matchers = calloc(nresos_grid+1, sizeof(int));
+        int *rshift_matchers = orpheus_calloc(nresos_grid+1, sizeof(int));
         for (int elgrid=0; elgrid<nresos_grid; elgrid++){
             int npix_side = 1 << (nresos_grid-elgrid-1);
             rshift_matchers[elgrid+1] = rshift_matchers[elgrid] + npix_side*npix_side;
@@ -4471,7 +4655,7 @@ void alloc_nnnn_doubletree(const MultiresoCatalog *cat_leaf, const NavHash *nav,
         int len_matcher = rshift_matchers[nresos_grid];
         // Per-reso cell offsets within the cache (discrete levels contribute no cells: their
         // "cells" are individual galaxies and are handled by the Wdisc cache instead)
-        int *rshift_cells = calloc(nresos+1, sizeof(int));
+        int *rshift_cells = orpheus_calloc(nresos+1, sizeof(int));
         for (int r=0;r<nresos;r++){
             rshift_cells[r+1] = rshift_cells[r] + ((r>=hasdiscrete) ? ngal_in_pix[r] : 0);
         }
@@ -4482,7 +4666,7 @@ void alloc_nnnn_doubletree(const MultiresoCatalog *cat_leaf, const NavHash *nav,
         int elregion_fullhash = region_to_fullhash[elregion];
         double hashpix_start1 = pix1_start + (elregion_fullhash%pix1_n)*pix1_d;
         double hashpix_start2 = pix2_start + (elregion_fullhash/pix1_n)*pix2_d;
-        int *pix2redpix = calloc(len_matcher>0?len_matcher:1, sizeof(int));
+        int *pix2redpix = orpheus_calloc(len_matcher>0?len_matcher:1, sizeof(int));
         for (int elgrid=0; elgrid<nresos_grid; elgrid++){
             int r = elgrid + hasdiscrete;
             int npix_side = 1 << (nresos_grid-elgrid-1);
@@ -4501,10 +4685,10 @@ void alloc_nnnn_doubletree(const MultiresoCatalog *cat_leaf, const NavHash *nav,
         }
 
         // Setup BaseTree caches (cf the xX_1 in eq F.6 of Porth+25)
-        double complex *Wncache  = calloc(nnvals_Wn*nshift_cache, sizeof(double complex)); // X_1
-        double complex *wWncache = calloc(nnvals_Wn*nshift_cache, sizeof(double complex)); // xX_1
-        double complex *W2ncache  = calloc(nnvals_Wn*nshift_cache, sizeof(double complex)); // A.3 with m=2
-        double complex *wW2ncache = calloc(nnvals_Wn*nshift_cache, sizeof(double complex)); // weighted A.3 with m=2
+        double complex *Wncache  = orpheus_calloc(nnvals_Wn*nshift_cache, sizeof(double complex)); // X_1
+        double complex *wWncache = orpheus_calloc(nnvals_Wn*nshift_cache, sizeof(double complex)); // xX_1
+        double complex *W2ncache  = orpheus_calloc(nnvals_Wn*nshift_cache, sizeof(double complex)); // A.3 with m=2
+        double complex *wW2ncache = orpheus_calloc(nnvals_Wn*nshift_cache, sizeof(double complex)); // weighted A.3 with m=2
         if (Wncache==NULL || wWncache==NULL || W2ncache==NULL || wW2ncache==NULL){
             fprintf(stderr,"alloc_nnnn_doubletree: cross-reso cell cache alloc failed (region %d)\n", elregion); exit(1);
         }
@@ -4517,12 +4701,12 @@ void alloc_nnnn_doubletree(const MultiresoCatalog *cat_leaf, const NavHash *nav,
         double *disc_p1=NULL, *disc_p2=NULL, *disc_w=NULL;
         double complex *Wdisc=NULL, *W2disc=NULL, *W3disc=NULL;
         if (ndiscbins>0 && ndisc>0){
-            disc_p1 = calloc(ndisc, sizeof(double));
-            disc_p2 = calloc(ndisc, sizeof(double));
-            disc_w  = calloc(ndisc, sizeof(double));
-            Wdisc   = calloc((long)ndisc*nnvals_Wn*ndiscbins, sizeof(double complex));
-            W2disc  = calloc((long)ndisc*nnvals_Wn*ndiscbins, sizeof(double complex));
-            W3disc  = calloc((long)ndisc*ndiscbins, sizeof(double complex));
+            disc_p1 = orpheus_calloc(ndisc, sizeof(double));
+            disc_p2 = orpheus_calloc(ndisc, sizeof(double));
+            disc_w  = orpheus_calloc(ndisc, sizeof(double));
+            Wdisc   = orpheus_calloc((long)ndisc*nnvals_Wn*ndiscbins, sizeof(double complex));
+            W2disc  = orpheus_calloc((long)ndisc*nnvals_Wn*ndiscbins, sizeof(double complex));
+            W3disc  = orpheus_calloc((long)ndisc*ndiscbins, sizeof(double complex));
             if (Wdisc==NULL || W2disc==NULL || W3disc==NULL){
                 fprintf(stderr,"alloc_nnnn_doubletree: Wdisc alloc failed (region %d, %.2f GiB). "
                         "Lower memory_bound/nmax or widen tree_resos.\n",
@@ -4535,10 +4719,10 @@ void alloc_nnnn_doubletree(const MultiresoCatalog *cat_leaf, const NavHash *nav,
         // samereso_N holds only the grid-reso same-reso triplets.
         int gridtrip_start = samereso_lo[hasdiscrete<nresos?hasdiscrete:nresos-1]; // first grid-reso triplet
         long n_gridtrips = n_samereso - gridtrip_start;
-        double complex *nextWns  = calloc(nnvals_Wn*nbinsr, sizeof(double complex)); // Base alloc W_n
-        double complex *nextW2ns = calloc(nnvals_Wn*nbinsr, sizeof(double complex)); // Double-counting corrs  W^2_n
-        double complex *nextW3ns = calloc(nbinsr, sizeof(double complex)); // Triple-counting corrs  W^3
-        double complex *samereso_N = calloc(n_gridtrips>0?(long)n_gridtrips*n2n3combis:1, sizeof(double complex)); // same-reso for grid
+        double complex *nextWns  = orpheus_calloc(nnvals_Wn*nbinsr, sizeof(double complex)); // Base alloc W_n
+        double complex *nextW2ns = orpheus_calloc(nnvals_Wn*nbinsr, sizeof(double complex)); // Double-counting corrs  W^2_n
+        double complex *nextW3ns = orpheus_calloc(nbinsr, sizeof(double complex)); // Triple-counting corrs  W^3
+        double complex *samereso_N = orpheus_calloc(n_gridtrips>0?(long)n_gridtrips*n2n3combis:1, sizeof(double complex)); // same-reso for grid
         for (int elreso=0; elreso<nresos; elreso++){
             int rbinmin = reso_rindedges[elreso], rbinmax = reso_rindedges[elreso+1];
             if (rbinmax<=rbinmin){ continue; }
@@ -4658,7 +4842,7 @@ void alloc_nnnn_doubletree(const MultiresoCatalog *cat_leaf, const NavHash *nav,
 
         // Parent maps: Cell at finer grid reso elgrid2 -> cell at coarser grid reso elgrid3
         // Here we restrict ourselves to grid resos
-        int **parent = calloc((long)nresos_grid*nresos_grid, sizeof(int*));
+        int **parent = orpheus_calloc((long)nresos_grid*nresos_grid, sizeof(int*));
         for (int elgrid2=0; elgrid2<nresos_grid; elgrid2++){
             int r2 = elgrid2 + hasdiscrete;
             int nps2 = 1 << (nresos_grid-elgrid2-1);
@@ -4666,7 +4850,7 @@ void alloc_nnnn_doubletree(const MultiresoCatalog *cat_leaf, const NavHash *nav,
             int upper2 = pixs_galind_bounds[rshift_pixs_galind_bounds[r2]+elregion+1];
             for (int elgrid3=elgrid2+1; elgrid3<nresos_grid; elgrid3++){
                 int nps3 = 1 << (nresos_grid-elgrid3-1);
-                int *cellmap = calloc(ngal_in_pix[r2]>0?ngal_in_pix[r2]:1, sizeof(int));
+                int *cellmap = orpheus_calloc(ngal_in_pix[r2]>0?ngal_in_pix[r2]:1, sizeof(int));
                 for (int ind_inpix=lower2; ind_inpix<upper2; ind_inpix++){
                     int ind_gal = rshift_pix_gals[r2] + pix_gals[rshift_pix_gals[r2]+ind_inpix];
                     double p11 = pos1_resos[ind_gal], p12 = pos2_resos[ind_gal];
@@ -4690,7 +4874,7 @@ void alloc_nnnn_doubletree(const MultiresoCatalog *cat_leaf, const NavHash *nav,
         // The discrete-level analogue of `parent` from above: p(Delta^B_k | discrete)_i.
         int *disc_cell_all = NULL;
         if (Wdisc!=NULL){
-            disc_cell_all = malloc((long)nresos_grid*ndisc*sizeof(int));
+            disc_cell_all = orpheus_malloc((long)nresos_grid*ndisc*sizeof(int));
             for (int elgrid=0; elgrid<nresos_grid; elgrid++){
                 int nps = 1 << (nresos_grid-elgrid-1);
                 for (long ind_disc=0; ind_disc<ndisc; ind_disc++){
@@ -4704,21 +4888,21 @@ void alloc_nnnn_doubletree(const MultiresoCatalog *cat_leaf, const NavHash *nav,
         }
         
         // Some heavily reused helper arrays 
-        double complex *thisN_n = calloc(n2n3combis, sizeof(double complex));
-        double complex *thisN_n_rec = calloc(n2n3combis_rec, sizeof(double complex));
-        double complex *partial_cell = calloc(maxcells_region, sizeof(double complex)); // per-(n2,n3) cell partial
-        double complex *accum = calloc((long)nbinsr*n2n3combis, sizeof(double complex)); // [e3][n2,n3] over the n12-stream
+        double complex *thisN_n = orpheus_calloc(n2n3combis, sizeof(double complex));
+        double complex *thisN_n_rec = orpheus_calloc(n2n3combis_rec, sizeof(double complex));
+        double complex *partial_cell = orpheus_calloc(maxcells_region, sizeof(double complex)); // per-(n2,n3) cell partial
+        double complex *accum = orpheus_calloc((long)nbinsr*n2n3combis, sizeof(double complex)); // [e3][n2,n3] over the n12-stream
         // Discrete-discrete cross-reso: cache the per-galaxy product wWWdisc[ncombi][ind_disc]
         // once per (theta1,theta2) and reuse across all coarse resos r3 (W12 reuse), ncombi-major.
-        double complex *wWWdisc = (Wdisc!=NULL) ? malloc((long)ndisc*n2n3combis*sizeof(double complex)) : NULL;
+        double complex *wWWdisc = (Wdisc!=NULL) ? orpheus_malloc((long)ndisc*n2n3combis*sizeof(double complex)) : NULL;
 
 
         // D.4: Same resolution combinations for discrete triplet combis
         if (hasdiscrete==1 && Wdisc!=NULL && discbin_hi>discbin_lo){
             double t_db0 = omp_get_wtime();
-            int *t3_wanted = malloc(ndiscbins*sizeof(int));
-            double complex *batch_N = calloc((long)ndiscbins*n2n3combis, sizeof(double complex));
-            double complex *wWW = malloc((long)n2n3combis*sizeof(double complex)); // this is xXX^-1 in F.6
+            int *t3_wanted = orpheus_malloc(ndiscbins*sizeof(int));
+            double complex *batch_N = orpheus_calloc((long)ndiscbins*n2n3combis, sizeof(double complex));
+            double complex *wWW = orpheus_malloc((long)n2n3combis*sizeof(double complex)); // this is xXX^-1 in F.6
             for (int t1=discbin_lo; t1<discbin_hi; t1++){
                 for (int t2=t1; t2<discbin_hi; t2++){
                     // Check if in this batch we have any valid combi, if not, skip
@@ -4980,8 +5164,17 @@ void alloc_nnnn_doubletree(const MultiresoCatalog *cat_leaf, const NavHash *nav,
     free(tmpN_n); free(bin2reso); free(wanted);
 
     // Get bin centers from the accumulated counts
-    double *totcounts = calloc(nbinsr, sizeof(double));
-    double *totnorms  = calloc(nbinsr, sizeof(double));
+    double *totcounts = orpheus_calloc(nbinsr, sizeof(double));
+    double *totnorms  = orpheus_calloc(nbinsr, sizeof(double));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        // The scratch freed at the end of stages E and F above is deliberately not repeated
+        free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
+        free(reso_rindedges); free(tmp_totcounts); free(tmp_totnorms);
+        free(samereso_e1); free(samereso_e2); free(samereso_e3); free(samereso_lo);
+        free(samereso_hi); free(totcounts); free(totnorms);
+        return;
+    }
     for (int t=0;t<nthreads;t++){
         for (int b=0;b<nbinsr;b++){ totcounts[b]+=tmp_totcounts[t*nbinsr+b]; totnorms[b]+=tmp_totnorms[t*nbinsr+b]; }
     }

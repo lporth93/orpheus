@@ -6,6 +6,7 @@
 #include <time.h>
 #include <omp.h>
 #include "spatialhash.h"
+#include "utils.h"
 
 #define _PI_ 3.14159265358979323846
 #define FLAG_NOGAL -1  
@@ -150,7 +151,7 @@ void reducecat(double *isinner, double *w, double *pos_1, double *pos_2, double 
     int start_bounds = ngal+npix;
     int start_pixgals = ngal+npix+ngal+1;
     //int start_ngalinpix=ngal+npix+ngal+1+ngal;
-    int *spatialhash = calloc(2*npix+3*ngal+1, sizeof(int));
+    int *spatialhash = orpheus_calloc(2*npix+3*ngal+1, sizeof(int));
     build_spatialhash(pos_1, pos_2, ngal,
                       mask_d1, mask_d2, mask_min1, mask_min2, mask_n1, mask_n2,
                       spatialhash);
@@ -174,7 +175,7 @@ void reducecat(double *isinner, double *w, double *pos_1, double *pos_2, double 
             tmppos_1 = 0;
             tmppos_2 = 0;
             ind_maxw = 0;
-            tmpscalarquants = calloc(nscalarquants, sizeof(double));
+            tmpscalarquants = orpheus_calloc(nscalarquants, sizeof(double));
             for (ind_inpix=lower; ind_inpix<upper; ind_inpix++){
                 ind_gal = spatialhash[start_pixgals+ind_inpix];
                 tmpisinner += w[ind_gal]*isinner[ind_gal];
@@ -256,7 +257,7 @@ void reducecat_tomo(double *isinner, double *w, double *pos_1, double *pos_2, do
     int start_matcher = ngal;
     int start_bounds = ngal+npix;
     int start_pixgals = ngal+npix+ngal+1;
-    int *spatialhash = calloc(2*npix+3*ngal+1, sizeof(int));
+    int *spatialhash = orpheus_calloc(2*npix+3*ngal+1, sizeof(int));
     build_spatialhash(pos_1, pos_2, ngal,
                       mask_d1, mask_d2, mask_min1, mask_min2, mask_n1, mask_n2,
                       spatialhash);
@@ -267,7 +268,7 @@ void reducecat_tomo(double *isinner, double *w, double *pos_1, double *pos_2, do
     int noccupied = 0;
     for (int p=0; p<npix; p++){ if (spatialhash[start_matcher+p]!=FLAG_NOGAL){ noccupied += 1; } }
     if (noccupied==0){ free(spatialhash); return; }
-    int *pix_of_red = malloc(noccupied*sizeof(int));
+    int *pix_of_red = orpheus_malloc(noccupied*sizeof(int));
     for (int p=0; p<npix; p++){
         int ir = spatialhash[start_matcher+p];
         if (ir!=FLAG_NOGAL){ pix_of_red[ir] = p; }
@@ -275,13 +276,13 @@ void reducecat_tomo(double *isinner, double *w, double *pos_1, double *pos_2, do
 
     // First pass: Count number of occupied zbins in each occupied pixel. A prefix sum over
     // these counts assigns each pixel a disjoint output range [outoffset[ir], outoffset[ir+1]).
-    int *pix_nzocc = malloc(noccupied*sizeof(int));
+    int *pix_nzocc = orpheus_malloc(noccupied*sizeof(int));
     #pragma omp parallel num_threads(nthreads)
     {
         // This array checks whether a zbin was already allocated for the pixel. Does only need
         // to be intialised once as we define allocated by the pixel index which gets refreshed
         // for each new pixel   
-        int *counted = calloc(nbinsz, sizeof(int)); // Check
+        int *counted = orpheus_calloc(nbinsz, sizeof(int)); // Check
         #pragma omp for schedule(dynamic, 64)
         for (int ir=0; ir<noccupied; ir++){
             int lower = spatialhash[start_bounds+ir];
@@ -296,7 +297,7 @@ void reducecat_tomo(double *isinner, double *w, double *pos_1, double *pos_2, do
         }
         free(counted);
     }
-    int *outoffset = malloc((noccupied+1)*sizeof(int));
+    int *outoffset = orpheus_malloc((noccupied+1)*sizeof(int));
     outoffset[0] = 0;
     for (int ir=0; ir<noccupied; ir++){ outoffset[ir+1] = outoffset[ir] + pix_nzocc[ir]; }
 
@@ -304,15 +305,15 @@ void reducecat_tomo(double *isinner, double *w, double *pos_1, double *pos_2, do
     // one reduced galaxy per occupied zbin.
     #pragma omp parallel num_threads(nthreads)
     {
-        double *tmpw  = malloc(nbinsz*sizeof(double));
-        double *tmpis = malloc(nbinsz*sizeof(double));
-        double *tmpp1 = malloc(nbinsz*sizeof(double));
-        double *tmpp2 = malloc(nbinsz*sizeof(double));
-        double *tmpmw = malloc(nbinsz*sizeof(double));
-        int *largestwind = malloc(nbinsz*sizeof(int));
-        int *randind = malloc(nbinsz*sizeof(int));
-        int *tmpcounts = malloc(nbinsz*sizeof(int));
-        double *asq = (nscalarquants>0) ? malloc((size_t)nbinsz*nscalarquants*sizeof(double)) : NULL;
+        double *tmpw  = orpheus_malloc(nbinsz*sizeof(double));
+        double *tmpis = orpheus_malloc(nbinsz*sizeof(double));
+        double *tmpp1 = orpheus_malloc(nbinsz*sizeof(double));
+        double *tmpp2 = orpheus_malloc(nbinsz*sizeof(double));
+        double *tmpmw = orpheus_malloc(nbinsz*sizeof(double));
+        int *largestwind = orpheus_malloc(nbinsz*sizeof(int));
+        int *randind = orpheus_malloc(nbinsz*sizeof(int));
+        int *tmpcounts = orpheus_malloc(nbinsz*sizeof(int));
+        double *asq = (nscalarquants>0) ? orpheus_malloc((size_t)nbinsz*nscalarquants*sizeof(double)) : NULL;
 
         #pragma omp for schedule(dynamic, 64)
         for (int ir=0; ir<noccupied; ir++){

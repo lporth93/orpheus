@@ -72,8 +72,8 @@ void update_transformations(int *rgs, int len_rgs, double *powersums, double *fa
     int i, j;
     int nsums = pow(2,len_rgs) - 1; // Number of power sums per set
     int nproducts = maxarr(rgs, len_rgs) + 1; // Number of products in the update
-    int *fullsel = calloc(nproducts*len_rgs, sizeof(int));
-    int *nextsel = calloc(len_rgs, sizeof(int));
+    int *fullsel = orpheus_calloc(nproducts*len_rgs, sizeof(int));
+    int *nextsel = orpheus_calloc(len_rgs, sizeof(int));
     // Select overall sign for all the updates. This is given by (-1)^x where 
     // x is the number of power sums of even order occuring in the partition
     // We can get this by setting sign=(-1)^(nradii+nproducts)
@@ -219,7 +219,7 @@ int minr(int ind, int n, int k, double *fac_table){
 // Find largest radius of powersum corresponding to index
 int maxr(int ind, int n, int k, double *fac_table){
     int indmax = 0;
-    int *tmpsel = calloc(n, sizeof(double));
+    int *tmpsel = orpheus_calloc(n, sizeof(double));
     ind2sel(ind, n, k, fac_table, tmpsel);
     for (int i=0; i<=n; i++){
         if (tmpsel[i] == 1){indmax=i;break;}
