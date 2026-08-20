@@ -404,8 +404,9 @@ def test_fejer_window_keeps_the_reconstructed_counts_positive(cls, shear_catalog
         corr.multipoles2npcf()
         norms[apodization] = np.real(np.asarray(corr.npcf_norm))
         multipoles[apodization] = np.asarray(corr.npcf_multipoles_norm)
-    # The window is a reweighting of the transform, so the multipoles must be untouched
-    assert np.array_equal(multipoles['rect'], multipoles['fejer'])
+    # The window is a reweighting of the transform, so the multipoles must be untouched.
+    # Not bitwise as we use dynamic scheduling in the C layer
+    assert np.allclose(multipoles['rect'], multipoles['fejer'], rtol=1e-11, atol=0.)
     # Empty bins reconstruct to zero either way, so allow rounding but nothing structural
     floor = 1e-12*np.max(norms['fejer'])
     assert norms['fejer'].min() > -floor, norms['fejer'].min()

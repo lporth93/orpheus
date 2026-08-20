@@ -2135,10 +2135,11 @@ void alloc_Gammans_discrete_ggg(const MultiresoCatalog *cat, const NavHash *nav,
     double *isinner = cat->isinner_resos, *weight = cat->weight_resos;
     double *pos1 = cat->pos1_resos, *pos2 = cat->pos2_resos;
     double *e1 = cat->e1_resos, *e2 = cat->e2_resos;
-    int *zbins = cat->zbin_resos, nbinsz = cat->nbinsz, ngal = cat->ngal_resos[0];
+    int *zbins = cat->zbin_resos, nbinsz = cat->nbinsz;
     int nmin = bin->nmin, nmax = bin->nmax, nbinsr = bin->nbinsr, dccorr = bin->dccorr;
     double rmin = bin->rmin, rmax = bin->rmax, *rbins = bin->rbins;
     int *index_matcher = nav->index_matcher, *pixs_galind_bounds = nav->pixs_galind_bounds, *pix_gals = nav->pix_gals;
+    int *filledregions = nav->filledregions, nfilledregions = nav->nfilledregions;
     double pix1_start = nav->pix1_start, pix1_d = nav->pix1_d; int pix1_n = nav->pix1_n;
     double pix2_start = nav->pix2_start, pix2_d = nav->pix2_d; int pix2_n = nav->pix2_n;
     double *bin_centers = out->bin_centers;
@@ -2155,48 +2156,43 @@ void alloc_Gammans_discrete_ggg(const MultiresoCatalog *cat, const NavHash *nav,
     if (orpheus_get_error()){free(totcounts); free(totnorms); return;}
            
     // Allocate Gns
-    // We do this in parallel as follows:
-    // * Split survey in 2*nthreads equal area stripes along x-axis
-    // * Do two parallelized iterations over galaxies
-    //   - In first one only consider galaxies within stripes of even number
-    //   - In second one only consider galaxies within stripes of odd number
-    // --> We avoid race conditions in calling the spatial hash arrays. - This
-    //    is explicitly made sure by (re)setting nthreads in the python layer.
     int nregionsdone = 0;
     reset_progress();
-    for (int odd=0; odd<2; odd++){
 
-        // Temporary arrays that are allocated in parallel and later reduced
-        double *tmpwcounts = orpheus_calloc(nthreads*nbinsz*nbinsr, sizeof(double));
-        double *tmpwnorms = orpheus_calloc(nthreads*nbinsz*nbinsr, sizeof(double));
-        double complex *tmpGammans = orpheus_calloc(nthreads*4*_gamma_compshift, sizeof(double complex));
-        double complex *tmpGammans_norm = orpheus_calloc(nthreads*_gamma_compshift, sizeof(double complex));
-        #pragma omp parallel for num_threads(nthreads)
-        for (int thisthread=0; thisthread<nthreads; thisthread++){
-            int gamma_zshift = nbinsr*nbinsr;
-            int gamma_nshift = _gamma_zshift*nbinsz*nbinsz*nbinsz;
-            int gamma_compshift = (nmax-nmin+1)*_gamma_nshift;
-            for (int ind_gal=0; ind_gal<ngal; ind_gal++){
-                // Check if galaxy falls in stripe used in this process
-                double p11, p12, w1, e11, e12;
-                int zbin1;
-                double innergal;
-                #pragma omp critical
-                {p11 = pos1[ind_gal];
-                p12 = pos2[ind_gal];
-                w1 = weight[ind_gal];
-                zbin1 = zbins[ind_gal];
-                e11 = e1[ind_gal];
-                e12 = e2[ind_gal];
-                innergal = isinner[ind_gal];}
+    // Temporary arrays that are allocated in parallel and later reduced
+    double *tmpwcounts = orpheus_calloc(nthreads*nbinsz*nbinsr, sizeof(double));
+    double *tmpwnorms = orpheus_calloc(nthreads*nbinsz*nbinsr, sizeof(double));
+    double complex *tmpGammans = orpheus_calloc(nthreads*4*_gamma_compshift, sizeof(double complex));
+    double complex *tmpGammans_norm = orpheus_calloc(nthreads*_gamma_compshift, sizeof(double complex));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(totcounts); free(totnorms); free(tmpwcounts); free(tmpwnorms);
+        free(tmpGammans); free(tmpGammans_norm);
+        return;
+    }
+    #pragma omp parallel num_threads(nthreads)
+    {
+        int elthread = omp_get_thread_num();
+        int gamma_zshift = nbinsr*nbinsr;
+        int gamma_nshift = _gamma_zshift*nbinsz*nbinsz*nbinsz;
+        int gamma_compshift = (nmax-nmin+1)*_gamma_nshift;
+        #pragma omp for schedule(dynamic, 8)
+        for (int _elregion=0; _elregion<nfilledregions; _elregion++){
+            int elregion = filledregions[_elregion];
+            #pragma omp atomic
+            nregionsdone += 1;
+            print_progress(nregionsdone, nfilledregions, verbose);
+            int lowerregion = pixs_galind_bounds[elregion];
+            int upperregion = pixs_galind_bounds[elregion+1];
+            for (int ind_inregion=lowerregion; ind_inregion<upperregion; ind_inregion++){
+                int ind_gal = pix_gals[ind_inregion];
+                double p11 = pos1[ind_gal], p12 = pos2[ind_gal];
+                double w1 = weight[ind_gal];
+                int zbin1 = zbins[ind_gal];
+                double e11 = e1[ind_gal], e12 = e2[ind_gal];
+                double innergal = isinner[ind_gal];
                 if (innergal<1e-5){continue;}
                 w1 *= innergal;
-                int thisstripe = 2*thisthread + odd;
-                int galstripe = (int) floor((p11-pix1_start)/pix1_d * (2*nthreads)/pix1_n);
-                if (thisstripe != galstripe){continue;}
-                #pragma omp atomic
-                nregionsdone += 1;
-                print_progress(nregionsdone, ngal, verbose);
 
                 int ind_inpix, ind_gal2;
                 int lower, upper;
@@ -2259,7 +2255,7 @@ void alloc_Gammans_discrete_ggg(const MultiresoCatalog *cat, const NavHash *nav,
                         twophirotc = phirotc*phirotc;
                         
                         zrshift = z2*nbinsr + rbin;
-                        ind_rbin = thisthread*nbinszr + zrshift;
+                        ind_rbin = elthread*nbinszr + zrshift;
                         // nmin=0 -
                         //   -> Gns axis: [-(nmax+1), ..., nmax+1] (projected)
                         //   -> Wns axis: [0,...,nmax]
@@ -2302,7 +2298,7 @@ void alloc_Gammans_discrete_ggg(const MultiresoCatalog *cat, const NavHash *nav,
                         ind_nm1 = (nmax-nmin+5+thisn)*nbinszr;
                         ind_norm = thisn*nbinszr;
                     }
-                    thisnshift = thisthread*gamma_compshift + thisn*gamma_nshift;
+                    thisnshift = elthread*gamma_compshift + thisn*gamma_nshift;
                     for (int zbin2=0; zbin2<nbinsz; zbin2++){
                         for (int elb1=0; elb1<nbinsr; elb1++){
                             zrshift = zbin2*nbinsr + elb1;
@@ -2359,47 +2355,47 @@ void alloc_Gammans_discrete_ggg(const MultiresoCatalog *cat, const NavHash *nav,
                 nextW2ns = NULL;
             }
         }
+    }
         
-        // Accumulate the Gamman
-        #pragma omp parallel for num_threads(nthreads)
-        for (int thisn=0; thisn<nmax-nmin+1; thisn++){
-            int itmpGamma, iGamma;
-            for (int thisthread=0; thisthread<nthreads; thisthread++){
-                for (int zcombi=0; zcombi<nbinsz*nbinsz*nbinsz; zcombi++){
-                    for (int elb1=0; elb1<nbinsr; elb1++){
-                        for (int elb2=0; elb2<nbinsr; elb2++){
-                            iGamma = thisn*_gamma_nshift + zcombi*_gamma_zshift + elb1*nbinsr + elb2;
-                            itmpGamma = iGamma + thisthread*_gamma_compshift;
-                            for (int elcomp=0; elcomp<4; elcomp++){
-                                Gammans[elcomp*_gamma_compshift+iGamma] += tmpGammans[4*itmpGamma+elcomp];
-                            }
-                            Gammans_norm[iGamma] += tmpGammans_norm[itmpGamma];
+    // Accumulate the Gamman
+    #pragma omp parallel for num_threads(nthreads)
+    for (int thisn=0; thisn<nmax-nmin+1; thisn++){
+        int itmpGamma, iGamma;
+        for (int thisthread=0; thisthread<nthreads; thisthread++){
+            for (int zcombi=0; zcombi<nbinsz*nbinsz*nbinsz; zcombi++){
+                for (int elb1=0; elb1<nbinsr; elb1++){
+                    for (int elb2=0; elb2<nbinsr; elb2++){
+                        iGamma = thisn*_gamma_nshift + zcombi*_gamma_zshift + elb1*nbinsr + elb2;
+                        itmpGamma = iGamma + thisthread*_gamma_compshift;
+                        for (int elcomp=0; elcomp<4; elcomp++){
+                            Gammans[elcomp*_gamma_compshift+iGamma] += tmpGammans[4*itmpGamma+elcomp];
                         }
+                        Gammans_norm[iGamma] += tmpGammans_norm[itmpGamma];
                     }
                 }
             }
         }
-        
-        // Update the bin distances and weights
-        for (int elbinz=0; elbinz<nbinsz; elbinz++){
-            for (int elbinr=0; elbinr<nbinsr; elbinr++){
-                int tmpind = elbinz*nbinsr + elbinr;
-                for (int thisthread=0; thisthread<nthreads; thisthread++){
-                    int tshift = thisthread*nbinsz*nbinsr; 
-                    totcounts[tmpind] += tmpwcounts[tshift+tmpind];
-                    totnorms[tmpind] += tmpwnorms[tshift+tmpind];
-                }
+    }
+    
+    // Update the bin distances and weights
+    for (int elbinz=0; elbinz<nbinsz; elbinz++){
+        for (int elbinr=0; elbinr<nbinsr; elbinr++){
+            int tmpind = elbinz*nbinsr + elbinr;
+            for (int thisthread=0; thisthread<nthreads; thisthread++){
+                int tshift = thisthread*nbinsz*nbinsr; 
+                totcounts[tmpind] += tmpwcounts[tshift+tmpind];
+                totnorms[tmpind] += tmpwnorms[tshift+tmpind];
             }
         }
-        free(tmpwcounts);
-        free(tmpwnorms);
-        free(tmpGammans);
-        free(tmpGammans_norm); 
-        tmpwcounts = NULL;
-        tmpwnorms = NULL;
-        tmpGammans = NULL;
-        tmpGammans_norm = NULL;
     }
+    free(tmpwcounts);
+    free(tmpwnorms);
+    free(tmpGammans);
+    free(tmpGammans_norm); 
+    tmpwcounts = NULL;
+    tmpwnorms = NULL;
+    tmpGammans = NULL;
+    tmpGammans_norm = NULL;
     
     // Get bin centers
     for (int elbinz=0; elbinz<nbinsz; elbinz++){
@@ -2427,12 +2423,13 @@ void alloc_Gammans_tree_ggg(const MultiresoCatalog *cat, const MultiresoCatalog 
     double *isinner = cat->isinner_resos, *weight = cat->weight_resos;
     double *pos1 = cat->pos1_resos, *pos2 = cat->pos2_resos;
     double *e1 = cat->e1_resos, *e2 = cat->e2_resos;
-    int *zbins = cat->zbin_resos, nbinsz = cat->nbinsz, ngal = cat->ngal_resos[0];
+    int *zbins = cat->zbin_resos, nbinsz = cat->nbinsz;
     int nresos = tree->nresos; double *reso_redges = tree->reso_redges;
     int *ngal_resos = cat_field->ngal_resos, *zbin_resos = cat_field->zbin_resos;
     double *weight_resos = cat_field->weight_resos, *pos1_resos = cat_field->pos1_resos, *pos2_resos = cat_field->pos2_resos;
     double *e1_resos = cat_field->e1_resos, *e2_resos = cat_field->e2_resos, *weightsq_resos = cat_field->weightsq_resos;
     int *index_matcher = nav->index_matcher, *pixs_galind_bounds = nav->pixs_galind_bounds, *pix_gals = nav->pix_gals;
+    int *filledregions = nav->filledregions, nfilledregions = nav->nfilledregions;
     double pix1_start = nav->pix1_start, pix1_d = nav->pix1_d; int pix1_n = nav->pix1_n;
     double pix2_start = nav->pix2_start, pix2_d = nav->pix2_d; int pix2_n = nav->pix2_n;
     int nmin = bin->nmin, nmax = bin->nmax, nbinsr = bin->nbinsr, dccorr = bin->dccorr;
@@ -2452,57 +2449,52 @@ void alloc_Gammans_tree_ggg(const MultiresoCatalog *cat, const MultiresoCatalog 
     
            
     // Allocate Gns
-    // We do this in parallel as follows:
-    // * Split survey in 2*nthreads equal area stripes along x-axis
-    // * Do two parallelized iterations over galaxies
-    //   - In first one only consider galaxies within stripes of even number
-    //   - In second one only consider galaxies within stripes of odd number
-    // --> We avoid race conditions in calling the spatial hash arrays. - This
-    //    is explicitly made sure by (re)setting nthreads in the python layer.
     int nregionsdone = 0;
     reset_progress();
-    for (int odd=0; odd<2; odd++){
-        
-        
-        // Temporary arrays that are allocated in parallel and later reduced
-        double *tmpwcounts = orpheus_calloc(nthreads*nbinsz*nbinsr, sizeof(double));
-        double *tmpwnorms = orpheus_calloc(nthreads*nbinsz*nbinsr, sizeof(double));
-        double complex *tmpGammans = orpheus_calloc(nthreads*4*_gamma_compshift, sizeof(double complex));
-        double complex *tmpGammans_norm = orpheus_calloc(nthreads*_gamma_compshift, sizeof(double complex));
-        #pragma omp parallel for num_threads(nthreads)
-        for (int thisthread=0; thisthread<nthreads; thisthread++){
-            int gamma_zshift = nbinsr*nbinsr;
-            int gamma_nshift = _gamma_zshift*nbinsz*nbinsz*nbinsz;
-            int gamma_compshift = (nmax-nmin+1)*_gamma_nshift;
-            int npix_hash = pix1_n*pix2_n;
-            int *rshift_index_matcher = orpheus_calloc(nresos, sizeof(int));
-            int *rshift_pixs_galind_bounds = orpheus_calloc(nresos, sizeof(int));
-            int *rshift_pix_gals = orpheus_calloc(nresos, sizeof(int));
-            build_rshift_offsets(nresos, npix_hash, ngal_resos,
-                rshift_index_matcher, rshift_pixs_galind_bounds, rshift_pix_gals);
-                
-            for (int ind_gal=0; ind_gal<ngal; ind_gal++){
-                // Check if galaxy falls in stripe used in this process
-                double p11, p12, w1, e11, e12;
-                int zbin1;
-                double innergal;
-                #pragma omp critical
-                {p11 = pos1[ind_gal];
-                p12 = pos2[ind_gal];
-                w1 = weight[ind_gal];
-                zbin1 = zbins[ind_gal];
-                e11 = e1[ind_gal];
-                e12 = e2[ind_gal];
-                innergal = isinner[ind_gal];}
+
+    // Temporary arrays that are allocated in parallel and later reduced
+    double *tmpwcounts = orpheus_calloc(nthreads*nbinsz*nbinsr, sizeof(double));
+    double *tmpwnorms = orpheus_calloc(nthreads*nbinsz*nbinsr, sizeof(double));
+    double complex *tmpGammans = orpheus_calloc(nthreads*4*_gamma_compshift, sizeof(double complex));
+    double complex *tmpGammans_norm = orpheus_calloc(nthreads*_gamma_compshift, sizeof(double complex));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(totcounts); free(totnorms); free(tmpwcounts); free(tmpwnorms);
+        free(tmpGammans); free(tmpGammans_norm);
+        return;
+    }
+    #pragma omp parallel num_threads(nthreads)
+    {
+        int elthread = omp_get_thread_num();
+        int gamma_zshift = nbinsr*nbinsr;
+        int gamma_nshift = _gamma_zshift*nbinsz*nbinsz*nbinsz;
+        int gamma_compshift = (nmax-nmin+1)*_gamma_nshift;
+        int npix_hash = pix1_n*pix2_n;
+        int *rshift_index_matcher = orpheus_calloc(nresos, sizeof(int));
+        int *rshift_pixs_galind_bounds = orpheus_calloc(nresos, sizeof(int));
+        int *rshift_pix_gals = orpheus_calloc(nresos, sizeof(int));
+        build_rshift_offsets(nresos, npix_hash, ngal_resos,
+            rshift_index_matcher, rshift_pixs_galind_bounds, rshift_pix_gals);
+
+        // The base-resolution block of the hash is the primary catalog's own, so the
+        // region bounds enumerate its galaxies without a resolution offset.
+        #pragma omp for schedule(dynamic, 8)
+        for (int _elregion=0; _elregion<nfilledregions; _elregion++){
+            int elregion = filledregions[_elregion];
+            #pragma omp atomic
+            nregionsdone += 1;
+            print_progress(nregionsdone, nfilledregions, verbose);
+            int lowerregion = pixs_galind_bounds[elregion];
+            int upperregion = pixs_galind_bounds[elregion+1];
+            for (int ind_inregion=lowerregion; ind_inregion<upperregion; ind_inregion++){
+                int ind_gal = pix_gals[ind_inregion];
+                double p11 = pos1[ind_gal], p12 = pos2[ind_gal];
+                double w1 = weight[ind_gal];
+                int zbin1 = zbins[ind_gal];
+                double e11 = e1[ind_gal], e12 = e2[ind_gal];
+                double innergal = isinner[ind_gal];
                 if (innergal<1e-5){continue;}
                 w1 *= innergal;
-                int thisstripe = 2*thisthread + odd;
-                int galstripe = (int) floor((p11-pix1_start)/pix1_d * (2*nthreads)/pix1_n);
-                if (thisstripe != galstripe){continue;}
-                
-                #pragma omp atomic
-                nregionsdone += 1;
-                print_progress(nregionsdone, ngal, verbose);
                 
                 
                 int ind_inpix, ind_gal2;
@@ -2568,7 +2560,7 @@ void alloc_Gammans_tree_ggg(const MultiresoCatalog *cat, const MultiresoCatalog 
                             twophirotc = phirotc*phirotc;
 
                             zrshift = z2*nbinsr + rbin;
-                            ind_rbin = thisthread*nbinszr + zrshift;
+                            ind_rbin = elthread*nbinszr + zrshift;
                             // nmin=0 -
                             //   -> Gns axis: [-(nmax+1), ..., nmax+1] (projected)
                             //   -> Wns axis: [0,...,nmax]
@@ -2612,7 +2604,7 @@ void alloc_Gammans_tree_ggg(const MultiresoCatalog *cat, const MultiresoCatalog 
                         ind_nm1 = (nmax-nmin+5+thisn)*nbinszr;
                         ind_norm = thisn*nbinszr;
                     }
-                    thisnshift = thisthread*gamma_compshift + thisn*gamma_nshift;
+                    thisnshift = elthread*gamma_compshift + thisn*gamma_nshift;
                     for (int zbin2=0; zbin2<nbinsz; zbin2++){
                         for (int elb1=0; elb1<nbinsr; elb1++){
                             zrshift = zbin2*nbinsr + elb1;
@@ -2666,52 +2658,52 @@ void alloc_Gammans_tree_ggg(const MultiresoCatalog *cat, const MultiresoCatalog 
                 nextG2ns = NULL;
                 nextW2ns = NULL;
             }
-            
-            free(rshift_index_matcher);
-            free(rshift_pixs_galind_bounds);
-            free(rshift_pix_gals);
         }
+            
+        free(rshift_index_matcher);
+        free(rshift_pixs_galind_bounds);
+        free(rshift_pix_gals);
+    }
         
-        // Accumulate the Gamman
-        #pragma omp parallel for num_threads(nthreads)
-        for (int thisn=0; thisn<nmax-nmin+1; thisn++){
-            int itmpGamma, iGamma;
-            for (int thisthread=0; thisthread<nthreads; thisthread++){
-                for (int zcombi=0; zcombi<nbinsz*nbinsz*nbinsz; zcombi++){
-                    for (int elb1=0; elb1<nbinsr; elb1++){
-                        for (int elb2=0; elb2<nbinsr; elb2++){
-                            iGamma = thisn*_gamma_nshift + zcombi*_gamma_zshift + elb1*nbinsr + elb2;
-                            itmpGamma = iGamma + thisthread*_gamma_compshift;
-                            for (int elcomp=0; elcomp<4; elcomp++){
-                                Gammans[elcomp*_gamma_compshift+iGamma] += tmpGammans[4*itmpGamma+elcomp];
-                            }
-                            Gammans_norm[iGamma] += tmpGammans_norm[itmpGamma];
+    // Accumulate the Gamman
+    #pragma omp parallel for num_threads(nthreads)
+    for (int thisn=0; thisn<nmax-nmin+1; thisn++){
+        int itmpGamma, iGamma;
+        for (int thisthread=0; thisthread<nthreads; thisthread++){
+            for (int zcombi=0; zcombi<nbinsz*nbinsz*nbinsz; zcombi++){
+                for (int elb1=0; elb1<nbinsr; elb1++){
+                    for (int elb2=0; elb2<nbinsr; elb2++){
+                        iGamma = thisn*_gamma_nshift + zcombi*_gamma_zshift + elb1*nbinsr + elb2;
+                        itmpGamma = iGamma + thisthread*_gamma_compshift;
+                        for (int elcomp=0; elcomp<4; elcomp++){
+                            Gammans[elcomp*_gamma_compshift+iGamma] += tmpGammans[4*itmpGamma+elcomp];
                         }
+                        Gammans_norm[iGamma] += tmpGammans_norm[itmpGamma];
                     }
                 }
             }
         }
-        
-        // Update the bin distances and weights
-        for (int elbinz=0; elbinz<nbinsz; elbinz++){
-            for (int elbinr=0; elbinr<nbinsr; elbinr++){
-                int tmpind = elbinz*nbinsr + elbinr;
-                for (int thisthread=0; thisthread<nthreads; thisthread++){
-                    int tshift = thisthread*nbinsz*nbinsr; 
-                    totcounts[tmpind] += tmpwcounts[tshift+tmpind];
-                    totnorms[tmpind] += tmpwnorms[tshift+tmpind];
-                }
+    }
+    
+    // Update the bin distances and weights
+    for (int elbinz=0; elbinz<nbinsz; elbinz++){
+        for (int elbinr=0; elbinr<nbinsr; elbinr++){
+            int tmpind = elbinz*nbinsr + elbinr;
+            for (int thisthread=0; thisthread<nthreads; thisthread++){
+                int tshift = thisthread*nbinsz*nbinsr; 
+                totcounts[tmpind] += tmpwcounts[tshift+tmpind];
+                totnorms[tmpind] += tmpwnorms[tshift+tmpind];
             }
         }
-        free(tmpwcounts);
-        free(tmpwnorms);
-        free(tmpGammans);
-        free(tmpGammans_norm); 
-        tmpwcounts = NULL;
-        tmpwnorms = NULL;
-        tmpGammans = NULL;
-        tmpGammans_norm = NULL;
     }
+    free(tmpwcounts);
+    free(tmpwnorms);
+    free(tmpGammans);
+    free(tmpGammans_norm); 
+    tmpwcounts = NULL;
+    tmpwnorms = NULL;
+    tmpGammans = NULL;
+    tmpGammans_norm = NULL;
     
     // Get bin centers
     for (int elbinz=0; elbinz<nbinsz; elbinz++){
@@ -2746,7 +2738,7 @@ void alloc_Gammans_basetree_ggg(const MultiresoCatalog *cat, const NavHash *nav,
     int *index_matcher = nav->index_matcher, *pixs_galind_bounds = nav->pixs_galind_bounds, *pix_gals = nav->pix_gals;
     double pix1_start = nav->pix1_start, pix1_d = nav->pix1_d; int pix1_n = nav->pix1_n;
     double pix2_start = nav->pix2_start, pix2_d = nav->pix2_d; int pix2_n = nav->pix2_n;
-    int *index_matcher_hash = nav->index_matcher_hash, nregions = nav->nregions;
+    int *index_matcher_hash = nav->index_matcher_hash;
     int *filledregions = nav->filledregions, nfilledregions = nav->nfilledregions;
     int nmax = bin->nmax, nbinsr = bin->nbinsr, dccorr = bin->dccorr;
     double rmin = bin->rmin, rmax = bin->rmax;
@@ -2773,9 +2765,9 @@ void alloc_Gammans_basetree_ggg(const MultiresoCatalog *cat, const NavHash *nav,
     
     int nregionsdone = 0;
     reset_progress();
-    #pragma omp parallel for num_threads(nthreads)
-    for(int elthread=0;elthread<nthreads;elthread++){
-        int nregions_per_thread = nregions/nthreads;
+    #pragma omp parallel num_threads(nthreads)
+    {
+        int elthread = omp_get_thread_num();
         int hasdiscrete = nresos-nresos_grid;
         int nnvals_Gn = 2*nmax+3;
         int nnvals_Nn = nmax+1;
@@ -2792,17 +2784,16 @@ void alloc_Gammans_basetree_ggg(const MultiresoCatalog *cat, const NavHash *nav,
         ctx.tmpGamma0s=tmpGamma0s; ctx.tmpGamma1s=tmpGamma1s; ctx.tmpGamma2s=tmpGamma2s;
         ctx.tmpGamma3s=tmpGamma3s; ctx.tmpGammans_norm=tmpGammans_norm;
 
-        for (int elregion=0; elregion<nregions; elregion++){
+        #pragma omp for schedule(dynamic, 8)
+        for (int _elregion=0; _elregion<nfilledregions; _elregion++){
+            int elregion = filledregions[_elregion];
             int region_debug=99999;
             bool printregdbg = (verbose>0) && (elregion==region_debug);
-            // Check if this thread is responsible for the region
-            int nthread_target = mymin(elregion/nregions_per_thread, nthreads-1);
-            if (nthread_target!=elthread){continue;}
             // printf("Region %d is in thread %d\n",elregion,elthread);
             if (printregdbg){printf("Region %d is in thread %d\n",elregion,elthread);}
             #pragma omp atomic
             nregionsdone += 1;
-            print_progress(nregionsdone, nregions, verbose);
+            print_progress(nregionsdone, nfilledregions, verbose);
             
             // Check which sets of radii are evaluated for each resolution
             int *reso_rindedges = orpheus_calloc(nresos+1, sizeof(int));
@@ -3816,7 +3807,7 @@ void alloc_Gammans_discrete_GNN(const MultiresoCatalog *cat_source, const NavHas
     double rmin = bin->rmin, rmax = bin->rmax;
     int *index_matcher_source = nav_source->index_matcher, *pixs_galind_bounds_source = nav_source->pixs_galind_bounds, *pix_gals_source = nav_source->pix_gals;
     int *index_matcher_lens = nav_lens->index_matcher, *pixs_galind_bounds_lens = nav_lens->pixs_galind_bounds, *pix_gals_lens = nav_lens->pix_gals;
-    int nregions = nav_source->nregions;
+    int *filledregions = nav_source->filledregions, nfilledregions = nav_source->nfilledregions;
     double pix1_start = nav_lens->pix1_start, pix1_d = nav_lens->pix1_d; int pix1_n = nav_lens->pix1_n;
     double pix2_start = nav_lens->pix2_start, pix2_d = nav_lens->pix2_d; int pix2_n = nav_lens->pix2_n;
 
@@ -3838,9 +3829,9 @@ void alloc_Gammans_discrete_GNN(const MultiresoCatalog *cat_source, const NavHas
     }
     int nregionsdone = 0;
     reset_progress();
-    #pragma omp parallel for num_threads(nthreads)
-    for(int elthread=0;elthread<nthreads;elthread++){
-        int nregions_per_thread = nregions/nthreads;
+    #pragma omp parallel num_threads(nthreads)
+    {
+        int elthread = omp_get_thread_num();
         int nnvals_Gn = nmax+3;
         //int nnvals_Wn = nmax+1;
         int nnvals_Ups = nmax+1;
@@ -3860,17 +3851,16 @@ void alloc_Gammans_discrete_GNN(const MultiresoCatalog *cat_source, const NavHas
         ctx.upsilon_threadshift=upsilon_threadshift; ctx.dccorr=dccorr; ctx.elthread=elthread;
         ctx.tmpUpsilon=tmpUpsilon; ctx.tmpNorm=tmpNorm;
 
-        for (int elregion=0; elregion<nregions; elregion++){
+        #pragma omp for schedule(dynamic, 8)
+        for (int _elregion=0; _elregion<nfilledregions; _elregion++){
+            int elregion = filledregions[_elregion];
             int region_debug=99999;
-            // Check if this thread is responsible for the region
-            int nthread_target = mymin(elregion/nregions_per_thread, nthreads-1);
-            if (nthread_target!=elthread){continue;}
             bool printregdbg = (verbose>0) && (elregion==region_debug);
             // printf("Region %d is in thread %d\n",elregion,elthread);
             if (printregdbg){printf("Region %d is in thread %d\n",elregion,elthread);}
             #pragma omp atomic
             nregionsdone += 1;
-            print_progress(nregionsdone, nregions, verbose);
+            print_progress(nregionsdone, nfilledregions, verbose);
             
             int zbin_gal1, zbin_gal2;
             double isinner_gal1, pos1_gal1, pos2_gal1, w_gal1, e1_gal1, e2_gal1;
@@ -3983,7 +3973,8 @@ void alloc_Gammans_doubletree_GNN(const MultiresoCatalog *cat_source, const NavH
     double rmin = bin->rmin, rmax = bin->rmax;
     int *index_matcher_source = nav_source->index_matcher, *pixs_galind_bounds_source = nav_source->pixs_galind_bounds, *pix_gals_source = nav_source->pix_gals;
     int *index_matcher_lens = nav_lens->index_matcher, *pixs_galind_bounds_lens = nav_lens->pixs_galind_bounds, *pix_gals_lens = nav_lens->pix_gals;
-    int *index_matcher_hash = nav_source->index_matcher_hash, nregions = nav_source->nregions;
+    int *index_matcher_hash = nav_source->index_matcher_hash;
+    int *filledregions = nav_source->filledregions, nfilledregions = nav_source->nfilledregions;
     double pix1_start = nav_lens->pix1_start, pix1_d = nav_lens->pix1_d; int pix1_n = nav_lens->pix1_n;
     double pix2_start = nav_lens->pix2_start, pix2_d = nav_lens->pix2_d; int pix2_n = nav_lens->pix2_n;
 
@@ -4005,9 +3996,9 @@ void alloc_Gammans_doubletree_GNN(const MultiresoCatalog *cat_source, const NavH
     }
     int nregionsdone = 0;
     reset_progress();
-    #pragma omp parallel for num_threads(nthreads)
-    for(int elthread=0;elthread<nthreads;elthread++){
-        int nregions_per_thread = nregions/nthreads;
+    #pragma omp parallel num_threads(nthreads)
+    {
+        int elthread = omp_get_thread_num();
         int hasdiscrete = nresos-nresos_grid;
         int nnvals_Gn = nmax+3; 
         int nnvals_Wn = nmax+1; 
@@ -4032,13 +4023,12 @@ void alloc_Gammans_doubletree_GNN(const MultiresoCatalog *cat_source, const NavH
         ctx.dccorr=dccorr; ctx.elthread=elthread;
         ctx.tmpUpsilon=tmpUpsilon; ctx.tmpNorm=tmpNorm;
 
-        for (int elregion=0; elregion<nregions; elregion++){
-            // Check if this thread is responsible for the region
-            int nthread_target = mymin(elregion/nregions_per_thread, nthreads-1);
-            if (nthread_target!=elthread){continue;}
+        #pragma omp for schedule(dynamic, 8)
+        for (int _elregion=0; _elregion<nfilledregions; _elregion++){
+            int elregion = filledregions[_elregion];
             #pragma omp atomic
             nregionsdone += 1;
-            print_progress(nregionsdone, nregions, verbose);
+            print_progress(nregionsdone, nfilledregions, verbose);
             
             // Check which sets of radii are evaluated for each resolution
             int *reso_rindedges = orpheus_calloc(nresos+1, sizeof(int));
@@ -4503,7 +4493,7 @@ void alloc_Gammans_discrete_NGG(const MultiresoCatalog *cat_source, const NavHas
     double rmin = bin->rmin, rmax = bin->rmax;
     int *index_matcher_source = nav_source->index_matcher, *pixs_galind_bounds_source = nav_source->pixs_galind_bounds, *pix_gals_source = nav_source->pix_gals;
     int *index_matcher_lens = nav_lens->index_matcher, *pixs_galind_bounds_lens = nav_lens->pixs_galind_bounds, *pix_gals_lens = nav_lens->pix_gals;
-    int nregions = nav_lens->nregions;
+    int *filledregions = nav_lens->filledregions, nfilledregions = nav_lens->nfilledregions;
     double pix1_start = nav_lens->pix1_start, pix1_d = nav_lens->pix1_d; int pix1_n = nav_lens->pix1_n;
     double pix2_start = nav_lens->pix2_start, pix2_d = nav_lens->pix2_d; int pix2_n = nav_lens->pix2_n;
 
@@ -4529,9 +4519,9 @@ void alloc_Gammans_discrete_NGG(const MultiresoCatalog *cat_source, const NavHas
     }
     int nregionsdone = 0;
     reset_progress();
-    #pragma omp parallel for num_threads(nthreads)
-    for(int elthread=0;elthread<nthreads;elthread++){
-        int nregions_per_thread = nregions/nthreads;
+    #pragma omp parallel num_threads(nthreads)
+    {
+        int elthread = omp_get_thread_num();
         int nnvals_Gn = 2*nmax+5; // Need [-nmax-2, ..., nmax+2]
         int nnvals_Wn = 2*nmax+1; // Need [-nmax, ..., nmax]
         int nnvals_Ups = 2*nmax+1;
@@ -4557,18 +4547,16 @@ void alloc_Gammans_discrete_NGG(const MultiresoCatalog *cat_source, const NavHas
         ctx.dccorr=dccorr; ctx.elthread=elthread;
         ctx.tmpUpsilon=tmpUpsilon; ctx.tmpNorm=tmpNorm;
 
-        for (int elregion=0; elregion<nregions; elregion++){
-            int region_debug=(int) (nthreads/2) * nregions_per_thread;
-            //int region_debug=99999;
-            // Check if this thread is responsible for the region
-            int nthread_target = mymin(elregion/nregions_per_thread, nthreads-1);
-            if (nthread_target!=elthread){continue;}
+        #pragma omp for schedule(dynamic, 8)
+        for (int _elregion=0; _elregion<nfilledregions; _elregion++){
+            int elregion = filledregions[_elregion];
+            int region_debug=99999;
             bool printregdbg = (verbose>0) && (elregion==region_debug);
             bool printregdbg2 = (verbose>1) && (elregion==region_debug); 
             //if (elregion==region_debug){printf("Region %d is in thread %d\n",elregion,elthread);}
             #pragma omp atomic
             nregionsdone += 1;
-            print_progress(nregionsdone, nregions, verbose);
+            print_progress(nregionsdone, nfilledregions, verbose);
             
             int zbin_gal1, zbin_gal2;
             double isinner_gal1, pos1_gal1, pos2_gal1, w_gal1;
@@ -4674,7 +4662,7 @@ void alloc_Gammans_tree_NGG(const MultiresoCatalog *cat_source, const NavHash *n
     int *zbin_lens = cat_lens->zbin_resos, nbinsz_lens = cat_lens->nbinsz, ngal_lens = cat_lens->ngal_resos[0];
     int *index_matcher_source = nav_source->index_matcher, *pixs_galind_bounds_source = nav_source->pixs_galind_bounds, *pix_gals_source = nav_source->pix_gals;
     int *index_matcher_lens = nav_lens->index_matcher, *pixs_galind_bounds_lens = nav_lens->pixs_galind_bounds, *pix_gals_lens = nav_lens->pix_gals;
-    int nregions = nav_lens->nregions;
+    int *filledregions = nav_lens->filledregions, nfilledregions = nav_lens->nfilledregions;
     double pix1_start = nav_lens->pix1_start, pix1_d = nav_lens->pix1_d; int pix1_n = nav_lens->pix1_n;
     double pix2_start = nav_lens->pix2_start, pix2_d = nav_lens->pix2_d; int pix2_n = nav_lens->pix2_n;
     int nmax = bin->nmax, nbinsr = bin->nbinsr, dccorr = bin->dccorr;
@@ -4701,9 +4689,9 @@ void alloc_Gammans_tree_NGG(const MultiresoCatalog *cat_source, const NavHash *n
     }
     int nregionsdone = 0;
     reset_progress();
-    #pragma omp parallel for num_threads(nthreads)
-    for(int elthread=0;elthread<nthreads;elthread++){
-        int nregions_per_thread = nregions/nthreads;
+    #pragma omp parallel num_threads(nthreads)
+    {
+        int elthread = omp_get_thread_num();
         int nnvals_Gn = 2*nmax+5; // Need [-nmax-2, ..., nmax+2]
         int nnvals_Wn = 2*nmax+1; // Need [-nmax, ..., nmax]
         int nnvals_Ups = 2*nmax+1;
@@ -4735,18 +4723,16 @@ void alloc_Gammans_tree_NGG(const MultiresoCatalog *cat_source, const NavHash *n
             rshift_index_matcher, rshift_pixs_galind_bounds, rshift_pix_gals);
         
         
-        for (int elregion=0; elregion<nregions; elregion++){
-            int region_debug=(int) (nthreads/2) * nregions_per_thread;
-            //int region_debug=99999;
-            // Check if this thread is responsible for the region
-            int nthread_target = mymin(elregion/nregions_per_thread, nthreads-1);
-            if (nthread_target!=elthread){continue;}
+        #pragma omp for schedule(dynamic, 8)
+        for (int _elregion=0; _elregion<nfilledregions; _elregion++){
+            int elregion = filledregions[_elregion];
+            int region_debug=99999;
             bool printregdbg = (verbose>0) && (elregion==region_debug);
             bool printregdbg2 = (verbose>1) && (elregion==region_debug); 
             //if (elregion==region_debug){printf("Region %d is in thread %d\n",elregion,elthread);}
             #pragma omp atomic
             nregionsdone += 1;
-            print_progress(nregionsdone, nregions, verbose);
+            print_progress(nregionsdone, nfilledregions, verbose);
             
             int zbin_gal1, zbin_gal2;
             double isinner_gal1, pos1_gal1, pos2_gal1, w_gal1;
@@ -4863,7 +4849,8 @@ void alloc_Gammans_doubletree_NGG(const MultiresoCatalog *cat_source, const NavH
     double rmin = bin->rmin, rmax = bin->rmax;
     int *index_matcher_source = nav_source->index_matcher, *pixs_galind_bounds_source = nav_source->pixs_galind_bounds, *pix_gals_source = nav_source->pix_gals;
     int *index_matcher_lens = nav_lens->index_matcher, *pixs_galind_bounds_lens = nav_lens->pixs_galind_bounds, *pix_gals_lens = nav_lens->pix_gals;
-    int *index_matcher_hash = nav_lens->index_matcher_hash, nregions = nav_lens->nregions;
+    int *index_matcher_hash = nav_lens->index_matcher_hash;
+    int *filledregions = nav_lens->filledregions, nfilledregions = nav_lens->nfilledregions;
     double pix1_start = nav_lens->pix1_start, pix1_d = nav_lens->pix1_d; int pix1_n = nav_lens->pix1_n;
     double pix2_start = nav_lens->pix2_start, pix2_d = nav_lens->pix2_d; int pix2_n = nav_lens->pix2_n;
 
@@ -4877,7 +4864,6 @@ void alloc_Gammans_doubletree_NGG(const MultiresoCatalog *cat_source, const NavH
     int _normnshift = _normzshift*_nzcombis;
     int _normthreadshift = (2*nmax+1)*_normnshift;  
     
-    int *regionsdone = orpheus_calloc(nregions, sizeof(int));
     int nregionsdone = 0;
     reset_progress();
     
@@ -4889,12 +4875,12 @@ void alloc_Gammans_doubletree_NGG(const MultiresoCatalog *cat_source, const NavH
     double complex *tmpNorm = orpheus_calloc(nthreads*_normthreadshift, sizeof(double complex));
     // Bail out rather than dereference a failed allocation
     if (orpheus_get_error()){
-        free(regionsdone); free(tmpwcounts); free(tmpwnorms); free(tmpUpsilon); free(tmpNorm);
+        free(tmpwcounts); free(tmpwnorms); free(tmpUpsilon); free(tmpNorm);
         return;
     }
-    #pragma omp parallel for num_threads(nthreads)
-    for(int elthread=0;elthread<nthreads;elthread++){
-        int nregions_per_thread = nregions/nthreads;
+    #pragma omp parallel num_threads(nthreads)
+    {
+        int elthread = omp_get_thread_num();
         int hasdiscrete = nresos-nresos_grid;
         int nnvals_Gn = 2*nmax+5; // Need [-nmax-2, ..., nmax+2]
         int nnvals_Wn = 2*nmax+1; // Need [-nmax, ..., nmax]
@@ -4924,23 +4910,11 @@ void alloc_Gammans_doubletree_NGG(const MultiresoCatalog *cat_source, const NavH
         ctx.dccorr=dccorr; ctx.elthread=elthread;
         ctx.tmpUpsilon=tmpUpsilon; ctx.tmpNorm=tmpNorm;
 
-        for (int _elregion=0; _elregion<2*nregions; _elregion++){
-            // Check if this thread is responsible for the region
-            int elregion = _elregion%nregions;
-            int wasdone = 0;
-            if (_elregion<nregions){
-                int nthread_target = mymin(elregion/nregions_per_thread, nthreads-1);
-                if (nthread_target!=elthread){continue;}
-            }
-            #pragma omp critical
-            {   
-                if (regionsdone[elregion]==1){wasdone = 1;}
-                else{
-                    regionsdone[elregion]=1;
-                    nregionsdone+=1; 
-                }
-            }
-            if (wasdone==1){continue;}
+        #pragma omp for schedule(dynamic, 8)
+        for (int _elregion=0; _elregion<nfilledregions; _elregion++){
+            int elregion = filledregions[_elregion];
+            #pragma omp atomic
+            nregionsdone += 1;
 
             // Check which sets of radii are evaluated for each resolution
             int *reso_rindedges = orpheus_calloc(nresos+1, sizeof(int));
@@ -5128,7 +5102,7 @@ void alloc_Gammans_doubletree_NGG(const MultiresoCatalog *cat_source, const NavH
             free(thetashifts_z);
             free(zbinshifts);
 
-            print_progress(nregionsdone, nregions, verbose);
+            print_progress(nregionsdone, nfilledregions, verbose);
         }
         free(Gncache);
         free(wGncache);
@@ -5144,7 +5118,6 @@ void alloc_Gammans_doubletree_NGG(const MultiresoCatalog *cat_source, const NavH
     free(tmpNorm);
     free(tmpwcounts);
     free(tmpwnorms);
-    free(regionsdone);
 }
 
 

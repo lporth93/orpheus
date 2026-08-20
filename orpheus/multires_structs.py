@@ -496,7 +496,14 @@ def build_flat_navhash_struct(cat_obj):
     im  = np.ascontiguousarray(cat_obj.index_matcher, dtype=np.int32)
     pgb = np.ascontiguousarray(cat_obj.pixs_galind_bounds, dtype=np.int32)
     pg  = np.ascontiguousarray(cat_obj.pix_gals, dtype=np.int32)
-    keepers = [im, pgb, pg]
+    # In C we only want to iterate over regions that contain at least one
+    # inner galaxy. Here we set up the array to efficiently enumerate through this set
+    nregions = int(np.count_nonzero(im > -1))
+    inner_ingal = np.asarray(cat_obj.isinner, dtype=np.float64)[pg]
+    inner_csum = np.concatenate(([0.], np.cumsum(inner_ingal)))
+    inner_per_cell = inner_csum[pgb[1:nregions+1]] - inner_csum[pgb[:nregions]]
+    filled = np.ascontiguousarray(np.nonzero(inner_per_cell > 0)[0].astype(np.int32))
+    keepers = [im, pgb, pg, filled]
 
     s = NavHash()
     s.metric = 0
@@ -509,7 +516,9 @@ def build_flat_navhash_struct(cat_obj):
     s.pix2_start = float(cat_obj.pix2_start)
     s.pix2_d = float(cat_obj.pix2_d)
     s.pix2_n = int(cat_obj.pix2_n)
-    s.nregions = int(len(np.argwhere(im > -1)))
+    s.nregions = nregions
+    s.filledregions = _ptr_i32(filled)
+    s.nfilledregions = len(filled)
 
     return s, keepers
 
