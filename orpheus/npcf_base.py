@@ -1040,6 +1040,24 @@ class BinnedNPCF:
     ####################
     ## MISC FUNCTIONS ##
     ####################
+    def _discrete_dpix(self, cat):
+        """Set pixel size for the spatial hash the discrete estimators walk."""
+
+        # Regions should be few time smaller than ranges searched over
+        dpix_rmax = self.max_sep/10.
+        # We should have sufficient regions for parallelism to work
+        inner = cat.isinner > 0.
+        nregions = 64*self.nthreads
+        area = np.ptp(cat.pos1[inner])*np.ptp(cat.pos2[inner])
+        dpix_parallel = np.sqrt(area/nregions)
+        # Regions should not be smaller than a crude estimate of nbar:
+        dpix_nbar = np.sqrt(2*area/np.sum(inner))
+        # Consensus: If dpix_rmax allowed take this, else take smaller one
+        if np.count_nonzero(inner) < nregions:
+            return dpix_rmax
+        dpix = max(dpix_nbar, min(dpix_parallel, dpix_rmax))
+        return dpix
+
     def _checkcats(self, cats, spins):
         if isinstance(cats, list):
             assert(len(cats)==self.order)

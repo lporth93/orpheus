@@ -177,7 +177,7 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
         bin_centers = np.zeros(self.nbinsz*self.nbinsr).astype(np.float64)
         if not use_spherical:
             if not cat.hasspatialhash:
-                cat.build_spatialhash(dpix=max(1.,self.max_sep//10.))
+                cat.build_spatialhash(dpix=self._discrete_dpix(cat))
             nregions = np.int32(len(np.argwhere(cat.index_matcher>-1).flatten()))
             args_hash = (cat.index_matcher, cat.pixs_galind_bounds, cat.pix_gals, nregions,
                          np.float64(cat.pix1_start), np.float64(cat.pix1_d), np.int32(cat.pix1_n),
@@ -614,7 +614,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
         # Init default args
         bin_centers = np.zeros(self.nbinsz*self.nbinsr).astype(np.float64)
         if not cat.hasspatialhash:
-            cat.build_spatialhash(dpix=max(1.,self.max_sep//10.))
+            cat.build_spatialhash(dpix=self._discrete_dpix(cat))
         nregions = np.int32(len(np.argwhere(cat.index_matcher>-1).flatten()))
         args_basecat = (cat.isinner.astype(np.float64), cat.weight, cat.pos1, cat.pos2, 
                         cat.tracer_1, cat.tracer_2, np.int32(cat.ngal), )

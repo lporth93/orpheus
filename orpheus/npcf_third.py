@@ -544,7 +544,7 @@ class GGGCorrelation(BinnedNPCF):
                                              rbins=np.array([-1.]))
                 if self.method=="Discrete":
                     if not cat.hasspatialhash:
-                        cat.build_spatialhash(dpix=max(1.,self.max_sep//10.))
+                        cat.build_spatialhash(dpix=self._discrete_dpix(cat))
                     cat_s, keep_cat = build_flat_catalog_struct(
                         cat.pos1, cat.pos2, cat.weight, cat.zbins, self.nbinsz,
                         cat.isinner, e1=cat.tracer_1, e2=cat.tracer_2)
@@ -1095,7 +1095,7 @@ class GNNCorrelation(BinnedNPCF):
                                          dccorr=int(self.multicountcorr))
             jointextent = list(cat_source._jointextent([cat_lens], extend=self.tree_resos[-1]))
             if self.method=="Discrete":
-                hash_dpix = max(1.,self.max_sep//10.)
+                hash_dpix = min(self._discrete_dpix(cat_source), self._discrete_dpix(cat_lens))
                 cat_source.build_spatialhash(dpix=hash_dpix, extent=jointextent)
                 cat_lens.build_spatialhash(dpix=hash_dpix, extent=jointextent)
                 cats_s, keep_cs = build_flat_catalog_struct(
@@ -1725,7 +1725,7 @@ class NGGCorrelation(BinnedNPCF):
                                          dccorr=int(self.multicountcorr))
             jointextent = list(cat_source._jointextent([cat_lens], extend=self.tree_resos[-1]))
             if self.method=="Discrete":
-                hash_dpix = max(1.,self.max_sep//10.)
+                hash_dpix = min(self._discrete_dpix(cat_source), self._discrete_dpix(cat_lens))
                 cat_source.build_spatialhash(dpix=hash_dpix, extent=jointextent)
                 cat_lens.build_spatialhash(dpix=hash_dpix, extent=jointextent)
                 cats_s, keep_cs = build_flat_catalog_struct(
