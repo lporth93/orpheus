@@ -14,6 +14,13 @@ orpheus/src/cov_postq.c
 # Profiling artifacts
 *.stats
 
+# Per default, the download for external data is set to here. Exclude all files but the 
+# tiny data_g3l.npz which comes naturally with the package
+docs/source/notebooks/*.fits
+docs/source/notebooks/*.h5
+docs/source/notebooks/*.hdf5
+docs/source/notebooks/*.dat
+
 # Only keep pdf of latex
 *.tex
 *.aux
@@ -185,3 +192,12 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
+################
+## EXCEPTIONS ##
+################
+
+# Keep the small file that is needed to reproduce the workflow diagram but ignore the
+# larger underlying one from which it was created.
+!figures/workflow/data/
+!figures/workflow/data/*
+figures/workflow/data/t17_ggg_full.npz
