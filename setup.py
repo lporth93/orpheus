@@ -50,6 +50,18 @@ def try_compile(code, compiler, cflags=None, lflags=None, include_dirs=None, lib
             if os.path.exists(fname):
                 os.remove(fname)
 
+# Not every compiler knows every flag: apple clang rejects -fcx-limited-range outright,
+# so keep only those the selected compiler accepts.
+def filter_supported(compiler, flags):
+    if not compiler:
+        return list(flags)
+    probe = "int main(){ return 0; }"
+    keep = [f for f in flags if try_compile(probe, compiler, cflags=[f])]
+    dropped = [f for f in flags if f not in keep]
+    if dropped:
+        print("Compiler does not accept %s; building without." % " ".join(dropped))
+    return keep
+
 CXX_MISSING = """
 %(rule)s
 orpheus needs a C++ compiler to build orpheus/src/healpix_utils.cpp. None of the
@@ -156,9 +168,12 @@ class BuildExtWithDetect(build_ext):
                 except Exception:
                     pass
 
+        opt_cflags = filter_supported(cc_path, OPT_CFLAGS)
+        warn_cflags = filter_supported(cc_path, WARN_CFLAGS)
+
         # Check whether the selected compiler supports OpenMP.
         link_shared = [] if sys.platform == "darwin" else ["-shared"]
-        omp_cflags = ["-fopenmp"] + OPT_CFLAGS + WARN_CFLAGS + ["-std=c99", "-fPIC"]
+        omp_cflags = ["-fopenmp"] + opt_cflags + warn_cflags + ["-std=c99", "-fPIC"]
         omp_lflags = link_shared + ["-fopenmp", "-lm"]
         use_openmp = False
         applied_alternative_clang_flags = False
@@ -190,7 +205,7 @@ class BuildExtWithDetect(build_ext):
                         break
 
                 if libomp_include and libomp_lib:
-                    clang_alt_cflags = (["-Xpreprocessor", "-fopenmp"] + OPT_CFLAGS + WARN_CFLAGS
+                    clang_alt_cflags = (["-Xpreprocessor", "-fopenmp"] + opt_cflags + warn_cflags
                                         + ["-std=c99", "-fPIC"])
                     clang_alt_lflags = ["-lomp", "-lm"]
                     if try_compile(omp_test_code, cc_path, cflags=clang_alt_cflags, lflags=clang_alt_lflags,
@@ -229,7 +244,7 @@ class BuildExtWithDetect(build_ext):
                     ext.include_dirs = list(ext.include_dirs or []) + [libomp_include]
                     ext.library_dirs = list(getattr(ext, "library_dirs", []) or []) + [libomp_lib]
             else:
-                ext.extra_compile_args = OPT_CFLAGS + WARN_CFLAGS + ["-std=c99", "-fPIC"]
+                ext.extra_compile_args = opt_cflags + warn_cflags + ["-std=c99", "-fPIC"]
                 ext.extra_link_args = link_shared + ["-lm"]
             ext.extra_compile_args = ext.extra_compile_args + extra_cflags
             ext.extra_link_args = ext.extra_link_args + extra_lflags

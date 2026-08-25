@@ -64,7 +64,8 @@ parallelised C kernels.
   and stops the compiler reassociating OpenMP reductions, which makes results independent of
   the thread count. Measured cost against the old build is 4% on `GGCorrelation` and 9% on
   `GGGCorrelation` with `DoubleTree`; the analytic test tier is unchanged. `-ffast-math` can be
-  restored with `ORPHEUS_FAST_MATH=1 pip install .`.
+  restored with `ORPHEUS_FAST_MATH=1 pip install .`. Each flag is probed against the selected
+  compiler and dropped if it is not accepted -- apple clang rejects `-fcx-limited-range`.
 * **`numba` is no longer a dependency.** It was declared but never imported, and its upper pin
   constrained `numpy` in unrelated environments. `mpmath`, which is imported lazily by the
   log-COSEBI construction, is now declared as the `cosebis` extra.
