@@ -6,6 +6,20 @@ went into every version.
 
 ## Release highlights
 
+### 0.5
+
+Mainly presentation updates with a few minor code changes covering certain edge cases and 
+more graceful error handling. The README was heavily rewritten to reflect the current status 
+of the codebase. In particular, it features the main figures from the testsuite and from the 
+newly added scaling test.
+
+* Default build does not use `-ffast-math` to be IEEE-safe. Slightly increased performance via 
+`-ffast-math` still available behind `ORPHEUS_FAST_MATH=1`
+* Allocation failures on the C side raise `MemoryError` rather than segfaulting
+* `autoset_tree` and the discrete spatial hash size themselves from the catalog
+* Performed benchmarking tests of GGG and added main results to README
+* The package root exports only orpheus' own names
+
 ### 0.4
 
 Validation and correctness. The estimators are now checked end to end against a shear
@@ -39,7 +53,7 @@ parallelised C kernels.
 
 ## Detailed changelog
 
-### Unreleased
+### 0.5.0 — 2026-08-25
 
 #### Changed — please read before upgrading
 
@@ -54,9 +68,23 @@ parallelised C kernels.
 * **`numba` is no longer a dependency.** It was declared but never imported, and its upper pin
   constrained `numpy` in unrelated environments. `mpmath`, which is imported lazily by the
   log-COSEBI construction, is now declared as the `cosebis` extra.
+* **The package namespace exports only orpheus' own names.** `orpheus/__init__.py` used star
+  imports, which republished whatever its modules had imported: `orpheus.SkyCoord`,
+  `orpheus.KMeans`, `orpheus.Parallel` and 32 further third-party names were importable from
+  the package root and indistinguishable from API. It now imports by name and declares
+  `__all__`. All 37 of orpheus' own names are unchanged, so code that imports estimators,
+  catalogs or helpers is unaffected; code that reached through orpheus for a third-party name
+  should import it from its own package.
 
 #### Fixed
 
+* **The discrete estimators sized their spatial hash from `max_sep` alone.** `dpix` was
+  `max(1., max_sep//10)`, which takes no account of how many galaxies the catalog holds or how
+  many threads will walk it. `_discrete_dpix` now bounds `max_sep/10` from above by the cell
+  size that yields 64 regions per thread and from below by a crude estimate of the mean
+  inter-galaxy separation, falling back to the old rule for catalogs holding fewer galaxies
+  than there are regions. `GNNCorrelation` and `NGGCorrelation` take the finer of the source
+  and lens values so the two hashes stay aligned.
 * **Four variables could be read before being assigned.** `inv_Nbar` in `directestimator.c` is
   declared outside the tomographic loop but assigned inside it, so an `Nbar_policy` outside the
   handled set would silently reuse the previous bin's value; `toadd_Mapn_w` and `Map3_w` are
@@ -90,6 +118,10 @@ parallelised C kernels.
   there is on squared or geodesic distance while the bin index goes through `sqrt` and `log`;
   the two roundings can disagree by one bin at a shell edge, which the 0.4.0 notes flagged as
   able to corrupt the accumulators silently.
+* **The advanced GG/GGG tutorial built its catalog from the Takahashi shear unnegated.** The
+  T17 maps store `gamma1` and `gamma2` in the opposite sign convention to the one orpheus
+  expects, so the even-order statistics were right but `Map3` came out negative. The notebook
+  negates both components and its outputs were re-run from that.
 
 #### Added
 
@@ -109,6 +141,13 @@ parallelised C kernels.
   extension build. `CITATION.cff` added.
 * The tutorial notebooks download their own input data instead of reading it from a hardcoded
   institute path.
+* `benchmarks/scaling.py`, which times the third-order estimators against maximum separation,
+  number density and thread count and draws the README performance figure. Timings are cached
+  per machine, so the figure can be redrawn without repeating the sweep, and `--legs` selects
+  which of the three to measure.
+* `figures/workflow/`, the two scripts behind the README workflow figure. They build a masked
+  mock catalog from a public Takahashi ray-tracing map, measure the spherical GGG and `Map3`,
+  and reduce the result to the small array the figure is drawn from.
 
 ### 0.4.0 — 2026-08-19
 
