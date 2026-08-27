@@ -26,7 +26,7 @@ cosmological surveys containing hundreds of millions of objects. As a ballpark e
 <span style="font-variant: small-caps;">orpheus</span>  can accurately determine how the $10^{18}$ 
 triangles formed by a catalogue of one million objects are distributed across configuration-space 
 bins within a few CPU minutes, with the computational complexity scaling approximately linear with 
-the numer of objects.
+the number of objects.
 
 <div align="center">
 
@@ -47,7 +47,7 @@ the numer of objects.
 <span style="font-variant: small-caps;">orpheus</span> is installable from PyPI, so a simple 
 `pip install orpheus-npcf` should get you the latest pre-compiled version.
 
-The computation of any higher-order correlation function follows the same patten; below we 
+The computation of any higher-order correlation function follows the same pattern; below we 
 give an example to compute third-order shear statistics. For a fully worked example see the 
 introductory [tutorial notebook](https://orpheus.readthedocs.io/notebooks/GGG_tutorial_basic.html)
 
@@ -103,8 +103,8 @@ The different <span style="font-variant: small-caps;">orpheus</span> implementat
 better scaling than their real-space counterparts. In particular:
 
 * **More configurations:** Both tree-based estimators show a much more shallow scaling when 
-  increasing the larges search distance; the DoubleTree in particular nearly plateaus.
-* **Larger datesets:** The DoubleTree estimator maintains near-linear scaling with survey depth, 
+  increasing the largest search distance; the DoubleTree in particular nearly plateaus.
+* **Larger datasets:** The DoubleTree estimator maintains near-linear scaling with survey depth, 
   making it well suited to increasingly large catalogues. 
 * **Parallel performance:** the implementation achieves near-ideal strong scaling up to 32 threads, 
   with diminishing returns at higher thread counts. This is partly due to the non-scaling spatial 
