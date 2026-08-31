@@ -19,7 +19,7 @@ from orpheus.npcf_fourth import GGGGCorrelation_NoTomo, GNNNCorrelation_NoTomo, 
 from orpheus.npcf_second import GGCorrelation, NGCorrelation, NNCorrelation
 from orpheus.npcf_third import GGGCorrelation, GNNCorrelation, NGGCorrelation, NNNCorrelation
 
-from conftest import (CORRELATORS, MAX_SEP, MIN_SEP, NBINSR, NBINSZ, NTHREADS,
+from conftest import (CORRELATORS, MAX_SEP, MIN_SEP, NBINSR, NBINSZ, NTHREADS, PI,
                       RTOL_EXACT, build_correlator, correlator_ids, correlator_outputs,
                       correlators, run_correlator)
 
@@ -119,6 +119,15 @@ def test_ng_runs_the_full_pipeline(shear_catalog, scalar_catalog):
     mapnap = np.asarray(ng.computeMapNap(RADII))
     assert mapnap.shape == (NZ2, NRADII) and _finite(mapnap)
 
+def test_ng_runs_in_a_3dbox(box_shear_catalog, box_scalar_catalog, box_random_catalog):
+    """Projected xi in slabs, normalised by the randoms."""
+    ng = NGCorrelation(**SEPS, nthreads=NTHREADS)
+
+    ng.process(box_shear_catalog, box_scalar_catalog, cat_random=box_random_catalog,
+               Pi=PI, dotomo=True)
+    assert np.shape(ng.xi) == (NZ2, NBINSR)
+    assert _finite(ng.xi) and np.any(np.asarray(ng.xi) != 0.)
+
 
 
 ## THIRD ORDER ##
@@ -151,6 +160,19 @@ def test_ggg_runs_the_full_pipeline(method, shear_catalog):
     map3 = np.asarray(ggg.computeMap3(RADII, basis='MapMx'))
     assert map3.shape == (8, NZ3, NRADII) and _finite(map3)
 
+def test_ggg_runs_in_a_3dbox(box_shear_catalog, box_random_catalog):
+    """SSS/RRR in projected slabs in real-space and in multipole-space."""
+    ggg = GGGCorrelation(n_cfs=4, **SEPS, **ANGULAR, nthreads=NTHREADS)
+
+    ggg.process(box_shear_catalog, cat_random=box_random_catalog, Pi=PI, dotomo=True)
+    assert np.shape(ggg.npcf_multipoles) == (4, NMAX+1, NZ3, NBINSR, NBINSR)
+    assert np.shape(ggg.npcf_multipoles_norm) == (NMAX+1, NZ3, NBINSR, NBINSR)
+    assert _finite(ggg.npcf_multipoles) and np.any(np.asarray(ggg.npcf_multipoles) != 0.)
+
+    ggg.multipoles2npcf(projection='Centroid')
+    assert np.shape(ggg.npcf) == (4, NZ3, NBINSR, NBINSR, NBINSPHI)
+    assert _finite(ggg.npcf) and np.any(np.asarray(ggg.npcf) != 0.)
+
 
 @pytest.mark.parametrize("method", GNN_METHODS)
 def test_gnn_runs_the_full_pipeline(method, shear_catalog, scalar_catalog):
@@ -168,6 +190,19 @@ def test_gnn_runs_the_full_pipeline(method, shear_catalog, scalar_catalog):
     nnm = np.asarray(gnn.computeNNM(RADII))
     assert nnm.shape == (1, NZ3, NRADII) and _finite(nnm)
 
+def test_gnn_runs_in_a_3dbox(box_shear_catalog, box_scalar_catalog, box_random_catalog):
+    """G3L in projected slabs in real-space and in multipole-space."""
+    gnn = GNNCorrelation(**SEPS, **ANGULAR, nthreads=NTHREADS)
+
+    gnn.process(box_shear_catalog, box_scalar_catalog, cat_random=box_random_catalog,
+                Pi=PI, dotomo_source=True, dotomo_lens=True)
+    assert np.shape(gnn.npcf_multipoles) == (1, NMAX+1, NZ3, NBINSR, NBINSR)
+    assert _finite(gnn.npcf_multipoles) and np.any(np.asarray(gnn.npcf_multipoles) != 0.)
+
+    gnn.multipoles2npcf()
+    assert np.shape(gnn.npcf) == (1, NZ3, NBINSR, NBINSR, NBINSPHI)
+    assert _finite(gnn.npcf) and np.any(np.asarray(gnn.npcf) != 0.)
+
 @pytest.mark.parametrize("method", NGG_METHODS)
 def test_ngg_runs_the_full_pipeline(method, shear_catalog, scalar_catalog):
     """G+- in real-space and in multipole-space, map2nap"""
@@ -183,6 +218,19 @@ def test_ngg_runs_the_full_pipeline(method, shear_catalog, scalar_catalog):
 
     nmm = np.asarray(ngg.computeNMM(RADII))
     assert nmm.shape == (4, NZ3, NRADII) and nmm.dtype == np.float64 and _finite(nmm)
+
+def test_ngg_runs_in_a_3dbox(box_shear_catalog, box_scalar_catalog, box_random_catalog):
+    """G+- around lenses in projected slabs in real-space and in multipole-space."""
+    ngg = NGGCorrelation(**SEPS, **ANGULAR, nthreads=NTHREADS)
+
+    ngg.process(box_shear_catalog, box_scalar_catalog, cat_random=box_random_catalog,
+                Pi=PI, dotomo_source=True, dotomo_lens=True)
+    assert np.shape(ngg.npcf_multipoles) == (2, 2*NMAX+1, NZ3, NBINSR, NBINSR)
+    assert _finite(ngg.npcf_multipoles) and np.any(np.asarray(ngg.npcf_multipoles) != 0.)
+
+    ngg.multipoles2npcf()
+    assert np.shape(ngg.npcf) == (2, NZ3, NBINSR, NBINSR, NBINSPHI)
+    assert _finite(ngg.npcf) and np.any(np.asarray(ngg.npcf) != 0.)
 
 
 ## FOURTH ORDER ##
@@ -241,7 +289,6 @@ def test_gnnn_runs_on_default_arguments(shear_catalog, scalar_catalog):
 
 # In this test we make sure that orpheus exits with an error message if a method
 # is chosen that is not contained within methods_avail
-
 # Generate a list of methods that are not implemented within different correlators
 def _undeclared_params():
     out = []
@@ -251,12 +298,21 @@ def _undeclared_params():
             if method not in declared:
                 out.append(pytest.param(spec, method, id='%s-%s'%(spec.cls.__name__, method)))
     return out
-
 # Run the test
 @pytest.mark.parametrize("spec, method", _undeclared_params())
 def test_undeclared_methods_are_rejected(spec, method):
     with pytest.raises((AssertionError, NotImplementedError, ValueError)):
         build_correlator(spec, **SEPS, method=method)
+
+
+# In this test we make sure that a 3dbox catalog cannot be processed without the randoms 
+# and the projection length.
+def test_3dbox_requires_randoms_and_projection_length(box_shear_catalog, box_random_catalog):
+    ggg = GGGCorrelation(n_cfs=4, **SEPS, **ANGULAR, nthreads=NTHREADS)
+    with pytest.raises(AssertionError):
+        ggg.process(box_shear_catalog, Pi=PI, dotomo=False)
+    with pytest.raises(AssertionError):
+        ggg.process(box_shear_catalog, cat_random=box_random_catalog, dotomo=False)
 
 
 ###################
