@@ -214,19 +214,23 @@ NBINSZ = 2 # Set dotomo=False for tests where we do not need tomography
 CHI = np.pi/5. # E/B mixing angle of the analytic field, see notes sect 6.
 
 ## Shared results ##
+NGAL_FASTCAT = 4000
+# The bin-slop convergence test isolates the projection error, so it needs more objects
+# than the smoke fixtures: at 10000 the two coarsest rmin_pixsize settings tie exactly.
+NGAL_TANGENTIAL = 20000
+PI = 20.
 
 @pytest.fixture(scope="session")
 def shear_catalog():
     """A small random shear catalog in a square, split over NBINSZ tomographic bins."""
     _rng = np.random.default_rng(7)
-    ngal = 4000
     return SpinTracerCatalog(spin=2,
-                             pos1=_rng.uniform(0., BOXSIZE, ngal),
-                             pos2=_rng.uniform(0., BOXSIZE, ngal),
-                             tracer_1=_rng.normal(0., .3, ngal),
-                             tracer_2=_rng.normal(0., .3, ngal),
-                             weight=_rng.uniform(.5, 1.5, ngal),
-                             zbins=_rng.integers(0, NBINSZ, ngal),
+                             pos1=_rng.uniform(0., BOXSIZE, NGAL_FASTCAT),
+                             pos2=_rng.uniform(0., BOXSIZE, NGAL_FASTCAT),
+                             tracer_1=_rng.normal(0., .3, NGAL_FASTCAT),
+                             tracer_2=_rng.normal(0., .3, NGAL_FASTCAT),
+                             weight=_rng.uniform(.5, 1.5, NGAL_FASTCAT),
+                             zbins=_rng.integers(0, NBINSZ, NGAL_FASTCAT),
                              geometry='flat2d')
 
 
@@ -234,26 +238,65 @@ def shear_catalog():
 def scalar_catalog():
     """A small random scalar catalog in a square, split over NBINSZ tomographic bins."""
     _rng = np.random.default_rng(8)
-    ngal = 4000
-    return ScalarTracerCatalog(pos1=_rng.uniform(0., BOXSIZE, ngal),
-                               pos2=_rng.uniform(0., BOXSIZE, ngal),
-                               tracer=np.ones(ngal),
-                               weight=_rng.uniform(.5, 1.5, ngal),
-                               zbins=_rng.integers(0, NBINSZ, ngal),
+    return ScalarTracerCatalog(pos1=_rng.uniform(0., BOXSIZE, NGAL_FASTCAT),
+                               pos2=_rng.uniform(0., BOXSIZE, NGAL_FASTCAT),
+                               tracer=np.ones(NGAL_FASTCAT),
+                               weight=_rng.uniform(.5, 1.5, NGAL_FASTCAT),
+                               zbins=_rng.integers(0, NBINSZ, NGAL_FASTCAT),
                                geometry='flat2d')
+
+@pytest.fixture(scope="session")
+def box_shear_catalog():
+    """A shear catalog in a periodic box, for the projected-slab estimators."""
+    _rng = np.random.default_rng(12)
+    return SpinTracerCatalog(spin=2,
+                             pos1=_rng.uniform(0., BOXSIZE, NGAL_FASTCAT),
+                             pos2=_rng.uniform(0., BOXSIZE, NGAL_FASTCAT),
+                             pos3=_rng.uniform(0., BOXSIZE, NGAL_FASTCAT),
+                             tracer_1=_rng.normal(0., .3, NGAL_FASTCAT),
+                             tracer_2=_rng.normal(0., .3, NGAL_FASTCAT),
+                             weight=_rng.uniform(.5, 1.5, NGAL_FASTCAT),
+                             zbins=_rng.integers(0, NBINSZ, NGAL_FASTCAT),
+                             geometry='3dbox')
+
+
+@pytest.fixture(scope="session")
+def box_scalar_catalog():
+    """A lens catalog in the same box as ``box_shear_catalog``."""
+    _rng = np.random.default_rng(13)
+    return ScalarTracerCatalog(pos1=_rng.uniform(0., BOXSIZE, NGAL_FASTCAT),
+                               pos2=_rng.uniform(0., BOXSIZE, NGAL_FASTCAT),
+                               pos3=_rng.uniform(0., BOXSIZE, NGAL_FASTCAT),
+                               tracer=np.ones(NGAL_FASTCAT),
+                               weight=_rng.uniform(.5, 1.5, NGAL_FASTCAT),
+                               zbins=_rng.integers(0, NBINSZ, NGAL_FASTCAT),
+                               geometry='3dbox')
+
+
+@pytest.fixture(scope="session")
+def box_random_catalog():
+    """A random catalog in the same box as ``box_shear_catalog``."""
+    _rng = np.random.default_rng(14)
+    nrand = 2*NGAL_FASTCAT
+    return ScalarTracerCatalog(pos1=_rng.uniform(0., BOXSIZE, nrand),
+                               pos2=_rng.uniform(0., BOXSIZE, nrand),
+                               pos3=_rng.uniform(0., BOXSIZE, nrand),
+                               tracer=np.ones(nrand),
+                               weight=np.ones(nrand),
+                               zbins=_rng.integers(0, NBINSZ, nrand),
+                               geometry='3dbox')
 
 
 @pytest.fixture(scope="session")
 def spherical_catalog():
     """A shear catalog on a small sky patch, for the patch decomposition."""
     _rng = np.random.default_rng(9)
-    ngal = 20000
     dec = np.degrees(np.arcsin(_rng.uniform(np.sin(np.radians(-20.)),
-                                            np.sin(np.radians(10.)), ngal)))
-    return SpinTracerCatalog(spin=2, pos1=_rng.uniform(10., 40., ngal), pos2=dec,
-                             tracer_1=_rng.normal(0., .3, ngal),
-                             tracer_2=_rng.normal(0., .3, ngal),
-                             weight=np.ones(ngal), geometry='spherical',
+                                            np.sin(np.radians(10.)), NGAL_FASTCAT)))
+    return SpinTracerCatalog(spin=2, pos1=_rng.uniform(10., 40., NGAL_FASTCAT), pos2=dec,
+                             tracer_1=_rng.normal(0., .3, NGAL_FASTCAT),
+                             tracer_2=_rng.normal(0., .3, NGAL_FASTCAT),
+                             weight=np.ones(NGAL_FASTCAT), geometry='spherical',
                              units_pos1='deg', units_pos2='deg')
 
 
@@ -265,15 +308,14 @@ def tangential_field():
     """
     _rng = np.random.default_rng(3)
     gamma_t = .1
-    ngal = 20000
     center = BOXSIZE/2.
-    rad = np.sqrt(_rng.uniform(MIN_SEP**2, MAX_SEP**2, ngal))
-    ang = _rng.uniform(0., 2.*np.pi, ngal)
+    rad = np.sqrt(_rng.uniform(MIN_SEP**2, MAX_SEP**2, NGAL_TANGENTIAL))
+    ang = _rng.uniform(0., 2.*np.pi, NGAL_TANGENTIAL)
     pos1, pos2 = center + rad*np.cos(ang), center + rad*np.sin(ang)
     ell = -gamma_t*np.exp(2j*np.arctan2(pos2-center, pos1-center))
     cat_source = SpinTracerCatalog(spin=2, pos1=pos1, pos2=pos2,
                                    tracer_1=ell.real, tracer_2=ell.imag,
-                                   weight=np.ones(ngal), geometry='flat2d')
+                                   weight=np.ones(NGAL_TANGENTIAL), geometry='flat2d')
     cat_lens = ScalarTracerCatalog(pos1=np.array([center]), pos2=np.array([center]),
                                    tracer=np.array([1.]),
                                    weight=np.array([1.]), geometry='flat2d')
@@ -286,7 +328,7 @@ def quadrupole_field():
     parity properties, i.e. not theory, so here it is sufficient to only use a few galaxies 
     that are poisson sampled."""
     fld = AnalyticField(gamma0=.05, r0=8., boxsize=BOXSIZE, chi=CHI)
-    return fld.catalogs(15000, seed=11, stratified=False)[0], fld
+    return fld.catalogs(NGAL_FASTCAT, seed=11, stratified=False)[0], fld
 
 
 ############################

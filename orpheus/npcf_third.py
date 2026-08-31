@@ -1224,7 +1224,7 @@ class GNNCorrelation(BinnedNPCF):
 
         self.clib.alloc_Gammans_slab_GNN(
             ct.byref(cat_c), ct.byref(cat_D), ct.byref(nav_D), ct.byref(cat_R), ct.byref(nav_R),
-            ct.byref(bin_s), ct.c_int32(self.nthreads), ct.c_int32(self._verbose_c),
+            ct.byref(bin_s), int(self.nthreads), int(self._verbose_c),
             ct.byref(out_s))
         check_clib_error(self.clib)
 
