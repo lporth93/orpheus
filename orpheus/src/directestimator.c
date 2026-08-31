@@ -49,17 +49,19 @@ double getFilterQ(int type_filter, double reff2){
             //reff2 = pow(dgal/R_ap,2);
             res = -1./area * (1.*(1./(150*reff2)+1)*exp(-150.*reff2) + 0.5*(1/(30*reff2)+1)*exp(-30.*reff2) + (-.0233333)*(1./(1*reff2)+1)*exp(-1.*reff2));
             break;
-        default:
-            printf("Error! operator is not correct");
-            res = 0;
         case 4:
             //reff2 = pow(dgal/R_ap,2);
             res = reff2/(0.01*area)*exp(-0.1*reff2);
             break;
+        default:
+            printf("Error! operator is not correct");
+            res = 0;
     }
     return res;
 }
 
+// Companion U to getFilterQ, related by Q(x) = 2/x^2 \int_0^x dx' x' U(x') - U(x).
+// TODO: There is a factor pi difference between U and Q; make consistent!
 double getFilterU(int type_filter, double reff2){
     double res=0;
     double area = 1;
@@ -67,13 +69,21 @@ double getFilterU(int type_filter, double reff2){
         // Polynominal (from Schneider 1998)
         case 0:
             //reff2 = pow(dgal/R_ap,2);
-            res = 6./area * reff2 * (1.-reff2);
+            res = 9./(M_PI*area) * (1.-reff2) * (1./3.-reff2);
             break;
         // Exponential (from Crittenden 2002)
         case 1:
             //reff2 = pow(dgal/R_ap,2);
             res = INV_2PI * (1.-0.5*reff2) * exp(-0.5*reff2);
             break;
+        // Poly-exp (More close to NFW, but there is a simple U)
+        case 3:
+            //reff2 = pow(dgal/R_ap,2);
+            res = 1./(M_PI*area) * (exp(-150.*reff2) + 0.5*exp(-30.*reff2) - 0.0233333*exp(-1.*reff2));
+            break;
+        default:
+            printf("Error! operator is not correct");
+            res = 0;
     }
     return res;
 }
