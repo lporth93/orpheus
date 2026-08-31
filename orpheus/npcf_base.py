@@ -92,8 +92,10 @@ class BinnedNPCF:
         Defaults to ``None``.
     maxresoind_leaf: int, optional
         Sets the largest resolution in the spatial hash hierarchy which can be used to access
-        tracers at leaf positions. If set to ``None`` uses the largest specified cell size. 
+        tracers at leaf positions. If set to ``None`` uses the largest specified cell size.
         Defaults to ``None``.
+    batch_membudget_mb: int, optional
+        Per-thread memory budget for the batched same-resolution accumulation. Defaults to ``64``.
     verbosity: int, optional
         The level of verbosity during the computation. Level 0: No verbosity, 1: Progress verbosity
         on python layer, 2: Progress verbosity also on C level, 3: Debug verbosity. Defaults to ``0``.
@@ -132,7 +134,7 @@ class BinnedNPCF:
     def __init__(self, order, spins, n_cfs, min_sep, max_sep, nbinsr=None, binsize=None, sep_units="arcmin", nbinsphi=100, 
                  nmaxs=30, method="DoubleTree", multicountcorr=True, shuffle_pix=0, process_spherical=False,
                  tree_alpha=None, tree_mincellsize=0.1, tree_maxcellsize=4., tree_resos=[0,0.25,0.5,1.,2.], tree_redges=None, rmin_pixsize=20, 
-                 resoshift_leafs=0, minresoind_leaf=None, maxresoind_leaf=None,  
+                 resoshift_leafs=0, minresoind_leaf=None, maxresoind_leaf=None, batch_membudget_mb=64,
                  methods_avail=["Discrete", "Tree", "BaseTree", "DoubleTree"], verbosity=0, nthreads=16,
                  norm_divisionmask=1e-2, apodization="rect"):
 
@@ -160,6 +162,7 @@ class BinnedNPCF:
         self.resoshift_leafs = resoshift_leafs
         self.minresoind_leaf = minresoind_leaf
         self.maxresoind_leaf = maxresoind_leaf
+        self.batch_membudget_mb = int(batch_membudget_mb)
         self.verbosity = np.int32(verbosity)
         self.nthreads = np.int32(max(1,nthreads))
         self.norm_divisionmask = float(norm_divisionmask)
@@ -371,7 +374,7 @@ class BinnedNPCF:
                 ct.POINTER(MultiresoCatalog), ct.POINTER(NavHash),
                 ct.POINTER(TreeResoParams), ct.POINTER(BinningParams),
                 ct.c_int32, ct.c_int32, ct.POINTER(NPCFOutput)]
-            
+
             # Doubletree-based estimator of GGG.
             self.clib.alloc_ggg_doubletree.restype = ct.c_void_p
             self.clib.alloc_ggg_doubletree.argtypes = [
@@ -948,6 +951,7 @@ class BinnedNPCF:
                     tree_resos=self.tree_resos, tree_redges=self.tree_redges,
                     rmin_pixsize=self.rmin_pixsize, resoshift_leafs=self.resoshift_leafs,
                     minresoind_leaf=self.minresoind_leaf, maxresoind_leaf=self.maxresoind_leaf,
+                    batch_membudget_mb=self.batch_membudget_mb,
                     nthreads=self.nthreads, projection=getattr(self, 'projection', None),
                     bin_centers=self.bin_centers, bin_centers_mean=self.bin_centers_mean)
 
@@ -977,7 +981,7 @@ class BinnedNPCF:
             ctor_keys = ('min_sep', 'max_sep', 'nbinsr', 'sep_units', 'nbinsphi', 'nmaxs',
                          'method', 'multicountcorr', 'shuffle_pix', 'process_spherical',
                          'tree_resos', 'rmin_pixsize', 'resoshift_leafs', 'minresoind_leaf',
-                         'maxresoind_leaf', 'nthreads')
+                         'maxresoind_leaf', 'batch_membudget_mb', 'nthreads')
             ctor = {k: _val(d[k]) for k in ctor_keys if k in d.files}
 
             # Alloc all child-specific constructor names that are not fixed internally

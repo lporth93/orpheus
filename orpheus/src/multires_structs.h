@@ -75,6 +75,7 @@ typedef struct {
     int resoshift_leafs;
     int minresoind_leaf;
     int maxresoind_leaf;
+    int batch_membudget_mb;
 } TreeResoParams;
 
 // NPCF binning in real space (N=2) and multipole space (N=3).
