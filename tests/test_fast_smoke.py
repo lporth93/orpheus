@@ -18,6 +18,7 @@ from orpheus.direct import Direct_MapnEqual, Direct_NapnEqual
 from orpheus.npcf_fourth import GGGGCorrelation_NoTomo, GNNNCorrelation_NoTomo, NNNNCorrelation_NoTomo
 from orpheus.npcf_second import GGCorrelation, NGCorrelation, NNCorrelation
 from orpheus.npcf_third import GGGCorrelation, GNNCorrelation, NGGCorrelation, NNNCorrelation
+from orpheus.patchutils import cat2hpx
 
 from conftest import (CORRELATORS, MAX_SEP, MIN_SEP, NBINSR, NBINSZ, NTHREADS, PI,
                       RTOL_EXACT, build_correlator, correlator_ids, correlator_outputs,
@@ -52,6 +53,21 @@ def _finite(arr):
     a = np.asarray(arr)
     return a.size > 0 and np.isfinite(a).all()
 
+# Calling .topatches alters the catalog, so we need to build a new one for
+# each test regarding patches.
+def _sky_catalog(kind, seed):
+    rng = np.random.default_rng(seed)
+    ngal = 4000
+    dec = np.degrees(np.arcsin(rng.uniform(np.sin(np.radians(-20.)),
+                                           np.sin(np.radians(10.)), ngal)))
+    shared = dict(pos1=rng.uniform(10., 40., ngal), pos2=dec, weight=np.ones(ngal),
+                  zbins=rng.integers(0, NBINSZ, ngal), geometry='spherical',
+                  units_pos1='deg', units_pos2='deg')
+    if kind == 'scalar':
+        return ScalarTracerCatalog(tracer=np.ones(ngal), **shared)
+    return SpinTracerCatalog(spin=2, tracer_1=rng.normal(0., .3, ngal),
+                             tracer_2=rng.normal(0., .3, ngal), **shared)
+
 def _third_kwargs(method):
     kwargs = dict(**SEPS, **ANGULAR, nthreads=NTHREADS, method=method)
     if method != "Discrete":
@@ -78,6 +94,19 @@ def test_nn_runs_the_full_pipeline(scalar_catalog):
     nap2 = np.asarray(nn.computeNap2(RADII))
     assert nap2.shape == (NZ2, NRADII) and nap2.dtype == np.float64 and _finite(nap2)
 
+    # Make sure all holds also with dotomo=False or single tomobin
+    notomo = NNCorrelation(**SEPS, **TREE)
+    notomo.process(scalar_catalog, cat_random=scalar_catalog, dotomo=False)
+    assert np.shape(notomo.xi) == (1, NBINSR) and _finite(notomo.xi)
+    onebin = ScalarTracerCatalog(pos1=scalar_catalog.pos1, pos2=scalar_catalog.pos2,
+                                 tracer=scalar_catalog.tracer,
+                                 weight=scalar_catalog.weight,
+                                 zbins=np.zeros(scalar_catalog.ngal, dtype=int),
+                                 geometry='flat2d')
+    single = NNCorrelation(**SEPS, **TREE)
+    single.process(onebin, cat_random=onebin, dotomo=True)
+    assert np.allclose(np.asarray(notomo.xi), np.asarray(single.xi), rtol=RTOL_EXACT)
+
 
 def test_gg_runs_the_full_pipeline(shear_catalog):
     """xi_pm, map2, pure-mode"""
@@ -94,6 +123,28 @@ def test_gg_runs_the_full_pipeline(shear_catalog):
     xip_pure, xim_pure = gg.computepuremode()
     for arr in (xip_pure, xim_pure):
         assert np.shape(arr) == (3, NZ2, NBINSR) and _finite(arr)
+
+SPHERICAL = dict(nthreads=NTHREADS, method="DoubleTree", process_spherical=True,
+                 sep_units='arcmin')
+
+def test_gg_runs_on_available_geometries():
+    """spherical: xi_pm from the curved-sky hash rather than from flat patches."""
+    gg = GGCorrelation(**SEPS, **SPHERICAL)
+
+    gg.process(_sky_catalog('shear', 25), dotomo=False)
+    for arr in (gg.xip, gg.xim):
+        assert np.shape(arr) == (1, NBINSR)
+        assert _finite(arr) and np.any(np.asarray(arr) != 0.)
+
+
+def test_nn_runs_on_available_geometries():
+    """spherical: pair counts from the curved-sky hash."""
+    nn = NNCorrelation(**SEPS, **SPHERICAL)
+
+    nn.process(_sky_catalog('scalar', 27), dotomo=False)
+    assert np.shape(nn.npair) == (1, NBINSR)
+    assert _finite(nn.npair) and np.any(np.asarray(nn.npair) != 0.)
+    assert np.all(np.asarray(nn.npair) >= 0.)
 
 
 # The log-COSEBI roots are built with mpmath, which the library imports lazily and does not
@@ -119,14 +170,21 @@ def test_ng_runs_the_full_pipeline(shear_catalog, scalar_catalog):
     mapnap = np.asarray(ng.computeMapNap(RADII))
     assert mapnap.shape == (NZ2, NRADII) and _finite(mapnap)
 
-def test_ng_runs_in_a_3dbox(box_shear_catalog, box_scalar_catalog, box_random_catalog):
-    """Projected xi in slabs, normalised by the randoms."""
+def test_ng_runs_on_available_geometries(box_shear_catalog, box_scalar_catalog,
+                                         box_random_catalog):
+    """3dbox: projected xi in slabs, normalised by the randoms."""
     ng = NGCorrelation(**SEPS, nthreads=NTHREADS)
 
     ng.process(box_shear_catalog, box_scalar_catalog, cat_random=box_random_catalog,
                Pi=PI, dotomo=True)
     assert np.shape(ng.xi) == (NZ2, NBINSR)
     assert _finite(ng.xi) and np.any(np.asarray(ng.xi) != 0.)
+
+    # The mixed correlators have no native curved-sky kernel, so make sure they raise 
+    # an error
+    with pytest.raises(ValueError, match="patch"):
+        NGCorrelation(**SEPS, **SPHERICAL).process(
+            _sky_catalog('shear', 28), _sky_catalog('scalar', 29), dotomo=False)
 
 
 
@@ -142,6 +200,16 @@ def test_nnn_runs_the_full_pipeline(scalar_catalog):
     nnn.multipoles2npcf()
     assert np.shape(nnn.npcf) == (1, NZ3, NBINSR, NBINSR, NBINSPHI)
     assert _finite(nnn.npcf)
+
+
+def test_nnn_runs_on_available_geometries():
+    """spherical: triplet multipoles from the curved-sky hash."""
+    nnn = NNNCorrelation(**SEPS, **ANGULAR, **SPHERICAL)
+
+    nnn.process(_sky_catalog('scalar', 30), dotomo=False)
+    assert np.shape(nnn.npcf_multipoles) == (1, NMAX+1, 1, NBINSR, NBINSR)
+    assert _finite(nnn.npcf_multipoles)
+    assert np.any(np.asarray(nnn.npcf_multipoles) != 0.)
 
 
 @pytest.mark.parametrize("method", METHODS)
@@ -160,15 +228,21 @@ def test_ggg_runs_the_full_pipeline(method, shear_catalog):
     map3 = np.asarray(ggg.computeMap3(RADII, basis='MapMx'))
     assert map3.shape == (8, NZ3, NRADII) and _finite(map3)
 
-def test_ggg_runs_in_a_3dbox(box_shear_catalog, box_random_catalog):
-    """SSS/RRR in projected slabs in real-space and in multipole-space."""
-    ggg = GGGCorrelation(n_cfs=4, **SEPS, **ANGULAR, nthreads=NTHREADS)
+def test_ggg_runs_on_available_geometries(box_shear_catalog, box_random_catalog):
+    """spherical: from the curved-sky hash. 3dbox: SSS/RRR in projected slabs."""
+    ggg = GGGCorrelation(n_cfs=4, **SEPS, **ANGULAR, **SPHERICAL)
+    ggg.process(_sky_catalog('shear', 26), dotomo=False)
+    assert np.shape(ggg.npcf_multipoles) == (4, NMAX+1, 1, NBINSR, NBINSR)
+    assert _finite(ggg.npcf_multipoles) and np.any(np.asarray(ggg.npcf_multipoles) != 0.)
+    ggg.multipoles2npcf(projection='Centroid')
+    assert np.shape(ggg.npcf) == (4, 1, NBINSR, NBINSR, NBINSPHI)
+    assert _finite(ggg.npcf) and np.any(np.asarray(ggg.npcf) != 0.)
 
+    ggg = GGGCorrelation(n_cfs=4, **SEPS, **ANGULAR, nthreads=NTHREADS)
     ggg.process(box_shear_catalog, cat_random=box_random_catalog, Pi=PI, dotomo=True)
     assert np.shape(ggg.npcf_multipoles) == (4, NMAX+1, NZ3, NBINSR, NBINSR)
     assert np.shape(ggg.npcf_multipoles_norm) == (NMAX+1, NZ3, NBINSR, NBINSR)
     assert _finite(ggg.npcf_multipoles) and np.any(np.asarray(ggg.npcf_multipoles) != 0.)
-
     ggg.multipoles2npcf(projection='Centroid')
     assert np.shape(ggg.npcf) == (4, NZ3, NBINSR, NBINSR, NBINSPHI)
     assert _finite(ggg.npcf) and np.any(np.asarray(ggg.npcf) != 0.)
@@ -190,8 +264,9 @@ def test_gnn_runs_the_full_pipeline(method, shear_catalog, scalar_catalog):
     nnm = np.asarray(gnn.computeNNM(RADII))
     assert nnm.shape == (1, NZ3, NRADII) and _finite(nnm)
 
-def test_gnn_runs_in_a_3dbox(box_shear_catalog, box_scalar_catalog, box_random_catalog):
-    """G3L in projected slabs in real-space and in multipole-space."""
+def test_gnn_runs_on_available_geometries(box_shear_catalog, box_scalar_catalog,
+                                          box_random_catalog):
+    """3dbox: G3L in projected slabs in real-space and in multipole-space."""
     gnn = GNNCorrelation(**SEPS, **ANGULAR, nthreads=NTHREADS)
 
     gnn.process(box_shear_catalog, box_scalar_catalog, cat_random=box_random_catalog,
@@ -219,8 +294,9 @@ def test_ngg_runs_the_full_pipeline(method, shear_catalog, scalar_catalog):
     nmm = np.asarray(ngg.computeNMM(RADII))
     assert nmm.shape == (4, NZ3, NRADII) and nmm.dtype == np.float64 and _finite(nmm)
 
-def test_ngg_runs_in_a_3dbox(box_shear_catalog, box_scalar_catalog, box_random_catalog):
-    """G+- around lenses in projected slabs in real-space and in multipole-space."""
+def test_ngg_runs_on_available_geometries(box_shear_catalog, box_scalar_catalog,
+                                          box_random_catalog):
+    """3dbox: G+- around lenses in projected slabs, real-space and multipole-space."""
     ngg = NGGCorrelation(**SEPS, **ANGULAR, nthreads=NTHREADS)
 
     ngg.process(box_shear_catalog, box_scalar_catalog, cat_random=box_random_catalog,
@@ -396,7 +472,7 @@ def test_saveinst_loadinst_round_trip(spec, shear_catalog, scalar_catalog, tmp_p
 # In this test we assert that the patch decomposition works as expected, i.e. that
 # the number of inner galaxies summed over the patches equals the number of galaxies
 
-# Run the test
+# Run the test for single catalog
 def test_patch_decomposition_unique_inner(spherical_catalog):
     """Patch inner regions tile the survey; only the buffers overlap."""
 
@@ -416,6 +492,48 @@ def test_patch_decomposition_unique_inner(spherical_catalog):
         inner += int(np.sum(patch.isinner))
     assert inner == cat.ngal
     assert int(np.sum(cat.patchinds['info']['patch_ngalsinner'])) == cat.ngal
+
+
+# Run the test for multiple catalogs
+def test_patch_decomposition_shares_patches_across_catalogs():
+    """other_cats are decomposed onto the patches of the catalog that defines them."""
+    cat_shape, cat_lens = _sky_catalog('shear', 21), _sky_catalog('scalar', 22)
+    cat_shape.topatches(npatches=8, method='healpix', healpix_nside=4,
+                        patchextend_deg=1., n_workers=1, other_cats=[cat_lens])
+
+    assert cat_shape.npatches > 1
+    assert cat_lens.npatches == cat_shape.npatches
+    centers = cat_shape.patchinds['info']['patchcenters']
+    assert np.allclose(centers, cat_lens.patchinds['info']['patchcenters'])
+
+    # Each catalog's inner regions still tile it exactly, as in the single-catalog case
+    for cat in (cat_shape, cat_lens):
+        inner = sum(int(np.sum(cat.frompatchind(i).isinner)) for i in range(cat.npatches))
+        assert inner == cat.ngal
+
+
+# Test single for kmeans_healpix decomposition method
+def test_patch_decomposition_by_kmeans():
+    """The default patch-assignment method produces the requested number of patches."""
+    cat = _sky_catalog('shear', 23)
+    cat.topatches(npatches=4, method='kmeans_healpix', nside_kmeans=64,
+                  patchextend_deg=1., n_workers=1)
+    assert cat.npatches == 4
+    inner = sum(int(np.sum(cat.frompatchind(i).isinner)) for i in range(cat.npatches))
+    assert inner == cat.ngal
+
+
+def test_cat2hpx_maps_the_footprint():
+    """Make sure cat2hpx agrees independent of the choice of do_counts"""
+    cat = _sky_catalog('scalar', 24)
+    nside = 32
+    occupied = np.asarray(cat2hpx(cat.pos1, cat.pos2, nside=nside, radec=True))
+    counts = np.asarray(cat2hpx(cat.pos1, cat.pos2, nside=nside, radec=True, do_counts=True))
+
+    assert occupied.shape == counts.shape == (1, 12*nside**2)
+    assert set(np.unique(occupied)) <= {0, 1}
+    assert counts.sum() == cat.ngal
+    assert np.array_equal(occupied.astype(bool), counts > 0)
 
 
 ###########################

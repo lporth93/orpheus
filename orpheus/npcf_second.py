@@ -301,7 +301,7 @@ class NNCorrelation(BinnedNPCF):
         # DD DR
         # RD RR
         # where each block is of shape (nz, nz) and the ordering of the indices is the same across all blocks.
-        _zshift = cat_data.nbinsz
+        _zshift = cat_data.nbinsz if dotomo else 1
         _creshape = self.npair.reshape((2*_zshift, 2*_zshift, self.nbinsr))
         dds = _creshape[:_zshift,:_zshift].reshape((_zshift*_zshift, self.nbinsr))
         rrs = _creshape[_zshift:,_zshift:].reshape((_zshift*_zshift, self.nbinsr))
@@ -309,8 +309,12 @@ class NNCorrelation(BinnedNPCF):
         rds = _creshape[_zshift:,:_zshift].reshape((_zshift*_zshift, self.nbinsr))
 
         # Get number of galaxies per tomo bin
-        _, ngal_zdata = np.unique(cat_data.zbins, return_counts=True)
-        _, ngal_zrand = np.unique(cat_rand.zbins, return_counts=True)
+        if dotomo:
+            _, ngal_zdata = np.unique(cat_data.zbins, return_counts=True)
+            _, ngal_zrand = np.unique(cat_rand.zbins, return_counts=True)
+        else:
+            ngal_zdata = np.array([cat_data.ngal])
+            ngal_zrand = np.array([cat_rand.ngal])
         ngal_zdata = ngal_zdata.astype(float)
         ngal_zrand = ngal_zrand.astype(float)
         # Get prefactors of LS estimator

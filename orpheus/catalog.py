@@ -228,7 +228,8 @@ class Catalog:
         Parameters
         ----------
         npatches: int
-            The number of patches the catalog should be decomposed into
+            The number of patches the catalog should be decomposed into. Ignored for
+            ``method='healpix'``.
         patchextend_deg: float, optional
             The width of the buffer region appended around each patch.
         other_cats: list of ``Catalog`` instances or None, optional
@@ -256,7 +257,7 @@ class Catalog:
             the kmeans algorithm. A coarse value will result in a faster runtime
             but less accurate patches.
         healpix_nside: int
-            Healpix nside for patch assignment (healpix method only).
+            Healpix nside for patch assignment. Ignored for ``method!='healpix'``.
        
         .. note::
             If you want to get an estimate of a survey-internal covariance matrix
@@ -330,15 +331,18 @@ class Catalog:
                                geometry='spherical', units_pos1='deg',  units_pos2='deg')
             
             # Build patches of joint catalog
-            jointcat.topatches(npatches=npatches, 
+            jointcat.topatches(npatches=npatches,
                                patchextend_deg=patchextend_deg,
                                other_cats=None,
                                nside_hash=nside_hash,
                                verbose=verbose,
                                method=method,
+                               n_workers=n_workers,
                                kmeanshp_maxiter=kmeanshp_maxiter,
                                kmeanshp_tol=kmeanshp_tol,
-                               kmeanshp_randomstate=kmeanshp_randomstate)
+                               kmeanshp_randomstate=kmeanshp_randomstate,
+                               nside_kmeans=nside_kmeans,
+                               healpix_nside=healpix_nside)
             
             # Distribute the patchindices of the joint catalog to the individual instances
             self.patchinds = {}
@@ -389,10 +393,12 @@ class Catalog:
                     cat.patchinds['patches'][elp]['inner'] = _inds['inner'][seli]-cumngals[elcat+1]
                     cat.patchinds['patches'][elp]['outer'] = _inds['outer'][selo]-cumngals[elcat+1]
 
-            # Finalize setting attributes for all instances
-            self.npatches = npatches
+            # Finalize setting attributes for all instances. Take the count from the joint
+            # catalog rather than from the request: with method='healpix' the patches are
+            # healpix pixels, so their number follows the footprint and not npatches.
+            self.npatches = jointcat.npatches
             for cat in other_cats:
-                cat.npatches = npatches
+                cat.npatches = jointcat.npatches
                    
     def _patchind_preparerot(self,  index, rotsignflip=False):
 
