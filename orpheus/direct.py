@@ -855,32 +855,26 @@ class Direct_NapnEqual(DirectEstimator):
     ----------
     order_max : int
         Maximum order of the statistics to be computed.
-
     Rmin : float
         Minimum aperture radius.
-
     Rmax : float
         Maximum aperture radius.
-
     field : str, optional
         Type of input field (``"scalar"`` or ``"polar"``).
-
     filter_form : str, optional
-        Filter type used in the aperture function (``"S98"``, ``"C02"``, ``"Sch04"``, etc.).
-
+        Filter type used in the aperture function (``"S98"``, ``"C02"``, ``"PolyExp"``).
     ap_weights : str, optional
         Aperture weighting strategy (``"Identity"``, ``"InvShot"``).
-
     **kwargs : dict
         Additional keyword arguments passed to :class:`DirectEstimator`.
 
     Notes
     -----
-    Inherits all other parameters and attributes from :class:`DirectEstimator`.  
+    Inherits all other parameters and attributes from :class:`DirectEstimator`.
     Additional child-specific parameters can be passed via ``kwargs``.
     """
 
-    
+
     def __init__(self, order_max, Rmin, Rmax, field="scalar", filter_form="C02", ap_weights="Identity", **kwargs):
         super().__init__(Rmin=Rmin, Rmax=Rmax, **kwargs)
         self.order_max = order_max
@@ -893,12 +887,14 @@ class Direct_NapnEqual(DirectEstimator):
 
         self.fields_avail = ["scalar", "polar"]
         self.ap_weights_dict = {"Identity":0, "InvShot":1}
-        self.filters_dict = {"S98":0, "C02":1, "Sch04":2, "PolyExp":3}
+        self.filters_dict = {"S98":0, "C02":1, "PolyExp":3}
         self.ap_weights_avail = list(self.ap_weights_dict.keys())
         self.filters_avail = list(self.filters_dict.keys())
         assert(self.field in self.fields_avail)
         assert(self.ap_weights in self.ap_weights_avail)
-        assert(self.filter_form in self.filters_avail)
+        if self.filter_form not in self.filters_avail:
+            raise ValueError("filter_form %r has no scalar (U) filter; Direct_NapnEqual "
+                             "supports %s"%(self.filter_form, self.filters_avail))
         
         # We do not need DoubleTree for equal-aperture estimator
         if self.method=="DoubleTree":

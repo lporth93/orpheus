@@ -456,7 +456,10 @@ def test_direct_mapn_equal_is_finite(mapn_equal):
     assert not np.all(mapn == 0)
 
 
-def test_direct_napn_equal_is_finite():
+# Every supported filter needs its own case: getFilterU dispatches on the filter index and
+# an unimplemented branch returns zeros for the whole aperture rather than raising.
+@pytest.mark.parametrize("filter_form", ["S98", "C02", "PolyExp"])
+def test_direct_napn_equal_is_finite(filter_form):
     rng = np.random.default_rng(8)
     ngal = 4000
     cat = ScalarTracerCatalog(pos1=rng.uniform(0., 300., ngal),
@@ -465,15 +468,22 @@ def test_direct_napn_equal_is_finite():
                               weight=rng.uniform(.5, 1.5, ngal), geometry='flat2d')
     cat.create_mask(method="Basic", pixsize=2.)
     napn, wnapn = (np.asarray(a) for a in
-                   Direct_NapnEqual(**DIRECT).process(cat, dotomo=False))
+                   Direct_NapnEqual(filter_form=filter_form, **DIRECT).process(cat, dotomo=False))
     assert napn.size and np.isfinite(napn).any()
+    assert wnapn.shape == napn.shape
+    # An undispatched branch returns zeros without raising, which no shape check sees
     assert not np.all(napn == 0)
+
+
+# Make sure that Schirmer 2004 gets rejected in the Napn
+def test_direct_napn_equal_rejects_filter_without_u():
+    with pytest.raises(ValueError, match="scalar"):
+        Direct_NapnEqual(filter_form="Sch04", **DIRECT)
 
 
 # The tree cell sizes come from an estimate of the catalog's number density. That estimate
 # counts occupied cells on a helper grid, so unless the grid is tied to the catalog it
-# saturates at one galaxy per cell and a sparse catalog is handed the same ladder as a dense
-# one -- tree overhead with nothing to group.
+# saturates at one galaxy per cell and a sparse catalog is handed the same ladder as a dense one.
 @pytest.mark.parametrize("nbar_sparse,nbar_dense", [(.05, 20.)])
 def test_autoset_tree_follows_the_number_density(nbar_sparse, nbar_dense):
     box = 100.
