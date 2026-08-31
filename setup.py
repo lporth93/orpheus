@@ -10,7 +10,7 @@ OPT_CFLAGS = ["-O3", "-fno-math-errno", "-fno-trapping-math", "-fcx-limited-rang
 WARN_CFLAGS = ["-Wall", "-Wextra"]
 
 # Optional faster, less reproducible math mode. For GGG DoubleTree this can save about
-# 5%-10% of copute time
+# 5%-10% of compute time
 if os.environ.get("ORPHEUS_FAST_MATH", "0") not in ("", "0", "false", "False"):
     print("ORPHEUS_FAST_MATH is set: building with -ffast-math. Runtime isnan/isfinite "
           "guards in the kernels are folded to constants and OpenMP reductions become "
@@ -72,7 +72,7 @@ following could compile a trivial C++ program:
 %(rule)s
 """
 
-# Find the C++ driver needed for for healpix_utils.cpp
+# Find the C++ driver needed for healpix_utils.cpp
 def detect_cxx(cc_path=None):
     candidates = []
     if os.environ.get("CXX"):

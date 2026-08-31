@@ -13,9 +13,11 @@ dynamic = ["version"]
 dependencies = [
     "astropy>=6",
     "healpy>=1.18",
+    "joblib>=1.0",
     "numpy>=1.24",
     "scipy>=1.15",
-    "scikit-learn",]
+    "scikit-learn",
+    "threadpoolctl",]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Programming Language :: Python :: 3",

@@ -1,4 +1,4 @@
-name: Sanitizers & Valgrind
+name: Sanitizers & Valgrind (advisory)
 
 # This makes sure that the code is safe to use by running through AddressSanitizer, 
 # UndefinedBehaviorSanitizer and valigrind.
@@ -16,6 +16,7 @@ jobs:
   # Builds the kernels under AddressSanitizer and UndefinedBehaviorSanitizer and runs the
   # fast tier against them. 
   asan_ubsan:
+    name: ASan + UBSan (advisory only)
     runs-on: ubuntu-latest
     continue-on-error: true
 
@@ -56,6 +57,7 @@ jobs:
   # Settles whether the allocation and free counts in the kernels actually balance.
   # Single-threaded and smoke tests only, since valgrind is very expensive.
   valgrind:
+    name: valgrind (advisory only)
     runs-on: ubuntu-latest
     continue-on-error: true
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
