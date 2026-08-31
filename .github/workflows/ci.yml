@@ -42,4 +42,4 @@ jobs:
           (cd "$RUNNER_TEMP" && python -c "import orpheus; print('orpheus', orpheus.__version__, 'from', orpheus.__file__)")
           # The pytest run itself is safe from the same shadowing: `tests/conftest.py`
           # drops the checkout from sys.path when it carries no compiled extension.
-          pytest tests/ -q
+          pytest tests/ -q --cov=orpheus --cov-report=term

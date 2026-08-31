@@ -48,3 +48,16 @@ license-files = ["LICENSE"]
 
 [tool.setuptools.dynamic]
 version = {attr = "orpheus._version.__version__"}
+
+# The tests run against the installed wheel, not the checkout -- `tests/conftest.py`
+# drops the source directory from sys.path when it carries no compiled extension. A
+# plain `--cov=orpheus` resolves to the source directory and reports 0%, so name the
+# package instead and map the two locations onto each other for the report.
+[tool.coverage.run]
+source_pkgs = ["orpheus"]
+
+[tool.coverage.paths]
+source = ["orpheus/", "*/site-packages/orpheus/"]
+
+[tool.coverage.report]
+exclude_also = ["if __name__ == .__main__.:"]
