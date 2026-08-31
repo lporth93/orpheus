@@ -53,6 +53,83 @@ parallelised C kernels.
 
 ## Detailed changelog
 
+### Unreleased
+
+#### Fixed
+
+* **`Direct_NapnEqual` returned zeros, or wrong numbers, for three of its four filters.**
+  `getFilterU` implemented only `case 0` and `case 1` and had no `default`, so `res` kept its
+  initialiser: `Sch04` and `PolyExp` came back as exactly zero for every aperture, with no
+  exception and no warning, because `getFilterSuppU` returns a valid support radius for all
+  four and the search therefore ran normally. Worse, `case 0` held the *`Q`* expression,
+  `6 x^2 (1-x^2)` -- a copy of `getFilterQ` -- which is not a compensated filter at all
+  (`\int_0^1 x U dx = 0.5`, and it must be 0), so `S98` returned plausible-looking wrong
+  values. `S98` is now `9/pi (1-x^2)(1/3-x^2)`, and `PolyExp` is
+  `1/pi [e^{-150x^2} + 0.5 e^{-30x^2} - 0.0233333 e^{-x^2}]`, derived from the shipped
+  `getFilterQ` through `Q = 2/x^2 \int_0^x x' U dx' - U` rather than taken from a paper.
+  Schirmer 2004 has no elementary `U` -- that is why the poly-exp form exists -- so
+  `Direct_NapnEqual` now raises `ValueError` for it instead of integrating against zero.
+  Verified against the compiled extension: `S98` compensation is `-9.5e-18` (relative
+  `6.7e-17`), and all three filters reproduce `getFilterQ` to `1e-13` up to the global factor
+  of pi by which the `Q` and `U` branches differ. The smoke test now parametrises over the
+  supported filters; it previously only ever ran the `C02` default, which is why this
+  survived.
+* **The error branch of `getFilterQ` fell through into a live computation.** `default:`
+  printed a complaint, set `res = 0`, and then fell into `case 4:`, which overwrote it with a
+  poly-exp value -- so an unrecognised filter returned a plausible number after announcing
+  that it was wrong. Unreachable from the python layer, where nothing maps to 4.
+
+#### Known issue
+
+* **The `N4`/`Nap4` aperture kernel is unfinished.** `fourpcf2N4correlators` sets
+  `F_1 = F_2 = F_3 = 1` and computes `nextF = 1/64 * measure * (F_1+F_2+F_3) * exp`, so the
+  filter reduces to a constant and the ~40 lines of `q`/`y` algebra above it are computed and
+  discarded. It is reached from `nnnn_reconstruct_batch`, and `"N4"`, `"Nap4"`, `"N4c"` and
+  `"Nap4c"` are all selectable statistics on `NNNNCorrelation_NoTomo`. The
+  `-Wunused-but-set-variable` warnings on its declarations are the symptom and are left
+  standing on purpose; the function carries a comment saying so.
+
+#### Changed
+
+* Compiler warnings under `-Wall -Wextra` went from 180 to 52, without suppressing anything.
+  The 128 that went were dead struct-field hoists left behind by the argument-struct
+  unification and leftover debug scaffolding -- including an `omp_get_wtime()` call per
+  galaxy in an inner loop whose result nothing read. Of the 52 that remain, 22 are the
+  unfinished kernel above and 30 are parameters fixed by the ctypes ABI, which cannot be
+  dropped without shifting every positional argument after them.
+* `mymin` and `mymax` were defined in eight translation units, all without the outer
+  parentheses, so `2*mymin(a,b)` would not have meant what it reads as. All 80 call sites
+  happened to be safe. They are now defined once, correctly, in `utils.h`.
+* All 64 `restype` declarations said `ct.c_void_p` for C functions that return `void`. They
+  now say `None`.
+* The library-loading block was copy-pasted into `catalog.py`, `direct.py` and
+  `npcf_base.py`, each with a dead `target_path`, and located the extension with
+  `glob.glob(...)[0]` -- a bare `IndexError` on the most likely first failure a new user
+  hits. It is now one `_load_clib()` in `utils.py` that raises `ImportError` naming the
+  directory it searched.
+* The direct estimators wrote progress to stdout on every aperture radius with no way to turn
+  it off. `DirectEstimator` now takes `verbosity`, following the `npcf_base.py` convention.
+* `joblib` and `threadpoolctl` are declared. `patchutils` imports both at module scope and is
+  imported by `__init__.py`, so they were needed to import the package at all; it worked only
+  because `scikit-learn` happens to require them.
+
+#### Documentation and CI
+
+* **Coverage is now actually reported.** The CI job installed `pytest-cov` and then never
+  passed `--cov`. Adding the flag alone reports 0%: the tests run against the installed wheel
+  -- `tests/conftest.py` drops the checkout from `sys.path` -- while `--cov=orpheus` resolves
+  to the source directory. `pyproject.toml` now sets `source_pkgs` and maps the two locations
+  onto each other, which reproduces the 54% on the direct estimators quoted for 0.5.0.
+* `GNNN_tutorial.ipynb` is no longer tracked. It was an 11 MB scratch notebook with execution
+  counts out of order, twelve stored tracebacks and 16 hardcoded institute paths, in no
+  toctree but named as though it were a tutorial. The README no longer claims every
+  correlator has one. The empty `_convergencetests_NN.ipynb` is likewise untracked.
+* Seven published notebooks carried stored output streams quoting a local conda prefix or an
+  institute data path, which were live on the docs site. The offending streams are stripped;
+  the notebook sources never referenced those paths.
+* The sanitizer jobs say `(advisory)` in their names. Both carry `continue-on-error` and
+  cannot fail, which the changelog admitted but the workflow did not.
+
 ### 0.5.0 — 2026-08-25
 
 #### Changed — please read before upgrading
