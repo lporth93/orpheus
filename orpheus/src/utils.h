@@ -8,6 +8,11 @@
 #include <complex.h>
 #include <math.h>
 
+// Note the outer parentheses: without them the conditional binds looser than any
+// operator applied to the result, so 2*mymin(a,b) would not mean what it reads as.
+#define mymin(x,y) (((x) <= (y)) ? (x) : (y))
+#define mymax(x,y) (((x) >= (y)) ? (x) : (y))
+
 int binary_search(double *array, int len_arr, double target);
 double linint(double *vec, double x, double xmin, double xmax, double dx);
 void expand_arr(int *arr_long, int *arr_sel, int len_long, int len_sel, int *result);

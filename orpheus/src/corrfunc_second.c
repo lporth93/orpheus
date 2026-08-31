@@ -15,8 +15,6 @@
 #include "healpix_utils.h"
 #include "multires_structs.h"
 
-#define mymin(x,y) ((x) <= (y)) ? (x) : (y)
-#define mymax(x,y) ((x) >= (y)) ? (x) : (y)
 #define M_PI      3.14159265358979323846
 #define INV_2PI   0.15915494309189534561
 
@@ -190,13 +188,10 @@ static void _nn_flat(const MultiresoCatalog *cat, const NavHash *nav,
             int pix1_lower, pix2_lower, pix1_upper, pix2_upper;
             int lower1, upper1, lower2, upper2;
             double innergal;
-            int rbin, nbinsz2r, nbinszr, ind_rbin;
             double pos1_gal1, pos2_gal1, pos1_gal2, pos2_gal2, w_gal1, w_gal2;
             double rel1, rel2, dist, dist_sq;
             double rmin_reso, rmax_reso, rmin_reso_sq, rmax_reso_sq;
             int elreso_leaf, rbinmin, rbinmax;
-            nbinsz2r = nbinsz*nbinsz*nbinsr;
-            nbinszr = nbinsz*nbinsr;
 
             for (int elreso=0; elreso<nresos; elreso++){
                 elreso_leaf = mymin(mymax(tree->minresoind_leaf, elreso+tree->resoshift_leafs), tree->maxresoind_leaf);
@@ -564,7 +559,6 @@ static void _gg_spherical(const MultiresoCatalog *cat, const NavHash *nav,
                 double cx = cat->vx_resos[g1], cy = cat->vy_resos[g1], cz = cat->vz_resos[g1];
                 double w1 = cat->isinner_resos[g1]*cat->weight_resos[g1];
                 int z1 = cat->zbin_resos[g1];
-                double sd1 = cat->sindec_resos[g1], cd1 = cat->cosdec_resos[g1];
                 double complex wshape1 = (double complex) w1 * (cat->e1_resos[g1]+I*cat->e2_resos[g1]);
                 double v1[3] = {cx, cy, cz};
                 long nr = hpx_query_disc_nest_ranges(ns_leaf, v1, rmax_reso, ranges, cap);
@@ -586,7 +580,6 @@ static void _gg_spherical(const MultiresoCatalog *cat, const NavHash *nav,
                             if (bin->do_dc==0 && elreso_leaf==elreso && g2 <= g1){ continue; }
                             double dist = sphere_dist(cx, cy, cz, cat->vx_resos[g2], cat->vy_resos[g2], cat->vz_resos[g2]);
                             if (dist < rmin_reso || dist >= rmax_reso){ continue; }
-                            double sd2 = cat->sindec_resos[g2], cd2 = cat->cosdec_resos[g2];
                             double vx2 = cat->vx_resos[g2], vy2 = cat->vy_resos[g2], vz2 = cat->vz_resos[g2];
                             double complex wshape2 = (double complex) cat->weight_resos[g2] * (cat->e1_resos[g2]+I*cat->e2_resos[g2]);
                             BearingAB g12 = bearing_AB_cart(cx,cy,cz, vx2,vy2,vz2);

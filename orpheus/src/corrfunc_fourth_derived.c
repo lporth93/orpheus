@@ -13,8 +13,6 @@
 #include "assign.h"
 #include "corrfunc_fourth_derived.h"
 
-#define mymin(x,y) ((x) <= (y)) ? (x) : (y)
-#define mymax(x,y) ((x) >= (y)) ? (x) : (y)
 #define M_PI      3.14159265358979323846
 #define INV_2PI   0.15915494309189534561
 
@@ -312,7 +310,6 @@ void fourpcfmultipoles2M4correlators(
 
     double complex *allm4corr = orpheus_calloc(nthreads*8*nmapradii, sizeof(double complex));
     int trafos_finished = 0;
-    int lastprint = 0;
     reset_progress();
 
     #pragma omp parallel for num_threads(nthreads)
@@ -1016,8 +1013,6 @@ void multipoles2npcf_gnnn_singletheta(double complex *Gtilde_n, double complex *
     double complex expphi12, expphi13;
     double complex *expphi12s = orpheus_calloc(nns, sizeof(double complex));
     double complex *expphi13s = orpheus_calloc(nns, sizeof(double complex));
-    int npcf_compshift = nbinsphi12*nbinsphi13;
-    int ups_compshift = nns*nns;
     for (int elphi12=0; elphi12<nbinsphi12; elphi12++){
         for (int elphi13=0; elphi13<nbinsphi13; elphi13++){
             // Convert multipoles to npcf
@@ -1319,7 +1314,7 @@ void fourpcf2MN3correlator(int nzcombis,
     int ind_4pcf;
     double complex exp12_sqrt, exp13_sqrt, exp23_sqrt, exp2312_sqrt, exp12, exp13, exp23, exp12c, exp13c, exp23c;
     double complex g1, g2, g3, g1c, g2c, g3c, h, g1g2cexp12_re, g1g3cexp13_re, g2g3cexp23_re;
-    double F1, F2, F3, c_sq, csq, b, measure;
+    double F1, F2, F3, csq, b, measure;
     double complex t1, t2, t3, nextF;
     for (int elphi1=0;elphi1<nbinsphi1;elphi1++){
         exp12_sqrt=cexp(I*.5*phis1[elphi1]); exp12=exp12_sqrt*exp12_sqrt; exp12c = conj(exp12);
@@ -1354,8 +1349,8 @@ void fourpcf2MN3correlatormulti(int nzcombis, double R1, double R2, double R3, d
     int ind_4pcf;
     double complex exp12_sqrt, exp13_sqrt, exp23_sqrt, exp2312_sqrt, exp12, exp13, exp23, exp12c, exp13c, exp23c;
     double cos12, cos13, cos23;
-    double complex g1, g2, g3, g1c, g2c, g3c, h, g1g2cexp12_re, g1g3cexp13_re, g2g3cexp23_re;
-    double F1, F2, F3, c_sq, csq, b, measure;
+    double complex g1, g2, g3, g2c, g3c, h, g1g2cexp12_re, g1g3cexp13_re, g2g3cexp23_re;
+    double F1, F2, F3, b, measure;
     double complex t1, t2, t3, nextF;
     
     // Helpers that do not depend on angles
@@ -1374,7 +1369,7 @@ void fourpcf2MN3correlatormulti(int nzcombis, double R1, double R2, double R3, d
             cos12=creal(exp12); cos13=creal(exp13); cos23=creal(exp23);
             b = b1 - 0.25*a*(b2_12*cos12 + b2_13*cos13 + b2_23*cos23);
             h = 0.5*a*( h_1*exp13_sqrt + h_2*exp2312_sqrt + h_3*conj(exp13_sqrt) );
-            g1 = theta1 - 0.5*a*(h_1        + h_2*exp12c + h_3*exp13c); g1c = conj(g1);
+            g1 = theta1 - 0.5*a*(h_1        + h_2*exp12c + h_3*exp13c);
             g2 = theta2 - 0.5*a*(h_1*exp12  + h_2        + h_3*exp23c); g2c = conj(g2);
             g3 = theta3 - 0.5*a*(h_1*exp13  + h_2*exp23  + h_3       ); g3c = conj(g3);
             g1g2cexp12_re=creal(g1*g2c*exp12); g1g3cexp13_re=creal(g1*g3c*exp13); g2g3cexp23_re=creal(g2*g3c*exp23);
@@ -1676,14 +1671,12 @@ void gtilde4pcf_analytic(
     double *xing, double *xinn, double thetamin_xis, double thetamax_xis, double dtheta_xis,
     double complex *gaussfourpcf){
     double complex y1, y2, y3;
-    double complex ang1, ang2, ang3;
     double complex ang12, ang13, ang23;
     double absy12, absy13, absy23;
     double xing_1, xing_2, xing_3, xinn_12, xinn_13, xinn_23;
     int phishift;
     
     y1 = (double complex) theta1;
-    ang1 = y1/cabs(y1);
     xing_1 = linint(xing, theta1, thetamin_xis, thetamax_xis, dtheta_xis);
     xing_2 = linint(xing, theta2, thetamin_xis, thetamax_xis, dtheta_xis);
     xing_3 = linint(xing, theta3, thetamin_xis, thetamax_xis, dtheta_xis);
@@ -1838,8 +1831,6 @@ void multipoles2npcf_nnnn_singletheta(double complex *N_n, int n1max, int n2max,
     double complex expphi12, expphi13;
     double complex *expphi12s = orpheus_calloc(nns, sizeof(double complex));
     double complex *expphi13s = orpheus_calloc(nns, sizeof(double complex));
-    int npcf_compshift = nbinsphi12*nbinsphi13;
-    int ups_compshift = nns*nns;
     for (int elphi12=0; elphi12<nbinsphi12; elphi12++){
         for (int elphi13=0; elphi13<nbinsphi13; elphi13++){
             // Convert multipoles to npcf
@@ -1870,7 +1861,8 @@ void multipoles2npcf_nnnn_singletheta(double complex *N_n, int n1max, int n2max,
 
 // N4 filters for a fixed aperture radius
 // Note that with y==theta/R_ap the expressions do not depend on the aperture radius
-// fourpcf has shape (8,nbinsz,nbinsphi,nbinsphi)
+// TODO: F_1, F_2 and F_3 are still placeholders set to unity, 
+// fourpcf has shape (1,nbinsz,nbinsphi,nbinsphi)
 void fourpcf2N4correlators(int nzcombis,
                            double y1, double y2, double y3, double dy1, double dy2, double dy3,
                            double *phis1, double *phis2, double *dphis1, double *dphis2, int nbinsphi1, int nbinsphi2,
