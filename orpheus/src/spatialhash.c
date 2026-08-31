@@ -12,7 +12,6 @@
 #define FLAG_NOGAL -1  
 #define FLAG_OUTSIDE -1  
 #define SQUARE(x) ((x)*(x))
-#define mymax(x,y) ((x) >= (y)) ? (x) : (y)
 
 void build_spatialhash(double *pos_1, double *pos_2, int ngal,
     double mask_d1, double mask_d2, double mask_min1, double mask_min2, int mask_n1, int mask_n2,

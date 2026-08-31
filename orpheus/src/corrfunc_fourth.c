@@ -15,8 +15,6 @@
 #include "utils.h"
 #include "healpix_utils.h"
 
-#define mymin(x,y) ((x) <= (y)) ? (x) : (y)
-#define mymax(x,y) ((x) >= (y)) ? (x) : (y)
 #define M_PI      3.14159265358979323846
 #define INV_2PI   0.15915494309189534561
 
@@ -478,9 +476,8 @@ void alloc_notomoGammans_discrete_gggg(const MultiresoCatalog *cat, const NavHas
     double *isinner = cat->isinner_resos, *weight = cat->weight_resos;
     double *pos1 = cat->pos1_resos, *pos2 = cat->pos2_resos;
     double *e1 = cat->e1_resos, *e2 = cat->e2_resos;
-    int ngal = cat->ngal_resos[0];
     double *rbins = bin->rbins;
-    int nmax = bin->nmax, nbinsr = bin->nbinsr, dccorr = bin->dccorr;
+    int nmax = bin->nmax, nbinsr = bin->nbinsr;
     double rmin = bin->rmin, rmax = bin->rmax;
     int *index_matcher_hash = nav->index_matcher, *pixs_galind_bounds = nav->pixs_galind_bounds, *pix_gals = nav->pix_gals;
     int nregions = nav->nregions;
@@ -523,7 +520,6 @@ void alloc_notomoGammans_discrete_gggg(const MultiresoCatalog *cat, const NavHas
     for(int elthread=0;elthread<nthreads;elthread++){
         int nregions_per_thread = nregions/nthreads;
         int nbinsz = 1;
-        int ncomp = 8;
         int nnvals_Gn = 4*nmax+3; // Need to cover [-n1-n2-3, n1+n2-1]
         int nnvals_G2n = 4*nmax+7; // Need to cover [-n1-n2-5, n1+n2+1]
         int nnvals_Wn = 4*nmax+1; // Need to cover [-n1-n2, n1+n2]
@@ -849,17 +845,16 @@ void alloc_notomoGammans_tree_gggg(const MultiresoCatalog *cat_base, const Multi
     double *isinner = cat_base->isinner_resos, *weight = cat_base->weight_resos;
     double *pos1 = cat_base->pos1_resos, *pos2 = cat_base->pos2_resos;
     double *e1 = cat_base->e1_resos, *e2 = cat_base->e2_resos;
-    int ngal = cat_base->ngal_resos[0];
     int nresos = tree->nresos; double *reso_redges = tree->reso_redges;
     int *ngal_resos = cat_leaf->ngal_resos;
-    double *isinner_resos = cat_leaf->isinner_resos, *weight_resos = cat_leaf->weight_resos;
+    double *weight_resos = cat_leaf->weight_resos;
     double *pos1_resos = cat_leaf->pos1_resos, *pos2_resos = cat_leaf->pos2_resos;
     double *e1_resos = cat_leaf->e1_resos, *e2_resos = cat_leaf->e2_resos;
     int *index_matcher_hash = nav->index_matcher, *pixs_galind_bounds = nav->pixs_galind_bounds, *pix_gals = nav->pix_gals;
     int nregions = nav->nregions;
     double pix1_start = nav->pix1_start, pix1_d = nav->pix1_d; int pix1_n = nav->pix1_n;
     double pix2_start = nav->pix2_start, pix2_d = nav->pix2_d; int pix2_n = nav->pix2_n;
-    int nmax = bin->nmax, nbinsr = bin->nbinsr, dccorr = bin->dccorr;
+    int nmax = bin->nmax, nbinsr = bin->nbinsr;
     double rmin = bin->rmin, rmax = bin->rmax;
     int nthetacombis = fourth->nthetacombis;
     int *nindices = fourth->nindices, len_nindices = fourth->len_nindices;
@@ -900,7 +895,6 @@ void alloc_notomoGammans_tree_gggg(const MultiresoCatalog *cat_base, const Multi
         int nregions_per_thread = nregions/nthreads;
         int nmax_alloc = 2*nmax+1;
         int nbinsz = 1;
-        int ncomp = 8;
         int nnvals_Gn = 4*nmax_alloc+3; // Need to cover [-n1-n2-3, n1+n2-1]
         int nnvals_G2n = 4*nmax_alloc+7; // Need to cover [-n1-n2-5, n1+n2+1]
         int nnvals_Wn = 4*nmax_alloc+1; // Need to cover [-n1-n2, n1+n2]
@@ -984,7 +978,7 @@ void alloc_notomoGammans_tree_gggg(const MultiresoCatalog *cat_base, const Multi
                 double complex phirot, phirotc, twophirotc, fourphirotc;
                 // Allocate Gn, Wn and their multiple-couting corrections
                 for (int elreso=0;elreso<nresos;elreso++){
-                    int ind_rbin, rbin, zrshift, ind_Gn, ind_G2n, ind_Wn;
+                    int rbin, zrshift, ind_Gn, ind_G2n, ind_Wn;
                     double rmin_reso = reso_redges[elreso];
                     double rmin_reso2 = rmin_reso*rmin_reso;
                     double rmax_reso = reso_redges[elreso+1];
@@ -1035,7 +1029,7 @@ void alloc_notomoGammans_tree_gggg(const MultiresoCatalog *cat_base, const Multi
                 
                 // Allocate Upsilon; have shape (nindices, rcombis)
                 double complex gGG0, gGG1, gGG2, gGG3, gGG4, gGG5, gGG6, gGG7, wNN;
-                int thisn2, thisn3, thisn, thisnshift, thisnrshift, elbcombi, elb1, elb2, elb3;
+                int thisn2, thisn3, thisn, thisnshift, thisnrshift, elbcombi;
                 int thisGshift_mn2m2, thisGshift_n2m2, thisWshift_n2;
                 int thisGshift_mn3m3, thisGshift_mn3m1, thisGshift_n3m3, thisGshift_n3m1, thisWshift_n3;
                 int thisGshift_mn2mn3m3, thisGshift_mn2mn3m1, thisGshift_n2n3m3, thisGshift_n2n3m1, thisWshift_n2n3;
@@ -1243,8 +1237,8 @@ void alloc_notomoGammans_tree_gggg(const MultiresoCatalog *cat_base, const Multi
     #pragma omp parallel for num_threads(nthreads)
     for (int elb=0;elb<nthetacombis;elb++){
 
-        int ntrafos, tnrshift, nbshift, nbshift_tmp, elb1, elb2, elb3, elb1t, elb2t, elb3t;
-        int thisn2, thisn3, thisn;
+        int ntrafos, tnrshift, nbshift, elb1, elb2, elb3, elb1t, elb2t, elb3t;
+        int thisn2, thisn3;
         int nmax_alloc = 2*nmax+1;
         int nnvals_Upsn_rec = 2*nmax+1; 
         int nnvals_Upsn = 2*nmax_alloc+1; 
@@ -1274,7 +1268,6 @@ void alloc_notomoGammans_tree_gggg(const MultiresoCatalog *cat_base, const Multi
             for (int nindex=0;nindex<len_nindices;nindex++){
                 thisn2 = nindices[nindex]/nnvals_Upsn - nzero_Ups;
                 thisn3 = nindices[nindex]%nnvals_Upsn - nzero_Ups;
-                nbshift_tmp = nindex*nthetacombis+elb;
                 nbshift = ((thisn2+nzero_Ups)*nnvals_Upsn + (thisn3+nzero_Ups));
                 for (int elthread=0;elthread<nthreads;elthread++){
                     tnrshift = elthread*len_nindices*nthetacombis + nindex*nthetacombis + elb;
@@ -1375,8 +1368,7 @@ void alloc_notomoMap4_disc_gggg(const MultiresoCatalog *cat, const NavHash *nav,
     double *isinner = cat->isinner_resos, *weight = cat->weight_resos;
     double *pos1 = cat->pos1_resos, *pos2 = cat->pos2_resos;
     double *e1 = cat->e1_resos, *e2 = cat->e2_resos;
-    int ngal = cat->ngal_resos[0];
-    int nmax = bin->nmax, nbinsr = bin->nbinsr, dccorr = bin->dccorr;
+    int nmax = bin->nmax, nbinsr = bin->nbinsr;
     double rmin = bin->rmin, rmax = bin->rmax;
     double *phibins = fourth->phibins1, *dbinsphi = fourth->dbinsphi1; int nbinsphi = fourth->nbinsphi1;
     int *index_matcher_hash = nav->index_matcher, *pixs_galind_bounds = nav->pixs_galind_bounds, *pix_gals = nav->pix_gals;
@@ -1773,13 +1765,12 @@ void alloc_notomoMap4_tree_gggg(const MultiresoCatalog *cat_base, const Multires
     double *isinner = cat_base->isinner_resos, *weight = cat_base->weight_resos;
     double *pos1 = cat_base->pos1_resos, *pos2 = cat_base->pos2_resos;
     double *e1 = cat_base->e1_resos, *e2 = cat_base->e2_resos;
-    int ngal = cat_base->ngal_resos[0];
     int nresos = tree->nresos; double *reso_redges = tree->reso_redges;
     int *ngal_resos = cat_leaf->ngal_resos;
-    double *isinner_resos = cat_leaf->isinner_resos, *weight_resos = cat_leaf->weight_resos;
+    double *weight_resos = cat_leaf->weight_resos;
     double *pos1_resos = cat_leaf->pos1_resos, *pos2_resos = cat_leaf->pos2_resos;
     double *e1_resos = cat_leaf->e1_resos, *e2_resos = cat_leaf->e2_resos;
-    int nmax = bin->nmax, nbinsr = bin->nbinsr, dccorr = bin->dccorr;
+    int nmax = bin->nmax, nbinsr = bin->nbinsr;
     double rmin = bin->rmin, rmax = bin->rmax;
     int *nindices = fourth->nindices, len_nindices = fourth->len_nindices;
     double *phibins = fourth->phibins1, *dbinsphi = fourth->dbinsphi1; int nbinsphi = fourth->nbinsphi1;
@@ -2238,7 +2229,7 @@ void alloc_notomoGammans_discrete_gnnn(const MultiresoCatalog *cat_source, const
     double *bin_centers = out->bin_centers;
     double complex *Gtilde_n = out->npcf, *N_n = out->norm_mp;
 
-    int thistmpnshift, thisnshift, thisnrshift, thisthreadnrshift;
+    int thisnshift, thisnrshift, thisthreadnrshift;
     int _nnvals_Upsn = 2*nmax+1;
     int _threadshift = _nnvals_Upsn*_nnvals_Upsn*nbinsr*nbinsr*nbinsr;
 
@@ -2264,20 +2255,16 @@ void alloc_notomoGammans_discrete_gnnn(const MultiresoCatalog *cat_source, const
         //if (isource%nthreads!=thisthread){continue;}
         //printf("Doing thetabatch %d/%d on thread %d\n",elthetbatch,nthetbatches,thisthread);
         int nbinsz = 1;
-        int ncomp = 1;
         int nbinszr = nbinsz*nbinsr;
         int nnvals_Wn = 4*nmax+3; // Need to cover [-n1-n2-1, n1+n2+1] (We use the Wn for both, the nominator and the denominator)
         int nnvals_W2n = 4*nmax+3;
-        int nnvals_W3n = 2;
         int nnvals_Gtilden = 2*nmax+1;  // Need tocover [-2*nmax,+2*nmax]
         int nzero_Gtilden = nmax;
         int nzero_Wn = 2*nmax+1;
-        int nzero_W2n = 2*nmax+1;
         
         int Gtilde_nshift = nbinsr*nbinsr*nbinsr;
         int n2n3combis = nnvals_Gtilden*nnvals_Gtilden;
         int Gtilde_threadshift = thisthread*Gtilde_nshift*n2n3combis;
-        int npix_hash = pix1_n*pix2_n;
 
         double p11, p12, w1, e11, e12;
         double innergal;
@@ -2339,9 +2326,8 @@ void alloc_notomoGammans_discrete_gnnn(const MultiresoCatalog *cat_source, const
         // Allocate Upsilon
         // Upsilon have shape 
         // (ncomp,(2*nmax+1),(2*nmax+1),nthetas)
-        int thisn2, thisn3, thisnshift, thisnrshift, elb1, elb2, elb3;
-        int thisWshift_n2, thisWshift_n3, thisWshift_n3p1;
-        int thisWshift_n2pn3, thisWshift_mn2mn3p1;
+        int thisnshift, thisnrshift;
+        int thisWshift_n2, thisWshift_n3, thisWshift_n2pn3;
         double complex wshape1 = - w1 * (e11+I*e12);  
         for (int n2=-nmax; n2<=nmax; n2++){
             for (int n3=-nmax; n3<=nmax; n3++){
@@ -2354,7 +2340,6 @@ void alloc_notomoGammans_discrete_gnnn(const MultiresoCatalog *cat_source, const
                 thisWshift_n2 = (nzero_Wn+n2)*nbinsr;
                 thisWshift_n3 = (nzero_Wn+n3)*nbinsr;
                 int thisWshift_mn3 = (nzero_Wn-n3)*nbinsr;
-                thisWshift_n3p1 = (nzero_Wn+n3+1)*nbinsr;
                 thisWshift_n2pn3 = (nzero_Wn+n2+n3)*nbinsr;
                 thisnshift = Gtilde_threadshift + ((n2+nzero_Gtilden)*nnvals_Gtilden + (n3+nzero_Gtilden)) * Gtilde_nshift;
                 for (int elb1=0;elb1<nbinsr;elb1++){
@@ -2458,10 +2443,9 @@ void alloc_notomoGammans_tree_gnnn(const MultiresoCatalog *cat_source, const Nav
     double *isinner_source = cat_source->isinner_resos, *weight_source = cat_source->weight_resos;
     double *pos1_source = cat_source->pos1_resos, *pos2_source = cat_source->pos2_resos;
     double *e1_source = cat_source->e1_resos, *e2_source = cat_source->e2_resos;
-    int ngal_source = cat_source->ngal_resos[0];
     double *weight_lens_resos = cat_lens->weight_resos, *pos1_lens_resos = cat_lens->pos1_resos, *pos2_lens_resos = cat_lens->pos2_resos;
     int *ngal_lens_resos = cat_lens->ngal_resos;
-    int *index_matcher_source = nav_source->index_matcher, *pixs_galind_bounds_source = nav_source->pixs_galind_bounds, *pix_gals_source = nav_source->pix_gals;
+    int *pixs_galind_bounds_source = nav_source->pixs_galind_bounds, *pix_gals_source = nav_source->pix_gals;
     int *index_matcher_lens = nav_lens->index_matcher, *pixs_galind_bounds_lens = nav_lens->pixs_galind_bounds, *pix_gals_lens = nav_lens->pix_gals;
     int nregions = nav_source->nregions;
     double pix1_start = nav_lens->pix1_start, pix1_d = nav_lens->pix1_d; int pix1_n = nav_lens->pix1_n;
@@ -2498,16 +2482,13 @@ void alloc_notomoGammans_tree_gnnn(const MultiresoCatalog *cat_source, const Nav
 
         int nregions_per_thread = nregions/nthreads;
         int nbinsz = 1;
-        int ncomp = 1;
         int nmax_alloc = 2*nmax+1;
         int nnvals_Wn = 4*nmax_alloc+3; // Need to cover [-n1-n2-1, n1+n2+1] (We use the Wn for both, the nominator and the denominator)
         int nnvals_W2n = 4*nmax_alloc+3;
         int nnvals_W3n = 2;
         int nnvals_Gtilden = 2*nmax_alloc+1;  // Need tocover [-2*nmax_alloc,+2*nmax_alloc]
-        int nnvals_Gtilden_rec = 2*nmax+1; // Need tocover [-nmax,+nmax]
         int nzero_Gtilden = nmax_alloc;
         int nzero_Wn = 2*nmax_alloc+1;
-        int nzero_W2n = 2*nmax_alloc+1;
 
         int ups_compshift = len_nindices*nthetacombis;
 
@@ -2557,8 +2538,6 @@ void alloc_notomoGammans_tree_gnnn(const MultiresoCatalog *cat_source, const Nav
             lower1 = pixs_galind_bounds_source[elregion];
             upper1 = pixs_galind_bounds_source[elregion+1];
             for (int ind_inpix1=lower1; ind_inpix1<upper1; ind_inpix1++){
-                double time1, time2;
-                time1 = omp_get_wtime();
                 int ind_gal = pix_gals_source[ind_inpix1];
                 double p11, p12, w1, e11, e12;
                 double innergal;
@@ -2620,7 +2599,7 @@ void alloc_notomoGammans_tree_gnnn(const MultiresoCatalog *cat_source, const Nav
                 // Allocate Upsilon
                 // Upsilon have shape 
                 // (ncomp,(2*nmax+1),(2*nmax+1),nthetas)
-                int n2, n3, thisnshift, thisnrshift, elbcombi, elb1, elb2, elb3;
+                int n2, n3, thisnshift, thisnrshift, elbcombi;
                 double complex wshape1 = - w1 * (e11+I*e12);  
                 for (int nindex=0; nindex<len_nindices; nindex++){
                     n2 = nindices[nindex]/nnvals_Gtilden - nzero_Gtilden;
@@ -2731,8 +2710,8 @@ void alloc_notomoGammans_tree_gnnn(const MultiresoCatalog *cat_source, const Nav
     #pragma omp parallel for num_threads(nthreads)
     for (int elb=0;elb<nthetacombis;elb++){
 
-        int ntrafos, tnrshift, nbshift, nbshift_tmp, elb1, elb2, elb3, elb1t, elb2t, elb3t;
-        int thisn2, thisn3, thisn;
+        int ntrafos, tnrshift, nbshift, elb1, elb2, elb3, elb1t, elb2t, elb3t;
+        int thisn2, thisn3;
         int nmax_alloc = 2*nmax+1;
         int nnvals_Upsn_rec = 2*nmax+1; 
         int nnvals_Upsn = 2*nmax_alloc+1; 
@@ -2762,7 +2741,6 @@ void alloc_notomoGammans_tree_gnnn(const MultiresoCatalog *cat_source, const Nav
             for (int nindex=0;nindex<len_nindices;nindex++){
                 thisn2 = nindices[nindex]/nnvals_Upsn - nzero_Ups;
                 thisn3 = nindices[nindex]%nnvals_Upsn - nzero_Ups;
-                nbshift_tmp = nindex*nthetacombis+elb;
                 nbshift = ((thisn2+nzero_Ups)*nnvals_Upsn + (thisn3+nzero_Ups));
                 for (int elthread=0;elthread<nthreads;elthread++){
                     tnrshift = elthread*len_nindices*nthetacombis + nindex*nthetacombis + elb;
@@ -2846,10 +2824,9 @@ void alloc_notomoMapNap3_tree_gnnn(const MultiresoCatalog *cat_source, const Nav
     double *isinner_source = cat_source->isinner_resos, *weight_source = cat_source->weight_resos;
     double *pos1_source = cat_source->pos1_resos, *pos2_source = cat_source->pos2_resos;
     double *e1_source = cat_source->e1_resos, *e2_source = cat_source->e2_resos;
-    int ngal_source = cat_source->ngal_resos[0];
     double *weight_lens_resos = cat_lens->weight_resos, *pos1_lens_resos = cat_lens->pos1_resos, *pos2_lens_resos = cat_lens->pos2_resos;
     int *ngal_lens_resos = cat_lens->ngal_resos;
-    int *index_matcher_source = nav_source->index_matcher, *pixs_galind_bounds_source = nav_source->pixs_galind_bounds, *pix_gals_source = nav_source->pix_gals;
+    int *pixs_galind_bounds_source = nav_source->pixs_galind_bounds, *pix_gals_source = nav_source->pix_gals;
     int *index_matcher_lens = nav_lens->index_matcher, *pixs_galind_bounds_lens = nav_lens->pixs_galind_bounds, *pix_gals_lens = nav_lens->pix_gals;
     int nregions = nav_source->nregions;
     double pix1_start = nav_lens->pix1_start, pix1_d = nav_lens->pix1_d; int pix1_n = nav_lens->pix1_n;
@@ -2879,7 +2856,6 @@ void alloc_notomoMapNap3_tree_gnnn(const MultiresoCatalog *cat_source, const Nav
         //printf("Doing thetabatch %d/%d on thread %d\n",elthetbatch,nthetbatches,thisthread);
         int nmax_alloc = 2*nmax+1;
         int nbinsz = 1;
-        int ncomp = 1;
         int nnvals_Wn = 4*nmax_alloc+3; // Need to cover [-n1-n2-1, n1+n2+1] (We use the Wn for both, the nominator and the denominator)
         int nnvals_W2n = 4*nmax_alloc+3;
         int nnvals_W3n = 2;
@@ -2887,7 +2863,6 @@ void alloc_notomoMapNap3_tree_gnnn(const MultiresoCatalog *cat_source, const Nav
         int nnvals_Gtilden_rec = 2*nmax+1; // Need tocover [-nmax,+nmax]
         int nzero_Gtilden = nmax_alloc;
         int nzero_Wn = 2*nmax_alloc+1;
-        int nzero_W2n = 2*nmax_alloc+1;
         
         int Gtilde_nshift = nbinsr*nbinsr*nbinsr;
         int n2n3combis = nnvals_Gtilden*nnvals_Gtilden;
@@ -3226,8 +3201,6 @@ void alloc_notomoMapNap3_tree_gnnn(const MultiresoCatalog *cat_source, const Nav
     
     // Accummulate the Map^4 integral
     for (int elthread=0;elthread<nthreads;elthread++){
-        int mapnap3ind;
-        int mapnap3threadshift = elthread*napradii;
         for (int elapr=0; elapr<napradii; elapr++){
             NM3correlator[elapr] += allNM3correlator[elthread*napradii+elapr];
         }
@@ -3252,14 +3225,13 @@ void alloc_notomoNap4_tree_nnnn(const MultiresoCatalog *cat_base, const Multires
     // Dereference input args
     double *isinner = cat_base->isinner_resos, *weight = cat_base->weight_resos;
     double *pos1 = cat_base->pos1_resos, *pos2 = cat_base->pos2_resos;
-    int ngal = cat_base->ngal_resos[0];
-    int nmax = bin->nmax, nbinsr = bin->nbinsr, dccorr = bin->dccorr;
+    int nmax = bin->nmax, nbinsr = bin->nbinsr;
     double rmin = bin->rmin, rmax = bin->rmax;
     int *nindices = fourth->nindices, len_nindices = fourth->len_nindices;
     double *phibins = fourth->phibins1, *dbinsphi = fourth->dbinsphi1; int nbinsphi = fourth->nbinsphi1;
     int nresos = tree->nresos; double *reso_redges = tree->reso_redges;
     int *ngal_resos = cat_leaf->ngal_resos;
-    double *isinner_resos = cat_leaf->isinner_resos, *weight_resos = cat_leaf->weight_resos;
+    double *weight_resos = cat_leaf->weight_resos;
     double *pos1_resos = cat_leaf->pos1_resos, *pos2_resos = cat_leaf->pos2_resos;
     int *index_matcher_hash = nav->index_matcher, *pixs_galind_bounds = nav->pixs_galind_bounds, *pix_gals = nav->pix_gals;
     int nregions = nav->nregions;
@@ -3295,7 +3267,6 @@ void alloc_notomoNap4_tree_nnnn(const MultiresoCatalog *cat_base, const Multires
         int N_nshift = nbinsr*nbinsr*nbinsr;
         int n2n3combis = nnvals_Nn*nnvals_Nn;
         int n2n3combis_rec = nnvals_Nn_rec*nnvals_Nn_rec;
-        int N_rec_compshift = n2n3combis_rec*N_nshift;
         
         int batch_nthetas = nthetacombis_batches[elthetbatch];
         int batchN_nshift = batch_nthetas;
@@ -3365,7 +3336,7 @@ void alloc_notomoNap4_tree_nnnn(const MultiresoCatalog *cat_base, const Multires
                 int ind_gal2;
                 int lower, upper;
                 double  p21, p22, w2, w2_sq, rel1, rel2, dist, dphi;
-                double complex phirot, phirotc, twophirotc;
+                double complex phirot, phirotc;
                 
                 // Check how many ns we need for Gn
                 // Gns have shape (nnvals, nbinsz, nbinsr)
@@ -3398,7 +3369,6 @@ void alloc_notomoNap4_tree_nnnn(const MultiresoCatalog *cat_base, const Multires
                             dphi = atan2(rel2,rel1);
                             phirot = cexp(I*dphi);
                             phirotc = conj(phirot);
-                            twophirotc = phirotc*phirotc;
                             zrshift = 0*nbinsr + rbin;
                             ind_Wn = nzero_Wn*nbinszr + zrshift;
                             nextW3ns[zrshift] += w2_sq*w2;
@@ -3533,14 +3503,13 @@ void alloc_notomoNap4_tree_nnnn_highmem(const MultiresoCatalog *cat_base, const 
     // Dereference input args
     double *isinner = cat_base->isinner_resos, *weight = cat_base->weight_resos;
     double *pos1 = cat_base->pos1_resos, *pos2 = cat_base->pos2_resos;
-    int ngal = cat_base->ngal_resos[0];
-    int nmax = bin->nmax, nbinsr = bin->nbinsr, dccorr = bin->dccorr;
+    int nmax = bin->nmax, nbinsr = bin->nbinsr;
     double rmin = bin->rmin, rmax = bin->rmax;
     int *nindices = fourth->nindices, len_nindices = fourth->len_nindices;
     double *phibins = fourth->phibins1, *dbinsphi = fourth->dbinsphi1; int nbinsphi = fourth->nbinsphi1;
     int nresos = tree->nresos; double *reso_redges = tree->reso_redges;
     int *ngal_resos = cat_leaf->ngal_resos;
-    double *isinner_resos = cat_leaf->isinner_resos, *weight_resos = cat_leaf->weight_resos;
+    double *weight_resos = cat_leaf->weight_resos;
     double *pos1_resos = cat_leaf->pos1_resos, *pos2_resos = cat_leaf->pos2_resos;
     int *index_matcher_hash = nav->index_matcher, *pixs_galind_bounds = nav->pixs_galind_bounds, *pix_gals = nav->pix_gals;
     int nregions = nav->nregions;
@@ -3809,13 +3778,12 @@ void alloc_nnnn_tree(const MultiresoCatalog *cat_base, const MultiresoCatalog *c
     // Dereference input args
     double *isinner = cat_base->isinner_resos, *weight = cat_base->weight_resos;
     double *pos1 = cat_base->pos1_resos, *pos2 = cat_base->pos2_resos;
-    int ngal = cat_base->ngal_resos[0];
-    int nmax = bin->nmax, nbinsr = bin->nbinsr, dccorr = bin->dccorr;
+    int nmax = bin->nmax, nbinsr = bin->nbinsr;
     double rmin = bin->rmin, rmax = bin->rmax;
     int *nindices = fourth->nindices, len_nindices = fourth->len_nindices;
     int nresos = tree->nresos; double *reso_redges = tree->reso_redges;
     int *ngal_resos = cat_leaf->ngal_resos;
-    double *isinner_resos = cat_leaf->isinner_resos, *weight_resos = cat_leaf->weight_resos;
+    double *weight_resos = cat_leaf->weight_resos;
     double *pos1_resos = cat_leaf->pos1_resos, *pos2_resos = cat_leaf->pos2_resos;
     int *index_matcher_hash = nav->index_matcher, *pixs_galind_bounds = nav->pixs_galind_bounds, *pix_gals = nav->pix_gals;
     int nregions = nav->nregions;
@@ -4103,11 +4071,11 @@ void alloc_nnnn_tree_spherical(const MultiresoCatalog *cat_base, const Multireso
     double *pos_vx = cat_base->vx_resos, *pos_vy = cat_base->vy_resos, *pos_vz = cat_base->vz_resos;
     double *pos_ra = cat_base->ra_resos, *pos_sindec = cat_base->sindec_resos, *pos_cosdec = cat_base->cosdec_resos;
     int ngal = cat_base->ngal_resos[0];
-    int nmax = bin->nmax, nbinsr = bin->nbinsr, dccorr = bin->dccorr;
+    int nmax = bin->nmax, nbinsr = bin->nbinsr;
     double rmin = bin->rmin, rmax = bin->rmax;
     int *nindices = fourth->nindices, len_nindices = fourth->len_nindices;
     int nresos = tree->nresos; double *reso_redges = tree->reso_redges;
-    int *ngal_resos = cat_leaf->ngal_resos, *ncells_resos = nav->ncells_resos;
+    int *ncells_resos = nav->ncells_resos;
     long *nside_nav = nav->nside_nav;
     double *weight_resos = cat_leaf->weight_resos;
     double *vx_resos = cat_leaf->vx_resos, *vy_resos = cat_leaf->vy_resos, *vz_resos = cat_leaf->vz_resos;
@@ -4405,15 +4373,15 @@ void alloc_nnnn_doubletree(const MultiresoCatalog *cat_leaf, const NavHash *nav,
     double *isinner_resos = cat_leaf->isinner_resos, *weight_resos = cat_leaf->weight_resos;
     double *pos1_resos = cat_leaf->pos1_resos, *pos2_resos = cat_leaf->pos2_resos;
     int *ngal_resos = cat_leaf->ngal_resos;
-    int nmax = bin->nmax, nbinsr = bin->nbinsr, dccorr = bin->dccorr;
+    int nmax = bin->nmax, nbinsr = bin->nbinsr;
     double rmin = bin->rmin, rmax = bin->rmax;
     int *nindices = fourth->nindices, len_nindices = fourth->len_nindices;
     int *index_matcher_hash = nav->index_matcher, *region_to_fullhash = nav->index_matcher_hash;
     int *pixs_galind_bounds = nav->pixs_galind_bounds, *pix_gals = nav->pix_gals;
-    int *filledregions = nav->filledregions, nfilledregions = nav->nfilledregions, nregions = nav->nregions;
+    int *filledregions = nav->filledregions, nfilledregions = nav->nfilledregions;
     double pix1_start = nav->pix1_start, pix1_d = nav->pix1_d; int pix1_n = nav->pix1_n;
     double pix2_start = nav->pix2_start, pix2_d = nav->pix2_d; int pix2_n = nav->pix2_n;
-    int *thetacombis_batches = fourth->thetacombis_batches, *nthetacombis_batches = fourth->nthetacombis_batches;
+    int *thetacombis_batches = fourth->thetacombis_batches;
     int *cumthetacombis_batches = fourth->cumthetacombis_batches; int nthetbatches = fourth->nthetbatches;
     double *bin_centers = out->bin_centers;
     double complex *N_n = out->npcf;
@@ -4422,7 +4390,6 @@ void alloc_nnnn_doubletree(const MultiresoCatalog *cat_leaf, const NavHash *nav,
 
     // Multipole index bookkeeping
     int nmax_alloc = 2*nmax+1; 
-    int nbinsz = 1; 
     int nnvals_Wn = 4*nmax_alloc+1;
     int nnvals_Nn = 2*nmax_alloc+1;
     int nnvals_Nn_rec = 2*nmax+1;
@@ -4431,7 +4398,6 @@ void alloc_nnnn_doubletree(const MultiresoCatalog *cat_leaf, const NavHash *nav,
     int N_nshift = nbinsr*nbinsr*nbinsr;
     int n2n3combis = nnvals_Nn*nnvals_Nn;
     int n2n3combis_rec = nnvals_Nn_rec*nnvals_Nn_rec;
-    int nbinszr = nbinsz*nbinsr;
     double drbin = (log(rmax)-log(rmin))/(nbinsr);   // logarithmic radial binning (Sect. 6.2)
     double logrmin = log(rmin);
     int npix_hash = pix1_n*pix2_n;

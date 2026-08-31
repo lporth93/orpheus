@@ -8,8 +8,6 @@
 #include "combinatorics.h"
 #include "utils.h"
 
-#define mymin(x,y) ((x) <= (y)) ? (x) : (y)
-#define mymax(x,y) ((x) >= (y)) ? (x) : (y)
 ////////////////////////////////////////////////////////////////////////
 // COMBINATORICS RELATED TO TRAFO OF SINGLE-SCALE APERTURE STATISTICS //
 ////////////////////////////////////////////////////////////////////////

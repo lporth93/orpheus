@@ -17,8 +17,6 @@
 #include "spatialhash.h"
 #include "directestimator.h"
 
-#define mymin(x,y) ((x) <= (y)) ? (x) : (y)
-#define mymax(x,y) ((x) >= (y)) ? (x) : (y)
 #define M_PI      3.14159265358979323846
 #define INV_2PI   0.15915494309189534561
 
@@ -320,7 +318,7 @@ void ApertureCountsMap_Equal(
     #pragma omp parallel for num_threads(nthreads)
     for (int elthread=0; elthread<nthreads; elthread++){
         //printf("Entered parallel region %d\n",elthread);
-        int ind_ap, elbinz, elzcombi, elcov_cut, order;
+        int ind_ap, elbinz, order;
         double *nextcounts = orpheus_calloc(3*nbinsz, sizeof(double));
         double *nextcovs = orpheus_calloc(2, sizeof(double));
         double *nextMsn = orpheus_calloc(max_order*nbinsz, sizeof(double));
@@ -851,7 +849,7 @@ void Map3MultiEonlyDisc(
     #pragma omp parallel for num_threads(nthreads)
     for (int elthread=0; elthread<nthreads; elthread++){
         //printf("Entered parallel region %d\n",elthread);
-        int ind_ap, elbinz, elzcombi, elcov_cut, order;
+        int ind_ap, elcov_cut;
         int nbinszr = nbinsz*nbinsr;
         double *nextcounts = orpheus_calloc(3*nbinszr, sizeof(double));
         double *nextcovs = orpheus_calloc(2*nbinsr, sizeof(double));
@@ -892,7 +890,6 @@ void Map3MultiEonlyDisc(
             for (int indr=0; indr<3*nbinszr; indr++){nextcounts[indr]=0;}
 
             // Variables for counting components
-            int order;
             // Helper precomputations
             double R_ap_max = radii[nbinsr-1];
             double R2_ap_max=R_ap_max*R_ap_max;
@@ -909,8 +906,6 @@ void Map3MultiEonlyDisc(
             // Helper variables being used for the actual Mapn computation
             double complex phirotc_sq;
             double rel1, rel2, d2gal, w, wc, frac_insurvey, et, Qval;
-            double tmp_et, tmp_w, tmp_wc, tmp_etmult;
-            double tmp_norm, tmp_normw, tmp_normvol, fac_norm, fac_normw, fac_normvol;
             
             int npix = mask1_n*mask2_n; 
             double supp_filter = getFilterSupp(ind_filter);
@@ -1173,7 +1168,7 @@ void NapnSingleDisc(
             // Nap^n(z_1,...,z_n) = \prod_{i=1}^nbinsz Nap^{alpha_i}(z_i)
             int elzbin, tmpzbin, tmporder, thisind;
             int cumzcombi = 0;
-            double toadd_Napn, toadd_countsn, toadd_Napn_w;
+            double toadd_Napn, toadd_Napn_w;
             //double area_ap = getFilterSuppU(ind_filter)*getFilterSuppU(ind_filter)*R_ap*R_ap*M_PI;
             double area_ap = pow(getFilterSuppU(ind_filter),2)*R_ap*R_ap*M_PI;
             for (order=1; order<=max_order; order++){
@@ -1183,7 +1178,6 @@ void NapnSingleDisc(
                     // Do double counting corrs
                     if (do_subtractions){
                         toadd_Napn = 1;
-                        toadd_countsn = 1;
                         if (order>1){
                             tmpzbin = thiszcombi[0];
                             tmporder = 0;
@@ -1204,7 +1198,6 @@ void NapnSingleDisc(
                     // No double counting corrs
                     else{
                         toadd_Napn = 1;
-                        toadd_countsn = 1;
                         for (elzbin=0; elzbin<order; elzbin++){
                             tmpzbin = thiszcombi[elzbin];
                             toadd_Napn *= nextNapn[tmpzbin*max_order+0];
@@ -1333,10 +1326,9 @@ void singleAp_NapnSingleDisc(
     // All the indices
     int ind_pix1, ind_pix2, ind_raw, ind_red, ind_inpix, ind_gal, zbin;
     // Helper variables being used for the actual Mapn computation
-    double complex phirotc_sq;
     double rel1, rel2, d2gal, w, tr, frac_insurvey, Uval;
     double tmp_n, tmp_w, tmp_nmult, tmp_wmult;
-    double tmp_norm, tmp_normw, tmp_normvol, fac_norm, fac_normvol;
+    double tmp_norm, tmp_normvol, fac_norm, fac_normvol;
     
     int npix = mask1_n*mask2_n; 
     double npix_m=0.; double Upix_m=0; double npix_t=0.; double Upix_t=0;

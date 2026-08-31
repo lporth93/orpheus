@@ -10,14 +10,13 @@
 #include "assign.h"
 #include "utils.h"
 
-#define mymin(x,y) ((x) <= (y)) ? (x) : (y)
 
 
 void assign_fields(
     double *pos1, double *pos2, int *zbins, double *weight, double *fields, 
     int nzbins, int nfields, int ngal, int method, double min1, double min2, 
     double dpix, int n1, int n2, int nthreads, double *result){
-    
+
     int npix = n1*n2;
     int nfnpix = (nfields+1)*npix;
 	//#pragma omp parallel for num_threads(nthreads)
@@ -125,7 +124,7 @@ void gen_weightgrid2d(
     double *pos1, double *pos2, int ngal, int method,
     double min1, double min2, double dpix, int n1, int n2,
     int nthreads, int *pixinds, double *pixweights){
-    
+
     int nwspergal_side = (2*method+1);
     int nwspergal = nwspergal_side*nwspergal_side;
 	for (int ind_gal=0; ind_gal<ngal; ind_gal++){

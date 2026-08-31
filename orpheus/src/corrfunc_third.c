@@ -15,8 +15,6 @@
 #include "healpix_utils.h"
 #include "multires_structs.h"
 
-#define mymin(x,y) ((x) <= (y)) ? (x) : (y)
-#define mymax(x,y) ((x) >= (y)) ? (x) : (y)
 #define M_PI      3.14159265358979323846
 #define INV_2PI   0.15915494309189534561
 
@@ -1751,7 +1749,6 @@ static void ngg_accum_norm(
     int nmax, int nbinsr, int nbinsz_lens, int nbinsz_polar, int dccorr){
 
     int nbinszr = nbinsz_polar*nbinsr;
-    int nmp = 2*nmax+1;
     int nzcombis = nbinsz_lens*nbinsz_polar*nbinsz_polar;
     int norm_zshift = nbinsr*nbinsr;
     int norm_nshift = norm_zshift*nzcombis;
@@ -2601,7 +2598,7 @@ void alloc_Gammans_tree_ggg(const MultiresoCatalog *cat, const MultiresoCatalog 
     int nresos = tree->nresos; double *reso_redges = tree->reso_redges;
     int *ngal_resos = cat_field->ngal_resos, *zbin_resos = cat_field->zbin_resos;
     double *weight_resos = cat_field->weight_resos, *pos1_resos = cat_field->pos1_resos, *pos2_resos = cat_field->pos2_resos;
-    double *e1_resos = cat_field->e1_resos, *e2_resos = cat_field->e2_resos, *weightsq_resos = cat_field->weightsq_resos;
+    double *e1_resos = cat_field->e1_resos, *e2_resos = cat_field->e2_resos;
     int *index_matcher = nav->index_matcher, *pixs_galind_bounds = nav->pixs_galind_bounds, *pix_gals = nav->pix_gals;
     int *filledregions = nav->filledregions, nfilledregions = nav->nfilledregions;
     double pix1_start = nav->pix1_start, pix1_d = nav->pix1_d; int pix1_n = nav->pix1_n;
@@ -2908,7 +2905,7 @@ void alloc_Gammans_basetree_ggg(const MultiresoCatalog *cat, const NavHash *nav,
     int *ngal_resos = cat->ngal_resos, nbinsz = cat->nbinsz, *zbin_resos = cat->zbin_resos;
     double *isinner_resos = cat->isinner_resos, *weight_resos = cat->weight_resos;
     double *pos1_resos = cat->pos1_resos, *pos2_resos = cat->pos2_resos;
-    double *e1_resos = cat->e1_resos, *e2_resos = cat->e2_resos, *weightsq_resos = cat->weightsq_resos;
+    double *e1_resos = cat->e1_resos, *e2_resos = cat->e2_resos;
     int *index_matcher = nav->index_matcher, *pixs_galind_bounds = nav->pixs_galind_bounds, *pix_gals = nav->pix_gals;
     double pix1_start = nav->pix1_start, pix1_d = nav->pix1_d; int pix1_n = nav->pix1_n;
     double pix2_start = nav->pix2_start, pix2_d = nav->pix2_d; int pix2_n = nav->pix2_n;
@@ -3487,7 +3484,6 @@ static void alloc_ggg_doubletree_spherical(const MultiresoCatalog *cat, const Na
     int nbinsz = cat->nbinsz;
     double *isinner = cat->isinner_resos, *weight = cat->weight_resos;
     double *vx = cat->vx_resos, *vy = cat->vy_resos, *vz = cat->vz_resos;
-    double *sindec = cat->sindec_resos, *cosdec = cat->cosdec_resos;
     double *e1 = cat->e1_resos, *e2 = cat->e2_resos;
     int *zbin = cat->zbin_resos;
     int *ncells_resos = nav->ncells_resos;
@@ -3650,16 +3646,13 @@ static void alloc_ggg_doubletree_spherical(const MultiresoCatalog *cat, const Na
 
                 // Base galaxies of this band in the region = its cell slice.
                 const int *cb1 = cell_redbounds + rshift_cellbounds[elreso];
-                const long *cp1 = cell_pix + rshift_cellpix[elreso];
                 for (int cc=slice_clo[elreso]; cc<slice_chi[elreso]; cc++){
-                    long cell_id1 = cp1[cc];
                     for (int j1=cb1[cc]; j1<cb1[cc+1]; j1++){
                         long g1 = rshift_red[elreso] + j1;
                         double innergal = isinner[g1];
                         if (innergal<1e-5){continue;}
                         int z_gal1 = zbin[g1];
                         double cx = vx[g1], cy = vy[g1], cz = vz[g1];
-                        double cd1 = cosdec[g1], sd1 = sindec[g1];
                         double w_gal1 = innergal*weight[g1];
                         double complex wshape_gal1 = (double complex) w_gal1 * (e1[g1]+I*e2[g1]);
 
@@ -3690,7 +3683,6 @@ static void alloc_ggg_doubletree_spherical(const MultiresoCatalog *cat, const Na
                                     int rbin = (int) floor((log(dist)-logrmin)/drbin) - rbinmin;
                                     if (rbin<0 || rbin>=nbinsr_reso){continue;}
                                     double vx2 = vx[g2], vy2 = vy[g2], vz2 = vz[g2];
-                                    double sd2 = sindec[g2], cd2 = cosdec[g2];
                                     double w_gal2 = weight[g2];
                                     int z_gal2 = zbin[g2];
                                     double complex wshape_gal2 = ((double complex) w_gal2 * (e1[g2]+I*e2[g2]));
@@ -4033,12 +4025,12 @@ void alloc_Gammans_discrete_GNN(const MultiresoCatalog *cat_source, const NavHas
     double *isinner_source = cat_source->isinner_resos, *w_source = cat_source->weight_resos;
     double *pos1_source = cat_source->pos1_resos, *pos2_source = cat_source->pos2_resos;
     double *e1_source = cat_source->e1_resos, *e2_source = cat_source->e2_resos;
-    int *zbin_source = cat_source->zbin_resos, nbinsz_source = cat_source->nbinsz, ngal_source = cat_source->ngal_resos[0];
+    int *zbin_source = cat_source->zbin_resos, nbinsz_source = cat_source->nbinsz;
     double *w_lens = cat_lens->weight_resos, *pos1_lens = cat_lens->pos1_resos, *pos2_lens = cat_lens->pos2_resos;
-    int *zbin_lens = cat_lens->zbin_resos, nbinsz_lens = cat_lens->nbinsz, ngal_lens = cat_lens->ngal_resos[0];
+    int *zbin_lens = cat_lens->zbin_resos, nbinsz_lens = cat_lens->nbinsz;
     int nmax = bin->nmax, nbinsr = bin->nbinsr, dccorr = bin->dccorr;
     double rmin = bin->rmin, rmax = bin->rmax;
-    int *index_matcher_source = nav_source->index_matcher, *pixs_galind_bounds_source = nav_source->pixs_galind_bounds, *pix_gals_source = nav_source->pix_gals;
+    int *pixs_galind_bounds_source = nav_source->pixs_galind_bounds, *pix_gals_source = nav_source->pix_gals;
     int *index_matcher_lens = nav_lens->index_matcher, *pixs_galind_bounds_lens = nav_lens->pixs_galind_bounds, *pix_gals_lens = nav_lens->pix_gals;
     int *filledregions = nav_source->filledregions, nfilledregions = nav_source->nfilledregions;
     double pix1_start = nav_lens->pix1_start, pix1_d = nav_lens->pix1_d; int pix1_n = nav_lens->pix1_n;
@@ -4199,12 +4191,12 @@ void alloc_Gammans_doubletree_GNN(const MultiresoCatalog *cat_source, const NavH
     double *pos1_source_resos = cat_source->pos1_resos, *pos2_source_resos = cat_source->pos2_resos;
     double *e1_source_resos = cat_source->e1_resos, *e2_source_resos = cat_source->e2_resos;
     int *zbin_source_resos = cat_source->zbin_resos, *ngal_source_resos = cat_source->ngal_resos, nbinsz_source = cat_source->nbinsz;
-    double *isinner_lens_resos = cat_lens->isinner_resos, *w_lens_resos = cat_lens->weight_resos;
+    double *w_lens_resos = cat_lens->weight_resos;
     double *pos1_lens_resos = cat_lens->pos1_resos, *pos2_lens_resos = cat_lens->pos2_resos;
     int *zbin_lens_resos = cat_lens->zbin_resos, *ngal_lens_resos = cat_lens->ngal_resos, nbinsz_lens = cat_lens->nbinsz;
     int nmax = bin->nmax, nbinsr = bin->nbinsr, dccorr = bin->dccorr;
     double rmin = bin->rmin, rmax = bin->rmax;
-    int *index_matcher_source = nav_source->index_matcher, *pixs_galind_bounds_source = nav_source->pixs_galind_bounds, *pix_gals_source = nav_source->pix_gals;
+    int *pixs_galind_bounds_source = nav_source->pixs_galind_bounds, *pix_gals_source = nav_source->pix_gals;
     int *index_matcher_lens = nav_lens->index_matcher, *pixs_galind_bounds_lens = nav_lens->pixs_galind_bounds, *pix_gals_lens = nav_lens->pix_gals;
     int *index_matcher_hash = nav_source->index_matcher_hash;
     int *filledregions = nav_source->filledregions, nfilledregions = nav_source->nfilledregions;
@@ -4718,14 +4710,14 @@ void alloc_Gammans_discrete_NGG(const MultiresoCatalog *cat_source, const NavHas
     // Dereference input args
     double *w_source = cat_source->weight_resos, *pos1_source = cat_source->pos1_resos, *pos2_source = cat_source->pos2_resos;
     double *e1_source = cat_source->e1_resos, *e2_source = cat_source->e2_resos;
-    int *zbin_source = cat_source->zbin_resos, nbinsz_source = cat_source->nbinsz, ngal_source = cat_source->ngal_resos[0];
+    int *zbin_source = cat_source->zbin_resos, nbinsz_source = cat_source->nbinsz;
     double *isinner_lens = cat_lens->isinner_resos, *w_lens = cat_lens->weight_resos;
     double *pos1_lens = cat_lens->pos1_resos, *pos2_lens = cat_lens->pos2_resos;
-    int *zbin_lens = cat_lens->zbin_resos, nbinsz_lens = cat_lens->nbinsz, ngal_lens = cat_lens->ngal_resos[0];
+    int *zbin_lens = cat_lens->zbin_resos, nbinsz_lens = cat_lens->nbinsz;
     int nmax = bin->nmax, nbinsr = bin->nbinsr, dccorr = bin->dccorr;
     double rmin = bin->rmin, rmax = bin->rmax;
     int *index_matcher_source = nav_source->index_matcher, *pixs_galind_bounds_source = nav_source->pixs_galind_bounds, *pix_gals_source = nav_source->pix_gals;
-    int *index_matcher_lens = nav_lens->index_matcher, *pixs_galind_bounds_lens = nav_lens->pixs_galind_bounds, *pix_gals_lens = nav_lens->pix_gals;
+    int *pixs_galind_bounds_lens = nav_lens->pixs_galind_bounds, *pix_gals_lens = nav_lens->pix_gals;
     int *filledregions = nav_lens->filledregions, nfilledregions = nav_lens->nfilledregions;
     double pix1_start = nav_lens->pix1_start, pix1_d = nav_lens->pix1_d; int pix1_n = nav_lens->pix1_n;
     double pix2_start = nav_lens->pix2_start, pix2_d = nav_lens->pix2_d; int pix2_n = nav_lens->pix2_n;
@@ -4783,9 +4775,6 @@ void alloc_Gammans_discrete_NGG(const MultiresoCatalog *cat_source, const NavHas
         #pragma omp for schedule(dynamic, 8)
         for (int _elregion=0; _elregion<nfilledregions; _elregion++){
             int elregion = filledregions[_elregion];
-            int region_debug=99999;
-            bool printregdbg = (verbose>0) && (elregion==region_debug);
-            bool printregdbg2 = (verbose>1) && (elregion==region_debug); 
             //if (elregion==region_debug){printf("Region %d is in thread %d\n",elregion,elthread);}
             #pragma omp atomic
             nregionsdone += 1;
@@ -4892,9 +4881,9 @@ void alloc_Gammans_tree_NGG(const MultiresoCatalog *cat_source, const NavHash *n
     int *zbin_source_resos = cat_source->zbin_resos, nbinsz_source = cat_source->nbinsz, *ngal_source_resos = cat_source->ngal_resos;
     double *isinner_lens = cat_lens->isinner_resos, *w_lens = cat_lens->weight_resos;
     double *pos1_lens = cat_lens->pos1_resos, *pos2_lens = cat_lens->pos2_resos;
-    int *zbin_lens = cat_lens->zbin_resos, nbinsz_lens = cat_lens->nbinsz, ngal_lens = cat_lens->ngal_resos[0];
+    int *zbin_lens = cat_lens->zbin_resos, nbinsz_lens = cat_lens->nbinsz;
     int *index_matcher_source = nav_source->index_matcher, *pixs_galind_bounds_source = nav_source->pixs_galind_bounds, *pix_gals_source = nav_source->pix_gals;
-    int *index_matcher_lens = nav_lens->index_matcher, *pixs_galind_bounds_lens = nav_lens->pixs_galind_bounds, *pix_gals_lens = nav_lens->pix_gals;
+    int *pixs_galind_bounds_lens = nav_lens->pixs_galind_bounds, *pix_gals_lens = nav_lens->pix_gals;
     int *filledregions = nav_lens->filledregions, nfilledregions = nav_lens->nfilledregions;
     double pix1_start = nav_lens->pix1_start, pix1_d = nav_lens->pix1_d; int pix1_n = nav_lens->pix1_n;
     double pix2_start = nav_lens->pix2_start, pix2_d = nav_lens->pix2_d; int pix2_n = nav_lens->pix2_n;
@@ -4959,9 +4948,6 @@ void alloc_Gammans_tree_NGG(const MultiresoCatalog *cat_source, const NavHash *n
         #pragma omp for schedule(dynamic, 8)
         for (int _elregion=0; _elregion<nfilledregions; _elregion++){
             int elregion = filledregions[_elregion];
-            int region_debug=99999;
-            bool printregdbg = (verbose>0) && (elregion==region_debug);
-            bool printregdbg2 = (verbose>1) && (elregion==region_debug); 
             //if (elregion==region_debug){printf("Region %d is in thread %d\n",elregion,elthread);}
             #pragma omp atomic
             nregionsdone += 1;
@@ -5071,7 +5057,7 @@ void alloc_Gammans_doubletree_NGG(const MultiresoCatalog *cat_source, const NavH
     int nresos = tree->nresos, nresos_grid = tree->nresos_grid;
     double *dpix1_resos = tree->dpix1_resos, *dpix2_resos = tree->dpix2_resos, *reso_redges = tree->reso_redges;
     int resoshift_leafs = tree->resoshift_leafs, minresoind_leaf = tree->minresoind_leaf, maxresoind_leaf = tree->maxresoind_leaf;
-    double *isinner_source_resos = cat_source->isinner_resos, *w_source_resos = cat_source->weight_resos;
+    double *w_source_resos = cat_source->weight_resos;
     double *pos1_source_resos = cat_source->pos1_resos, *pos2_source_resos = cat_source->pos2_resos;
     double *e1_source_resos = cat_source->e1_resos, *e2_source_resos = cat_source->e2_resos;
     int *zbin_source_resos = cat_source->zbin_resos, *ngal_source_resos = cat_source->ngal_resos, nbinsz_source = cat_source->nbinsz;
@@ -5081,7 +5067,7 @@ void alloc_Gammans_doubletree_NGG(const MultiresoCatalog *cat_source, const NavH
     int nmax = bin->nmax, nbinsr = bin->nbinsr, dccorr = bin->dccorr;
     double rmin = bin->rmin, rmax = bin->rmax;
     int *index_matcher_source = nav_source->index_matcher, *pixs_galind_bounds_source = nav_source->pixs_galind_bounds, *pix_gals_source = nav_source->pix_gals;
-    int *index_matcher_lens = nav_lens->index_matcher, *pixs_galind_bounds_lens = nav_lens->pixs_galind_bounds, *pix_gals_lens = nav_lens->pix_gals;
+    int *pixs_galind_bounds_lens = nav_lens->pixs_galind_bounds, *pix_gals_lens = nav_lens->pix_gals;
     int *index_matcher_hash = nav_lens->index_matcher_hash;
     int *filledregions = nav_lens->filledregions, nfilledregions = nav_lens->nfilledregions;
     double pix1_start = nav_lens->pix1_start, pix1_d = nav_lens->pix1_d; int pix1_n = nav_lens->pix1_n;
