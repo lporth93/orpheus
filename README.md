@@ -5,10 +5,6 @@
   </span>
 </h1>
 
-<!---<p align="center">
-[//]: #   <img src="figures/orpheus_logov1.png" alt="Orpheus logo" width="500"/>
-[//]: # </p>--->
-
 <p align="center">
   <a href="https://github.com/lporth93/orpheus/actions/workflows/ci.yml"><img src="https://github.com/lporth93/orpheus/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
   <a href="https://pypi.org/project/orpheus-npcf/"><img src="https://img.shields.io/pypi/v/orpheus-npcf" alt="PyPI"/></a>
@@ -86,7 +82,8 @@ following correlation functions.
 In addition, <span style="font-variant: small-caps;">orpheus</span> also implements direct estimators 
 for aperture statistics of arbitrary order for pure scalar and polar correlators.
 
-All correlators are featured in the [tutorial notebooks]((https://orpheus.readthedocs.io/tutorial)). 
+Almost all correlators are featured in the [tutorial notebooks](https://orpheus.readthedocs.io/tutorial.html) --
+the exception is GNNN, for which no notebook is published yet. 
 In there you can also find worked examples on how to measure the statistics on realistic catalogs on the 
 celestial sphere, how to handle tomography and how to customize the level of accuracy of the estimators.
 
@@ -156,7 +153,7 @@ Then navigate to the cloned directory and install:
 cd orpheus
 pip install .
 ```
-For more detailed installation instuctions, troubleshooting and optional flags 
+For more detailed installation instructions, troubleshooting and optional flags 
 please consult the corresponding section in the [documentation](https://orpheus.readthedocs.io/installation.html).
 
 ## Citations
