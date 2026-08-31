@@ -1,12 +1,9 @@
 # TODO Reactivate gridded catalog instances?
 
 import ctypes as ct
-import numpy as np 
+import numpy as np
 from numpy.ctypeslib import ndpointer
-from pathlib import Path
-import glob
-from .utils import (get_site_packages_dir, search_file_in_site_package, convertunits,
-                    _randomhealpixshift, _check_openmp_runtimes)
+from .utils import convertunits, _randomhealpixshift, _load_clib
 from .flat2dgrid import FlatPixelGrid_2D, FlatDataGrid_2D
 from .patchutils import gen_cat_patchindices, frompatchindices_preparerot
 import sys
@@ -174,11 +171,7 @@ class Catalog:
         self.assign_methods = {"NGP":0, "CIC":1, "TSC":2}
         
         ## Link compiled libraries ##
-        # Method that works for LP
-        target_path = __import__('orpheus').__file__
-        self.library_path = str(Path(__import__('orpheus').__file__).parent.absolute())
-        self.clib = ct.CDLL(glob.glob(self.library_path+"/orpheus_clib*.so")[0])
-        _check_openmp_runtimes()
+        self.library_path, self.clib = _load_clib()
         p_c128 = ndpointer(np.complex128, flags="C_CONTIGUOUS")
         p_f64 = ndpointer(np.float64, flags="C_CONTIGUOUS")
         p_f32 = ndpointer(np.float32, flags="C_CONTIGUOUS")
@@ -187,7 +180,7 @@ class Catalog:
         
         # Assigns a set of tomographic fields over a grid
         # Safely called within 'togrid' function
-        self.clib.assign_fields.restype = ct.c_void_p
+        self.clib.assign_fields.restype = None
         self.clib.assign_fields.argtypes = [
             p_f64, p_f64, p_i32, p_f64, p_f64, ct.c_int32, ct.c_int32, ct.c_int32, 
             ct.c_int32, ct.c_double, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
@@ -195,7 +188,7 @@ class Catalog:
         
         # Assigns a set of tomographic fields over a grid
         # Safely called within 'togrid' function
-        self.clib.gen_weightgrid2d.restype = ct.c_void_p
+        self.clib.gen_weightgrid2d.restype = None
         self.clib.gen_weightgrid2d.argtypes = [
             p_f64, p_f64, ct.c_int32, ct.c_int32, 
             ct.c_double, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, ct.c_int32, 
@@ -204,20 +197,20 @@ class Catalog:
         
         # Generate pixel --> galaxy mapping
         # Safely called within other wrapped functions
-        self.clib.build_spatialhash.restype = ct.c_void_p
+        self.clib.build_spatialhash.restype = None
         self.clib.build_spatialhash.argtypes = [
             p_f64, p_f64, ct.c_int32, ct.c_double, ct.c_double, ct.c_double, ct.c_double,
             ct.c_int32, ct.c_int32,
             np.ctypeslib.ndpointer(dtype=np.int32)]
         
-        self.clib.reducecat.restype = ct.c_void_p
+        self.clib.reducecat.restype = None
         self.clib.reducecat.argtypes = [
             p_f64, p_f64, p_f64, p_f64, p_f64, ct.c_int32, ct.c_int32, ct.c_int32,
             ct.c_double, ct.c_double, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, ct.c_int32,
             p_f64_nof, p_f64_nof, p_f64_nof, p_f64_nof, p_f64_nof,ct.c_int32]
 
         # Construct reduced catalog
-        self.clib.reducecat_tomo.restype = ct.c_void_p
+        self.clib.reducecat_tomo.restype = None
         self.clib.reducecat_tomo.argtypes = [
             p_f64, p_f64, p_f64, p_f64, p_f64, p_i32,
             ct.c_int32, ct.c_int32, ct.c_int32, ct.c_int32,

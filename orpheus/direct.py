@@ -1,14 +1,14 @@
 import ctypes as ct
 from copy import deepcopy
-import glob
 from math import factorial
-import numpy as np 
+import numpy as np
 from numpy.ctypeslib import ndpointer
 import operator
 from pathlib import Path
 import sys
 from .flat2dgrid import FlatPixelGrid_2D, FlatDataGrid_2D
 from .catalog import Catalog, ScalarTracerCatalog, SpinTracerCatalog
+from .utils import _load_clib
 
 __all__ = ["DirectEstimator", "Direct_MapnEqual", "Direct_NapnEqual", "MapCombinatorics", "Direct_Map3Unequal"]
 
@@ -198,9 +198,7 @@ class DirectEstimator:
         #############################
         ## Link compiled libraries ##
         #############################
-        target_path = __import__('orpheus').__file__
-        self.library_path = str(Path(__import__('orpheus').__file__).parent.absolute())
-        self.clib = ct.CDLL(glob.glob(self.library_path+"/orpheus_clib*.so")[0])
+        self.library_path, self.clib = _load_clib()
         p_c128 = ndpointer(complex, flags="C_CONTIGUOUS")
         p_f64 = ndpointer(np.float64, flags="C_CONTIGUOUS")
         p_f32 = ndpointer(np.float32, flags="C_CONTIGUOUS")
@@ -377,7 +375,7 @@ class Direct_Map3Unequal(DirectEstimator):
         p_f64_nof = ndpointer(np.float64) 
 
         # Compute third-order unequal-scale statistics using discrete estimator (E-Mode only!)
-        self.clib.Map3MultiEonlyDisc.restype = ct.c_void_p
+        self.clib.Map3MultiEonlyDisc.restype = None
         self.clib.Map3MultiEonlyDisc.argtypes = [
             p_f64, ct.c_int32, p_f64, p_f64, ct.c_int32,
             ct.c_int32, ct.c_int32, ct.c_int32, ct.c_int32, ct.c_double, ct.c_double,
@@ -539,7 +537,7 @@ class Direct_MapnEqual(DirectEstimator):
         p_f64_nof = ndpointer(np.float64) 
         
         # Compute nth order equal-scale statistics using discrete estimator (E-Mode only!)
-        self.clib.MapnSingleEonlyDisc.restype = ct.c_void_p
+        self.clib.MapnSingleEonlyDisc.restype = None
         self.clib.MapnSingleEonlyDisc.argtypes = [
             ct.c_double, p_f64, p_f64, ct.c_int32,
             ct.c_int32, ct.c_int32, ct.c_int32, ct.c_int32, ct.c_double, ct.c_double, 
@@ -548,7 +546,7 @@ class Direct_MapnEqual(DirectEstimator):
             ct.c_double, ct.c_double, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32,
             p_i32, p_i32, p_i32, 
             ct.c_int32, p_f64, p_f64]
-        self.clib.singleAp_MapnSingleEonlyDisc.restype = ct.c_void_p
+        self.clib.singleAp_MapnSingleEonlyDisc.restype = None
         self.clib.singleAp_MapnSingleEonlyDisc.argtypes = [
             ct.c_double, ct.c_double, ct.c_double,
             ct.c_int32, ct.c_int32, ct.c_double, ct.c_double, 
@@ -559,7 +557,7 @@ class Direct_MapnEqual(DirectEstimator):
             p_f64, p_f64, p_f64, p_f64, p_f64, p_f64]    
         
         # Compute aperture mass map for equal-scale stats
-        self.clib.ApertureMassMap_Equal.restype = ct.c_void_p
+        self.clib.ApertureMassMap_Equal.restype = None
         self.clib.ApertureMassMap_Equal.argtypes = [
             ct.c_double, p_f64, p_f64, ct.c_int32, ct.c_int32, 
             ct.c_int32, ct.c_int32, ct.c_int32, ct.c_double, ct.c_double, 
@@ -907,7 +905,7 @@ class Direct_NapnEqual(DirectEstimator):
         p_f64_nof = ndpointer(np.float64) 
                 
         # Compute aperture counts map for equal-scale stats
-        self.clib.ApertureCountsMap_Equal.restype = ct.c_void_p
+        self.clib.ApertureCountsMap_Equal.restype = None
         self.clib.ApertureCountsMap_Equal.argtypes = [
             ct.c_double, p_f64, p_f64, ct.c_int32, ct.c_int32,
             ct.c_int32, ct.c_int32, ct.c_int32, ct.c_int32, ct.c_double, ct.c_double, 
@@ -918,7 +916,7 @@ class Direct_NapnEqual(DirectEstimator):
             ct.c_int32, p_f64, p_f64, p_f64, p_f64, p_f64, p_f64]
         
         # Compute nth order equal-scale statistics using discrete estimator (E-Mode only!)
-        self.clib.NapnSingleDisc.restype = ct.c_void_p
+        self.clib.NapnSingleDisc.restype = None
         self.clib.NapnSingleDisc.argtypes = [
             ct.c_double, p_f64, p_f64, ct.c_int32,
             ct.c_int32, ct.c_int32, ct.c_int32,  ct.c_int32, ct.c_double, ct.c_double, 
@@ -929,7 +927,7 @@ class Direct_NapnEqual(DirectEstimator):
             ct.c_int32, p_f64, p_f64]
         
         # Compute nth order equal-scale statistics using discrete estimator (E-Mode only!)
-        self.clib.singleAp_NapnSingleDisc.restype = ct.c_void_p
+        self.clib.singleAp_NapnSingleDisc.restype = None
         self.clib.singleAp_NapnSingleDisc.argtypes = [
             ct.c_double, ct.c_double, ct.c_double, 
             ct.c_int32, ct.c_int32,  ct.c_int32, ct.c_double, ct.c_double, 

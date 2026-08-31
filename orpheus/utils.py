@@ -2,8 +2,10 @@ import numpy as np
 from healpy import pix2ang, ang2pix, nside2resol
 
 import ctypes as ct
+import glob
 from itertools import combinations_with_replacement, product
 import os
+from pathlib import Path
 import site
 import sys
 import warnings
@@ -65,6 +67,18 @@ def _check_openmp_runtimes():
             "the C kernels once they spawn worker threads. See the macOS section of "
             "https://orpheus.readthedocs.io/en/latest/installation.html"
             %(len(runtimes), "\n  ".join(runtimes)), RuntimeWarning)
+
+def _load_clib():
+    """Locates and loads the compiled extension. Returns its directory and the handle."""
+    library_path = str(Path(__import__('orpheus').__file__).parent.absolute())
+    matches = glob.glob(library_path+"/orpheus_clib*.so")
+    if not matches:
+        raise ImportError("No compiled orpheus extension found in %s. The package needs "
+                          "to be built against a C compiler, e.g. via `pip install .`"
+                          %library_path)
+    clib = ct.CDLL(matches[0])
+    _check_openmp_runtimes()
+    return library_path, clib
 
 def _randomhealpixshift(nside, pixel_idx, rng, oversampling=3):
     """Applies a random shift within a healpix pixel assuming NEST
