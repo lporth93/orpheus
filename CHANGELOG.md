@@ -53,7 +53,16 @@ parallelised C kernels.
 
 ## Detailed changelog
 
-### Unreleased
+### 0.5.1 — 2026-08-31
+
+#### Added
+
+* **The GGG `DoubleTree` accumulates the multipoles for a batch of base galaxies at a time.**
+  Galaxies sharing a resolution band are collected into one `XnBatch` buffer holding their
+  `Gn`, `Wn`, `G2n` and `W2n` arrays plus the radial bins that carry a nonzero count, sized
+  once at `nbinszr_max` so a single allocation serves the batch. This is now the only GGG
+  `DoubleTree` kernel, flat and spherical alike. `batch_membudget_mb` sets the buffer budget
+  and defaults to 64, which sits at the knee of the cost curve.
 
 #### Fixed
 
