@@ -109,6 +109,7 @@ class TreeResoParams(ctypes.Structure):
         ("resoshift_leafs", ctypes.c_int32),
         ("minresoind_leaf", ctypes.c_int32),
         ("maxresoind_leaf", ctypes.c_int32),
+        ("batch_membudget_mb", ctypes.c_int32),
     ]
 
 
@@ -599,6 +600,7 @@ def build_tree_params_struct(corr, mh):
     s.resoshift_leafs = int(corr.resoshift_leafs)
     s.minresoind_leaf = int(corr.minresoind_leaf)
     s.maxresoind_leaf = int(corr.maxresoind_leaf)
+    s.batch_membudget_mb = int(corr.batch_membudget_mb)
 
     return s, keepers
 

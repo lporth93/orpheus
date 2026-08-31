@@ -235,6 +235,7 @@ int orpheus_struct_layout(int which, size_t *out, int len_out){
             OFF(TreeResoParams, dpix1_resos);     OFF(TreeResoParams, dpix2_resos);
             OFF(TreeResoParams, reso_redges);     OFF(TreeResoParams, resoshift_leafs);
             OFF(TreeResoParams, minresoind_leaf); OFF(TreeResoParams, maxresoind_leaf);
+            OFF(TreeResoParams, batch_membudget_mb);
             break;
         case 3:
             PUT(sizeof(BinningParams));
@@ -292,7 +293,7 @@ const char *orpheus_struct_fields(int which){
                        "dpix_z,ncells_resos,nside_nav,cell_pix,cell_redbounds,rshift_red,"
                        "rshift_cellpix,rshift_cellbounds";
         case 2: return "nresos,nresos_grid,dpix1_resos,dpix2_resos,reso_redges,resoshift_leafs,"
-                       "minresoind_leaf,maxresoind_leaf";
+                       "minresoind_leaf,maxresoind_leaf,batch_membudget_mb";
         case 3: return "rmin,rmax,nbinsr,do_dc,nmax,nmin,dccorr,Pi,rbins";
         case 4: return "bin_centers,npcf,norm,norm_mp,npair,npair_cell,ncomp,nmax";
         case 5: return "nbinsphi1,nbinsphi2,phibins1,phibins2,dbinsphi1,dbinsphi2,nindices,"
