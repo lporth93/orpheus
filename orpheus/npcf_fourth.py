@@ -1130,7 +1130,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                     toprint += (func.argtypes[elarg], )
                     print(toprint)
                     print(arg)
-                except:
+                except (AttributeError, IndexError):
                     print("We did have a problem for arg %i"%elarg)
 
         func(*args)
@@ -1811,7 +1811,7 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
                     toprint += (func.argtypes[elarg], )
                     print(toprint)
                     print(arg)
-                except:
+                except (AttributeError, IndexError):
                     print("We did have a problem for arg %i"%elarg)
 
         func(*args)
@@ -1916,7 +1916,7 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
                     toprint += (func.argtypes[elarg], )
                     print(toprint)
                     print(arg)
-                except:
+                except (AttributeError, IndexError):
                     print("We did have a problem for arg %i"%elarg)
 
         func(*args)

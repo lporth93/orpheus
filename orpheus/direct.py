@@ -19,21 +19,16 @@ class DirectEstimator:
     ----------
     Rmin : float
         The smallest aperture radius for which the cumulants are computed.
-
     Rmax : float
         The largest aperture radius for which the cumulants are computed.
-
     nbinsr : int, optional
         The number of radial bins for the aperture radii. If set to
         ``None`` this attribute is inferred from the ``binsize`` attribute.
-
     binsize : int, optional
         The logarithmic size of the radial bins for the aperture radii. If set to
         ``None`` this attribute is inferred from the ``nbinsr`` attribute.
-
     aperture_centers : str, optional
         How to sample the apertures. Can be ``'grid'`` or ``'density'``.
-
     accuracies : int or numpy.ndarray, optional
         The sampling density of aperture centers.
 
@@ -47,57 +42,46 @@ class DirectEstimator:
         only includes apertures with ``coverage <= frac_covs[0]`` while the other coverage bins include the
         intervals between ``frac_covs[i]`` and ``frac_covs[i+1]``. Coverage is defined as the percentage of 
         the aperture area that is not within the survey area.
-
     dpix_hash : float, optional
         The pixel size of the spatial hash used to search through the catalog.
-
     weight_outer : float, optional
         The fractional weight applied to galaxies not contained within the interior of the catalog.
         This only affects catalogs which are overlapping patches of a full-sky catalog.
-
     weight_inpainted : float, optional
         The fractional weight applied to virtual galaxies inpainted into the catalog. This only
         affects catalogs which have objects in them that are labeled as inpainted.
-
     method : str, optional
         The method to be employed for the estimator. Defaults to ``Discrete``.
-
     multicountcorr : bool, optional
         Flag on whether to subtract multiplets in which the same tracer appears more
         than once. Defaults to ``True``.
-
     shuffle_pix : int, optional
         Choice of how to define centers of the cells in the spatial hash structure.
         Defaults to ``1``, i.e. random positioning.
-
     tree_resos : list, optional
         The cell sizes of the hierarchical spatial hash structure.
-
     tree_redges : list, optional
         Deprecated (possibly).
-
     rmin_pixsize : int, optional
         The limiting radial distance relative to the cell of the spatial hash
         after which one switches to the next hash in the hierarchy. At the moment
         has no effect. Defaults to ``20``.
-
     resoshift_leafs : int, optional
         Allows for a difference in how the hierarchical spatial hash is traversed for
         pixels at the base of the NPCF and pixels at leafs. Positive values indicate
         that leafs will be evaluated at coarser resolutions than the base. At the moment 
         does have no effect. Defaults to ``0``.
-
     minresoind_leaf : int, optional
         Sets the smallest resolution in the spatial hash hierarchy which can be used to access
         tracers at leaf positions. If set to ``None`` uses the smallest specified cell size. 
         At the moment has no effect. Defaults to ``None``.
-
-
     maxresoind_leaf : int, optional
         Sets the largest resolution in the spatial hash hierarchy which can be used to access
         tracers at leaf positions. If set to ``None`` uses the largest specified cell size. 
         At the moment has no effect. Defaults to ``None``.
-
+    verbosity : int, optional
+        The level of verbosity during the computation. Level 0: No verbosity, 1: Progress
+        verbosity on python layer. Defaults to ``0``.
     nthreads : int, optional
         The number of OpenMP threads used for the reduction procedure. Defaults to ``16``.
     """
@@ -106,10 +90,11 @@ class DirectEstimator:
                  aperture_centers="grid", accuracies=2., 
                  frac_covs=[0.,0.1,0.3,0.5,1.], dpix_hash=1.,
                  weight_outer=1., weight_inpainted=0.,
-                 method="Discrete", multicountcorr=True, shuffle_pix=1, 
-                 tree_resos=[0,0.25,0.5,1.,2.], tree_redges=None, rmin_pixsize=20, 
-                 resoshift_leafs=0, minresoind_leaf=None, maxresoind_leaf=None,nthreads=16):
-        
+                 method="Discrete", multicountcorr=True, shuffle_pix=1,
+                 tree_resos=[0,0.25,0.5,1.,2.], tree_redges=None, rmin_pixsize=20,
+                 resoshift_leafs=0, minresoind_leaf=None, maxresoind_leaf=None,
+                 verbosity=0, nthreads=16):
+
         self.Rmin = Rmin
         self.Rmax = Rmax
         self.method = method
@@ -130,7 +115,9 @@ class DirectEstimator:
         self.resoshift_leafs = resoshift_leafs
         self.minresoind_leaf = minresoind_leaf
         self.maxresoind_leaf = maxresoind_leaf
+        self.verbosity = np.int32(verbosity)
         self.nthreads = np.int32(max(1,nthreads))
+        self._verbose_python = self.verbosity > 0
 
         self.combinatorics = None # Here we will store a dict to match tomobin indices for arbitrary orders
         
@@ -481,22 +468,16 @@ class Direct_MapnEqual(DirectEstimator):
     ----------
     order_max : int
         Maximum order of the statistics to be computed.
-
     Rmin : float
         Minimum aperture radius.
-
     Rmax : float
         Maximum aperture radius.
-
     field : str, optional
         Type of input field (``"scalar"`` or ``"polar"``).
-
     filter_form : str, optional
         Filter type used in the aperture function (``"S98"``, ``"C02"``, ``"Sch04"``, etc.).
-
     ap_weights : str, optional
         Aperture weighting strategy (``"Identity"``, ``"InvShot"``).
-
     **kwargs : dict
         Additional keyword arguments passed to :class:`DirectEstimator`.
 
@@ -632,8 +613,9 @@ class Direct_MapnEqual(DirectEstimator):
             func(*args)
             result_Mapn[elr] = args[-2].reshape((self.nfrac_covs, nzcombis))[:]
             result_wMapn[elr] = args[-1].reshape((self.nfrac_covs, nzcombis))[:]
-            
-            sys.stdout.write("\rDone %i/%i aperture radii"%(elr+1,self.nbinsr))
+
+            if self._verbose_python:
+                sys.stdout.write("\rDone %i/%i aperture radii"%(elr+1,self.nbinsr))
 
         self.Mapn = result_Mapn
         self.wMapn = result_wMapn
@@ -735,22 +717,10 @@ class Direct_MapnEqual(DirectEstimator):
                  *args_cat,
                  *args_mask,
                  *args_hash,
-                 np.int32(self.nthreads), 
+                 np.int32(self.nthreads),
                  *args_out)
-        if False:
-            for elarg, arg in enumerate(args):
-                func  = self.clib.MapnSingleEonlyDisc
-                toprint = (elarg, type(arg),)
-                if isinstance(arg, np.ndarray):
-                    toprint += (type(arg[0]), arg.shape)
-                try:
-                    toprint += (func.argtypes[elarg], )
-                    print(toprint)
-                    print(arg)
-                except:
-                    print("We did have a problem for arg %i"%elarg)
 
-        return args    
+        return args
    
     def _nzcombis_tot(self, nbinsz, dotomo):
         res = 0
@@ -1007,8 +977,9 @@ class Direct_NapnEqual(DirectEstimator):
             func(*args)
             result_Napn[elr] = args[-2].reshape((self.nfrac_covs, nzcombis))[:]
             result_wNapn[elr] = args[-1].reshape((self.nfrac_covs, nzcombis))[:]
-            
-            sys.stdout.write("\rDone %i/%i aperture radii"%(elr+1,self.nbinsr))
+
+            if self._verbose_python:
+                sys.stdout.write("\rDone %i/%i aperture radii"%(elr+1,self.nbinsr))
 
         self.Napn = result_Napn
         self.wNapn = result_wNapn
