@@ -228,10 +228,10 @@ class BinnedNPCF:
         self.bin_edges = np.geomspace(self.min_sep, self.max_sep, self.nbinsr+1)
         self.binsize = np.log(self.bin_edges[1]/self.bin_edges[0])
         # Setup variable for tree estimator according to input
-        if self.tree_redges != None:
+        if self.tree_redges is not None:
             assert(isinstance(self.tree_redges, np.ndarray))
             self.tree_redges = self.tree_redges.astype(np.float64)
-            assert(len(self.tree_redges)==self.tree_resos+1)
+            assert(len(self.tree_redges)==self.tree_nresos+1)
             self.tree_redges = np.sort(self.tree_redges)
             assert(self.tree_redges[0]==self.min_sep)
             assert(self.tree_redges[-1]==self.max_sep)
@@ -677,7 +677,7 @@ class BinnedNPCF:
                 p_c128, p_c128, ct.c_int32, ct.c_int32, 
                 ct.c_double, ct.c_double, ct.c_double, 
                 p_f64, p_f64, ct.c_int32, ct.c_int32, 
-                ct.c_int32, 
+                ct.c_int32, ct.c_int32, 
                 np.ctypeslib.ndpointer(dtype=np.complex128),np.ctypeslib.ndpointer(dtype=np.complex128)]
  
             # Reconstruction of all 4pcf multipoles from symmetry properties given a set of
@@ -809,17 +809,17 @@ class BinnedNPCF:
         # leaf resolution until it reaches at most 10% of the Gamman time complexity.
         # TODO: Check how bad this approximation is. It's probably not perfect, but one should at least make
         # sure to not add much more than 10% overhead...
+        _areashells = np.pi*(self.tree_redges[1:]**2-self.tree_redges[:-1]**2)
+        # resos[0] is the discrete level, where the cell count is infinite and the minimum
+        # below picks nbar_z. np.divide keeps that without dividing by zero to get there.
+        _percell = lambda resos: np.divide(1., resos**2, where=resos > 0,
+                                           out=np.full_like(resos, np.inf, dtype=float))
+        _nupdateGn = lambda resos: 6*cat.nbinsz*(self.nmaxs[0]+5)*np.sum(
+            _areashells*np.minimum(nbar_z, _percell(resos)))
+        _nupdateUpsN = (self.n_cfs+1)*(2*self.nmaxs[0]+1)**(self.order-2)*self.nbinsr**(self.order-1)*cat.nbinsz**self.order
+        _nupdatebase = _nupdateGn(self.tree_resos) + _nupdateUpsN
+        leafresos = 1.*self.tree_resos
         if set_resoshiftleafs:
-            _areashells = np.pi*(self.tree_redges[1:]**2-self.tree_redges[:-1]**2)
-            # resos[0] is the discrete level, where the cell count is infinite and the minimum
-            # below picks nbar_z. np.divide keeps that without dividing by zero to get there.
-            _percell = lambda resos: np.divide(1., resos**2, where=resos > 0,
-                                               out=np.full_like(resos, np.inf, dtype=float))
-            _nupdateGn = lambda resos: 6*cat.nbinsz*(self.nmaxs[0]+5)*np.sum(
-                _areashells*np.minimum(nbar_z, _percell(resos)))
-            _nupdateUpsN = (self.n_cfs+1)*(2*self.nmaxs[0]+1)**(self.order-2)*self.nbinsr**(self.order-1)*cat.nbinsz**self.order
-            _nupdatebase = _nupdateGn(self.tree_resos) + _nupdateUpsN
-            leafresos = 1.*self.tree_resos
             tmpresoshift = 0
             for shifts in range(len(self.tree_resos)):
                 propresos = 1.*leafresos
@@ -1020,8 +1020,8 @@ class BinnedNPCF:
         assert(child.npcf is not None)
         if projection not in child.projections_avail:
             print(f"Projection {projection} is not yet supported.")
-            self._print_npcfprojections_avail()
-            return 
+            self._print_npcfprojections_avail(child)
+            return
 
         projection_func = child.project[child.projection].get(projection)
         if projection_func is not None:
