@@ -301,6 +301,29 @@ def spherical_catalog():
 
 
 @pytest.fixture(scope="session")
+def patched_catalogs():
+    """Shear, lens and random catalogs decomposed onto one shared set of patches.
+    """
+    _rng = np.random.default_rng(31)
+    def _sky(cls, **fields):
+        dec = np.degrees(np.arcsin(_rng.uniform(np.sin(np.radians(-20.)),
+                                                np.sin(np.radians(10.)), NGAL_FASTCAT)))
+        return cls(pos1=_rng.uniform(10., 40., NGAL_FASTCAT), pos2=dec,
+                   weight=np.ones(NGAL_FASTCAT),
+                   zbins=_rng.integers(0, NBINSZ, NGAL_FASTCAT), geometry='spherical',
+                   units_pos1='deg', units_pos2='deg', **fields)
+
+    cat_shape = _sky(SpinTracerCatalog, spin=2,
+                     tracer_1=_rng.normal(0., .3, NGAL_FASTCAT),
+                     tracer_2=_rng.normal(0., .3, NGAL_FASTCAT))
+    cat_lens = _sky(ScalarTracerCatalog, tracer=np.ones(NGAL_FASTCAT))
+    cat_rand = _sky(ScalarTracerCatalog, tracer=np.ones(NGAL_FASTCAT))
+    cat_shape.topatches(npatches=8, method='healpix', healpix_nside=4,
+                        patchextend_deg=1., n_workers=1, other_cats=[cat_lens, cat_rand])
+    return cat_shape, cat_lens, cat_rand
+
+
+@pytest.fixture(scope="session")
 def tangential_field():
     """Create source and lens catalogs on a circle around a constant tangential shear field
     centered at the catalogs center s.t. we masure pure E. Used for isolating the projection 
