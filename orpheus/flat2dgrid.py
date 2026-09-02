@@ -62,7 +62,4 @@ class FlatDataGrid_2D(FlatPixelGrid_2D):
             infoot = self.data.flatten()[rand_ipix]==0
             rand_1 = rand_1[infoot]
             rand_2 = rand_2[infoot]
-        # Assumes .data is density map
-        if method=="LinBias":
-            raise NotImplementedError
         return rand_1, rand_2
