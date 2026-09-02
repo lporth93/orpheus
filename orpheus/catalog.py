@@ -126,8 +126,6 @@ class Catalog:
 
         self.mask = mask
         assert(isinstance(self.mask, FlatDataGrid_2D) or self.mask is None)
-        if isinstance(self.mask, FlatDataGrid_2D):
-            self.__checkmask()
         assert(np.min(self.isinner) >= 0.)
         assert(np.max(self.isinner) <= 1.)
         assert(len(self.isinner)==self.ngal)
@@ -138,7 +136,7 @@ class Catalog:
         
         self.zbins_mean = zbins_mean
         self.zbins_std = zbins_std
-        for _ in [self.zbins_mean, self.zbins_mean]:
+        for _ in [self.zbins_mean, self.zbins_std]:
             if _ is not None:
                 assert(isinstance(_,np.ndarray))
                 assert(len(_)==self.nbinsz)
@@ -153,6 +151,10 @@ class Catalog:
             self.min3 = np.min(self.pos3)
             self.max3 = np.max(self.pos3)
             self.len3 = self.max3-self.min3
+
+        # In case a mask is provided make sure it is valid given the footprint
+        if isinstance(self.mask, FlatDataGrid_2D):
+            self.__checkmask()
         
         self.spatialhash = None
         self.hasspatialhash = False
@@ -239,7 +241,7 @@ class Catalog:
             The healpix resolution used for hashing subareas of the patches.
         verbose: bool
             Flag setting on whether output is printed to the console.
-        method: {'kmeans_healpix', 'kmeans_treecorr', 'healpix'}
+        method: {'kmeans_healpix', 'healpix'}
             Patch-assignment algorithm. See the notes for additional details.
         n_workers: int or None
             Number of parallel worker processes for buffer construction.
@@ -393,9 +395,7 @@ class Catalog:
                     cat.patchinds['patches'][elp]['inner'] = _inds['inner'][seli]-cumngals[elcat+1]
                     cat.patchinds['patches'][elp]['outer'] = _inds['outer'][selo]-cumngals[elcat+1]
 
-            # Finalize setting attributes for all instances. Take the count from the joint
-            # catalog rather than from the request: with method='healpix' the patches are
-            # healpix pixels, so their number follows the footprint and not npatches.
+            # Finalize setting attributes for all instances using jointcat as reference.
             self.npatches = jointcat.npatches
             for cat in other_cats:
                 cat.npatches = jointcat.npatches
@@ -566,7 +566,8 @@ class Catalog:
             return self.multihash_slabs(dpix=dpix_hash, dpix_z=dpix_z, fields=fields,
                                         extent=extent, extent_z=extent_z)
         else:
-            raise ValueError("Unknown geometry %r" % self.geometry)
+            # Unreachable as __init__ admits only the three geometries above
+            raise ValueError("Unknown geometry %r" % self.geometry)  # pragma: no cover
 
     def multihash_flat(self, dpixs, fields, dpix_hash=None, normed=True, shuffle=0,
                   extent=[None,None,None,None], forcedivide=1, nthreads=1):
@@ -883,7 +884,8 @@ class Catalog:
                     chosen = order[first_idx]
                     rvx, rvy, rvz = gvx[chosen], gvy[chosen], gvz[chosen]
                     rra, rsdec, rcdec = ra[chosen], sindec[chosen], cosdec[chosen]
-                else:
+                else:  # pragma: no cover
+                    # Unreachable as convention is validated in at start of function
                     raise NotImplementedError("Only shuffle conventions 0,1,2,3 are implemented.")
 
                 rw = sw
@@ -1441,8 +1443,7 @@ class ScalarTracerCatalog(Catalog):
             ret_inst=False)
         (w_red, pos1_red, pos2_red, zbins_red, isinner_red, fields_red) = res
         if ret_inst:
-            return ScalarTracerCatalog(self.spin, pos1_red, pos2_red, 
-                                       fields_red[0], 
+            return ScalarTracerCatalog(pos1_red, pos2_red, fields_red[0],
                                        weight=w_red, zbins=zbins_red, isinner=isinner_red)
         return res
     
