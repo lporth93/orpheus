@@ -220,11 +220,14 @@ void ApertureMassMap_Equal(
             // Transform to Mapn(zi)
             //if (elthread==0){printf("Transforming to Mapn %d on thread %d\n",ind_ap,elthread);}
             for (elbinz=0; elbinz<nbinsz; elbinz++){
-                for (int i=0; i<max_order+1; i++){
-                    nextMapn_singlez[i]=0; nextMapn_norm_singlez[i]=0; 
-                    nextMapn_var_singlez[i]=0; nextMapn_var_norm_singlez[i]=0;
+                for (int i=0; i<max_order; i++){
                     nextMapn[elbinz*max_order+i]=0;nextMapn_var[elbinz*max_order+i]=0;
+                    nextMapn_singlez[i]=0; nextMapn_norm_singlez[i]=0;
+                    nextMapn_var_singlez[i]=0; nextMapn_var_norm_singlez[i]=0;
                 }
+                nextMapn_singlez[max_order]=0; nextMapn_norm_singlez[max_order]=0;
+                nextMapn_var_singlez[max_order]=0; nextMapn_var_norm_singlez[max_order]=0;
+
                 int tmpind = elbinz*max_order+0;
                 bellargs_Msn[0] = -nextMsn[tmpind];
                 bellargs_Sn[0] = -nextSn[tmpind];
@@ -359,10 +362,12 @@ void ApertureCountsMap_Equal(
             
             // Transform to Napn(zi)
             for (elbinz=0; elbinz<nbinsz; elbinz++){
-                for (int i=0; i<max_order+1; i++){
-                    nextNapn_singlez[i]=0; nextNapn_norm_singlez[i]=0; 
+                for (int i=0; i<max_order; i++){
                     nextNapn[elbinz*max_order+i]=0;nextNapn_norm[elbinz*max_order+i]=0;
-                    }
+                    nextNapn_singlez[i]=0; nextNapn_norm_singlez[i]=0;
+                }
+                nextNapn_singlez[max_order]=0; nextNapn_norm_singlez[max_order]=0;
+                
                 int tmpind = elbinz*max_order+0;
                 bellargs_Msn[0] = -nextMsn[tmpind];
                 bellargs_Sn[0] = -nextSn[tmpind];

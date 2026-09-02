@@ -142,18 +142,18 @@ class DirectEstimator:
         assert(isinstance(self.nbinsr, int))
         self.radii = np.geomspace(self.Rmin, self.Rmax, self.nbinsr)
         # Setup variable for tree estimator
-        if self.tree_redges != None:
+        if self.tree_redges is not None:
             assert(isinstance(self.tree_redges, np.ndarray))
             self.tree_redges = self.tree_redges.astype(np.float64)
-            assert(len(self.tree_redges)==self.tree_resos+1)
+            assert(len(self.tree_redges)==self.tree_nresos+1)
             self.tree_redges = np.sort(self.tree_redges)
             assert(self.tree_redges[0]==self.Rmin)
             assert(self.tree_redges[-1]==self.Rmax)
         else:
             self.tree_redges = np.zeros(len(self.tree_resos)+1)
-            self.tree_redges[-1] = self.Rmin
+            self.tree_redges[-1] = self.Rmax
             for elreso, reso in enumerate(self.tree_resos):
-                self.tree_redges[elreso] = (reso==0.)*self.Rmax + (reso!=0.)*self.rmin_pixsize*reso
+                self.tree_redges[elreso] = (reso==0.)*self.Rmin + (reso!=0.)*self.rmin_pixsize*reso
         # Setup accuracies
         if (isinstance(self.accuracies, int) or isinstance(self.accuracies, float)):
             self.accuracies = self.accuracies*np.ones(self.nbinsr,dtype=np.float64)
@@ -172,15 +172,15 @@ class DirectEstimator:
             print("Error: Parameter minreso_leaf is out of bounds. Set to 0.")
         if self.minresoind_leaf>=self.tree_nresos:
             self.minresoind_leaf = self.tree_nresos-1
-            print("Error: Parameter minreso_leaf is out of bounds. Set to %i."%self.minresoint_leaf)
+            print("Error: Parameter minreso_leaf is out of bounds. Set to %i."%self.minresoind_leaf)
         if self.maxresoind_leaf<0:
             self.maxresoind_leaf = 0
-            print("Error: Parameter minreso_leaf is out of bounds. Set to 0.")
+            print("Error: Parameter maxreso_leaf is out of bounds. Set to 0.")
         if self.maxresoind_leaf>=self.tree_nresos:
             self.maxresoind_leaf = self.tree_nresos-1
-            print("Error: Parameter minreso_leaf is out of bounds. Set to %i."%self.maxresoint_leaf) 
+            print("Error: Parameter maxreso_leaf is out of bounds. Set to %i."%self.maxresoind_leaf)
         if self.maxresoind_leaf<self.minresoind_leaf:
-            print("Error: Parameter maxreso_leaf is smaller than minreso_leaf. Set to %i."%self.minreso_leaf) 
+            print("Error: Parameter maxreso_leaf is smaller than minreso_leaf. Set to %i."%self.minresoind_leaf) 
           
         #############################
         ## Link compiled libraries ##
@@ -621,9 +621,6 @@ class Direct_MapnEqual(DirectEstimator):
         self.wMapn = result_wMapn
         return result_Mapn, result_wMapn
                 
-    def _getindex(self, order, mode, zcombi):
-        pass
-    
     def _buildargs(self, cat, args_innergrid, dotomo, indR, forfunc="Equal"):
         
         assert(forfunc in ["Equal", "EqualGrid"])
@@ -661,8 +658,8 @@ class Direct_MapnEqual(DirectEstimator):
             # not taken into account in the directestimator.c code.
             elif self.aperture_centers=="density":
                 rng = np.random.RandomState(1234567890)
-                ncenters = max(len(centers_1),cat.ngal)
-                sel_centers = rng.random.choice(np.arange(cat.ngal), ncenters, replace=False).astype(np.int32)
+                ncenters = min(len(centers_1),cat.ngal)
+                sel_centers = rng.choice(np.arange(cat.ngal), ncenters, replace=False).astype(np.int32)
                 centers_1 = cat.pos1[sel_centers] 
                 centers_2 = cat.pos2[sel_centers] 
         elif forfunc=="EqualGrid": 
@@ -757,11 +754,6 @@ class Direct_MapnEqual(DirectEstimator):
             Index of flattened Map^k(z1,...,zk) datavector in global output.
         """
 
-        if self.combinatorics is None:
-            self.combinatorics = {}
-            for order in range(1,self.order_max+1):
-                self.combinatorics[order] = MapCombinatorics(nbinsz,order_max=order)
-
         if nbinsz is None:
             nbinsz = self.nbinsz
         if nbinsz is None:
@@ -770,7 +762,12 @@ class Direct_MapnEqual(DirectEstimator):
             raise ValueError("We only computed the statistics up to order %i."%self.order_max)
         if max(zs) >= nbinsz:
             raise ValueError("We only have %i tomographic bins available."%nbinsz)
-        
+
+        if self.combinatorics is None:
+            self.combinatorics = {}
+            for order in range(1,self.order_max+1):
+                self.combinatorics[order] = MapCombinatorics(nbinsz,order_max=order)
+
         order = len(zs)
         zind_flat = self._cumnzcombis_order(order-1,nbinsz,True) + self.combinatorics[order].sel2ind(zs)
         
@@ -961,10 +958,9 @@ class Direct_NapnEqual(DirectEstimator):
         result_wNapn = np.zeros((self.nbinsr, self.nfrac_covs, nzcombis), dtype=np.float64)
         if (self.method in ["Discrete", "BaseTree"]):
             func = self.clib.NapnSingleDisc
-        elif (self.method in ["Discrete", "BaseTree"]):
-            raise NotImplementedError
         else:
-            raise NotImplementedError
+            raise NotImplementedError(
+                "Direct_NapnEqual only has a discrete kernel, got method=%r"%self.method)
             
         # Build a grid that only covers inner part of patch
         # This will be used to preselelct aperture centers
@@ -985,9 +981,6 @@ class Direct_NapnEqual(DirectEstimator):
         self.wNapn = result_wNapn
         return result_Napn, result_wNapn
                 
-    def _getindex(self, order, mode, zcombi):
-        pass
-    
     def _buildargs(self, cat, args_innergrid, dotomo, Nbar_policy, indR, forfunc="Equal"):
         
         assert(forfunc in ["Equal", "EqualGrid"])
@@ -1036,7 +1029,8 @@ class Direct_NapnEqual(DirectEstimator):
             args_ofw = (self.order_max, self.filters_dict[self.filter_form], 
                         np.int32(self.multicountcorr), np.int32(Nbar_policy), np.float64(self.weight_outer), np.float64(self.weight_inpainted), )
         elif forfunc=="EqualGrid":
-            args_ofw = (self.order_max, self.filters_dict[self.filter_form], self.ap_weights_dict[self.ap_weights],
+            args_ofw = (self.order_max, self.filters_dict[self.filter_form],
+                        np.int32(self.multicountcorr), np.int32(Nbar_policy),
                         np.float64(self.weight_outer), np.float64(self.weight_inpainted), )
         args_cat = (cat.weight.astype(np.float64), cat.isinner.astype(np.float64),
                     cat.pos1.astype(np.float64), cat.pos2.astype(np.float64), cat.tracer.astype(np.float64),
@@ -1128,18 +1122,23 @@ class Direct_NapnEqual(DirectEstimator):
             raise ValueError("We only computed the statistics up to order %i."%self.order_max)
         if max(zs) >= nbinsz:
             raise ValueError("We only have %i tomographic bins available."%nbinsz)
-        
+
+        if self.combinatorics is None:
+            self.combinatorics = {}
+            for order in range(1,self.order_max+1):
+                self.combinatorics[order] = MapCombinatorics(nbinsz,order_max=order)
+
         order = len(zs)
         return self._cumnzcombis_order(order-1,nbinsz,True) + self.combinatorics[order].sel2ind(zs)
         
         
-    def getnap(self, indR, cat, dotomo=True):
+    def getnap(self, indR, cat, dotomo=True, Nbar_policy=1):
         """ This simply computes an aperture mass map together with weights and coverages """
         nbinsz = cat.nbinsz
         if not dotomo:
             nbinsz = 1
-            
-        args = self._buildargs(cat, None, dotomo, indR, forfunc="EqualGrid")
+
+        args = self._buildargs(cat, None, dotomo, Nbar_policy, indR, forfunc="EqualGrid")
         ncenters_1 = args[3]
         ncenters_2 = args[4]
         self.clib.ApertureCountsMap_Equal(*args)
@@ -1255,7 +1254,7 @@ class MapCombinatorics:
             sel[-1] = 1
             return sel.astype(int)
         if ind==self.nindices-1:
-            return (self.nradii-1)*np.zeros(self.order_max, dtype=int)
+            return (self.nradii-1)*np.ones(self.order_max, dtype=int)
         
         tmpind = ind # Remainder of index in psum
         nextind_ax0 = self.order_max-1 # Value of i_k
