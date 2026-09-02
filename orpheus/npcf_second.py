@@ -44,10 +44,6 @@ class NNCorrelation(BinnedNPCF):
     """
 
     def __init__(self, min_sep, max_sep, shuffle_pix=1, **kwargs):
-        # Second order has a single algorithm: `process` dispatches the doubletree
-        # kernel whatever `method` says, and the accuracy is set by `tree_resos` and
-        # `rmin_pixsize` instead. Declaring the one scheme keeps `methods_avail`
-        # meaning the same thing here as at third and fourth order.
         super().__init__(order=2, spins=np.array([0,0], dtype=np.int32), n_cfs=1,
                          min_sep=min_sep, max_sep=max_sep, shuffle_pix=shuffle_pix,
                          methods_avail=["DoubleTree"], **kwargs)
@@ -363,10 +359,6 @@ class GGCorrelation(BinnedNPCF):
     """
 
     def __init__(self, min_sep, max_sep, **kwargs):
-        # Second order has a single algorithm: `process` dispatches the doubletree
-        # kernel whatever `method` says, and the accuracy is set by `tree_resos` and
-        # `rmin_pixsize` instead. Declaring the one scheme keeps `methods_avail`
-        # meaning the same thing here as at third and fourth order.
         super().__init__(order=2, spins=np.array([2,2], dtype=np.int32), n_cfs=2,
                          min_sep=min_sep, max_sep=max_sep,
                          methods_avail=["DoubleTree"], **kwargs)
@@ -922,10 +914,6 @@ class NGCorrelation(BinnedNPCF):
     """
 
     def __init__(self, min_sep, max_sep, **kwargs):
-        # Second order has a single algorithm: `process` dispatches the doubletree
-        # kernel whatever `method` says, and the accuracy is set by `tree_resos` and
-        # `rmin_pixsize` instead. Declaring the one scheme keeps `methods_avail`
-        # meaning the same thing here as at third and fourth order.
         super().__init__(order=2, spins=np.array([0, 2], dtype=np.int32), n_cfs=1,
                          min_sep=min_sep, max_sep=max_sep,
                          methods_avail=["DoubleTree"], **kwargs)
@@ -1027,7 +1015,8 @@ class NGCorrelation(BinnedNPCF):
         # Process for flat metric
         if cat_shape.geometry == 'flat2d':
             return self.__process_flat2d(cat_shape, cat_data, dotomo=dotomo)
-        raise NotImplementedError(
+        # Unreachable given geometry check in __init__
+        raise NotImplementedError(  # pragma: no cover
             "NGCorrelation supports '3dbox' (discrete) and flat2d/spherical (doubletree).")
 
     def __process_3dbox(self, cat_shape, cat_data, cat_random, Pi, dpix=None, dpix_z=None,
@@ -1037,7 +1026,7 @@ class NGCorrelation(BinnedNPCF):
         for c in (cat_data, cat_random):
             assert c.geometry == '3dbox', "NGCorrelation '3dbox' requires all catalogs in '3dbox'."
         if periodic:
-            raise NotImplementedError("Periodic boundaries not implemented; use a random catalog.")
+            raise NotImplementedError("Periodic boundaries not implemented.")
         self._Pi = float(Pi)
         if dpix is None: dpix = self.max_sep
         if dpix_z is None: dpix_z = Pi

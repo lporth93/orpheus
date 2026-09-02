@@ -103,7 +103,7 @@ def gen_cat_patchindices(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_ha
         The healpix resolution used for hashing subareas of the patches.
     verbose: bool
         Flag setting on whether output is printed to the console.
-    method: {'kmeans_healpix', 'kmeans_treecorr', 'healpix'}
+    method: {'kmeans_healpix', 'healpix'}
         Patch-assignment algorithm.
     kmeanshp_maxiter: int
         KMeans maximum iterations (kmeans_healpix method only).
@@ -150,24 +150,6 @@ def gen_cat_patchindices(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_ha
         print("Took %.3f seconds" % (time() - t1))
 
     ## Step 2: Define inner region of patches ##
-    # Run treecorrs k-means implementation
-    if method == 'kmeans_treecorr':
-        try:
-            import treecorr
-            if verbose:
-                print("Computing patch assignment via treecorr KMeans")
-                t1 = time()
-            cat = treecorr.Catalog(
-                ra=ra_deg, dec=dec_deg,
-                ra_units='deg', dec_units='deg',
-                npatch=npatches,
-            )
-            patchinds = cat.patch
-            if verbose:
-                print("Took %.3f seconds" % (time() - t1))
-        except ImportError:
-            print("treecorr not available; switching to kmeans_healpix")
-            method = 'kmeans_healpix'
     # Run standard k-means on catalog reduced to healpix pixels
     if method == 'kmeans_healpix':
         if verbose:
@@ -225,15 +207,12 @@ def gen_cat_patchindices(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_ha
     if verbose:
         print("Computing patch centres")
         t1 = time()
-    if method == 'kmeans_treecorr':
-        _patchcenters = cat.patch_centers
-    else:
-        counts = np.bincount(patchinds, minlength=npatches).astype(float)
-        ra_sum = np.bincount(patchinds, weights=ra_deg,  minlength=npatches)
-        dec_sum = np.bincount(patchinds, weights=dec_deg, minlength=npatches)
-        ra_mean = np.divide(ra_sum,  counts, out=np.full(npatches, np.nan), where=counts > 0)
-        dec_mean = np.divide(dec_sum, counts, out=np.full(npatches, np.nan), where=counts > 0)
-        _patchcenters = np.column_stack((ra_mean, dec_mean))
+    counts = np.bincount(patchinds, minlength=npatches).astype(float)
+    ra_sum = np.bincount(patchinds, weights=ra_deg,  minlength=npatches)
+    dec_sum = np.bincount(patchinds, weights=dec_deg, minlength=npatches)
+    ra_mean = np.divide(ra_sum,  counts, out=np.full(npatches, np.nan), where=counts > 0)
+    dec_mean = np.divide(dec_sum, counts, out=np.full(npatches, np.nan), where=counts > 0)
+    _patchcenters = np.column_stack((ra_mean, dec_mean))
     if verbose:
         print("Took %.3f seconds"%(time()-t1))
 
@@ -351,9 +330,10 @@ def gen_cat_patchindices(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_ha
                     sys.stdout.write("\r%i/%i"%(i+1, npatches))
                     sys.stdout.flush()
                 _collect(*result)
-        else:
-            # joblib version < 1.2: collect all results, then process.
-            results = Parallel(n_jobs=n_jobs, backend='loky')(_task(i) for i in range(npatches))
+        else:  # pragma: no cover
+            # Right now not reacheable as joblib version < 1.2 disallowed py requirements
+            results = Parallel(n_jobs=n_jobs, backend='loky')(
+                _task(i) for i in range(npatches))
             for i, result in enumerate(results):
                 if verbose:
                     sys.stdout.write("\r%i/%i" % (i + 1, npatches))
@@ -369,7 +349,8 @@ def gen_cat_patchindices(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_ha
             try:
                 shm.close()
                 shm.unlink()
-            except Exception:
+            except Exception:  # pragma: no cover
+                # Should never happen in practice hence not reachable.
                 pass
     if verbose:
         print("\nTook %.3f seconds" % (time() - t1))
@@ -432,7 +413,9 @@ def _process_patch(elpatch, shm_specs, galinds_inner_offsets,
             # Make sure that galaxies already appearing as inner are excluded from outer
             gal_ext = np.unique(np.concatenate(parts))
             galinds_outer = gal_ext[~np.isin(gal_ext, galinds_inner, assume_unique=True)]
-        else:
+        else:  # pragma: no cover
+            # Unreachable for now as query_disc always returns at least the pixel it is centred on
+            # and every inner galaxy's pixel is in the hash.
             galinds_outer = np.empty(0, dtype=np.int64)
 
         # galinds_inner is a view of SharedMemory; copy before the shm handle
