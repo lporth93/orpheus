@@ -53,6 +53,91 @@ parallelised C kernels.
 
 ## Detailed changelog
 
+### 0.5.2 — 2026-09-02
+
+#### Fixed
+
+* **Two direct-estimator kernels wrote past the end of their output buffers.**
+  `ApertureMassMap_Equal` and `ApertureCountsMap_Equal` reset the per-tomographic-bin blocks
+  with a loop running to `max_order+1` over `nextMapn`/`nextNapn`, which are allocated at
+  `max_order*nbinsz`. The last bin therefore wrote one `double` past the end on every
+  aperture. An even `nbinsz` hid it in the malloc padding, which is why the tomographic path
+  looked healthy; `getmap(dotomo=False)` and `getnap(dotomo=False)` set `nbinsz=1` and aborted
+  with `free(): invalid pointer`.
+
+* **`GNNNCorrelation_NoTomo` returned zeros for its aperture statistics, and corrupted the
+  heap doing it.** `GGGGCorrelation_NoTomo` forces `lowmem=True` when an integrated statistic
+  is requested; GNNN had no such line, and its `lowmem` defaults to `None`, i.e. `False`.
+  Only the low-memory kernel fills `MN3correlators`, so `MapNap3` came back as exactly zero.
+  The same branch also handed `alloc_notomoGammans_tree_gnnn` the ten-element `__lenflag`
+  placeholders that stand in for `Upsilon_n` and `N_n` when no 4PCF was requested, and the
+  kernel wrote the full multipole array into them.
+
+* **`Catalog` could not be given a mask.** `__init__` called `__checkmask` before `min1`,
+  `max1`, `min2` and `max2` were assigned, so any `Catalog(..., mask=...)` raised
+  `AttributeError`. The check now runs once the footprint is known.
+
+* **`ScalarTracerCatalog.reduce(ret_inst=True)` raised `TypeError`.** It passed `self.spin`
+  as the first positional argument to a constructor whose signature is
+  `(pos1, pos2, tracer, **kwargs)`, shifting the whole reduced catalog by one.
+
+* **`zbins_std` was never validated.** The loop checking the per-bin redshift moments read
+  `[self.zbins_mean, self.zbins_mean]`, so a mis-shaped `zbins_std` passed silently.
+
+* **`autoset_tree(set_resoshiftleafs=False)` raised `UnboundLocalError`.** The cost model
+  (`_areashells`, `_nupdateGn`, `_nupdateUpsN`, `leafresos`) was defined inside the branch
+  that flag switches off, while the `set_maxresoindleaf` block below reads all four. The two
+  leaf refinements can now be selected independently.
+
+* **`tree_redges` could not be supplied.** `if self.tree_redges != None` raises on an
+  `ndarray`, and the length check compared an `int` against `self.tree_resos+1` — the array,
+  not its length. Fixed in `BinnedNPCF` and in `DirectEstimator`, along with an `Rmin`/`Rmax`
+  swap in the latter's fallback branch. Note that `__init__` still rebuilds the ladder from
+  `tree_resos` further down, so a hand-given `tree_redges` is validated but does not yet
+  survive construction.
+
+* **`Direct_MapnEqual.genzcombi` crashed unless `nbinsz` was passed explicitly.** It built its
+  `MapCombinatorics` from the *argument* before falling back to `self.nbinsz`, so the default
+  call reached `MapCombinatorics(None, ...)`. The `Direct_NapnEqual` twin already had the two
+  blocks in the right order.
+
+* **Four call sites named methods that do not exist.** `NNNNCorrelation_NoTomo.process`
+  called `self.multipoles2npcf_c()` (the method is `multipoles2npcf`), so any `4pcf_real`
+  request without `lowmem` raised `AttributeError`; `gauss4pcf_multipolebasis` called
+  `self.gauss4pcf_analytic_integrated` (that is the C name, the python method is
+  `gauss4pcf_analytic`); `apply_edge_correction=True` called `self.edge_correction`, which no
+  fourth-order class defines — there is no fourth-order edge correction, so it now says so
+  instead; and GNNN's int32 cache guard formatted two arguments into one `%.2f`, raising
+  `TypeError` in place of its own `ValueError`.
+
+#### Added
+
+* **The fast tier now covers every line of the python package.** 380 tests in ~40 s, up from
+  145 tests and 61 % at 0.5.0. Both fast-tier modules were regrouped into labelled sections,
+  each file opening with a summary of what it checks. Nine `# pragma: no cover` mark branches
+  that are provably unreachable — fallbacks behind constructor asserts, the `joblib < 1.2`
+  path, best-effort shared-memory cleanup — in place of any blanket `exclude_lines`.
+
+#### Removed
+
+* Dead code found while covering the untested paths: an `elif` in `Direct_NapnEqual.process`
+  duplicating the `if` above it, two `_getindex` stubs that were `pass` and unreferenced, the
+  `adjust_tree` assignment in `GGGCorrelation.process` that its own docstring calls a no-op,
+  the unreachable `LinBias` branch in `FlatDataGrid_2D`, and the `else` branch of the
+  fourth-order `lowmem` decision, which re-tested a condition the guard above it had already
+  raised on and carried a `nvals`/`_nvals` typo making the real-space test read the multipole
+  size.
+
+#### Known issue
+
+* **`NNNNCorrelation_NoTomo` returns exactly zero for `N4`.** Beyond the constant filter in
+  `fourpcf2N4correlators` noted under 0.5.1, the low-memory kernel
+  `alloc_notomoNap4_tree_nnnn` — which is what NNNN's default `lowmem=True` selects — leaves
+  `N4correlators` untouched, while `alloc_notomoNap4_tree_nnnn_highmem` fills it. Both call
+  `nnnn_reconstruct_batch` with identical arguments, so the difference lies in how the batch
+  multipoles are built. `test_fourth_order_aperture_only_statistics` carries a
+  `FOURTH_APERTURE_IS_ZERO` exemption naming this; remove it when the kernel is fixed.
+
 ### 0.5.1 — 2026-08-31
 
 #### Added
