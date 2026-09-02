@@ -22,7 +22,7 @@ void multipoles2npcf_gggg_singletheta_nconvergence(
     double complex *Upsilon_n, double complex *N_n, int n1max, int n2max,
     double theta1, double theta2, double theta3,
     double *phis12, double *phis13, int nbinsphi12, int nbinsphi13,
-    int projection, double complex *npcf, double complex *npcf_norm);
+    int projection, int verbose, double complex *npcf, double complex *npcf_norm);
 
 void multipoles2npcf_gggg(double complex *upsilon_n, double complex *N_n, double *rcenters,
                           const BinningParams *bin, const FourthParams *fourth,

@@ -215,7 +215,7 @@ void multipoles2npcf_gggg_singletheta_nconvergence(
     double complex *Upsilon_n, double complex *N_n, int n1max, int n2max,
     double theta1, double theta2, double theta3,
     double *phis12, double *phis13, int nbinsphi12, int nbinsphi13,
-    int projection, double complex *npcf, double complex *npcf_norm){
+    int projection, int verbose, double complex *npcf, double complex *npcf_norm){
     
     int n_cfs = 8;
     int nmax = n1max;
@@ -228,10 +228,10 @@ void multipoles2npcf_gggg_singletheta_nconvergence(
     int npcf_n1cutshift = (n2max+1)*nbinsphi12*nbinsphi13;
     int npcf_compshift = (n1max+1)*(n2max+1)*nbinsphi12*nbinsphi13;
     int ups_compshift = nns*nns;
+    reset_progress();
     for (int elphi12=0; elphi12<nbinsphi12; elphi12++){
         for (int elphi13=0; elphi13<nbinsphi13; elphi13++){
-            printf("\rDone %.2f per cent",
-                   100*((double) (elphi12*nbinsphi13+elphi13+1)/(nbinsphi12*nbinsphi13)));
+            print_progress(elphi12*nbinsphi13+elphi13+1, nbinsphi12*nbinsphi13, verbose);
             // Convert multipoles to npcf
             expphi12s[nmax] = 1;
             expphi13s[nmax] = 1;

@@ -62,7 +62,7 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
         Arguments:
         
         Logic works as follows:
-        * Keyword 'statistics' \in [4pcf_real, 4pcf_multipoles, N4, Nap4, Nap4, Nap4c, allNap, all4pcf, all]
+        * Keyword 'statistics' \in [4pcf_real, 4pcf_multipole, N4, Nap4, N4c, Nap4c, allNap, all4pcf, all]
         * - If 4pcf_multipoles in statistics --> save 4pcf_multipoles
         * - If 4pcf_real in statistics --> save 4pcf_real
         * - If only N4 in statistics --> Do not save any 4pcf. This is really the lowmem case.
@@ -137,27 +137,12 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
                     print("Warning: Lowmem computation recommended for integrated measures of the 4pcf. " +
                           "Set `lowmem` from `%s` to `True`"%str(lowmem))
         else:
+            # Anything that would not have fit was already refused above, so what is left
+            # runs without the low-memory kernels.
             if lowmem in [None, False]:
-                maxlen = 0
-                _lowmem = False
-                if "4pcf_multipole" in statistics:
-                    _nvals = self.nzcombis*(2*self.nmaxs[0]+1)*(2*self.nmaxs[1]+1)*self.nbinsr**3
-                    if _nvals > cutlen:
-                        if not lowmem:
-                            print("Switching to low-memory computation of 4pcf in multipole basis.")
-                        lowmem = True
-                    else:
-                        lowmem = False
-                if "4pcf_real" in statistics:
-                    nvals = self.nzcombis*self.nbinsphi[0]*self.nbinsphi[1]*self.nbinsr**3
-                    if _nvals > cutlen:
-                        if not lowmem:
-                            print("Switching to low-memory computation of 4pcf in real basis.")
-                        lowmem = True
-                    else:
-                        lowmem = False
-                        
-        # Misc checks            
+                lowmem = False
+
+        # Misc checks
         self._checkcats(cat, self.spins)
         
         ## Build args for wrapped functions ##
@@ -269,9 +254,9 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
                 np.float64(memory_bound), np.int32(self.nthreads),
                 np.int32(self._verbose_c+self._verbose_debug), ct.byref(out_s))
             check_clib_error(self.clib)
-        elif self.method=="Discrete" and not lowmem:
+        elif self.method=="Discrete" and not lowmem:  # pragma: no cover
             raise NotImplementedError
-        elif self.method=="Discrete" and lowmem:
+        elif self.method=="Discrete" and lowmem:  # pragma: no cover
             raise NotImplementedError
         elif self.method in ("Tree", "DoubleTree"):
             # Prepare mask for nonredundant theta- and multipole configurations
@@ -362,7 +347,7 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
             else:
                 if self._verbose_python:
                     print("Transforming output to real space basis")
-                self.multipoles2npcf_c()
+                self.multipoles2npcf()
         if hasintegratedstats:
             if "N4" in statistics:
                 istatout += (N4correlators.reshape((self.nzcombis,len(mapradii))), )
@@ -499,7 +484,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
         Arguments:
         
         Logic works as follows:
-        * Keyword 'statistics' \in [4pcf_real, 4pcf_multipoles, M4, Map4, M4c, Map4c, allMap, all4pcf, all]
+        * Keyword 'statistics' \in [4pcf_real, 4pcf_multipole, M4, Map4, M4c, Map4c, allMap, all4pcf, all]
         * - If 4pcf_multipoles in statistics --> save 4pcf_multipoles
         * - If 4pcf_real in statistics --> save 4pcf_real
         * - If only M4 in statistics --> Do not save any 4pcf. This is really the lowmem case.
@@ -547,6 +532,10 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                 if stat in statistics_avail_phys and stat not in _statistics:
                     _statistics.append(stat)
         statistics = list(set(flatlist(_statistics)))
+        if "4pcf_real" in statistics and "4pcf_multipole" not in statistics:
+            raise ValueError("statistics='4pcf_real' on its own is not supported; request "
+                             "'all4pcf' (or add '4pcf_multipole') to also keep the "
+                             "multipoles the real-space transform is built from.")
         for stat in statistics:
             if stat in statistics_avail_map4:
                 hasintegratedstats = True
@@ -575,25 +564,10 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                           "Set `lowmem` from `%s` to `True`"%str(lowmem))
                 lowmem = True
         else:
+            # Anything that would not have fit was already refused above, so what is left
+            # runs without the low-memory kernels.
             if lowmem in [None, False]:
-                maxlen = 0
-                _lowmem = False
-                if "4pcf_multipole" in statistics:
-                    _nvals = 8*self.nzcombis*(2*self.nmaxs[0]+1)*(2*self.nmaxs[1]+1)*self.nbinsr**3
-                    if _nvals > cutlen:
-                        if not lowmem:
-                            print("Switching to low-memory computation of 4pcf in multipole basis.")
-                        lowmem = True
-                    else:
-                        lowmem = False
-                if "4pcf_real" in statistics:
-                    nvals = 8*self.nzcombis*self.nbinsphi[0]*self.nbinsphi[1]*self.nbinsr**3
-                    if _nvals > cutlen:
-                        if not lowmem:
-                            print("Switching to low-memory computation of 4pcf in real basis.")
-                        lowmem = True
-                    else:
-                        lowmem = False
+                lowmem = False
 
         # Misc checks
         assert(projection in self.projections_avail)
@@ -852,7 +826,8 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
             Upsilon_in, N_in, self.nmaxs[0], self.nmaxs[1],
             self.bin_centers_mean[elthet1], self.bin_centers_mean[elthet2], self.bin_centers_mean[elthet3],
             _phis1, _phis2, _nphis1, _nphis2,
-            np.int32(self.proj_dict[projection]), npcf_out, npcf_norm_out)
+            np.int32(self.proj_dict[projection]), np.int32(self._verbose_c),
+            npcf_out, npcf_norm_out)
                 
         npcf_out = npcf_out.reshape((self.n_cfs, self.nmaxs[0]+1, self.nmaxs[1]+1, _nphis1, _nphis2))
         npcf_norm_out = npcf_norm_out.reshape((self.nmaxs[0]+1, self.nmaxs[1]+1, _nphis1, _nphis2))
@@ -996,19 +971,6 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
     
         return allgammas        
     
-    # Disconnected 4pcf from binned 2pcf (might want to deprecate this as it is a special case of nsubr==1)
-    def __gauss4pcf_analytic(self, theta1, theta2, theta3, xip_arr, xim_arr, thetamin_xi, thetamax_xi, dtheta_xi):
-        gausss_4pcf = np.zeros(8*len(self.phis[0])*len(self.phis[0]),dtype=np.complex128)
-        self.clib.gauss4pcf_analytic(theta1.astype(np.float64), 
-                                     theta2.astype(np.float64),
-                                     theta3.astype(np.float64),
-                                     self.phis[0].astype(np.float64), np.int32(len(self.phis[0])),
-                                     xip_arr.astype(np.float64), xim_arr.astype(np.float64),
-                                     thetamin_xi, thetamax_xi, dtheta_xi,
-                                     gausss_4pcf)
-        return gausss_4pcf
-    
-    
     # [Debug] Disconnected 4pcf from analytic 2pcf
     def gauss4pcf_analytic(self, itheta1, itheta2, itheta3, nsubr, 
                                  xip_arr, xim_arr, thetamin_xi, thetamax_xi, dtheta_xi):
@@ -1037,9 +999,9 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                                  xip_arr, xim_arr, thetamin_xi, thetamax_xi, dtheta_xi):
         
         # Obtain integrated 4pcf
-        int_4pcf = self.gauss4pcf_analytic_integrated(itheta1, itheta2, itheta3, nsubr, 
-                                                      xip_arr, xim_arr, 
-                                                      thetamin_xi, thetamax_xi, dtheta_xi)
+        int_4pcf = self.gauss4pcf_analytic(itheta1, itheta2, itheta3, nsubr,
+                                           xip_arr, xim_arr,
+                                           thetamin_xi, thetamax_xi, dtheta_xi)
         
         # Transform to multiple basis (cf eq xxx in P25)
         phigrid1, phigrid2 = np.meshgrid(self.phis[0],self.phis[1])
@@ -1130,7 +1092,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                     toprint += (func.argtypes[elarg], )
                     print(toprint)
                     print(arg)
-                except (AttributeError, IndexError):
+                except (AttributeError, IndexError):  # pragma: no cover
                     print("We did have a problem for arg %i"%elarg)
 
         func(*args)
@@ -1278,7 +1240,8 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
             ncache_required_out = self.nbinsr*self.nbinsr*self.nbinsr*(2*self.nmaxs[0]+1)*(2*self.nmaxs[1]+1)
             ncache_required_alloc = nthetacombis_tot*len(_inds)*self.nthreads
             if max(ncache_required_out,ncache_required_alloc)>2**31-1:
-                raise ValueError("Required memory too large (%.2f /  x 10^9 elements)"%(ncache_required_out/1e9,ncache_required_alloc/1e9))
+                raise ValueError("Required memory too large (%.2f / %.2f x 10^9 elements)"%(
+                    ncache_required_out/1e9, ncache_required_alloc/1e9))
 
         # Build list of statistics to be calculated
         statistics_avail_4pcf = ["4pcf_real", "4pcf_multipole"]
@@ -1310,9 +1273,19 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
                 if stat in statistics_avail_phys and stat not in _statistics:
                     _statistics.append(stat)
         statistics = list(set(flatlist(_statistics)))
+        if "4pcf_real" in statistics and "4pcf_multipole" not in statistics:
+            raise ValueError("statistics='4pcf_real' on its own is not supported; request "
+                             "'all4pcf' (or add '4pcf_multipole') to also keep the "
+                             "multipoles the real-space transform is built from.")
         for stat in statistics:
             if stat in statistics_avail_mapnap3:
                 hasintegratedstats = True
+        # Only the low-memory kernel fills MN3correlators. Same as GGGG.
+        if hasintegratedstats and lowmem in [False, None]:
+            if not lowmem:
+                print("Low-memory computation enforced for integrated measures of the 4pcf. " +
+                      "Set `lowmem` from `%s` to `True`"%str(lowmem))
+            lowmem = True
 
         # Init optional args
         __lenflag = 10
@@ -1458,7 +1431,8 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
             # TODO allocate mapnap3, mapnap3c etc.
 
         if apply_edge_correction:
-            self.edge_correction()
+            raise NotImplementedError(
+                "Edge correction is not implemented yet for the fourth-order correlators.")
             
         return istatout
      
@@ -1811,7 +1785,7 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
                     toprint += (func.argtypes[elarg], )
                     print(toprint)
                     print(arg)
-                except (AttributeError, IndexError):
+                except (AttributeError, IndexError):  # pragma: no cover
                     print("We did have a problem for arg %i"%elarg)
 
         func(*args)
@@ -1916,7 +1890,7 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
                     toprint += (func.argtypes[elarg], )
                     print(toprint)
                     print(arg)
-                except (AttributeError, IndexError):
+                except (AttributeError, IndexError):  # pragma: no cover
                     print("We did have a problem for arg %i"%elarg)
 
         func(*args)
