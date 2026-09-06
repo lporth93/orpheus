@@ -55,7 +55,7 @@ extensions = [
 ]
 
 napoleon_google_docstring = False
-nbsphinx_allow_errors = True
+nbsphinx_allow_errors = False
 
 #suppress_warnings = ['misc.highlighting', 'numpydoc']
 

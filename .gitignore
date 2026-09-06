@@ -20,6 +20,9 @@ docs/source/notebooks/*.fits
 docs/source/notebooks/*.h5
 docs/source/notebooks/*.hdf5
 docs/source/notebooks/*.dat
+docs/source/notebooks/*.npz
+!docs/source/notebooks/data_g3l.npz
+!docs/source/notebooks/nncorr.npz
 
 # Only keep pdf of latex
 *.tex
