@@ -13,7 +13,7 @@ void multipoles2npcf_third_z1z23(double complex *Upsilon_n, double complex *N_n,
                                  int nmax, int ncomp_cf, int nbinsz1, int nbinsz23, int nbinstheta,
                                  double *phi_centers, int nbinsphi,
                                  int store_full_range, int *conjmap, double *modeweight,
-                                 int is_edge_corrected, int floor_use_abs, double *floor_thr,
+                                 int is_edge_corrected, double count_floor,
                                  int nthreads,
                                  double complex *npcf, double complex *npcf_norm);
 

@@ -135,7 +135,8 @@ void getMultipolesFromSymm(double complex *Upsn_in, double complex *Nn_in,
 void multipoles2npcf_gggg_singletheta(double complex *Upsilon_n, double complex *N_n, int n1max, int n2max,
                                       double theta1, double theta2, double theta3,
                                       double *phis12, double *phis13, int nbinsphi12, int nbinsphi13,
-                                      int projection, double complex *npcf, double complex *npcf_norm){
+                                      int projection, double count_floor,
+                                      double complex *npcf, double complex *npcf_norm){
     int n_cfs = 8;
     int nmax = n1max;
     int nns = 2*nmax+1;
@@ -145,6 +146,12 @@ void multipoles2npcf_gggg_singletheta(double complex *Upsilon_n, double complex 
     double complex *projdir = orpheus_calloc(n_cfs, sizeof(double complex));
     int npcf_compshift = nbinsphi12*nbinsphi13;
     int ups_compshift = nns*nns;
+    int has_multiplets = shell_has_multiplets(N_n[nmax*nns+nmax]);
+    double nextang_pref = 1./((double)nbinsphi12*nbinsphi13);
+    // Floor on the count per resolution element, one factor per angle. See the
+    // comment in multipoles2npcf_third_z1z23 for more reasoning for the single-
+    // angle case.
+    double count_thr = count_floor*(2.*n1max + 1.)*(2.*n2max + 1.)*nextang_pref;
     for (int elphi12=0; elphi12<nbinsphi12; elphi12++){
         for (int elphi13=0; elphi13<nbinsphi13; elphi13++){
             // Convert multipoles to npcf
@@ -163,7 +170,7 @@ void multipoles2npcf_gggg_singletheta(double complex *Upsilon_n, double complex 
             for (int nextn1=0; nextn1<nns; nextn1++){
                 for (int nextn2=0; nextn2<nns; nextn2++){ 
                     int ind_ups = nextn1*nns + nextn2;
-                    nextang = INV_2PI * expphi12s[nextn1] * expphi13s[nextn2];
+                    nextang = nextang_pref * expphi12s[nextn1] * expphi13s[nextn2];
                     npcf_norm[ind_npcf] += N_n[ind_ups]*nextang;
                     for (int elcf=0; elcf<n_cfs; elcf++){ 
                         npcf[elcf*npcf_compshift + ind_npcf] += Upsilon_n[elcf*ups_compshift + ind_ups]*nextang;
@@ -171,8 +178,8 @@ void multipoles2npcf_gggg_singletheta(double complex *Upsilon_n, double complex 
                 }
             }
             // Normalize: Gamma=Upsilon/N --> Make sure that we have counts, i.e. N >~ 1.
-            for (int elcf=0; elcf<n_cfs; elcf++){ 
-                if (cabs(npcf_norm[ind_npcf]) > 0.){npcf[elcf*npcf_compshift + ind_npcf] /= creal(npcf_norm[ind_npcf]);}
+            for (int elcf=0; elcf<n_cfs; elcf++){
+                if (has_multiplets && fabs(creal(npcf_norm[ind_npcf])) > count_thr){npcf[elcf*npcf_compshift + ind_npcf] /= creal(npcf_norm[ind_npcf]);}
                 else{npcf[elcf*npcf_compshift + ind_npcf] = 0;}
             }
             // Now transform to some projection
@@ -215,7 +222,8 @@ void multipoles2npcf_gggg_singletheta_nconvergence(
     double complex *Upsilon_n, double complex *N_n, int n1max, int n2max,
     double theta1, double theta2, double theta3,
     double *phis12, double *phis13, int nbinsphi12, int nbinsphi13,
-    int projection, int verbose, double complex *npcf, double complex *npcf_norm){
+    int projection, int verbose, double count_floor,
+    double complex *npcf, double complex *npcf_norm){
     
     int n_cfs = 8;
     int nmax = n1max;
@@ -228,6 +236,8 @@ void multipoles2npcf_gggg_singletheta_nconvergence(
     int npcf_n1cutshift = (n2max+1)*nbinsphi12*nbinsphi13;
     int npcf_compshift = (n1max+1)*(n2max+1)*nbinsphi12*nbinsphi13;
     int ups_compshift = nns*nns;
+    int has_multiplets = shell_has_multiplets(N_n[nmax*nns+nmax]);
+    double nextang_pref = 1./((double)nbinsphi12*nbinsphi13);
     reset_progress();
     for (int elphi12=0; elphi12<nbinsphi12; elphi12++){
         for (int elphi13=0; elphi13<nbinsphi13; elphi13++){
@@ -248,10 +258,14 @@ void multipoles2npcf_gggg_singletheta_nconvergence(
                 for (int n2cut=0; n2cut<=nmax; n2cut++){ 
                     //printf("Doing n1c=%d n2c=%d",n1cut,n2cut);
                     int ind_npcf = n1cut*npcf_n1cutshift + n2cut*npcf_n2cutshift + elphi12*nbinsphi13 + elphi13;
+                    // Floor on the count per resolution element, one factor per angle. See the
+                    // comment in multipoles2npcf_third_z1z23 for more reasoning for the single-
+                    // angle case.
+                    double count_thr = count_floor*(2.*n1cut + 1.)*(2.*n2cut + 1.)*nextang_pref;
                     for (int nextn1=-n1cut; nextn1<=n1cut; nextn1++){
                         for (int nextn2=-n2cut; nextn2<=n2cut; nextn2++){ 
                             int ind_ups = (nmax+nextn1)*nns + (nmax+nextn2);
-                            nextang = INV_2PI * expphi12s[nmax+nextn1] * expphi13s[nmax+nextn2];
+                            nextang = nextang_pref * expphi12s[nmax+nextn1] * expphi13s[nmax+nextn2];
                             npcf_norm[ind_npcf] += N_n[ind_ups]*nextang;
                             for (int elcf=0; elcf<n_cfs; elcf++){ 
                                 npcf[elcf*npcf_compshift + ind_npcf] += Upsilon_n[elcf*ups_compshift + ind_ups]*nextang;
@@ -259,8 +273,8 @@ void multipoles2npcf_gggg_singletheta_nconvergence(
                         }
                     }
                     // Normalize: Gamma=Upsilon/N --> Make sure that we have counts, i.e. N >~ 1.
-                    for (int elcf=0; elcf<n_cfs; elcf++){ 
-                        if (cabs(npcf_norm[ind_npcf]) > 0.){npcf[elcf*npcf_compshift + ind_npcf] /= creal(npcf_norm[ind_npcf]);}
+                    for (int elcf=0; elcf<n_cfs; elcf++){
+                        if (has_multiplets && fabs(creal(npcf_norm[ind_npcf])) > count_thr){npcf[elcf*npcf_compshift + ind_npcf] /= creal(npcf_norm[ind_npcf]);}
                         else{npcf[elcf*npcf_compshift + ind_npcf] = 0;}
                     }
                     // Now transform to some projection
@@ -304,7 +318,7 @@ void fourpcfmultipoles2M4correlators(
     double *theta_edges, double *theta_centers, int nthetas, 
     double *mapradii, int nmapradii,
     double *phis1, double *phis2, double *dphis1, double *dphis2, int nbinsphi1, int nbinsphi2,
-    int projection, int nthreads, int verbose,
+    int projection, double count_floor, int nthreads, int verbose,
     double complex *Upsilon_n, double complex *N_n, double complex *m4corr){
 
 
@@ -360,7 +374,7 @@ void fourpcfmultipoles2M4correlators(
         multipoles2npcf_gggg_singletheta(Upsn_single, Nn_single, nmax_trafo, nmax_trafo,
                                          theta1, theta2, theta3,
                                          phis1, phis2, nbinsphi1, nbinsphi2,
-                                         projection, thisnpcf, thisnpcf_norm);
+                                         projection, count_floor, thisnpcf, thisnpcf_norm);
 
         // Transform 4pcf to M4
         double complex nextm4corr[8] = {0, 0, 0, 0, 0, 0, 0, 0};
@@ -506,6 +520,7 @@ void multipoles2npcf_gggg(double complex *upsilon_n, double complex *N_n, double
     int nbinsr = bin->nbinsr, nmax = bin->nmax;
     double *phis12 = fourth->phibins1, *phis13 = fourth->phibins2;
     int nbinsphi12 = fourth->nbinsphi1, nbinsphi13 = fourth->nbinsphi2;
+    double count_floor = fourth->count_floor;
     // Shape of upsilon_n: (n_cfs,2*_nmax+1,2*_nmax+1,1,nbinsr,nbinsr,nbinsr) ~ (elcomp, n1, n2, elb1, elb2, elb3)
     //          npcf     : (n_cfs,1,nbinsr,nbinsr,nbinsr,nbinsphi,nbinsphi)   ~ (elcomp, elb1, elb2, elb3, elphi12, elphi13)
     
@@ -539,7 +554,15 @@ void multipoles2npcf_gggg(double complex *upsilon_n, double complex *N_n, double
         
         #pragma omp critical
         {rcenter1 = rcenters[elr1]; rcenter2 = rcenters[elr2]; rcenter3 = rcenters[elr3];}
-        
+
+        int has_multiplets = shell_has_multiplets(
+            N_n[nmax*mult_n2shift + nmax*mult_n1shift + elr1*nbinsr2 + elr2*nbinsr + elr3]);
+        double nextang_pref = 1./((double)nbinsphi12*nbinsphi13);
+        // Floor on the count per resolution element, one factor per angle. See the
+        // comment in multipoles2npcf_third_z1z23 for more reasoning for the single-
+        // angle case.
+        double count_thr = count_floor*(2.*nmax + 1.)*(2.*nmax + 1.)*nextang_pref;
+
         for (int elphi12=0; elphi12<nbinsphi12; elphi12++){
             for (int elphi13=0; elphi13<nbinsphi13; elphi13++){
                 // Convert multipoles to npcf
@@ -550,7 +573,7 @@ void multipoles2npcf_gggg(double complex *upsilon_n, double complex *N_n, double
                 ind_npcf = elr1*npcf_r1shift + elr2*npcf_r2shift + elr3*npcf_r3shift + elphi12*nbinsphi13 + elphi13;
                 for (int nextn1=0; nextn1<2*nmax+1; nextn1++){
                     for (int nextn2=0; nextn2<2*nmax+1; nextn2++){ 
-                        nextang = INV_2PI * expphi12s[nextn1] * expphi13s[nextn2];
+                        nextang = nextang_pref * expphi12s[nextn1] * expphi13s[nextn2];
                         ind_multi = nextn1*mult_n2shift + nextn2*mult_n1shift + elr1*nbinsr2 + elr2*nbinsr + elr3;
                         npcf_norm[ind_npcf] += N_n[ind_multi]*nextang;
                         for (int elcf=0; elcf<n_cfs; elcf++){ 
@@ -559,8 +582,8 @@ void multipoles2npcf_gggg(double complex *upsilon_n, double complex *N_n, double
                     }
                 }
                 // Normalize: Gamma=Upsilon/N --> Make sure that we have counts, i.e. N >~ 1.
-                for (int elcf=0; elcf<n_cfs; elcf++){ 
-                    if (cabs(npcf_norm[ind_npcf]) > 0.){npcf[elcf*npcf_compshift + ind_npcf] /= creal(npcf_norm[ind_npcf]);}
+                for (int elcf=0; elcf<n_cfs; elcf++){
+                    if (has_multiplets && fabs(creal(npcf_norm[ind_npcf])) > count_thr){npcf[elcf*npcf_compshift + ind_npcf] /= creal(npcf_norm[ind_npcf]);}
                     else{npcf[elcf*npcf_compshift + ind_npcf] = 0;}
                 }
                 // Now transform to some projection
@@ -1013,6 +1036,12 @@ void multipoles2npcf_gnnn_singletheta(double complex *Gtilde_n, double complex *
     double complex expphi12, expphi13;
     double complex *expphi12s = orpheus_calloc(nns, sizeof(double complex));
     double complex *expphi13s = orpheus_calloc(nns, sizeof(double complex));
+    int has_multiplets = shell_has_multiplets(N_n[nmax*nns+nmax]);
+    double nextang_pref = 1./((double)nbinsphi12*nbinsphi13);
+    // Floor on the count per resolution element, one factor per angle. See the
+    // comment in multipoles2npcf_third_z1z23 for more reasoning for the single-
+    // angle case.
+    double count_thr = count_floor*(2.*n1max + 1.)*(2.*n2max + 1.)*nextang_pref;
     for (int elphi12=0; elphi12<nbinsphi12; elphi12++){
         for (int elphi13=0; elphi13<nbinsphi13; elphi13++){
             // Convert multipoles to npcf
@@ -1031,15 +1060,14 @@ void multipoles2npcf_gnnn_singletheta(double complex *Gtilde_n, double complex *
             for (int nextn1=0; nextn1<nns; nextn1++){
                 for (int nextn2=0; nextn2<nns; nextn2++){
                     int ind_ups = nextn1*nns + nextn2;
-                    nextang = INV_2PI * expphi12s[nextn1] * expphi13s[nextn2];
+                    nextang = nextang_pref * expphi12s[nextn1] * expphi13s[nextn2];
                     npcf[ind_npcf] += Gtilde_n[ind_ups]*nextang;
                     npcf_norm[ind_npcf] += N_n[ind_ups]*nextang;
                 }
             }
 
             // Normalize Gtilde--> Make sure that we have counts, i.e. N >~ 1.
-            // We treat set small values as zero, as those could be interpreted as ringing effects from the multipole-based reconstruction, i.e. they are oscillating around zero.
-            if (cabs(npcf_norm[ind_npcf]) > count_floor){npcf[ind_npcf] /= creal(npcf_norm[ind_npcf]);}
+            if (has_multiplets && fabs(creal(npcf_norm[ind_npcf])) > count_thr){npcf[ind_npcf] /= creal(npcf_norm[ind_npcf]);}
             else{npcf[ind_npcf] = 0;}
 
             // Optionally debias the estimator by applying the 2pt & 3pt clustering correction
@@ -1078,6 +1106,8 @@ void multipoles2npcf_gnnn_singletheta_nconvergence(
     int npcf_n1cutshift = (n2max+1)*nbinsphi12*nbinsphi13;
     int npcf_compshift = (n1max+1)*(n2max+1)*nbinsphi12*nbinsphi13;
     int ups_compshift = nns*nns;
+    int has_multiplets = shell_has_multiplets(N_n[nmax*nns+nmax]);
+    double nextang_pref = 1./((double)nbinsphi12*nbinsphi13);
     for (int elphi12=0; elphi12<nbinsphi12; elphi12++){
         for (int elphi13=0; elphi13<nbinsphi13; elphi13++){
             // Convert multipoles to npcf
@@ -1085,7 +1115,7 @@ void multipoles2npcf_gnnn_singletheta_nconvergence(
             expphi13s[nmax] = 1;
             expphi12 = cexp(I*phis12[elphi12]);
             expphi13 = cexp(I*phis13[elphi13]);
-            for (int nextn=1; nextn<=nmax; nextn++){ 
+            for (int nextn=1; nextn<=nmax; nextn++){
                 expphi12s[nmax+nextn] = expphi12s[nmax+nextn-1]*expphi12;
                 expphi12s[nmax-nextn] = conj(expphi12s[nmax+nextn]);
                 expphi13s[nmax+nextn] = expphi13s[nmax+nextn-1]*expphi13;
@@ -1093,22 +1123,26 @@ void multipoles2npcf_gnnn_singletheta_nconvergence(
             }
             double complex nextang;
             for (int n1cut=0; n1cut<=nmax; n1cut++){
-                for (int n2cut=0; n2cut<=nmax; n2cut++){ 
+                for (int n2cut=0; n2cut<=nmax; n2cut++){
                     //printf("Doing n1c=%d n2c=%d",n1cut,n2cut);
                     int ind_npcf = n1cut*npcf_n1cutshift + n2cut*npcf_n2cutshift + elphi12*nbinsphi13 + elphi13;
+                    // Floor on the count per resolution element, one factor per angle. See the
+                    // comment in multipoles2npcf_third_z1z23 for more reasoning for the single-
+                    // angle case.
+                    double count_thr = count_floor*(2.*n1cut + 1.)*(2.*n2cut + 1.)*nextang_pref;
                     for (int nextn1=-n1cut; nextn1<=n1cut; nextn1++){
-                        for (int nextn2=-n2cut; nextn2<=n2cut; nextn2++){ 
+                        for (int nextn2=-n2cut; nextn2<=n2cut; nextn2++){
                             int ind_ups = (nmax+nextn1)*nns + (nmax+nextn2);
-                            nextang = INV_2PI * expphi12s[nmax+nextn1] * expphi13s[nmax+nextn2];
+                            nextang = nextang_pref * expphi12s[nmax+nextn1] * expphi13s[nmax+nextn2];
                             npcf_norm[ind_npcf] += N_n[ind_ups]*nextang;
-                            for (int elcf=0; elcf<n_cfs; elcf++){ 
-                                npcf[elcf*npcf_compshift + ind_npcf] += Upsilon_n[elcf*ups_compshift + ind_ups]*nextang;
+                            for (int elcf=0; elcf<n_cfs; elcf++){
+                                npcf[elcf*npcf_compshift + ind_npcf] += Upsilon_n[elcf*ups_compshift+ind_ups]*nextang;
                             }
                         }
                     }
                     // Normalize: Gamma=Upsilon/N --> Make sure that we have counts, i.e. N >~ 1.
                     for (int elcf=0; elcf<n_cfs; elcf++){
-                        if (cabs(npcf_norm[ind_npcf]) > count_floor){npcf[elcf*npcf_compshift + ind_npcf] /= creal(npcf_norm[ind_npcf]);}
+                        if (has_multiplets && fabs(creal(npcf_norm[ind_npcf])) > count_thr){npcf[elcf*npcf_compshift + ind_npcf] /= creal(npcf_norm[ind_npcf]);}
                         else{npcf[elcf*npcf_compshift + ind_npcf] = 0;}
                         if (has_xi==1 || has_zeta==1){
                             npcf[elcf*npcf_compshift + ind_npcf] *= gnnn_clustering_corr(
@@ -1831,6 +1865,7 @@ void multipoles2npcf_nnnn_singletheta(double complex *N_n, int n1max, int n2max,
     double complex expphi12, expphi13;
     double complex *expphi12s = orpheus_calloc(nns, sizeof(double complex));
     double complex *expphi13s = orpheus_calloc(nns, sizeof(double complex));
+    double nextang_pref = 1./((double)nbinsphi12*nbinsphi13);
     for (int elphi12=0; elphi12<nbinsphi12; elphi12++){
         for (int elphi13=0; elphi13<nbinsphi13; elphi13++){
             // Convert multipoles to npcf
@@ -1849,7 +1884,7 @@ void multipoles2npcf_nnnn_singletheta(double complex *N_n, int n1max, int n2max,
             for (int nextn1=0; nextn1<nns; nextn1++){
                 for (int nextn2=0; nextn2<nns; nextn2++){ 
                     int ind_ups = nextn1*nns + nextn2;
-                    nextang = INV_2PI * expphi12s[nextn1] * expphi13s[nextn2];
+                    nextang = nextang_pref * expphi12s[nextn1] * expphi13s[nextn2];
                     npcf[ind_npcf] += N_n[ind_ups]*nextang;
                 }
             }

@@ -115,7 +115,7 @@ class NNCorrelation(BinnedNPCF):
                 pcorr.saveinst(save_patchres, save_filebase+'_patch%i'%elp)
 
         # Finalize the measurement on the full footprint
-        self.bin_centers /= self.npair
+        self.bin_centers = self.safe_divide_bins(self.bin_centers, self.npair)
         self.bin_centers_mean = np.mean(self.bin_centers, axis=0)
 
         if keep_patchres:
@@ -242,7 +242,7 @@ class NNCorrelation(BinnedNPCF):
         if native_spherical:
             bin_centers /= convertunits(self.sep_units, 'rad')   # radians -> sep_units
 
-        self.bin_centers = bin_centers.reshape(sz2r)
+        self.bin_centers = self.safe_divide_bins(bin_centers.reshape(sz2r))
         self.bin_centers_mean = np.mean(self.bin_centers, axis=0)
         self.npair = npair.reshape(sz2r)
         self.npair_cell = npair_cell.reshape(sz2r)
@@ -321,9 +321,11 @@ class NNCorrelation(BinnedNPCF):
         pref_DR = pref_DR.flatten()[:, np.newaxis]
         pref_RD = pref_RD.flatten()[:, np.newaxis]
         
-        # Combine all pair counts to get 2pcf estimator
+        # Combine all pair counts to get 2pcf estimator. Set all bins to zero in which there
+        # are no random pairs.
         if estimator=="LS":
-            self.xi = pref_DD*dds/rrs - pref_DR*drs/rrs -  pref_RD*rds/rrs + 1
+            num = pref_DD*dds - pref_DR*drs - pref_RD*rds
+            self.xi = self.safe_divide_npcf(num, rrs) + (rrs > self.count_floor)
 
 
     def computeNap2(self, radii, tofile=False):
@@ -439,10 +441,10 @@ class GGCorrelation(BinnedNPCF):
                 pcorr.saveinst(save_patchres, save_filebase+'_patch%i'%elp)
 
         # Finalize the measurement on the full footprint
-        self.bin_centers /= self.norm
+        self.bin_centers = self.safe_divide_bins(self.bin_centers, self.norm)
         self.bin_centers_mean = np.mean(self.bin_centers, axis=0)
-        self.xip /= self.norm
-        self.xim /= self.norm
+        self.xip = self.safe_divide_npcf(self.xip, self.norm)
+        self.xim = self.safe_divide_npcf(self.xim, self.norm)
         self.projection = "xipm"
 
         if keep_patchres:
@@ -557,7 +559,7 @@ class GGCorrelation(BinnedNPCF):
         if native_spherical:
             bin_centers /= convertunits(self.sep_units, 'rad')
 
-        self.bin_centers = bin_centers.reshape(sz2r)
+        self.bin_centers = self.safe_divide_bins(bin_centers.reshape(sz2r))
         self.bin_centers_mean = np.mean(self.bin_centers, axis=0)
         self.npair = npair.reshape(sz2r)
         self.norm = norm.reshape(sz2r)
@@ -1070,13 +1072,13 @@ class NGCorrelation(BinnedNPCF):
         # Get normalisation factors per zbin
         WD = np.array([cat_data.weight[cat_data.zbins == z].sum() for z in range(nzd)])
         WR = np.array([cat_random.weight[cat_random.zbins == z].sum() for z in range(nzd)])
-        f = self.save_divide_npcf(WD, WR, fill=1.)
+        f = self.safe_divide_npcf(WD, WR, fill=1.)
 
         # LS-like estimator for NG where N=D(ata)-R(andom)
         DtS = DS - f[:, None, None]*RS
         RRnorm = f[:, None, None]*wRS
-        xi = -self.save_divide_npcf(DtS, RRnorm)
-        bc = self.save_divide_bins(rsumDS, wDS)
+        xi = -self.safe_divide_npcf(DtS, RRnorm)
+        bc = self.safe_divide_bins(rsumDS, wDS)
 
         # Homogenise shapes with other functions, i.e. flattened zbin axis. We further
         # add all the individual pair counts as private attributes for comaprison
@@ -1084,6 +1086,9 @@ class NGCorrelation(BinnedNPCF):
         z2r = (nzd*nzs, self.nbinsr)
         zzr = (nzd*nzd, self.nbinsr)
         self.xi = xi.reshape(z2r)
+        # Set norm to expected data-source pair count of the randoms, i.e. what the estimator
+        # does for the other geometries.
+        self.norm = RRnorm.reshape(z2r)
         self.bin_centers = bc.reshape(z2r)
         self.bin_centers_mean = np.mean(self.bin_centers, axis=0)
         self._DS, self._RS, self._RR = DS.reshape(z2r), RS.reshape(z2r), wRR.reshape(zzr)
@@ -1156,7 +1161,7 @@ class NGCorrelation(BinnedNPCF):
         # tangential basis gamma_t + i*gamma_x, matching the 3dbox path and the
         # (-1)^nspin2 convention of the higher-order correlators.
         szr = (nzl*nzs, self.nbinsr)
-        self.bin_centers = bin_centers.reshape(szr)
+        self.bin_centers = self.safe_divide_bins(bin_centers.reshape(szr))
         self.bin_centers_mean = np.mean(self.bin_centers, axis=0)
         self.xi = -xi.reshape(szr)
         self.norm = norm.reshape(szr)
@@ -1212,8 +1217,8 @@ class NGCorrelation(BinnedNPCF):
                 pcorr.saveinst(save_patchres, save_filebase+'_patch%i'%elp)
 
         # Finalize on the full footprint (norm-weighted mean of the patches).
-        self.bin_centers = self.save_divide_bins(self.bin_centers, self.norm)
-        self.xi = self.save_divide_npcf(self.xi, self.norm)
+        self.bin_centers = self.safe_divide_bins(self.bin_centers, self.norm)
+        self.xi = self.safe_divide_npcf(self.xi, self.norm)
         self.projection = None
 
         if keep_patchres:

@@ -159,7 +159,7 @@ class NNNCorrelation(BinnedNPCF):
         sc = (1, self.nmax+1, self.nzcombis, self.nbinsr, self.nbinsr)
         sn = (self.nmax+1, self.nzcombis, self.nbinsr, self.nbinsr)
         szr = (self.nbinsz, self.nbinsr)
-        self.bin_centers = bin_centers.reshape(szr)
+        self.bin_centers = self.safe_divide_bins(bin_centers.reshape(szr))
         self.bin_centers_mean = np.mean(self.bin_centers, axis=0)
         self.npcf_multipoles = triplets_n.reshape(sc)
         self.npcf_multipoles_norm = triplets_norm_n.reshape(sn)
@@ -167,7 +167,6 @@ class NNNCorrelation(BinnedNPCF):
 
         if not dotomo:
             cat.zbins = old_zbins
-
 
     # Just a helper to make the zeta computation less awkward
     def _inverse_transform(self, correlator_n, nbinsz1, nbinsz23):
@@ -185,7 +184,7 @@ class NNNCorrelation(BinnedNPCF):
             np.int32(rbins),
             self.phi.astype(np.float64), np.int32(nbinsphi),
             np.int32(0), conjmap, modeweight,
-            np.int32(0), np.int32(0), np.zeros(nzcombis, dtype=np.float64),
+            np.int32(0), np.float64(0.),
             np.int32(self.nthreads),
             dummy, correlator_real)
         return correlator_real.reshape((nzcombis, rbins, rbins, nbinsphi)).real
@@ -198,7 +197,7 @@ class NNNCorrelation(BinnedNPCF):
         self.npcf_norm = ntriplet
         self.projection = "X"
 
-    def __compute_zeta(self, cat_data, cat_rand, dotomo=True, adjust_tree=False, count_floor_rtol=None):
+    def __compute_zeta(self, cat_data, cat_rand, dotomo=True, adjust_tree=False):
         r"""Estimate the clustering 3PCF via LS-like estimator: ``zeta = (D-R)^3 / RRR``.
         """
         nz = cat_data.nbinsz if dotomo else 1
@@ -240,7 +239,7 @@ class NNNCorrelation(BinnedNPCF):
         else:
             WD = np.array([cat_data.weight.sum()])
             WR = np.array([cat_rand.weight.sum()])
-        f = self.save_divide_npcf(WR, WD, fill=1.).astype(np.float64)
+        f = self.safe_divide_npcf(WR, WD, fill=1.).astype(np.float64)
         fa = f[None, :, None, None, None, None]
         fb = f[None, None, :, None, None, None]
         fc = f[None, None, None, :, None, None]
@@ -252,12 +251,11 @@ class NNNCorrelation(BinnedNPCF):
         numerator = numerator.reshape(self.nmax+1, nzc, self.nbinsr, self.nbinsr)
         RRR = RRR.reshape(self.nmax+1, nzc, self.nbinsr, self.nbinsr)
 
-        # Transform to real space and filter out ~empty bins
+        # Transform to real space. RRR is a triplet count like any other norm, so the
+        # same absolute floor applies to it.
         num_real = self._inverse_transform(numerator, nz, nz)
         rrr_real = self._inverse_transform(RRR, nz, nz)
-        rtol = self.norm_divisionmask if count_floor_rtol is None else count_floor_rtol
-        floor = rtol * np.abs(rrr_real).mean(axis=-1, keepdims=True)
-        zeta = np.divide(num_real, rrr_real, out=np.zeros_like(num_real), where=rrr_real > floor)
+        zeta = self.safe_divide_npcf(num_real, rrr_real)
 
         self.nbinsz = nz
         self.nzcombis = nzc
@@ -391,7 +389,7 @@ class GGGCorrelation(BinnedNPCF):
                 pcorr.saveinst(save_patchres, save_filebase+'_patch%i'%elp)
 
         # Finalize the measurement on the full footprint
-        self.bin_centers = self.save_divide_bins(self.bin_centers, _footnorm)
+        self.bin_centers = self.safe_divide_bins(self.bin_centers, _footnorm)
         self.bin_centers_mean = np.mean(self.bin_centers,axis=0)
         self.projection = "X"
 
@@ -582,7 +580,7 @@ class GGGCorrelation(BinnedNPCF):
                             ct.byref(bin_s), int(self.nthreads), int(self._verbose_c), ct.byref(out_s))
                         check_clib_error(self.clib)
 
-            self.bin_centers = bin_centers.reshape(szr)
+            self.bin_centers = self.safe_divide_bins(bin_centers.reshape(szr))
             self.bin_centers_mean = np.mean(self.bin_centers, axis=0)
             self.npcf_multipoles = threepcfs_n.reshape(sc)
             self.npcf_multipoles_norm = threepcfsnorm_n.reshape(sn)
@@ -627,7 +625,7 @@ class GGGCorrelation(BinnedNPCF):
         # Get rescaling f = W_S / W_R per shape tomo-bin.
         WS = np.array([cat_source.weight[cat_source.zbins == z].sum() for z in range(nz)])
         WR = np.array([cat_random.weight[cat_random.zbins == z].sum() for z in range(nz)])
-        f = self.save_divide_npcf(WS, WR, fill=1.).astype(np.float64)
+        f = self.safe_divide_npcf(WS, WR, fill=1.).astype(np.float64)
 
         # Build all the relevant args for the C call
         scomp = (4, self.nmax+1, self.nzcombis, self.nbinsr, self.nbinsr)
@@ -655,7 +653,7 @@ class GGGCorrelation(BinnedNPCF):
         self.npcf_multipoles = self._SSS
         self.npcf_multipoles_norm = (fc*f2*f3).reshape(1, self.nzcombis, 1, 1)*self._RRR
 
-        self.bin_centers = bin_centers.reshape(szr)
+        self.bin_centers = self.safe_divide_bins(bin_centers.reshape(szr))
         self.bin_centers_mean = np.mean(self.bin_centers, axis=(0, 1))
         self.projection = "X"
         self.is_edge_corrected = False
@@ -723,14 +721,13 @@ class GGGCorrelation(BinnedNPCF):
         # This is how the 3pcf components need to ber permuted for n-->-n, see A.6 in Porth+23.
         conjmap = np.array([0, 1, 3, 2], dtype=np.int32)
         modeweight = self.mode_window(self.nmax)/nbinsphi
-        floor_thr = np.zeros(nzcombis, dtype=np.float64)
         self.clib.multipoles2npcf_third_z1z23(
             self.npcf_multipoles.flatten(), self.npcf_multipoles_norm.flatten(),
             np.int32(self.nmax), np.int32(self.n_cfs), np.int32(self.nbinsz), np.int32(self.nbinsz),
             np.int32(rbins),
             self.phi.astype(np.float64), np.int32(nbinsphi),
             np.int32(0), conjmap, modeweight,
-            np.int32(self.is_edge_corrected), np.int32(1), floor_thr,
+            np.int32(self.is_edge_corrected), np.float64(self.count_floor),
             np.int32(self.nthreads),
             thisnpcf, thisnpcf_norm)
         if projection == "Centroid":
@@ -961,7 +958,7 @@ class GNNCorrelation(BinnedNPCF):
                 pcorr.saveinst(save_patchres, save_filebase+'_patch%i'%elp)
 
         # Finalize the measurement on the full footprint
-        self.bin_centers = self.save_divide_bins(self.bin_centers, _footnorm)
+        self.bin_centers = self.safe_divide_bins(self.bin_centers, _footnorm)
         self.bin_centers_mean =np.mean(self.bin_centers, axis=(0,1))
         self.projection = "X"
 
@@ -1131,7 +1128,7 @@ class GNNCorrelation(BinnedNPCF):
                     ct.byref(out_s))
                 check_clib_error(self.clib)
             
-            self.bin_centers = bin_centers.reshape(szr)
+            self.bin_centers = self.safe_divide_bins(bin_centers.reshape(szr))
             self.bin_centers_mean = np.mean(self.bin_centers, axis=(0,1))
             self.npcf_multipoles = np.nan_to_num(Upsilon_n.reshape(sc))
             self.npcf_multipoles_norm = np.nan_to_num(Norm_n.reshape(sn))
@@ -1189,7 +1186,7 @@ class GNNCorrelation(BinnedNPCF):
         # Get number counts rescaling f = W_D / W_R per tomo-bin.
         WD = np.array([cat_lens.weight[cat_lens.zbins == z].sum() for z in range(nzd)])
         WR = np.array([cat_random.weight[cat_random.zbins == z].sum() for z in range(nzd)])
-        f = self.save_divide_npcf(WD, WR, fill=1.).astype(np.float64)
+        f = self.safe_divide_npcf(WD, WR, fill=1.).astype(np.float64)
 
         assert nzs == nzd, "'3dbox' requires matching source/lens tomographic bins."
 
@@ -1233,9 +1230,8 @@ class GNNCorrelation(BinnedNPCF):
         f3 = f[z3_i].reshape(1, _z3combis, 1, 1)
         self.npcf_multipoles = (self._SDD - f3*self._SDR - f2*self._SRD + f2*f3*self._SRR)[None]
         self.npcf_multipoles_norm = fc*f2*f3*self._RRR
-        self._normcountscale = np.mean(cat_random.weight)**3 * (fc*f2*f3).reshape(_z3combis)
 
-        self.bin_centers = bin_centers.reshape(szr)
+        self.bin_centers = self.safe_divide_bins(bin_centers.reshape(szr))
         self.bin_centers_mean = np.mean(self.bin_centers, axis=(0, 1))
         self.projection = "X"
         self.is_edge_corrected = False
@@ -1289,7 +1285,7 @@ class GNNCorrelation(BinnedNPCF):
         if ret_matrices:
             return threepcf_n_corr[:,nmax:], mats
 
-    def multipoles2npcf(self, xi=None, count_floor_rtol=None):
+    def multipoles2npcf(self, xi=None):
         r"""Transforms the 3PCF from the multipole-basis to the real-space-basis.
 
         Parameters
@@ -1300,21 +1296,18 @@ class GNNCorrelation(BinnedNPCF):
         """
         _, nzcombis, rbins, rbins = np.shape(self.npcf_multipoles[0])
         nbinsphi = len(self.phi)
+        dphi = self.phi[1] - self.phi[0]
         thisnpcf = np.zeros(self.n_cfs*nzcombis*rbins*rbins*nbinsphi, dtype=np.complex128)
         thisnpcf_norm = np.zeros(nzcombis*rbins*rbins*nbinsphi, dtype=np.complex128)
         conjmap = np.array([0], dtype=np.int32)
-        modeweight = self.mode_window(self.nmax)/(2*np.pi)
-        _scale = getattr(self, '_normcountscale', None)
-        floor_thr = np.zeros(nzcombis, dtype=np.float64) if \
-            (count_floor_rtol is None or _scale is None) else \
-            (count_floor_rtol*_scale).astype(np.float64)
+        modeweight = self.mode_window(self.nmax)*dphi/(2*np.pi)
         self.clib.multipoles2npcf_third_z1z23(
             self.npcf_multipoles.flatten(), self.npcf_multipoles_norm.flatten(),
             np.int32(self.nmax), np.int32(self.n_cfs), np.int32(self.nbinsz_source), np.int32(self.nbinsz_lens),
             np.int32(rbins),
             self.phi.astype(np.float64), np.int32(nbinsphi),
             np.int32(0), conjmap, modeweight,
-            np.int32(self.is_edge_corrected), np.int32(1), floor_thr,
+            np.int32(self.is_edge_corrected), np.float64(self.count_floor),
             np.int32(self.nthreads),
             thisnpcf, thisnpcf_norm)
         self.npcf = thisnpcf.reshape((self.n_cfs, nzcombis, rbins, rbins, nbinsphi))
@@ -1511,7 +1504,7 @@ class NGGCorrelation(BinnedNPCF):
                 pcorr.saveinst(save_patchres, save_filebase+'_patch%i'%elp)
 
         # Finalize the measurement on the full footprint
-        self.bin_centers = self.save_divide_bins(self.bin_centers, _footnorm)
+        self.bin_centers = self.safe_divide_bins(self.bin_centers, _footnorm)
         self.bin_centers_mean =np.mean(self.bin_centers, axis=(0,1))
         self.projection = "X"
 
@@ -1560,7 +1553,7 @@ class NGGCorrelation(BinnedNPCF):
         # Density-weight rescaling f = W_D / W_R per lens tomo-bin.
         WD = np.array([cat_lens.weight[cat_lens.zbins == z].sum() for z in range(nzl)])
         WR = np.array([cat_random.weight[cat_random.zbins == z].sum() for z in range(nzl)])
-        f = self.save_divide_npcf(WD, WR, fill=1.).astype(np.float64)
+        f = self.safe_divide_npcf(WD, WR, fill=1.).astype(np.float64)
 
         # Output: We order the two correlators as  [DSS, RSS]
         _z3combis = nzl*nzs*nzs
@@ -1600,10 +1593,8 @@ class NGGCorrelation(BinnedNPCF):
         fc = f[zc_i]; f2 = f[z2_i]; f3 = f[z3_i]
         self.npcf_multipoles = _DSS - fc.reshape(1, 1, _z3combis, 1, 1)*_RSS
         self.npcf_multipoles_norm = (fc*f2*f3).reshape(1, _z3combis, 1, 1)*self._RRR
-        # Little helper that helps us to identify empty bins for f!=1.
-        self._normcountscale = np.mean(cat_random.weight)**3 * (fc*f2*f3)
 
-        self.bin_centers = bin_centers.reshape(szr)
+        self.bin_centers = self.safe_divide_bins(bin_centers.reshape(szr))
         self.bin_centers_mean = np.mean(self.bin_centers, axis=(0, 1))
         self.projection = "X"
         self.is_edge_corrected = False
@@ -1772,7 +1763,7 @@ class NGGCorrelation(BinnedNPCF):
                 check_clib_error(self.clib)
             
             # Components of npcf are ordered as (Ups_-, Ups_+)
-            self.bin_centers = bin_centers.reshape(szr)
+            self.bin_centers = self.safe_divide_bins(bin_centers.reshape(szr))
             self.bin_centers_mean = np.mean(self.bin_centers, axis=(0,1))
             self.npcf_multipoles = Upsilon_n.reshape(sc)
             self.npcf_multipoles_norm = Norm_n.reshape(sn)
@@ -1824,7 +1815,7 @@ class NGGCorrelation(BinnedNPCF):
         if ret_matrices:
             return threepcf_n_corr, mats
     
-    def multipoles2npcf(self, integrated=False, count_floor_rtol=None):
+    def multipoles2npcf(self, integrated=False):
         r"""Transforms the 3PCF from the multipole-basis using the to the real-space-basis.
         """
         _, nzcombis, rbins, rbins = np.shape(self.npcf_multipoles[0])
@@ -1841,17 +1832,13 @@ class NGGCorrelation(BinnedNPCF):
         else:
             modeweight = np.full(self.nmax+1, dphi, dtype=np.float64)
         modeweight = (self.mode_window(self.nmax)*modeweight/(2*np.pi)).astype(np.float64)
-        _scale = getattr(self, '_normcountscale', None)
-        floor_thr = np.zeros(nzcombis, dtype=np.float64) if \
-            (count_floor_rtol is None or _scale is None) else \
-            (count_floor_rtol*_scale).astype(np.float64)
         self.clib.multipoles2npcf_third_z1z23(
             self.npcf_multipoles.flatten(), self.npcf_multipoles_norm.flatten(),
             np.int32(self.nmax), np.int32(self.n_cfs), np.int32(self.nbinsz_lens), np.int32(self.nbinsz_source),
             np.int32(rbins),
             self.phi.astype(np.float64), np.int32(nbinsphi),
             np.int32(1), conjmap, modeweight,
-            np.int32(self.is_edge_corrected), np.int32(1), floor_thr,
+            np.int32(self.is_edge_corrected), np.float64(self.count_floor),
             np.int32(self.nthreads),
             thisnpcf, thisnpcf_norm)
         self.npcf = thisnpcf.reshape((self.n_cfs, nzcombis, rbins, rbins, nbinsphi))

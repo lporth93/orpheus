@@ -242,7 +242,7 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
             nav_s, keep_n = build_navhash_struct(sph)
             tree_s, keep_t = build_tree_params_struct(self, sph)
             bin_s = build_binning_struct(self, scale=_deg2rad, nmax=int(_nmax), dccorr=int(self.multicountcorr))
-            fourth_s, keep_f = build_fourth_params(
+            fourth_s, keep_f = build_fourth_params(count_floor=self.count_floor, 
                 nindices=_inds, len_nindices=len(_inds),
                 thetacombis_batches=thetacombis_batches, nthetacombis_batches=nthetacombis_batches,
                 cumthetacombis_batches=cumnthetacombis_batches, nthetbatches=nbatches)
@@ -288,7 +288,7 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
             if self.method=="Tree" and only_multipoles and lowmem:
                 # Multipoles-only fast path: stops after the multipole reconstruction
                 # (no real-space transform, no Map^4 integral)
-                fourth_s, keep_f = build_fourth_params(
+                fourth_s, keep_f = build_fourth_params(count_floor=self.count_floor, 
                     nindices=_inds, len_nindices=len(_inds),
                     thetacombis_batches=thetacombis_batches, nthetacombis_batches=nthetacombis_batches,
                     cumthetacombis_batches=cumnthetacombis_batches, nthetbatches=nbatches)
@@ -302,7 +302,7 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
             elif self.method=="DoubleTree" and only_multipoles and lowmem:
                 # True double tree (central-vertex gridding), multipoles only.
                 tree_s.nresos_grid = int(self.tree_nresos - cutfirst)
-                fourth_s, keep_f = build_fourth_params(
+                fourth_s, keep_f = build_fourth_params(count_floor=self.count_floor, 
                     nindices=_inds, len_nindices=len(_inds),
                     thetacombis_batches=thetacombis_batches, nthetacombis_batches=nthetacombis_batches,
                     cumthetacombis_batches=cumnthetacombis_batches, nthetbatches=nbatches)
@@ -316,7 +316,7 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
             else:
                 # Aperture/real-space paths (Nap4): partial struct port, aperture radii and
                 # output arrays stay loose. Tree and DoubleTree share the same signature.
-                fourth_s, keep_f = build_fourth_params(
+                fourth_s, keep_f = build_fourth_params(count_floor=self.count_floor, 
                     nindices=_inds, len_nindices=len(_inds),
                     phibins1=self.phis[0], dbinsphi1=2*np.pi/_nphis*np.ones(_nphis), nbinsphi1=_nphis,
                     thetacombis_batches=thetacombis_batches, nthetacombis_batches=nthetacombis_batches,
@@ -337,10 +337,13 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
             # The curved-sky C path works in radians; convert bin centers back in
             # the catalogue's angular unit (degrees for spherical catalogs).
             bin_centers = bin_centers * (180./np.pi)
-        self.bin_centers = bin_centers.reshape(szr)
+        self.bin_centers = self.safe_divide_bins(bin_centers.reshape(szr))
         self.bin_centers_mean = np.mean(self.bin_centers, axis=0)
         if "4pcf_multipole" in statistics:
+            # A scalar correlator normalises by its own counts, so the multipoles are
+            # their own normalisation.
             self.npcf_multipoles = N_n.reshape(sc)
+            self.npcf_multipoles_norm = self.npcf_multipoles
         if "4pcf_real" in statistics:
             if lowmem:
                 self.npcf = fourpcf.reshape(s4pcf)
@@ -401,18 +404,24 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
         _nphis2 = len(self.phis[1])
         nnvals, _, nzcombis, nbinsr, _, _ = np.shape(self.npcf_multipoles)
         
-        N_in = self.npcf_multipoles.flatten()
+        # The fourth-order kernels carry no mode weight, so the window is applied here
+        _win = self.mode_window(self.nmaxs[0], full_range=True)
+        _win = (_win[:, None]*_win)[..., None, None, None, None]
+        N_in = (self.npcf_multipoles*_win).flatten()
         npcf_out = np.zeros(self.nbinsr*self.nbinsr*self.nbinsr*_nphis1*_nphis2, dtype=np.complex128)
         bin_s = build_binning_struct(self, nmax=int(self.nmaxs[0]), dccorr=int(self.multicountcorr))
-        fourth_s, _keep_f = build_fourth_params(phibins1=_phis1, phibins2=_phis2,
+        fourth_s, _keep_f = build_fourth_params(count_floor=self.count_floor, phibins1=_phis1, phibins2=_phis2,
                                                 nbinsphi1=_nphis1, nbinsphi2=_nphis2)
         self.clib.multipoles2npcf_nnnn(
             N_in.astype(np.complex128, copy=False),
             ct.byref(bin_s), ct.byref(fourth_s),
             self.bin_centers_mean.astype(np.float64, copy=False),
             npcf_out, np.int32(self.nthreads))
-        
+
+        # A scalar correlator normalises by its own counts, so npcf is npcf_norm
         self.npcf = npcf_out.reshape((self.nbinsr, self.nbinsr, self.nbinsr, 1, _nphis1,_nphis2))
+        self.npcf_norm = self.npcf
+        self.set_ringing_sigma(1./(_nphis1*_nphis2), self.nmaxs[:2], full_range=True)
 
 class GGGGCorrelation_NoTomo(BinnedNPCF):
     r""" Class containing methods to measure and obtain statistics that are built
@@ -651,7 +660,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                                                       e1=cat.tracer_1, e2=cat.tracer_2)
             nav_s, keep_n = build_flat_navhash_struct(cat)
             bin_s = build_binning_struct(self, nmax=int(_nmax), dccorr=int(self.multicountcorr))
-            fourth_s, keep_f = build_fourth_params(
+            fourth_s, keep_f = build_fourth_params(count_floor=self.count_floor, 
                 phibins1=self.phis[0], dbinsphi1=2*np.pi/_nphis*np.ones(_nphis), nbinsphi1=_nphis,
                 thetacombis_batches=thetacombis_batches, nthetacombis_batches=nthetacombis_batches,
                 cumthetacombis_batches=cumnthetacombis_batches, nthetbatches=nbatches)
@@ -686,7 +695,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
             bin_s = build_binning_struct(self, nmax=int(_nmax), dccorr=int(self.multicountcorr))
             _alive = keep_cc + keep_cr + keep_n + keep_t   # noqa: F841
             if not lowmem:
-                fourth_s, keep_f = build_fourth_params(nindices=_inds, len_nindices=len(_inds),
+                fourth_s, keep_f = build_fourth_params(count_floor=self.count_floor, nindices=_inds, len_nindices=len(_inds),
                                                        nthetacombis=int(cumnthetacombis_batches[-1]))
                 out_s = build_gggg_output(bin_centers, Upsilon_n, N_n)
                 self.clib.alloc_notomoGammans_tree_gggg(
@@ -695,7 +704,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                     np.int32(self.nthreads), np.int32(self._verbose_c+self._verbose_debug), ct.byref(out_s))
                 check_clib_error(self.clib)
             if lowmem:
-                fourth_s, keep_f = build_fourth_params(
+                fourth_s, keep_f = build_fourth_params(count_floor=self.count_floor, 
                     nindices=_inds, len_nindices=len(_inds),
                     phibins1=self.phis[0], dbinsphi1=2*np.pi/_nphis*np.ones(_nphis), nbinsphi1=_nphis,
                     thetacombis_batches=thetacombis_batches, nthetacombis_batches=nthetacombis_batches,
@@ -712,7 +721,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
         
         ## Massage the output ##
         istatout = ()
-        self.bin_centers = bin_centers.reshape(szr)
+        self.bin_centers = self.safe_divide_bins(bin_centers.reshape(szr))
         self.bin_centers_mean = np.mean(self.bin_centers, axis=0)
         if "4pcf_multipole" in statistics:
             self.npcf_multipoles = Upsilon_n.reshape(sc)
@@ -750,7 +759,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
         self.npcf = np.zeros(self.n_cfs*nzcombis*nbinsr*nbinsr*nbinsr*_nphis1*_nphis2, dtype=np.complex128)
         self.npcf_norm = np.zeros(nzcombis*nbinsr*nbinsr*nbinsr*_nphis1*_nphis2, dtype=np.complex128)
         bin_s = build_binning_struct(self, nmax=int(self.nmaxs[0]), dccorr=int(self.multicountcorr))
-        fourth_s, _keep_f = build_fourth_params(phibins1=_phis1, phibins2=_phis2,
+        fourth_s, _keep_f = build_fourth_params(count_floor=self.count_floor, phibins1=_phis1, phibins2=_phis2,
                                                 nbinsphi1=_nphis1, nbinsphi2=_nphis2)
         # The fourth-order kernels carry no mode weight, so the window is applied here
         _win = self.mode_window(_nzero1, full_range=True)
@@ -764,7 +773,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
         self.npcf = self.npcf.reshape(shape_npcf)
         self.npcf_norm = self.npcf_norm.reshape(shape_npcf_norm)
         self.projection = projection
-        self.set_ringing_sigma(1./(2*np.pi), self.nmaxs[:2], full_range=True)
+        self.set_ringing_sigma(1./(_nphis1*_nphis2), self.nmaxs[:2], full_range=True)
         
         
     def multipoles2npcf_singlethetcombi(self, elthet1, elthet2, elthet3, projection="X"):
@@ -794,7 +803,8 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
             Upsilon_in, N_in, self.nmaxs[0], self.nmaxs[1],
             self.bin_centers_mean[elthet1], self.bin_centers_mean[elthet2], self.bin_centers_mean[elthet3],
             _phis1, _phis2, _nphis1, _nphis2,
-            np.int32(self.proj_dict[projection]), npcf_out, npcf_norm_out)
+            np.int32(self.proj_dict[projection]), np.float64(self.count_floor),
+            npcf_out, npcf_norm_out)
         
         return npcf_out.reshape((self.n_cfs, _nphis1,_nphis2)), npcf_norm_out.reshape((_nphis1,_nphis2))
                 
@@ -827,7 +837,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
             self.bin_centers_mean[elthet1], self.bin_centers_mean[elthet2], self.bin_centers_mean[elthet3],
             _phis1, _phis2, _nphis1, _nphis2,
             np.int32(self.proj_dict[projection]), np.int32(self._verbose_c),
-            npcf_out, npcf_norm_out)
+            np.float64(self.count_floor), npcf_out, npcf_norm_out)
                 
         npcf_out = npcf_out.reshape((self.n_cfs, self.nmaxs[0]+1, self.nmaxs[1]+1, _nphis1, _nphis2))
         npcf_norm_out = npcf_norm_out.reshape((self.nmaxs[0]+1, self.nmaxs[1]+1, _nphis1, _nphis2))
@@ -851,8 +861,8 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
             self.phis[0].astype(np.float64), self.phis[1].astype(np.float64), 
             self.dphis[0].astype(np.float64), self.dphis[1].astype(np.float64), 
             len(self.phis[0]), len(self.phis[1]),
-            np.int32(self.proj_dict[self.projection]), np.int32(self.nthreads),
-            np.int32(self._verbose_c+self._verbose_debug),
+            np.int32(self.proj_dict[self.projection]), np.float64(self.count_floor),
+            np.int32(self.nthreads), np.int32(self._verbose_c+self._verbose_debug),
             self.npcf_multipoles.flatten(), self.npcf_multipoles_norm.flatten(),
             M4correlators)
         res_MMStar = M4correlators.reshape((8,len(radii)))
@@ -1201,7 +1211,7 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
 
     def process(self, cat_source, cat_lens, statistics="all", tofile=False, apply_edge_correction=False,
                 dotomo_source=True, dotomo_lens=True,
-                lowmem=None, apradii=None, xi=None, nnn=None, count_floor=0.1,
+                lowmem=None, apradii=None, xi=None, nnn=None, count_floor=None,
                 batchsize=None, custom_thetacombis=None, cutlen=2**31-1):
         self._checkcats([cat_source, cat_lens, cat_lens, cat_lens], [2, 0, 0, 0])
         
@@ -1383,12 +1393,12 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
             bin_s = build_binning_struct(self, nmax=int(self.nmax), dccorr=int(self.multicountcorr))
             _alive = keep_cs + keep_ns + keep_cl + keep_nl + keep_tree   # noqa: F841
             if lowmem:
-                fourth_s, keep_f = build_fourth_params(
+                fourth_s, keep_f = build_fourth_params(count_floor=self.count_floor, 
                     nindices=_inds, len_nindices=len(_inds),
                     phibins1=self.phis[0], dbinsphi1=2*np.pi/_nphis*np.ones(_nphis), nbinsphi1=_nphis,
                     thetacombis_batches=thetacombis_batches, nthetacombis_batches=nthetacombis_batches,
                     cumthetacombis_batches=cumnthetacombis_batches, nthetbatches=nbatches)
-                cc_s, keep_cc = build_clustcorr(self, xi, nnn, count_floor)
+                cc_s, keep_cc = build_clustcorr(self, xi, nnn, self._count_floor(count_floor))
                 _alive2 = keep_f + keep_cc   # noqa: F841
                 self.clib.alloc_notomoMapNap3_tree_gnnn(
                     ct.byref(cats_s), ct.byref(navs_s), ct.byref(catl_s), ct.byref(navl_s),
@@ -1399,7 +1409,7 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
                     bin_centers, Upsilon_n, N_n, fourpcf, fourpcf_norm, MN3correlators)
                 check_clib_error(self.clib)
             else:
-                fourth_s, keep_f = build_fourth_params(
+                fourth_s, keep_f = build_fourth_params(count_floor=self.count_floor, 
                     nindices=_inds, len_nindices=len(_inds), nthetacombis=nthetacombis_tot)
                 _alive2 = keep_f   # noqa: F841
                 self.clib.alloc_notomoGammans_tree_gnnn(
@@ -1410,7 +1420,7 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
 
         ## Massage the output ##
         istatout = ()
-        self.bin_centers = bin_centers.reshape(szr)
+        self.bin_centers = self.safe_divide_bins(bin_centers.reshape(szr))
         self.bin_centers_mean = np.mean(self.bin_centers, axis=0)
         self.projection = "X"
         self.is_edge_corrected = False
@@ -1438,7 +1448,7 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
      
     # TODO: 
     # * Same inclusion of z-weighting etc as for g3l?
-    def multipoles2npcf(self, xi=None, nnn=None, count_floor=0.):
+    def multipoles2npcf(self, xi=None, nnn=None, count_floor=None):
         r"""Converts the GNNN 4PCF from the multipole basis to the real-space basis for
         every combination of radial bins (shape ``(n_cfs, nzcombis, nbinsr, nbinsr, nbinsr, nphi, nphi)``).
 
@@ -1472,9 +1482,9 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
         npcf_norm_out = np.zeros(self.nzcombis*_nelem, dtype=np.complex128)
         bin_s = build_binning_struct(self, nmax=int(self.nmaxs[0]), dccorr=int(self.multicountcorr),
                                      rbins=self.bin_edges)
-        fourth_s, _keep_f = build_fourth_params(phibins1=self.phis[0], phibins2=self.phis[1],
+        fourth_s, _keep_f = build_fourth_params(count_floor=self.count_floor, phibins1=self.phis[0], phibins2=self.phis[1],
                                                 nbinsphi1=_nphis1, nbinsphi2=_nphis2)
-        cc_s, _keep_cc = build_clustcorr(self, xi, nnn, count_floor)
+        cc_s, _keep_cc = build_clustcorr(self, xi, nnn, self._count_floor(count_floor))
         # The fourth-order kernels carry no mode weight, so the window is applied here
         _win = self.mode_window(self.nmaxs[0], full_range=True)
         _win = (_win[:, None]*_win)[..., None, None, None, None]
@@ -1486,10 +1496,10 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
         self.npcf = npcf_out.reshape((self.n_cfs, self.nzcombis, self.nbinsr, self.nbinsr, self.nbinsr, _nphis1, _nphis2))
         self.npcf_norm = npcf_norm_out.reshape((self.nzcombis, self.nbinsr, self.nbinsr, self.nbinsr, _nphis1, _nphis2))
         self.projection = projection
-        self.set_ringing_sigma(1./(2*np.pi), self.nmaxs[:2], full_range=True)
+        self.set_ringing_sigma(1./(_nphis1*_nphis2), self.nmaxs[:2], full_range=True)
         return self.npcf, self.npcf_norm
 
-    def multipoles2npcf_singlethetcombi(self, elthet1, elthet2, elthet3, xi=None, nnn=None, count_floor=0.1):
+    def multipoles2npcf_singlethetcombi(self, elthet1, elthet2, elthet3, xi=None, nnn=None, count_floor=None):
         r""" Converts a 4PCF in the multipole basis in the real space basis for a fixed combination of radial bins.
 
         Parameters
@@ -1534,7 +1544,7 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
 
         # Correction thetas: geometric bin centers, identical across all conversion routes
         _rc = np.sqrt(self.bin_edges[:-1]*self.bin_edges[1:])
-        cc_s, _keep_cc = build_clustcorr(self, xi, nnn, count_floor)
+        cc_s, _keep_cc = build_clustcorr(self, xi, nnn, self._count_floor(count_floor))
         self.clib.multipoles2npcf_gnnn_singletheta(
             Upsilon_in, N_in, self.nmaxs[0], self.nmaxs[1],
             _rc[elthet1], _rc[elthet2], _rc[elthet3],
@@ -1672,7 +1682,7 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
 
     ## INTEGRATED MEASURES ##
     def computeMapNap3(self, radii, nmax_trafo=None, basis='MapMx', radii_M=None,
-                       xi=None, nnn=None, count_floor=0.1):
+                       xi=None, nnn=None, count_floor=None):
         r"""Computes the fourth-order aperture statistics
         :math:`\langle M_\mathrm{ap}(\theta_M)\,\mathcal{N}_\mathrm{ap}^3(\theta_N)\rangle`
         using the exponential filter of Crittenden 2002.
@@ -1710,7 +1720,7 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
 
         # Retrieve all the aperture measures in the MM* basis via the 5D transformation eqns
         MN3correlators = np.zeros(1*len(radii), dtype=np.complex128)
-        cc_s, _keep_cc = build_clustcorr(self, xi, nnn, count_floor)
+        cc_s, _keep_cc = build_clustcorr(self, xi, nnn, self._count_floor(count_floor))
         self.clib.fourpcfmultipoles2MN3correlators(
             np.int32(self.nmaxs[0]), np.int32(nmax_trafo),
             self.bin_edges, self.bin_centers_mean, np.int32(self.nbinsr),

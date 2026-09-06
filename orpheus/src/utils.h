@@ -13,6 +13,12 @@
 #define mymin(x,y) (((x) <= (y)) ? (x) : (y))
 #define mymax(x,y) (((x) >= (y)) ? (x) : (y))
 
+// A radial bin combination whose n=0 normalisation multipole vanishes contains no
+// multiplets at all. Its remaining modes are then pure roundoff left over from the
+// double-count correction, so the band-limited reconstruction divides noise by noise
+// and returns O(1) garbage. Test the n=0 mode rather than the reconstructed count.
+static inline int shell_has_multiplets(double complex N0){ return creal(N0) > 0.; }
+
 int binary_search(double *array, int len_arr, double target);
 double linint(double *vec, double x, double xmin, double xmax, double dx);
 void expand_arr(int *arr_long, int *arr_sel, int len_long, int len_sel, int *result);
