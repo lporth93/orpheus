@@ -53,7 +53,7 @@ parallelised C kernels.
 
 ## Detailed changelog
 
-### 0.5.2 — 2026-09-02
+### 0.5.2 — 2026-09-06
 
 #### Changed
 
