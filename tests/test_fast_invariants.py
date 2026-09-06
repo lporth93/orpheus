@@ -96,6 +96,20 @@ def grid_catalog():
                              tracer_2=rng.normal(0., .3, ngal),
                              weight=rng.uniform(.5, 1.5, ngal), geometry='flat2d')
 
+# Sparse catalog that will leave some bins empty
+@pytest.fixture(scope="module")
+def sparse_catalogs():
+    rng = np.random.default_rng(70)
+    ngal = 400
+    pos1, pos2 = rng.uniform(0., BOXSIZE, ngal), rng.uniform(0., BOXSIZE, ngal)
+    shear = SpinTracerCatalog(spin=2, pos1=pos1, pos2=pos2,
+                              tracer_1=rng.normal(0., .3, ngal),
+                              tracer_2=rng.normal(0., .3, ngal),
+                              weight=np.ones(ngal), geometry='flat2d')
+    scalar = ScalarTracerCatalog(pos1=pos1, pos2=pos2, tracer=np.ones(ngal),
+                                 weight=np.ones(ngal), geometry='flat2d')
+    return shear, scalar
+
 # A denser shape catalog that is needed for certain tests
 @pytest.fixture(scope="module")
 def dense_catalog():
@@ -290,6 +304,8 @@ def test_polar_norm_reproduces_the_scalar_counts(scalar_name, scalar_field, pola
 #   equivalent.
 # * Disable multiple counting corrs (as they break this by construction)
 # * Use x-projection (as bin-centers between tomo/nontom differ in general).
+# * Drop the count floor: a bin can hold enough multiplets in the sum but not in each
+#   single tomographic bin, so an absolute floor is not additive by construction.
 @pytest.mark.parametrize("spec", correlators(orders=(2, 3)), ids=correlator_ids(correlators(orders=(2, 3))))
 def test_tomography_partitions_the_single_bin_result(spec, shear_catalog, scalar_catalog):
     # Process all the catalogs
@@ -298,9 +314,9 @@ def test_tomography_partitions_the_single_bin_result(spec, shear_catalog, scalar
     runs = []
     for tomo in (True, False):
         if spec.order == 2:
-            kwargs = dict(**SEPS, tree_resos=[0.], nthreads=NTHREADS)
+            kwargs = dict(**SEPS, tree_resos=[0.], nthreads=NTHREADS, count_floor=0.)
         else:
-            kwargs = dict(**SEPS, **ANGULAR,
+            kwargs = dict(**SEPS, **ANGULAR, count_floor=0.,
                           **_discrete_method(spec),
                           **tomo_extra.get(spec.cls.__name__, {}))
         inst = build_correlator(spec, **kwargs)
@@ -319,12 +335,53 @@ def test_tomography_partitions_the_single_bin_result(spec, shear_catalog, scalar
     nz = np.asarray(getattr(split, count))
     want_count = np.asarray(getattr(single, count)).reshape(nz.shape[1:])
     assert _deviation(nz.sum(0), want_count) < RTOL_EXACT, count
+    # npcf*norm returns the raw multipole sum only where the bin was normalised at all,
+    # so bins that any of the two runs left unnormalised carry no statement here.
+    shared = np.all(np.abs(nz.real) > 0., axis=0) & (np.abs(want_count.real) > 0.)
+    assert shared.any(), "every bin was masked, so the partition is untested"
     for name in fields:
         # Second-order fields carry no leading component axis, so give them one
         ft, fs = (np.asarray(getattr(r, name)) for r in (split, single))
         if spec.order == 2:
             ft, fs = ft[None], fs[None]
-        assert _deviation((ft*nz[None]).sum(1), fs[:, 0]*want_count[None]) < RTOL_EXACT, name
+        got = (ft*nz[None]).sum(1)[:, shared]
+        want = (fs[:, 0]*want_count[None])[:, shared]
+        assert _deviation(got, want) < RTOL_EXACT, name
+
+# Make sure that the normalisation for 3dbox geometry is in the same units as for the
+# other geometries, i.e. units of "counts" in bin.
+@pytest.mark.parametrize("cls,kwargs,legs,attr", [
+    (NGCorrelation, dict(**SEPS, nthreads=NTHREADS), 'ng', 'norm'),
+    (GGGCorrelation, dict(n_cfs=4, **SEPS, **ANGULAR, nthreads=NTHREADS), 'shear', 'npcf_norm'),
+    (GNNCorrelation, dict(**SEPS, **ANGULAR, nthreads=NTHREADS), 'mixed', 'npcf_norm'),
+    (NGGCorrelation, dict(**SEPS, **ANGULAR, nthreads=NTHREADS), 'mixed', 'npcf_norm'),
+    ], ids=['NG', 'GGG', 'GNN', 'NGG'])
+def test_slab_reports_its_normalisation_in_count_units(cls, kwargs, legs, attr,
+                                                       box_shear_catalog, box_scalar_catalog,
+                                                       box_random_catalog):
+    inst = cls(**kwargs)
+    if legs == 'shear':
+        inst.process(box_shear_catalog, cat_random=box_random_catalog, Pi=PI, dotomo=False)
+    elif legs == 'ng':
+        inst.process(box_shear_catalog, box_scalar_catalog, cat_random=box_random_catalog,
+                     Pi=PI, dotomo=False)
+    else:
+        inst.process(box_shear_catalog, box_scalar_catalog, cat_random=box_random_catalog,
+                     Pi=PI, dotomo_source=False, dotomo_lens=False)
+    if attr == 'npcf_norm':
+        inst.multipoles2npcf(**({'projection': None} if cls is GGGCorrelation else {}))
+    norm = getattr(inst, attr)
+    assert norm is not None, "%s never set %s"%(cls.__name__, attr)
+    norm = np.asarray(norm).real
+    assert np.isfinite(norm).all()
+    assert norm.max() > 1., "a populated slab has to hold more than one multiplet"
+    # The multipole transforms spread the shell count over the phi bins, so summing it
+    # back has to return the n=0 mode
+    if attr == 'npcf_norm':
+        izero = 0 if cls in (GGGCorrelation, GNNCorrelation) else ANGULAR['nmaxs']
+        n0 = np.asarray(inst.npcf_multipoles_norm)[izero].real
+        live = n0 > 0.
+        assert _deviation(norm.sum(-1)[live], n0[live]) < RTOL_EXACT
 
 # Make sure that setting dotomo=False does not tinker with the zbins of the catalog
 @pytest.mark.parametrize("cls,kwargs,legs", [
@@ -445,6 +502,49 @@ def test_gnn_clustering_correction_is_a_rescaling(omega, shear_catalog, scalar_c
     corrected.multipoles2npcf(xi=(thetas, np.full((1, len(thetas)), omega)))
     assert np.allclose(np.asarray(corrected.npcf), (1.+omega)*np.asarray(plain.npcf),
                        rtol=RTOL_EXACT, atol=0.)
+
+# Make sure that all components corresponding to a radial bin combination whose n=0 normalisation 
+# multipole vanishes are set to zero in the npcf.
+@pytest.mark.parametrize("cls", [GGGCorrelation, NGGCorrelation, GNNCorrelation,
+                                 GGGGCorrelation_NoTomo, GNNNCorrelation_NoTomo])
+def test_empty_shells_are_zeroed_in_the_npcf(cls, sparse_catalogs):
+    shear, scalar = sparse_catalogs
+    nmax, isfourth = 4, cls in (GGGGCorrelation_NoTomo, GNNNCorrelation_NoTomo)
+    kwargs = dict(min_sep=1e-2, max_sep=MAX_SEP, nbinsr=6, nmaxs=nmax, nbinsphi=10,
+                  nthreads=NTHREADS, method='Discrete', tree_resos=[0.], rmin_pixsize=8)
+    corr = GGGCorrelation(n_cfs=4, **kwargs) if cls is GGGCorrelation else cls(**kwargs)
+    if cls is GGGCorrelation:
+        corr.process(shear, dotomo=False)
+    elif cls is GGGGCorrelation_NoTomo:
+        corr.process(shear, statistics='4pcf_multipole', lowmem=False)
+    elif cls is GNNNCorrelation_NoTomo:
+        corr.process(shear, scalar, statistics='4pcf_multipole', lowmem=False)
+    else:
+        corr.process(shear, scalar, dotomo_source=False, dotomo_lens=False)
+    (corr.multipoles2npcf_c if cls is GGGGCorrelation_NoTomo else corr.multipoles2npcf)()
+
+    # GGG and NGG only store n>=0, everything else keeps the full range around n=0
+    norm = np.asarray(corr.npcf_multipoles_norm)
+    izero = 0 if cls in (GGGCorrelation, NGGCorrelation) else nmax
+    empty = norm[(izero,)*(2 if isfourth else 1)] == 0.
+    npcf = np.asarray(corr.npcf)
+    assert empty.any(), "the setup left no empty shells to check"
+    assert np.isfinite(npcf).all()
+    assert not np.any(npcf[:, empty]), np.abs(npcf[:, empty]).max()
+
+# Make sure that the LS estimator never gets zerodivisionerrors
+def test_landy_szalay_stays_finite_without_random_pairs(sparse_catalogs):
+    _, scalar = sparse_catalogs
+    rng = np.random.default_rng(31)
+    ngal = 2*scalar.ngal
+    random = ScalarTracerCatalog(pos1=rng.uniform(0., BOXSIZE, ngal),
+                                 pos2=rng.uniform(0., BOXSIZE, ngal),
+                                 tracer=np.ones(ngal), weight=np.ones(ngal),
+                                 geometry='flat2d')
+    nn = NNCorrelation(min_sep=1e-2, max_sep=MAX_SEP, nbinsr=20, nthreads=NTHREADS)
+    nn.process(cat=scalar, cat_random=random, dotomo=False)
+    assert np.any(np.asarray(nn.npair) == 0), "the setup left no empty bins to check"
+    assert np.isfinite(np.asarray(nn.xi)).all()
 
 
 ################################
