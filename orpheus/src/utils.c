@@ -262,6 +262,7 @@ int orpheus_struct_layout(int which, size_t *out, int len_out){
             OFF(FourthParams, thetacombis_batches);
             OFF(FourthParams, nthetacombis_batches);
             OFF(FourthParams, cumthetacombis_batches);
+            OFF(FourthParams, count_floor);
             break;
         case 6:
             PUT(sizeof(ClustCorr));
@@ -298,7 +299,7 @@ const char *orpheus_struct_fields(int which){
         case 4: return "bin_centers,npcf,norm,norm_mp,npair,npair_cell,ncomp,nmax";
         case 5: return "nbinsphi1,nbinsphi2,phibins1,phibins2,dbinsphi1,dbinsphi2,nindices,"
                        "len_nindices,nthetacombis,nthetbatches,thetacombis_batches,"
-                       "nthetacombis_batches,cumthetacombis_batches";
+                       "nthetacombis_batches,cumthetacombis_batches,count_floor";
         case 6: return "count_floor,xi_nn,thetamin_xi,thetamax_xi,dtheta_xi,has_xi,zeta,"
                        "zeta_rbins,zeta_nr,zeta_phis,zeta_nphi,has_zeta";
         default: return "";

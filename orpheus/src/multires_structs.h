@@ -110,6 +110,7 @@ typedef struct {
     int *nindices; int len_nindices;
     int nthetacombis, nthetbatches;
     int *thetacombis_batches, *nthetacombis_batches, *cumthetacombis_batches;
+    double count_floor;
 } FourthParams;
 
 // Pars related to the clustering-correction of GNL-correlators

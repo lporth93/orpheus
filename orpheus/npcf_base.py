@@ -121,8 +121,9 @@ class BinnedNPCF:
         are specified as: ``(zcombi, multipole_1, ..., multipole_N-2, rbin_1, ..., rbin_N-1)``.
     is_edge_corrected: bool
         Flag signifying on whether the NPCF multipoles have been edge-corrected. Defaults to ``False``.
-    norm_divisionmask: float
-        If the absolute value of the normalisation is smaller the NPCF is set to zero.
+    count_floor: float
+        Smallest multiplet count a bin may hold and still be normalised. For all bins below 
+        this bound the NPCF is set to zero. Defaults to ``0.5``.
     apodization: {'rect', 'fejer'}, optional
         Window applied to the multipoles before the transform to real space. 
         Right now we default to the plain band limit, alternatively we allow for application 
@@ -135,7 +136,7 @@ class BinnedNPCF:
                  tree_alpha=None, tree_mincellsize=0.1, tree_maxcellsize=4., tree_resos=[0,0.25,0.5,1.,2.], tree_redges=None, rmin_pixsize=20, 
                  resoshift_leafs=0, minresoind_leaf=None, maxresoind_leaf=None, batch_membudget_mb=64,
                  methods_avail=["Discrete", "Tree", "BaseTree", "DoubleTree"], verbosity=0, nthreads=16,
-                 norm_divisionmask=1e-2, apodization="rect"):
+                 count_floor=0.5, apodization="rect"):
 
         self.order = int(order)
         self.n_cfs = int(n_cfs)
@@ -164,7 +165,7 @@ class BinnedNPCF:
         self.batch_membudget_mb = int(batch_membudget_mb)
         self.verbosity = np.int32(verbosity)
         self.nthreads = np.int32(max(1,nthreads))
-        self.norm_divisionmask = float(norm_divisionmask)
+        self.count_floor = float(count_floor)
         self.apodization = apodization
         self._sigma = None
 
@@ -336,7 +337,7 @@ class BinnedNPCF:
                 p_c128, p_c128, ct.c_int32, ct.c_int32, ct.c_int32, ct.c_int32, ct.c_int32,
                 p_f64, ct.c_int32,
                 ct.c_int32, p_i32, p_f64,
-                ct.c_int32, ct.c_int32, p_f64,
+                ct.c_int32, ct.c_double,
                 ct.c_int32,
                 np.ctypeslib.ndpointer(dtype=np.complex128),
                 np.ctypeslib.ndpointer(dtype=np.complex128)]
@@ -657,7 +658,8 @@ class BinnedNPCF:
             self.clib.multipoles2npcf_gggg.restype = None
             self.clib.multipoles2npcf_gggg.argtypes = [
                 p_c128, p_c128, p_f64, ct.POINTER(BinningParams), ct.POINTER(FourthParams),
-                ct.c_int32, ct.c_int32, ct.c_int32, np.ctypeslib.ndpointer(dtype=np.complex128), 
+                ct.c_int32, ct.c_int32, ct.c_int32,
+                np.ctypeslib.ndpointer(dtype=np.complex128),
                 np.ctypeslib.ndpointer(dtype=np.complex128)]
                         
             # Transformation between 4PCF from multipole-basis tp real-space basis for a fixed
@@ -666,8 +668,8 @@ class BinnedNPCF:
             self.clib.multipoles2npcf_gggg_singletheta.argtypes = [
                 p_c128, p_c128, ct.c_int32, ct.c_int32, 
                 ct.c_double, ct.c_double, ct.c_double, 
-                p_f64, p_f64, ct.c_int32, ct.c_int32, 
-                ct.c_int32, 
+                p_f64, p_f64, ct.c_int32, ct.c_int32,
+                ct.c_int32, ct.c_double,
                 np.ctypeslib.ndpointer(dtype=np.complex128),np.ctypeslib.ndpointer(dtype=np.complex128)]
             
             # Transformation between 4PCF from multipole-basis tp real-space basis for a fixed
@@ -676,8 +678,8 @@ class BinnedNPCF:
             self.clib.multipoles2npcf_gggg_singletheta_nconvergence.argtypes = [
                 p_c128, p_c128, ct.c_int32, ct.c_int32, 
                 ct.c_double, ct.c_double, ct.c_double, 
-                p_f64, p_f64, ct.c_int32, ct.c_int32, 
-                ct.c_int32, ct.c_int32, 
+                p_f64, p_f64, ct.c_int32, ct.c_int32,
+                ct.c_int32, ct.c_int32, ct.c_double,
                 np.ctypeslib.ndpointer(dtype=np.complex128),np.ctypeslib.ndpointer(dtype=np.complex128)]
  
             # Reconstruction of all 4pcf multipoles from symmetry properties given a set of
@@ -695,7 +697,7 @@ class BinnedNPCF:
                 p_f64, p_f64, ct.c_int32,
                 p_f64, ct.c_int32,
                 p_f64, p_f64, p_f64, p_f64, ct.c_int32, ct.c_int32,
-                ct.c_int32, ct.c_int32, ct.c_int32,
+                ct.c_int32, ct.c_double, ct.c_int32, ct.c_int32,
                 p_c128, p_c128, np.ctypeslib.ndpointer(dtype=np.complex128)]
             
             # [DEBUG]: Shear 4pt function in terms of xip/xim
@@ -881,17 +883,6 @@ class BinnedNPCF:
 
         return nsides, nside_hash
 
-            
-    def save_divide_npcf(self, npcf, npcf_norm, fill=0., thr=None, use_abs=False):
-        """Masked division for obtaining the npcf. 
-
-        All NPCF bins for which the normalisation is smaller than ``thr`` are
-        set to ``fill``.
-        """
-        _thr = self.norm_divisionmask if thr is None else thr
-        _cmp = np.abs(npcf_norm) if use_abs else npcf_norm
-        return np.divide(npcf, npcf_norm, out=np.full_like(npcf, fill), where=_cmp > _thr)
-
     def mode_window(self, nmax, full_range=False):
         """Returns multipole window, indexed the way the multipoles are stored. Note that 
         Numerator and denominator always carry the same window"""
@@ -902,6 +893,32 @@ class BinnedNPCF:
         elif self.apodization == 'fejer':
             window = 1. - orders/(nmax+1.)
         return window
+
+    def _count_floor(self, count_floor):
+        """Resolve a per-call count floor against the instance default."""
+        return float(self.count_floor if count_floor is None else count_floor)
+
+    def safe_divide_bins(self, rsum, norm=None):
+        """Bin centers, falling back to the arithmetic centers for empty bins.
+
+        Pass ``norm`` only if rsum has not yet been properly normalised. 
+        """
+        arith = 0.5*(self.bin_edges[:-1] + self.bin_edges[1:])
+        if norm is None:
+            return np.where(rsum > 0., rsum, arith)
+        out = np.empty_like(rsum)
+        out[...] = arith
+        return np.divide(rsum, norm, out=out, where=np.abs(norm) > self.count_floor)
+
+    def safe_divide_npcf(self, npcf, npcf_norm, fill=0., thr=None, use_abs=False):
+        """Masked division for obtaining the npcf. 
+
+        All NPCF bins for which the normalisation is smaller than ``thr`` are
+        set to ``fill``.
+        """
+        _thr = self.count_floor if thr is None else thr
+        _cmp = np.abs(npcf_norm) if use_abs else npcf_norm
+        return np.divide(npcf, npcf_norm, out=np.full_like(npcf, fill), where=_cmp > _thr)
         
     def set_ringing_sigma(self, modeweight, nmaxs, full_range=False):
         """Noise level of the band-limited reconstruction of the multiplet counts.
@@ -910,10 +927,13 @@ class BinnedNPCF:
         the band measures the noise. The noise level is stored in ``_sigma`` and this
         is intended to serve as a diagnostic how many bins are in the ringing regime.
         """
-        nempty = int(np.count_nonzero(self.npcf_norm == 0))
+        # Count the empty shells on the same n=0 mode the transform zeroes them on.
+        izero = np.atleast_1d(nmaxs)[0] if full_range else 0
+        zeromode = np.asarray(self.npcf_multipoles_norm)[izero]
+        nempty = int(np.count_nonzero(zeromode == 0))
         if self._verbose_python and nempty:
             print('Warning: %.2f%% of the npcf bins carry no multiplets'%(
-                100.*nempty/np.size(self.npcf_norm)))
+                100.*nempty/np.size(zeromode)))
         acc = np.abs(modeweight*np.asarray(self.npcf_multipoles_norm))**2
         nmodes = 1
         for nmax in np.atleast_1d(nmaxs):
@@ -921,14 +941,6 @@ class BinnedNPCF:
             acc = acc[orders > nmax//2].mean(axis=0)
             nmodes *= 2*nmax + 1
         self._sigma = np.sqrt(nmodes*acc)[(Ellipsis,) + (None,)*(self.order-2)]
-
-    def save_divide_bins(self, rsum, norm):
-        """Masked division for obtaining the bin centers. Falls back to 
-        arithmetic centers for empty bins."""
-        arith = 0.5*(self.bin_edges[:-1] + self.bin_edges[1:])
-        out = np.empty_like(rsum)
-        out[...] = arith
-        return np.divide(rsum, norm, out=out, where=np.abs(norm) > self.norm_divisionmask)
 
     def saveinst(self, path_save, fname, extr_pars=None):
         """Save an instance as a ``.npz`` archive.

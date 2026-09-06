@@ -145,6 +145,7 @@ class FourthParams(ctypes.Structure):
         ("thetacombis_batches", _p_i32),
         ("nthetacombis_batches", _p_i32),
         ("cumthetacombis_batches",_p_i32),
+        ("count_floor", ctypes.c_double),
     ]
 
 
@@ -824,7 +825,7 @@ def build_fourth_params(nindices=None, len_nindices=0, nthetacombis=0, nthetbatc
                         phibins1=None, phibins2=None, dbinsphi1=None, dbinsphi2=None,
                         nbinsphi1=0, nbinsphi2=0,
                         thetacombis_batches=None, nthetacombis_batches=None,
-                        cumthetacombis_batches=None):
+                        cumthetacombis_batches=None, count_floor=0.):
     """Populate a FourthParams struct. 
 
     Returns
@@ -838,6 +839,7 @@ def build_fourth_params(nindices=None, len_nindices=0, nthetacombis=0, nthetbatc
     s.len_nindices = int(len_nindices)
     s.nthetacombis = int(nthetacombis)
     s.nthetbatches = int(nthetbatches)
+    s.count_floor = float(count_floor)
     for name, arr, dt in (('phibins1', phibins1, np.float64), ('phibins2', phibins2, np.float64),
                           ('dbinsphi1', dbinsphi1, np.float64), ('dbinsphi2', dbinsphi2, np.float64),
                           ('nindices', nindices, np.int32),

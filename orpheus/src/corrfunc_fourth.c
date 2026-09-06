@@ -1635,7 +1635,8 @@ void alloc_notomoMap4_disc_gggg(const MultiresoCatalog *cat, const NavHash *nav,
                 multipoles2npcf_gggg_singletheta(thisUpsilon_n, thisN_n, nmax, nmax,
                                                  bin_centers_batch[elb1], bin_centers_batch[elb2], bin_centers_batch[elb3],
                                                  phibins, phibins, nbinsphi, nbinsphi,
-                                                 projection, thisnpcf, thisnpcf_norm);
+                                                 projection, fourth->count_floor,
+                                                 thisnpcf, thisnpcf_norm);
             }
             
             // OPTIONAL: Allocate 4pcf in real basis (Shape: (8,ntheta,ntheta,ntheta,nphi,nphi)
@@ -2079,7 +2080,8 @@ void alloc_notomoMap4_tree_gggg(const MultiresoCatalog *cat_base, const Multires
                     multipoles2npcf_gggg_singletheta(thisUpsilon_n_rec, thisN_n_rec, nmax, nmax,
                                                      elb1t, elb2t, elb3t,
                                                      phibins, phibins, nbinsphi, nbinsphi,
-                                                     projection, thisnpcf, thisnpcf_norm);
+                                                     projection, fourth->count_floor,
+                                                     thisnpcf, thisnpcf_norm);
                 }
 
                 // OPTIONAL: Allocate 4pcf in real basis (Shape: (8,ntheta,ntheta,ntheta,nphi,nphi)

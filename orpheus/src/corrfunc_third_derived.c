@@ -73,17 +73,26 @@ void _x2centroid_ggg(double complex *npcf, int nbinsz,
 // * modeweight, which is each correlator's own normalization convention
 // * store_full_range: 0 reconstructs n<0 via the z2<->z3 transpose while
 //   1 reads the full n=-nmax..nmax range directly.
-// * floor_use_abs/floor_thr[zcombi] protect against division by zero for ~empty bins
+// * modeweight carries dphi/(2pi), so the reconstructed norm is the multiplet count of
+//   the bin. count_floor is a number of multiplets per resolution element, see below.
 void multipoles2npcf_third_z1z23(double complex *Upsilon_n, double complex *N_n,
                                  int nmax, int ncomp_cf, int nbinsz1, int nbinsz23, int nbinstheta,
                                  double *phi_centers, int nbinsphi,
                                  int store_full_range, int *conjmap, double *modeweight,
-                                 int is_edge_corrected, int floor_use_abs, double *floor_thr,
+                                 int is_edge_corrected, double count_floor,
                                  int nthreads,
                                  double complex *npcf, double complex *npcf_norm){
 
     int nzcombis = nbinsz1*nbinsz23*nbinsz23;
     int nmodes = store_full_range ? 2*nmax+1 : nmax+1;
+    // For computation of the count threashold we need to take into account nmax and nbinsphi:
+    // In each angular dimension, having nmax allows for 2*nmax+1 independent locations for the
+    // peaks of the field but the pixelisation divides the [0,2*pi] interval into npix pixels. 
+    // This means that a count, that in the ideal case is a delta function, will be recorded as 
+    // a peak with weight one, but as this peak is distributed across nbinsphi/(2*nmax+1) pixels
+    // its amplitude will be reduced. We set the count threashold as a scalar parameter (default 
+    // 0.5 in python) times the average height of the smeared peak.
+    double count_thr = count_floor*(2.*nmax + 1.)/nbinsphi;
     int nthetcombis = nbinstheta*nbinstheta;
     int ups_zshift = nthetcombis;
     int ups_nshift = nzcombis*ups_zshift;
@@ -112,12 +121,10 @@ void multipoles2npcf_third_z1z23(double complex *Upsilon_n, double complex *N_n,
                 int z3 = zcombi%nbinsz23;
                 int zcombi_t = z1*nbinsz23*nbinsz23+z3*nbinsz23+z2;
 
-                // Edge-corrected divisor is a single mode (n=0), phi-independent.
-                double complex N0 = 0;
-                if (is_edge_corrected){
-                    int base_ind = store_full_range ? nmax : 0;
-                    N0 = modeweight[0]*N_n[base_ind*ups_nshift+zcombi*ups_zshift+thetcombi];
-                }
+                // Check whether there are multiplets in this shell
+                int base_ind = store_full_range ? nmax : 0;
+                double complex N0 = modeweight[0]*N_n[base_ind*ups_nshift+zcombi*ups_zshift+thetcombi];
+                int has_multiplets = shell_has_multiplets(N0);
 
                 for (int elphi=0; elphi<nbinsphi; elphi++){
                     int ind_gam = zcombi*gam_zshift+thetcombi*gam_thetshift+elphi;
@@ -162,12 +169,15 @@ void multipoles2npcf_third_z1z23(double complex *Upsilon_n, double complex *N_n,
                     }
 
                     npcf_norm[ind_gam] = norm_acc;
-                    // Only guard against bins without any multiplets. Bins whose counts
-                    // ring through zero are kept here and filtered on the python layer.
+                    // Set the npcf to zero for two cases
+                    // * shells without multiplets --> All elements set to zero
+                    // * shells with few multiplets --> Here we expect ringing effects in bins
+                    //   where no actual multiplets reside. To avoid near zero division we pick
+                    //   a scale, count_thr, s.t. all elments with |N|<count_thr are zeroed. For 
+                    //   more details on count_thr see the comment above
                     double complex divisor = is_edge_corrected ? N0 : norm_acc;
                     double dval = creal(divisor);
-                    double cmpval = floor_use_abs ? cabs(divisor) : dval;
-                    if (cmpval > floor_thr[zcombi]){
+                    if (has_multiplets && fabs(dval) > count_thr){
                         for (int elcf=0; elcf<ncomp_cf; elcf++){
                             npcf[elcf*gam_compshift+ind_gam] = npcf_acc[elcf]/dval;
                         }
