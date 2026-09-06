@@ -55,7 +55,76 @@ parallelised C kernels.
 
 ### 0.5.2 — 2026-09-02
 
+#### Changed
+
+* **`npcf_norm` holds the multiplet count of its bin, for every multipole-based correlator
+  and every geometry.** Summing it over `phi` returns the n=0 multipole to machine
+  precision, flat-sky and projected-slab alike. `npcf` is unaffected, as numerator and
+  denominator share the mode weight; the exception is `NNNNCorrelation_NoTomo`, whose
+  `npcf` *is* the count, so it and `N4` change scale and now agree with `NNNCorrelation`.
+
+* **`norm_divisionmask=1e-2` is replaced by `count_floor=0.5`, a number of multiplets per
+  resolution element.** Now that the norm is a count, one constant serves every correlator,
+  order and geometry, including the random-based denominators of the Landy-Szalay
+  estimators: a bin holding fewer multiplets than the floor is ringing around zero rather
+  than counting, and is zeroed. The band limit, not the `phi` binning, sets how much data
+  backs each sample — the reconstruction carries `2*nmax+1` independent modes however
+  finely `phi` is sampled — so the kernels compare against `count_floor*(2*nmax+1)/nbinsphi`,
+  one such factor per angle, and refining the `phi` grid does not mask more bins. The
+  comparison is on `|Re(N)|` while the divisor keeps its sign, because numerator and
+  denominator ring together and dropping the negative lobes would bias the `phi`-integrals
+  towards the positive peaks of the ringing. On a sparse catalog at `nmax=20` this takes
+  `max|npcf|` from 3.3e3 to 2.5 (GNN in `3dbox`), 8.5e2 to 1.6 (GNN), 1.1e2 to 0.8 (NGG)
+  and 54 to 0.5 (GGG). `count_floor_rtol`, the per-tomographic-combination
+  `_normcountscale`, the `floor_thr` array and the `floor_use_abs` switch existed only
+  because the units were not normalised, and are gone. Note that an absolute floor is
+  deliberately not additive across tomographic bins: a bin can clear it in the sum and not
+  in the individual bins.
+
+* **`save_divide_npcf` and `save_divide_bins` are now `safe_divide_npcf` and
+  `safe_divide_bins`.** They guard a division, they do not save anything.
+
 #### Fixed
+
+* **`NGCorrelation` never reported a normalisation in `3dbox`.** Every other geometry, and
+  every other second-order correlator, sets `norm`; the projected-slab branch built its
+  denominator `f*wRS` and then kept only private `_wRS`, leaving the public `norm` at
+  `None` — so `saveinst` archived a `None` for it. It now reports that denominator, which
+  is the data-source pair count the randoms predict and so is in the same count units as
+  the other geometries.
+
+* **`NNNNCorrelation_NoTomo` was left out of three conventions its siblings follow.** The
+  apodization window is applied on the python side, because the fourth-order kernels carry
+  no mode weight — GGGG and GNNN did so, NNNN did not, which made `apodization='fejer'`
+  silently a no-op for it alone. It also never set `npcf_norm` or `npcf_multipoles_norm`
+  (a scalar correlator normalises by its own counts, so both now mirror the counts the way
+  `NNNCorrelation` already did) and never called `set_ringing_sigma`, so it carried no
+  `_sigma` and none of the shared empty-bin diagnostics reached it.
+
+* **Empty radial bins leaked garbage into the real-space NPCF.** The multipole transforms
+  decided whether a bin could be normalised from the *reconstructed* count, testing
+  `|N(phi)| > 0`. In a radial bin combination that holds no multiplet at all the n=0 mode is
+  an exact zero but the remaining modes are the roundoff left over from the double-count
+  correction, of order `1e-15`, so the test passed and the transform divided noise by noise.
+  Third and fourth order now decide on the n=0 mode itself, which counts the multiplets in
+  the shell and is phi-independent, and zero the whole shell when it vanishes. This is the
+  exact statement — no tolerance enters — and it is orthogonal to the `count_floor` masking
+  of bins whose counts ring through zero within a populated shell. On a sparse catalog
+  binned below its mean separation the affected bins reached `|Gamma| ~ 10` for GGG and
+  `~ 3e4` for GNNN.
+
+* **Empty radial bins came back at zero separation, which the centroid projection turned
+  into `NaN`.** The C kernels leave `bin_centers` at zero where they cannot divide by the
+  count, and `_x2centroid_ggg` builds its rotations from ratios of those centres, so an empty
+  bin gave `0/0` and poisoned every component and every `phi` of that bin — 160 of 1440
+  entries on a six-bin GGG run reaching below the mean separation. Empty bins now fall back
+  to their arithmetic centre, the same fallback `safe_divide_bins` already applied on the
+  patch paths.
+
+* **`NNCorrelation` returned `inf`/`NaN` for radial bins without random pairs.** The
+  Landy-Szalay combination divided `DD`, `DR` and `RD` by `RR` unguarded. Those bins now
+  come back at zero. The `GGCorrelation` patch combination divided by the summed norm the
+  same way and is guarded likewise.
 
 * **Two direct-estimator kernels wrote past the end of their output buffers.**
   `ApertureMassMap_Equal` and `ApertureCountsMap_Equal` reset the per-tomographic-bin blocks
@@ -112,7 +181,7 @@ parallelised C kernels.
 
 #### Added
 
-* **The fast tier now covers every line of the python package.** 380 tests in ~40 s, up from
+* **The fast tier now covers every line of the python package.** 390 tests in ~40 s, up from
   145 tests and 61 % at 0.5.0. Both fast-tier modules were regrouped into labelled sections,
   each file opening with a summary of what it checks. Nine `# pragma: no cover` mark branches
   that are provably unreachable — fallbacks behind constructor asserts, the `joblib < 1.2`
