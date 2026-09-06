@@ -116,14 +116,14 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
                 
         # Check if the output will fit in memory
         if "4pcf_multipole" in statistics:
-            _nvals = self.nzcombis*(2*self.nmaxs[0]+1)*(2*self.nmaxs[1]+1)*self.nbinsr**3
+            _nvals = self.nzcombis*(2*int(self.nmaxs[0])+1)*(2*int(self.nmaxs[1])+1)*self.nbinsr**3
             if _nvals>cutlen:
                 raise ValueError(("4pcf in multipole basis will cause memory overflow " + 
                                   "(requiring %.2fx10^9 > %.2fx10^9 elements)\n"%(_nvals/1e9, cutlen/1e9) + 
                                   "If you are solely interested in integrated statistics (like Map4), you" +
                                   "only need to add those to the `statistics` argument."))
         if "4pcf_real" in statistics:
-            _nvals = self.nzcombis*self.nbinsphi[0]*self.nbinsphi[1]*self.nbinsr**3
+            _nvals = self.nzcombis*int(self.nbinsphi[0])*int(self.nbinsphi[1])*self.nbinsr**3
             if _nvals>cutlen:
                 raise ValueError(("4pcf in real basis will cause memory overflow " + 
                                   "(requiring %.2fx10^9 > %.2fx10^9 elements)\n"%(_nvals/1e9, cutlen/1e9) + 
@@ -147,7 +147,7 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
         
         ## Build args for wrapped functions ##
         # Shortcuts
-        _nmax = self.nmaxs[0]
+        _nmax = int(self.nmaxs[0])
         _nnvals = (2*_nmax+1)*(2*_nmax+1)
         _nbinsr3 = self.nbinsr*self.nbinsr*self.nbinsr
         _nphis = len(self.phis[0])
@@ -551,14 +551,14 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
                 
         # Check if the output will fit in memory
         if "4pcf_multipole" in statistics:
-            _nvals = 8*self.nzcombis*(2*self.nmaxs[0]+1)*(2*self.nmaxs[1]+1)*self.nbinsr**3
+            _nvals = 8*self.nzcombis*(2*int(self.nmaxs[0])+1)*(2*int(self.nmaxs[1])+1)*self.nbinsr**3
             if _nvals>cutlen:
                 raise ValueError(("4pcf in multipole basis will cause memory overflow " + 
                                   "(requiring %.2fx10^9 > %.2fx10^9 elements)\n"%(_nvals/1e9, cutlen/1e9) + 
                                   "If you are solely interested in integrated statistics (like Map4), you" +
                                   "only need to add those to the `statistics` argument."))
         if "4pcf_real" in statistics:
-            _nvals = 8*self.nzcombis*self.nbinsphi[0]*self.nbinsphi[1]*self.nbinsr**3
+            _nvals = 8*self.nzcombis*int(self.nbinsphi[0])*int(self.nbinsphi[1])*self.nbinsr**3
             if _nvals>cutlen:
                 raise ValueError(("4pcf in real basis will cause memory overflow " + 
                                   "(requiring %.2fx10^9 > %.2fx10^9 elements)\n"%(_nvals/1e9, cutlen/1e9) + 
@@ -585,7 +585,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
         
         ## Build args for wrapped functions ##
         # Shortcuts
-        _nmax = self.nmaxs[0]
+        _nmax = int(self.nmaxs[0])
         _nnvals = (2*_nmax+1)*(2*_nmax+1)
         _nbinsr3 = self.nbinsr*self.nbinsr*self.nbinsr
         _nphis = len(self.phis[0])
@@ -829,8 +829,8 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
         
         Upsilon_in = self.npcf_multipoles[...,elthet1,elthet2,elthet3].flatten()
         N_in = self.npcf_multipoles_norm[...,elthet1,elthet2,elthet3].flatten()
-        npcf_out = np.zeros(self.n_cfs*nzcombis*(self.nmaxs[0]+1)*(self.nmaxs[1]+1)*_nphis1*_nphis2, dtype=np.complex128)
-        npcf_norm_out = np.zeros(nzcombis*(self.nmaxs[0]+1)*(self.nmaxs[1]+1)*_nphis1*_nphis2, dtype=np.complex128)
+        npcf_out = np.zeros(self.n_cfs*nzcombis*(int(self.nmaxs[0])+1)*(int(self.nmaxs[1])+1)*_nphis1*_nphis2, dtype=np.complex128)
+        npcf_norm_out = np.zeros(nzcombis*(int(self.nmaxs[0])+1)*(int(self.nmaxs[1])+1)*_nphis1*_nphis2, dtype=np.complex128)
         
         self.clib.multipoles2npcf_gggg_singletheta_nconvergence(
             Upsilon_in, N_in, self.nmaxs[0], self.nmaxs[1],
@@ -1058,7 +1058,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
         
         self.nbinsz = 1
         self.nzcombis = 1
-        _nmax = self.nmaxs[0]
+        _nmax = int(self.nmaxs[0])
         _nnvals = (2*_nmax+1)*(2*_nmax+1)
         _nbinsr3 = self.nbinsr*self.nbinsr*self.nbinsr
         _nphis = len(self.phis[0])
@@ -1247,8 +1247,8 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
             assert(self.nmaxs[0]==self.nmaxs[1])
             _resmultipoles = gen_n2n3indices_Upsfourth(self.nmaxs[0])
             _, _inds, _, _ = _resmultipoles
-            ncache_required_out = self.nbinsr*self.nbinsr*self.nbinsr*(2*self.nmaxs[0]+1)*(2*self.nmaxs[1]+1)
-            ncache_required_alloc = nthetacombis_tot*len(_inds)*self.nthreads
+            ncache_required_out = self.nbinsr**3*(2*int(self.nmaxs[0])+1)*(2*int(self.nmaxs[1])+1)
+            ncache_required_alloc = int(nthetacombis_tot)*len(_inds)*int(self.nthreads)
             if max(ncache_required_out,ncache_required_alloc)>2**31-1:
                 raise ValueError("Required memory too large (%.2f / %.2f x 10^9 elements)"%(
                     ncache_required_out/1e9, ncache_required_alloc/1e9))
@@ -1300,7 +1300,7 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
         # Init optional args
         __lenflag = 10
         __fillflag = -1
-        _nmax = self.nmaxs[0]
+        _nmax = int(self.nmaxs[0])
         _nnvals = (2*_nmax+1)*(2*_nmax+1)
         _nbinsr3 = self.nbinsr*self.nbinsr*self.nbinsr
         _nphis = len(self.phis[0])
@@ -1574,8 +1574,8 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
         
         Upsilon_in = self.npcf_multipoles[...,elthet1,elthet2,elthet3].flatten()
         N_in = self.npcf_multipoles_norm[...,elthet1,elthet2,elthet3].flatten()
-        npcf_out = np.zeros(self.n_cfs*nzcombis*(self.nmaxs[0]+1)*(self.nmaxs[1]+1)*_nphis1*_nphis2, dtype=np.complex128)
-        npcf_norm_out = np.zeros(nzcombis*(self.nmaxs[0]+1)*(self.nmaxs[1]+1)*_nphis1*_nphis2, dtype=np.complex128)
+        npcf_out = np.zeros(self.n_cfs*nzcombis*(int(self.nmaxs[0])+1)*(int(self.nmaxs[1])+1)*_nphis1*_nphis2, dtype=np.complex128)
+        npcf_norm_out = np.zeros(nzcombis*(int(self.nmaxs[0])+1)*(int(self.nmaxs[1])+1)*_nphis1*_nphis2, dtype=np.complex128)
         
         _rc = np.sqrt(self.bin_edges[:-1]*self.bin_edges[1:])
         cc_s, _keep_cc = build_clustcorr(self, None, None, 0.1)
@@ -1856,7 +1856,7 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
         
         self.nbinsz = 1
         self.nzcombis = 1
-        _nmax = self.nmaxs[0]
+        _nmax = int(self.nmaxs[0])
         _nnvals = (2*_nmax+1)*(2*_nmax+1)
         _nbinsr3 = self.nbinsr*self.nbinsr*self.nbinsr
         _nphis = len(self.phis[0])

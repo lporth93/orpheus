@@ -818,7 +818,7 @@ class BinnedNPCF:
                                            out=np.full_like(resos, np.inf, dtype=float))
         _nupdateGn = lambda resos: 6*cat.nbinsz*(self.nmaxs[0]+5)*np.sum(
             _areashells*np.minimum(nbar_z, _percell(resos)))
-        _nupdateUpsN = (self.n_cfs+1)*(2*self.nmaxs[0]+1)**(self.order-2)*self.nbinsr**(self.order-1)*cat.nbinsz**self.order
+        _nupdateUpsN = (self.n_cfs+1)*(2*int(self.nmaxs[0])+1)**(self.order-2)*self.nbinsr**(self.order-1)*int(cat.nbinsz)**self.order
         _nupdatebase = _nupdateGn(self.tree_resos) + _nupdateUpsN
         leafresos = 1.*self.tree_resos
         if set_resoshiftleafs:

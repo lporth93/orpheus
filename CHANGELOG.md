@@ -86,6 +86,16 @@ parallelised C kernels.
 
 #### Fixed
 
+* **The fourth-order memory guards overflowed instead of tripping.** `nmaxs`, `nbinsphi`
+  and `nthreads` are stored as `int32`, and under NEP 50 (numpy >= 2) a product of a python
+  `int` with an `int32` stays `int32` rather than being promoted, so the guards wrapped
+  around at `2**31-1` — the very threshold they test against. `GNNNCorrelation_NoTomo` at
+  `nbinsr=64, nmaxs=45` needs 2.17e9 elements and reported -2.12e9, passing its own check
+  and failing later inside numpy. A configuration wrapping to a small *positive* value
+  would have passed the guard and under-allocated a buffer the C kernel then writes into.
+  All the size arithmetic is now done in python ints, which cannot overflow. numpy 1.x
+  promoted these products to `int64`, which is why this only ever appeared in CI.
+
 * **`NGCorrelation` never reported a normalisation in `3dbox`.** Every other geometry, and
   every other second-order correlator, sets `norm`; the projected-slab branch built its
   denominator `f*wRS` and then kept only private `_wRS`, leaving the public `norm` at
