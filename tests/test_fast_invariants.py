@@ -985,7 +985,9 @@ def test_catalog_shifts_a_footprint_that_wraps_the_meridian(capsys):
     ra = np.concatenate([rng.uniform(355., 360., ngal//2), rng.uniform(0., 5., ngal//2)])
     cat = ScalarTracerCatalog(pos1=ra, pos2=rng.uniform(-5., 5., ngal),
                               tracer=np.ones(ngal), weight=np.ones(ngal),
-                              geometry='spherical', units_pos1='deg', units_pos2='deg')
+                              geometry='spherical', units_pos1='deg', units_pos2='deg',
+                              verbosity=3)
+    # The shift rewrites the caller's positions, so it is announced at debug verbosity
     assert 'not contiguous' in capsys.readouterr().out
     assert cat.max1 - cat.min1 < 15., "the footprint is still split across the meridian"
     assert np.any(np.asarray(cat.pos1) < 0.)

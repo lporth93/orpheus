@@ -3,10 +3,12 @@
 #include <string.h>
 #include <stdbool.h>
 #include <math.h>
+#include <complex.h>
 #include <time.h>
 #include <omp.h>
 #include "spatialhash.h"
 #include "utils.h"
+#include "healpix_utils.h"
 
 #define _PI_ 3.14159265358979323846
 #define FLAG_NOGAL -1  
@@ -389,4 +391,295 @@ void reducecat_tomo(double *isinner, double *w, double *pos_1, double *pos_2, do
     free(pix_nzocc);
     free(outoffset);
     free(spatialhash);
+}
+
+//////////////////////////////
+/// Spherical spatial hash ///
+//////////////////////////////
+
+// Map sky positions in degrees to unit vectors and allocate some trig helpers needed lateron
+void sphericalhash_positions(
+    const double *ra_deg, const double *dec_deg, long ngal,
+    double *vx, double *vy, double *vz, double *ra, double *sindec, double *cosdec,
+    int nthreads){
+
+    const double deg2rad = _PI_/180.;
+    #pragma omp parallel for num_threads(nthreads) schedule(static)
+    for (long i=0; i<ngal; i++){
+        double thisra = ra_deg[i]*deg2rad, thisdec = dec_deg[i]*deg2rad;
+        double cd = cos(thisdec), sd = sin(thisdec);
+        ra[i] = thisra; sindec[i] = sd; cosdec[i] = cd;
+        vx[i] = cd*cos(thisra); vy[i] = cd*sin(thisra); vz[i] = sd;
+    }
+}
+
+// Nested healpix cells at nside, with the tomographic bin folded in for nz>1
+void sphericalhash_keys(
+    const double *vx, const double *vy, const double *vz, long ngal,
+    long nside, const int *zbins, int nz, long *key, int nthreads){
+
+    // The discrete band groups by cell alone and so passes nz=1 even for a tomographic catalog.
+    // Folding the bin in regardless would read as pix+zbins there and merge neighbouring cells.
+    #pragma omp parallel for num_threads(nthreads) schedule(static)
+    for (long i=0; i<ngal; i++){
+        double v1[3] = {vx[i], vy[i], vz[i]};
+        long pix = hpx_ang2pix_nest(nside, v1);
+        key[i] = (nz>1) ? pix*nz + zbins[i] : pix;
+    }
+}
+
+// One stable LSD radix pass on the byte at `shift`.
+// The basic workflow histogram -> prefix sum -> stable distribution structure is
+// classical LSD radix sorting, see i.e. Knuth, TAOCP Vol. 3, §5.2.5). 
+// Here we parallelize using the per-chunk histograms and their (bucket, chunk) 
+// prefix ordering.
+static void radix_pass(const long *kin, const long *pin, long *kout, long *pout,
+                       long n, int shift, int nthreads){
+
+    const int nbuckets = 256; // radix = one byte
+
+    // Each input chunk gets its own histogram, avoiding
+    // synchronization while counting.
+    long *hist = orpheus_calloc((size_t)nthreads*nbuckets, sizeof(long));
+    long *offsets = orpheus_malloc((size_t)nthreads*nbuckets*sizeof(long));
+    if (orpheus_get_error()){ free(hist); free(offsets); return; }
+
+    // Get counting-sort histogram, performed independently per chunk.
+    #pragma omp parallel for num_threads(nthreads) schedule(static, 1)
+    for (int c=0; c<nthreads; c++){
+        long *tmphist = hist + (long)c*nbuckets;
+        for (long i=(n*c)/nthreads; i<(n*(c+1))/nthreads; i++){
+            tmphist[(kin[i]>>shift)&255] += 1;
+        }
+    }
+    // Get counting-sort prefix sum. As we process in (bucket, chunk)
+    // order assigns each chunk a contiguous part of each bucket; since
+    // the chunks are in input order this preserves stability across chunks.
+    long cumul = 0;
+    for (int b=0; b<nbuckets; b++){
+        for (int c=0; c<nthreads; c++){
+            offsets[(long)c*nbuckets+b] = cumul;
+            cumul += hist[(long)c*nbuckets+b];
+        }
+    }
+    // Stable distribution: records are scanned in input order within each
+    // chunk and written at successive positions in that chunk's bucket range.
+    #pragma omp parallel for num_threads(nthreads) schedule(static, 1)
+    for (int c=0; c<nthreads; c++){
+        long *tmpoffsets = offsets + (long)c*nbuckets;
+        for (long i=(n*c)/nthreads; i<(n*(c+1))/nthreads; i++){
+            long ind = tmpoffsets[(kin[i]>>shift)&255]++;
+            kout[ind] = kin[i];
+            // First pass starts from the identity permutation; later passes carry it along.
+            pout[ind] = (pin==NULL) ? i : pin[i];
+        }
+    }
+    free(hist); free(offsets);
+}
+
+// To sort over the whole healpix key range withoug too much memory pressure 
+// we sort the keys using LSD radix sort
+long sphericalhash_sort(const long *key, long ngal, int nbits,
+                        long *order, long *key_sorted, int nthreads){
+
+    if (ngal<=0){ return 0; }
+
+    // Only process bytes containing meaningful key bits.
+    int npass = mymax(1, (nbits+7)/8);
+
+    long *tmpkey = orpheus_malloc((size_t)ngal*sizeof(long));
+    long *tmporder = orpheus_malloc((size_t)ngal*sizeof(long));
+    if (orpheus_get_error()){ free(tmpkey); free(tmporder); return 0; }
+
+    // Standard radix-sort ping-pong buffering.  Choose the destination on each
+    // pass so that, after the final pass, the result resides in the caller's
+    // key_sorted and order arrays.
+    long *keybuf[2] = {tmpkey, key_sorted};
+    long *orderbuf[2] = {tmporder, order};
+    for (int p=0; p<npass; p++){
+        int dest = 1 - ((npass-1-p)&1);
+        radix_pass(p==0 ? key : keybuf[1-dest],
+                   p==0 ? NULL : orderbuf[1-dest],
+                   keybuf[dest], orderbuf[dest],
+                   ngal, 8*p, nthreads);
+    }
+    free(tmpkey); free(tmporder);
+
+    // In sorted order, each distinct spherical hash value begins a new run, 
+    // so the number of runs is the number of occupied cells.
+    long nocc = 0;
+    #pragma omp parallel for num_threads(nthreads) schedule(static) reduction(+:nocc)
+    for (long i=0; i<ngal; i++){
+        if (i==0 || key_sorted[i]!=key_sorted[i-1]){ nocc += 1; }
+    }
+    return nocc;
+}
+
+// Allocate Discrete band of spherical hash 
+// --> The reduced tracers are the tracers themselves, so the band is only permuted
+//     into hash order and cut into cells
+void sphericalhash_gather(
+    const long *order, const long *key_sorted, long ngal,
+    const double *vx, const double *vy, const double *vz,
+    const double *ra, const double *sindec, const double *cosdec,
+    const double *w, const double *isinner, const int *zbins,
+    const double *e1, const double *e2, int do_shear, int do_wsq,
+    double *red_vx, double *red_vy, double *red_vz,
+    double *red_ra, double *red_sindec, double *red_cosdec,
+    double *red_w, double *red_isinner, int *red_zbin,
+    double *red_e1, double *red_e2, double *red_wsq,
+    long *cell_pix, long *cell_redbounds, int nthreads){
+
+    #pragma omp parallel for num_threads(nthreads) schedule(static)
+    for (long i=0; i<ngal; i++){
+        long g = order[i];
+        red_vx[i] = vx[g]; red_vy[i] = vy[g]; red_vz[i] = vz[g];
+        red_ra[i] = ra[g]; red_sindec[i] = sindec[g]; red_cosdec[i] = cosdec[g];
+        red_w[i] = w[g]; red_isinner[i] = isinner[g]; red_zbin[i] = zbins[g];
+        if (do_shear){ red_e1[i] = e1[g]; red_e2[i] = e2[g]; }
+        if (do_wsq){ red_wsq[i] = w[g]*w[g]; }
+    }
+
+    long ncells = 0;
+    for (long i=0; i<ngal; i++){
+        if (i==0 || key_sorted[i]!=key_sorted[i-1]){
+            cell_pix[ncells] = key_sorted[i];
+            cell_redbounds[ncells] = i;
+            ncells += 1;
+        }
+    }
+    cell_redbounds[ncells] = ngal;
+}
+
+// Helpers for shuffling
+// Get seed based on pixel index
+static inline unsigned int cell_seed(long pix){
+    return _hash_u32((unsigned int)(pix & 0xffffffffu) ^ _hash_u32((unsigned int)(pix>>32)));
+}
+// Uniformy draw a random subpixel. As those are equal-area by definition this is exact
+static inline long cell_subpix(long pix, int nsplit){
+    return (pix << (2*nsplit)) + (long)(cell_seed(pix) & (unsigned int)((1u<<(2*nsplit)) - 1u));
+}
+
+// Allocate a reduced band of spherical hash 
+// --> Each sorted key is one tracer, placed at the chosen center based on shuffle
+//     and transport the shear of the discrete galaxies to it
+long sphericalhash_reduce(
+    const long *order, const long *key_sorted, long ngal, long nocc,
+    long nside, int nz, int shuffle, int navshift,
+    const double *vx, const double *vy, const double *vz,
+    const double *ra, const double *sindec, const double *cosdec,
+    const double *w, const double *isinner,
+    const double *e1, const double *e2, int do_shear, int do_wsq,
+    double *red_vx, double *red_vy, double *red_vz,
+    double *red_ra, double *red_sindec, double *red_cosdec,
+    double *red_w, double *red_isinner, int *red_zbin,
+    double *red_e1, double *red_e2, double *red_wsq,
+    long *cell_pix, long *cell_redbounds, int nthreads){
+
+    long *occbounds = orpheus_malloc((size_t)(nocc+1)*sizeof(long));
+    if (orpheus_get_error()){ free(occbounds); return 0; }
+    long iocc = 0;
+    for (long i=0; i<ngal; i++){
+        if (i==0 || key_sorted[i]!=key_sorted[i-1]){ occbounds[iocc] = i; iocc += 1; }
+    }
+    occbounds[nocc] = ngal;
+    // Subcell depth for shuffle 1, capped so that nside<<nsplit stays a legal healpix resolution
+    int nsplit = 10;
+    while (nsplit>0 && (nside<<nsplit) > (1L<<29)){ nsplit -= 1; }
+
+    #pragma omp parallel for num_threads(nthreads) schedule(static)
+    for (long ic=0; ic<nocc; ic++){
+
+        // Compute helpers for centroid computation within the pixel
+        double sumw = 0., sumis = 0., sumwsq = 0., sumx = 0., sumy = 0., sumz = 0.;
+        for (long i=occbounds[ic]; i<occbounds[ic+1]; i++){
+            long g = order[i];
+            double wg = w[g];
+            sumw += wg; sumis += isinner[g];
+            sumx += wg*vx[g]; sumy += wg*vy[g]; sumz += wg*vz[g];
+            if (do_wsq){ sumwsq += wg*wg; }
+        }
+
+        // Get pixel index 
+        long pix = key_sorted[occbounds[ic]]/nz;
+
+        // Get pixel center based on shuffling convention
+        double cx = 0., cy = 0., cz = 0., v1[3];
+        long pick = -1;
+        switch (shuffle){
+            case 0: // Weighted centroid of the members
+                {   double norm = sqrt(sumx*sumx + sumy*sumy + sumz*sumz);
+                    if (norm==0.){ norm = 1.; }
+                    cx = sumx/norm; cy = sumy/norm; cz = sumz/norm; }
+                break;
+            case 1: // Uniformly random point of the cell
+                hpx_pix2vec_nest(nside<<nsplit, cell_subpix(pix, nsplit), v1);
+                cx = v1[0]; cy = v1[1]; cz = v1[2];
+                break;
+            case 2: // Cell center
+                hpx_pix2vec_nest(nside, pix, v1);
+                cx = v1[0]; cy = v1[1]; cz = v1[2];
+                break;
+            case 3: // One member drawn at random
+                {   long seen = 0;
+                    pick = order[occbounds[ic]];
+                    for (long i=occbounds[ic]; i<occbounds[ic+1]; i++){
+                        seen += 1;
+                        if (_hash_u32(cell_seed(pix) + (unsigned int)seen)
+                            % (unsigned int)seen == 0u){ pick = order[i]; }
+                    }
+                    cx = vx[pick]; cy = vy[pick]; cz = vz[pick]; }
+                break;
+        }
+        // Get trig helpers for chosen center
+        double cra, csindec, ccosdec;
+        if (pick >= 0){
+             cra = ra[pick]; csindec = sindec[pick]; ccosdec = cosdec[pick]; 
+        }
+        else{
+            cra = atan2(cy, cx); if (cra<0.){ cra += 2.*_PI_; } csindec = cz; ccosdec = sqrt(mymax(0., 1.-cz*cz));
+        }
+
+        // Update the relevant arrays with the chosen center 
+        red_vx[ic] = cx; red_vy[ic] = cy; red_vz[ic] = cz;
+        red_ra[ic] = cra; red_sindec[ic] = csindec; red_cosdec[ic] = ccosdec;
+        red_w[ic] = sumw;
+        red_isinner[ic] = (sumis>0.) ? 1. : 0.;
+        red_zbin[ic] = (int) (key_sorted[occbounds[ic]]%nz);
+        if (do_wsq){ red_wsq[ic] = sumwsq; }
+
+        // Parallel transport the shear of each discrete galaxy to the chosen pixel center
+        if (do_shear){
+            double sume1 = 0., sume2 = 0.;
+            for (long i=occbounds[ic]; i<occbounds[ic+1]; i++){
+                long g = order[i];
+                double dphi = 2.*(sphere_bearing(cra, csindec, ccosdec,
+                                                 ra[g], sindec[g], cosdec[g])
+                                  + _PI_
+                                  - sphere_bearing(ra[g], sindec[g], cosdec[g],
+                                                   cra, csindec, ccosdec));
+                double complex wshape = w[g]*(e1[g] + I*e2[g])*cexp(I*dphi);
+                sume1 += creal(wshape); sume2 += cimag(wshape);
+            }
+            double norm = (sumw==0.) ? 1. : sumw;
+            red_e1[ic] = sume1/norm; red_e2[ic] = sume2/norm;
+        }
+    }
+
+    // Update the bookkeeping of occupied cells and ranges 
+    long ncells = 0;
+    for (long ic=0; ic<nocc; ic++){
+        long navpix = (key_sorted[occbounds[ic]]/nz) >> navshift;
+        if (ic==0 || navpix!=cell_pix[ncells-1]){
+            cell_pix[ncells] = navpix;
+            cell_redbounds[ncells] = ic;
+            ncells += 1;
+        }
+    }
+    cell_redbounds[ncells] = nocc;
+
+    free(occbounds);
+
+    return ncells;
 }

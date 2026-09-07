@@ -118,7 +118,7 @@ class NNNCorrelation(BinnedNPCF):
             nsides, nside_hash = self.tree_resos_to_nsides()
             mh = cat.multihash_bundle(reso_redges=self.tree_redges*sep2deg, nsides=nsides,
                                       nside_hash=nside_hash, shuffle=self.shuffle_pix,
-                                      verbose=self._verbose_python)
+                                      nthreads=self.nthreads, verbose=self._verbose_python)
             assert not mh['nav_coarsened'], (
                 "nav_coarsen is incompatible with the NNN doubletree: it reuses "
                 "nside_nav for the cross-reso reduction hierarchy, which requires "
@@ -483,7 +483,7 @@ class GGGCorrelation(BinnedNPCF):
                     nsides, nside_hash = self.tree_resos_to_nsides()
                     mh = cat.multihash_bundle(reso_redges=self.tree_redges*sep2deg, nsides=nsides,
                                               nside_hash=nside_hash, shuffle=self.shuffle_pix,
-                                              w2field=True,
+                                              w2field=True, nthreads=self.nthreads,
                                               verbose=self._verbose_python)
                     assert not mh['nav_coarsened'], (
                         "nav_coarsen is incompatible with the GGG doubletree. Only single-tree navigation "

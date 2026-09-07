@@ -35,6 +35,44 @@ void reducecat_tomo(double *isinner, double *w, double *pos_1, double *pos_2, do
                int nthreads,
                double *isinner_red, double *w_red, double *pos1_red, double *pos2_red, int *zbins_red, double *scalarquants_red);
 
+// Map sky positions in degrees to unit vectors and allocate some trig helpers needed lateron
+void sphericalhash_positions(const double *ra_deg, const double *dec_deg, long ngal,
+    double *vx, double *vy, double *vz, double *ra, double *sindec, double *cosdec,
+    int nthreads);
+
+// Nested healpix cells at nside, with the tomographic bin folded in for nz>1
+void sphericalhash_keys(const double *vx, const double *vy, const double *vz, long ngal,
+    long nside, const int *zbins, int nz, long *key, int nthreads);
+
+// Sort over the whole healpix key range withoug too much memory pressure 
+long sphericalhash_sort(const long *key, long ngal, int nbits,
+    long *order, long *key_sorted, int nthreads);
+
+// Allocate Discrete band of spherical hash 
+void sphericalhash_gather(const long *order, const long *key_sorted, long ngal,
+    const double *vx, const double *vy, const double *vz,
+    const double *ra, const double *sindec, const double *cosdec,
+    const double *w, const double *isinner, const int *zbins,
+    const double *e1, const double *e2, int do_shear, int do_wsq,
+    double *red_vx, double *red_vy, double *red_vz,
+    double *red_ra, double *red_sindec, double *red_cosdec,
+    double *red_w, double *red_isinner, int *red_zbin,
+    double *red_e1, double *red_e2, double *red_wsq,
+    long *cell_pix, long *cell_redbounds, int nthreads);
+
+// Allocate a reduced band of spherical hash 
+long sphericalhash_reduce(const long *order, const long *key_sorted, long ngal, long nocc,
+    long nside, int nz, int shuffle, int navshift,
+    const double *vx, const double *vy, const double *vz,
+    const double *ra, const double *sindec, const double *cosdec,
+    const double *w, const double *isinner,
+    const double *e1, const double *e2, int do_shear, int do_wsq,
+    double *red_vx, double *red_vy, double *red_vz,
+    double *red_ra, double *red_sindec, double *red_cosdec,
+    double *red_w, double *red_isinner, int *red_zbin,
+    double *red_e1, double *red_e2, double *red_wsq,
+    long *cell_pix, long *cell_redbounds, int nthreads);
+
 // FOREACH-style macro walking the occupied flat-grid pixels within a search
 // radius of (pos1, pos2): mirrors the
 // `for(ip1=lo1;ip1<hi1;ip1++){ for(ip2=lo2;ip2<hi2;ip2++){ ... } }` pixel-box +

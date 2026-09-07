@@ -231,7 +231,7 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
                       for r in range(self.tree_nresos)]
             nside_hash = _nside_for(max(self.min_sep, 0.5*self.tree_redges[1])*_deg2rad)
             sph = cat.multihash_bundle(reso_redges=self.tree_redges, nsides=nsides,
-                                       nside_hash=nside_hash,
+                                       nside_hash=nside_hash, nthreads=self.nthreads,
                                        verbose=self._verbose_python)
             assert sph['geometry'] == 'spherical'
             catc_s, keep_cc = build_spherical_central_catalog_struct(
