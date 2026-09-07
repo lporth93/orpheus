@@ -9,6 +9,7 @@ from .npcf_fourth import (GGGGCorrelation_NoTomo, GNNNCorrelation_NoTomo,
 from .direct import (DirectEstimator, Direct_Map3Unequal, Direct_MapnEqual,
                      Direct_NapnEqual, MapCombinatorics)
 from .flat2dgrid import FlatDataGrid_2D, FlatPixelGrid_2D
+from .sphericalmap import SphericalMap
 from .patchutils import (cat2hpx, frompatchindices_preparerot, gen_cat_patchindices,
                          pickle_load, pickle_save, toorigin)
 from .utils import (check_clib_error, convertunits, flatlist,
@@ -35,7 +36,7 @@ __all__ = [
     "DirectEstimator", "Direct_MapnEqual", "Direct_NapnEqual", "Direct_Map3Unequal",
     "MapCombinatorics",
     # Grids and helpers
-    "FlatDataGrid_2D", "FlatPixelGrid_2D",
+    "FlatDataGrid_2D", "FlatPixelGrid_2D", "SphericalMap",
     "cat2hpx", "frompatchindices_preparerot", "gen_cat_patchindices", "toorigin",
     "pickle_load", "pickle_save",
     "check_clib_error", "convertunits", "flatlist", "get_site_packages_dir",
