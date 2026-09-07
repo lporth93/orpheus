@@ -1,10 +1,30 @@
 # Changelog
 
-Since version 0.3 we provide a detailed changelog. The first section summarises 
-what each release series provides. The second lists the individual changes that 
-went into every version.
+Since version 0.3 we provide a detailed changelog. The first section summarises what
+each minor release adds since the previous one; it is written at `a.b.0` and not revisited
+for the patch releases that follow, so anything landing in `a.b.1` and later is picked up
+by the highlights of `a.(b+1)`. The second section lists the individual changes that went
+into every version.
 
 ## Release highlights
+
+### 0.6
+
+Mix of new features, optimisations, and test updates. Main new feature includes the 
+creation of full-sky aperture mass maps given a shape catalog. Most of the smaller 
+commits constitute some minor bugs that were uncovered by the new tests which now 
+cover nearly the whole package.
+
+* `SphericalMap`, computing complex-valued aperture mass map on a healpix grid together 
+with aperture coverage and normalisation maps.
+* The spherical multihash has been ported to C where it has also been parallelised.
+* The memory traffic in the same-resolution accumulation stage of the GGG estimator 
+has been strongly reduced. While for a coarse binning and no tomography this barely 
+matters, this yields a >50% speedup for a stage-IV like setup
+* `npcf_norm` now holds the multiplet count of its bin for every multipole-based 
+correlator and geometry.
+* The fast-tier test suite has been strongly expanded to now cover nearly all of the 
+package.
 
 ### 0.5
 
@@ -19,6 +39,7 @@ newly added scaling test.
 * `autoset_tree` and the discrete spatial hash size themselves from the catalog
 * Performed benchmarking tests of GGG and added main results to README
 * The package root exports only orpheus' own names
+
 
 ### 0.4
 
@@ -51,7 +72,74 @@ parallelised C kernels.
 * Flat and curved-sky geometries, tomographic binning, and the `Discrete`,
   `Tree`, `BaseTree` and `DoubleTree` approximation schemes
 
-## Detailed changelog
+## Detailed changelog (*mainly updated by claude*)
+
+### 0.6.0 — 2026-09-08
+
+#### Added
+
+* **`SphericalMap`, aperture mass maps on the celestial sphere.** Evaluates
+  `Map + i*Mx = supp(Q)^2 * sum_g w_g Q(d_g^2/R_ap^2) (e_t + i e_x)_g / sum_g w_g`, eqns
+  (22) and (23) of arXiv:2106.04594 at first order, on every pixel of a healpix grid.
+  Separations are geodesic and the spin-2 projection is taken in the tangent plane of each
+  tracer, so no flat-sky approximation enters and the map stays valid over the full sky.
+  Alongside the map it returns the two normalisations `sum_g w_g` and `sum_g w_g Q_g` and
+  the masked area fraction of every aperture, raw and Q-weighted, which is what selects the
+  apertures complete enough to use. `Discrete` and `Tree` are both available; with
+  `tree_nsides` left unset the reduction resolution is inferred from the tracer density.
+  Maps sharing a grid, aperture radius and filter combine with `+` as a norm-weighted
+  co-add, so a survey can be processed in patches and accumulated afterwards. The estimator
+  is first order; the `Map^n` ladder remains with `Direct_MapnEqual`.
+
+* **`Catalog` takes a `verbosity` level**, exposing the same 0/1/2/3 scale the correlators
+  use, with level 3 reserved for debug output such as the meridian-shift notice below.
+
+#### Changed
+
+* **The spherical multihash is computed in C.** `Catalog.multihash_spherical` previously
+  built its bands in numpy and healpy, single-threaded throughout, which made it the larger
+  half of a fully spherical two-point run and the dominant cost of an aperture mass map.
+  Positions, nested cell ids, the sort and the band reduction now run in `spatialhash.c`,
+  with the sort a stable parallel radix sort over the bounded healpix keys rather than a
+  comparison sort. The resulting hash layout is bitwise identical to the numpy path
+  — `cell_pix`, `cell_redbounds`, `ngal_resos`, `red_zbin` and every `rshift_*` array — and
+  the floating-point arrays agree to ~1e-14, the residual being libm against numpy for
+  `sin`/`cos`/`atan2`. `multihash_bundle` now forwards `nthreads` to the spherical branch,
+  and the correlators pass their own thread count through.
+
+#### Changed — please read before upgrading
+
+* **The random shuffle conventions no longer reproduce their previous cell positions.**
+  `shuffle=1` (a uniformly random point of the cell) and `shuffle=3` (a random member) now
+  draw from the counter-based generator in `spatialhash.c` instead of a seeded
+  `numpy.random.default_rng`. Results stay deterministic and independent of the thread
+  count, but they are not bitwise reproducible against earlier versions. This affects
+  `NNCorrelation` by default, which sets `shuffle_pix=1` to break up grid artifacts at the
+  radial bin boundaries. `shuffle=1` also changed definition slightly for the better: it is
+  now uniform in solid angle over the cell, where the previous rejection sampler was
+  uniform in `(theta, phi)` and so biased towards the poles.
+
+#### Removed
+
+* **The numpy implementation of the spherical multihash.** All four shuffle conventions run
+  in C, so the fallback added while the port was being validated is gone. Its reference
+  implementation is retained outside the package, in the private validation script that
+  checks the C against it.
+
+#### Fixed
+
+* **A densely sampled full-sky catalog was split across an arbitrary meridian.** The
+  contiguity check sorted the right ascensions and treated the largest gap between
+  neighbouring values as a hole in the footprint. On a full-sky catalog there is no hole,
+  but the largest Poisson spacing between adjacent sorted values still exceeds the gap at
+  the 0/360 boundary, so the check fired anyway and shifted every tracer beyond that point
+  by -360 degrees: at 1e6 tracers it split the sky at 264.99 degrees, at 1e7 at 220.68.
+  `min1`, `max1` and `len1` were left meaningless afterwards, which matters for the
+  tangent-plane and patch paths that consume them, and an alarming NOTE was printed. The
+  check now bins the right ascension circle into 720 bins and requires at least one empty
+  bin before declaring a hole, so a full-sky catalog is correctly left alone. Being a
+  histogram rather than a sort it is also O(ngal), which removed about 70% of the cost of
+  constructing a spherical catalog.
 
 ### 0.5.2 — 2026-09-06
 
