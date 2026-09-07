@@ -64,6 +64,7 @@ User Guide
    threepcf
    fourpcf
    direct
+   sphericalmaps
    algos
    tutorial
    

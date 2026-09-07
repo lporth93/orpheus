@@ -80,7 +80,8 @@ following correlation functions.
 | **4pt** |    ✓   |   ✓  |   GNNN   |   ✗  |           Aperture statistics        |
 
 In addition, <span style="font-variant: small-caps;">orpheus</span> also implements direct estimators 
-for aperture statistics of arbitrary order for pure scalar and polar correlators.
+for aperture statistics of arbitrary order for pure scalar and polar correlators, as well as 
+curved-sky aperture mass maps from a shape catalog.
 
 Almost all correlators are featured in the [tutorial notebooks](https://orpheus.readthedocs.io/tutorial.html) --
 the exception is GNNN, for which no notebook is published yet. 

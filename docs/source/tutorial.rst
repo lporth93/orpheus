@@ -11,3 +11,4 @@ Here you can find several tutorials on how to use the `orpheus` code.
    tutorial_third   
    tutorial_direct
    tutorial_fourth
+   tutorial_sphericalmaps
