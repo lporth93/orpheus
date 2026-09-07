@@ -56,3 +56,9 @@ extern "C" long hpx_ang2pix_nest(long nside, const double *vec){
     pointing ptg(vec3(vec[0], vec[1], vec[2]));
     return (long)base.ang2pix(ptg);
 }
+
+extern "C" void hpx_pix2vec_nest(long nside, long ipix, double *vec){
+    T_Healpix_Base<int64> base((int64)nside, NEST, SET_NSIDE);
+    vec3 v = base.pix2vec((int64)ipix);
+    vec[0] = v.x; vec[1] = v.y; vec[2] = v.z;
+}

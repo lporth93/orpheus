@@ -3,7 +3,7 @@
 import ctypes as ct
 import numpy as np
 from numpy.ctypeslib import ndpointer
-from .utils import convertunits, _randomhealpixshift, _load_clib
+from .utils import convertunits, _load_clib, check_clib_error
 from .flat2dgrid import FlatPixelGrid_2D, FlatDataGrid_2D
 from .patchutils import gen_cat_patchindices, frompatchindices_preparerot
 import sys
@@ -57,6 +57,9 @@ class Catalog:
         Flag on whether a spatial hash structure has been allocated for the catalog
     index_matcher: numpy.ndarray
         Indicates on whether there is a tracer in each of the pixels in the spatial hash.
+    verbosity: int, optional
+        The level of verbosity during the computation. Level 0: No verbosity, 1: Progress verbosity
+        on python layer, 2: Progress verbosity also on C level, 3: Debug verbosity. Defaults to ``0``.
     
         
     .. note::
@@ -68,14 +71,27 @@ class Catalog:
     
     def __init__(self, pos1, pos2, pos3=None, weight=None, zbins=None, isinner=None,
                  units_pos1=None, units_pos2=None, geometry='flat2d',
-                 mask=None, zbins_mean=None, zbins_std=None):
+                 mask=None, zbins_mean=None, zbins_std=None, verbosity=0):
 
         self.pos1 = pos1.astype(np.float64)
         self.pos2 = pos2.astype(np.float64)
         self.pos3 = None if pos3 is None else pos3.astype(np.float64)
         self.weight = weight
         self.zbins = zbins
+        self.isinner = np.asarray(isinner, dtype=np.float64)
+        self.units_pos1 = units_pos1
+        self.units_pos2 = units_pos2
+        self.geometry = geometry
+        self.mask = mask
+        self.zbins_mean = zbins_mean
+        self.zbins_std = zbins_std
+        self.verbosity = np.int32(verbosity)
+
         self.ngal = len(self.pos1)
+        # Set verbosity levels
+        self._verbose_python = self.verbosity > 0
+        self._verbose_c = self.verbosity > 1
+        self._verbose_debug = self.verbosity > 2
         # Allocate weights
         if self.weight is None:
             self.weight = np.ones(self.ngal)
@@ -88,11 +104,8 @@ class Catalog:
         assert(np.max(self.zbins)-np.min(self.zbins)==self.nbinsz-1)
         self.zbins -= (np.min( self.zbins))
         if isinner is None:
-            isinner = np.ones(self.ngal, dtype=np.float64)
-        self.isinner = np.asarray(isinner, dtype=np.float64)
-        self.units_pos1 = units_pos1
-        self.units_pos2 = units_pos2
-        self.geometry = geometry
+            self.isinner = np.ones(self.ngal, dtype=np.float64)
+        # Check geometry consistency
         assert(self.geometry in ['flat2d','spherical','3dbox'])
         if self.geometry in ['flat2d','3dbox']:
             self.units_pos1 = None
@@ -108,24 +121,25 @@ class Catalog:
             self.units_pos1 = 'deg'
             self.units_pos2 = 'deg'
             # Make sure that footprint is contiguous
-            # 1) Compute internal distance between tracers
-            # 2) Compute distance around the origin
-            # 3) If largest distance is internal, i.e. catalog not contiguous
-            #    split catalog at this boundary and shift one side by 360 deg
-            # Note that this algorithm only works for truly contiguous fields, 
-            # but might fail for catalogues consisting of multiple disconnected 
+            # 1) Bin the ra circle and mark which bins hold tracers
+            # 2) Interpret the longest run of empty bins as the largest hole in the footprint
+            # 3) If that hole is larger than the one at the 0/360 boundary the footprint is
+            #    split across the meridian, so shift everything beyond it by -360 deg
+            # Note that this algorithm only works for truly contiguous fields,
+            # but might fail for catalogues consisting of multiple disconnected
             # (yet contiguous) patches covering the whole range of ra...
-            ra_sorted = np.sort(self.pos1)
-            diffs = np.diff(ra_sorted)
-            wrap_diff = (360.0 - ra_sorted[-1]) + ra_sorted[0]
-            if wrap_diff <= np.max(diffs):
-                max_gap_idx = np.argmax(diffs)
-                split_value = ra_sorted[max_gap_idx]
-                self.pos1[self.pos1 > split_value] -= 360
-                print('NOTE: Catalog not contiguous, shifted RA coordinates > %.2f deg by -360 deg.'%split_value)
-
-        self.mask = mask
-        assert(isinstance(self.mask, FlatDataGrid_2D) or self.mask is None)
+            nbins_ra = 720
+            rabins = np.floor(self.pos1*(nbins_ra/360.)).astype(np.int64)%nbins_ra
+            occupied = np.flatnonzero(np.bincount(rabins, minlength=nbins_ra))
+            if len(occupied) > 1:
+                gaps = np.diff(occupied)
+                wrap_gap = (nbins_ra - occupied[-1]) + occupied[0]
+                if np.max(gaps) > 1 and wrap_gap < np.max(gaps):
+                    split_value = (occupied[np.argmax(gaps)] + 1)*(360./nbins_ra)
+                    self.pos1[self.pos1 > split_value] -= 360
+                    if self._verbose_debug:
+                        print('NOTE: Catalog not contiguous, shifted RA coordinates > %.2f deg by -360 deg.'%split_value)
+        # Basic consistency checks of catalog arrays
         assert(np.min(self.isinner) >= 0.)
         assert(np.max(self.isinner) <= 1.)
         assert(len(self.isinner)==self.ngal)
@@ -133,14 +147,12 @@ class Catalog:
         assert(len(self.weight)==self.ngal)
         assert(len(self.zbins)==self.ngal)
         assert(np.min(self.weight)>0.)
-        
-        self.zbins_mean = zbins_mean
-        self.zbins_std = zbins_std
+        # Consistency checks for zbin-dist arrays
         for _ in [self.zbins_mean, self.zbins_std]:
             if _ is not None:
                 assert(isinstance(_,np.ndarray))
                 assert(len(_)==self.nbinsz)
-        
+        # Define main footprint parameters
         self.min1 = np.min(self.pos1)
         self.min2 = np.min(self.pos2)
         self.max1 = np.max(self.pos1)
@@ -151,8 +163,8 @@ class Catalog:
             self.min3 = np.min(self.pos3)
             self.max3 = np.max(self.pos3)
             self.len3 = self.max3-self.min3
-
         # In case a mask is provided make sure it is valid given the footprint
+        assert(isinstance(self.mask, FlatDataGrid_2D) or self.mask is None)
         if isinstance(self.mask, FlatDataGrid_2D):
             self.__checkmask()
         
@@ -178,6 +190,7 @@ class Catalog:
         p_f64 = ndpointer(np.float64, flags="C_CONTIGUOUS")
         p_f32 = ndpointer(np.float32, flags="C_CONTIGUOUS")
         p_i32 = ndpointer(np.int32, flags="C_CONTIGUOUS")
+        p_i64 = ndpointer(np.int64, flags="C_CONTIGUOUS")
         p_f64_nof = ndpointer(np.float64)
         
         # Assigns a set of tomographic fields over a grid
@@ -218,6 +231,37 @@ class Catalog:
             ct.c_int32, ct.c_int32, ct.c_int32, ct.c_int32,
             ct.c_double, ct.c_double, ct.c_double, ct.c_double, ct.c_int32, ct.c_int32, ct.c_int32, ct.c_int32,
             p_f64_nof, p_f64_nof, p_f64_nof, p_f64_nof, p_i32, p_f64_nof]
+
+        # Build the bands of a spherical multihash, see 'multihash_spherical'
+        self.clib.sphericalhash_positions.restype = None
+        self.clib.sphericalhash_positions.argtypes = [
+            p_f64, p_f64, ct.c_long,
+            p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, ct.c_int32]
+
+        self.clib.sphericalhash_keys.restype = None
+        self.clib.sphericalhash_keys.argtypes = [
+            p_f64, p_f64, p_f64, ct.c_long, ct.c_long, p_i32, ct.c_int32, p_i64, ct.c_int32]
+
+        self.clib.sphericalhash_sort.restype = ct.c_long
+        self.clib.sphericalhash_sort.argtypes = [
+            p_i64, ct.c_long, ct.c_int32, p_i64, p_i64, ct.c_int32]
+
+        self.clib.sphericalhash_gather.restype = None
+        self.clib.sphericalhash_gather.argtypes = [
+            p_i64, p_i64, ct.c_long,
+            p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, p_i32,
+            p_f64, p_f64, ct.c_int32, ct.c_int32,
+            p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, p_i32,
+            p_f64, p_f64, p_f64, p_i64, p_i64, ct.c_int32]
+
+        self.clib.sphericalhash_reduce.restype = ct.c_long
+        self.clib.sphericalhash_reduce.argtypes = [
+            p_i64, p_i64, ct.c_long, ct.c_long, ct.c_long,
+            ct.c_int32, ct.c_int32, ct.c_int32,
+            p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, p_f64,
+            p_f64, p_f64, ct.c_int32, ct.c_int32,
+            p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, p_i32,
+            p_f64, p_f64, p_f64, p_i64, p_i64, ct.c_int32]
 
 
     ### PATCH DECOMPOSITION RELATED METHODS ###
@@ -523,7 +567,8 @@ class Catalog:
             Forces the number of cells in each dimensions to be divisible by some number
             Considered for ``flat2d`` geometry.
         nthreads: int, optional, default ``1``
-            Number of threads used when building the reduced catalogs (``flat2d``).
+            Number of threads used when building the reduced catalogs
+            (``flat2d`` and ``spherical``).
         reso_redges: array, optional, default ``None``
             Radial band edges in degrees (``spherical``).
         nsides: array of int, optional, default ``None``
@@ -561,7 +606,8 @@ class Catalog:
             return self.multihash_spherical(reso_redges=reso_redges, nsides=nsides,
                                             nside_hash=nside_hash, shuffle=shuffle,
                                             fields=fields, w2field=w2field,
-                                            nav_coarsen=nav_coarsen, verbose=verbose)
+                                            nav_coarsen=nav_coarsen, verbose=verbose,
+                                            nthreads=nthreads)
         elif self.geometry == '3dbox':
             return self.multihash_slabs(dpix=dpix_hash, dpix_z=dpix_z, fields=fields,
                                         extent=extent, extent_z=extent_z)
@@ -763,7 +809,8 @@ class Catalog:
         return bundle
 
     def multihash_spherical(self, reso_redges, nsides, nside_hash, shuffle=0,
-                            fields=None, w2field=False, nav_coarsen=None, verbose=False):
+                            fields=None, w2field=False, nav_coarsen=None, verbose=False,
+                            nthreads=1):
         r"""Builds spatialhash for a base catalog with geometry ``spherical`` and its reductions.
 
         Returns
@@ -775,7 +822,7 @@ class Catalog:
         -----
         The parameters are as documented in :meth:`Catalog.multihash_bundle`.
         """
-        from healpy import ang2pix, pix2ang, pix2vec, query_disc, nside2resol
+        from healpy import nside2resol
 
         if self.geometry != 'spherical':
             raise ValueError("multihash_spherical requires a spherical catalog "
@@ -788,31 +835,25 @@ class Catalog:
         nresos = len(nsides)
         assert len(reso_redges) == nresos + 1
 
-        # Some helpers
         deg2rad = np.pi/180.
-        ra = self.pos1*deg2rad
-        dec = self.pos2*deg2rad
-        theta = 0.5*np.pi - dec
-        phi = ra%(2.*np.pi)
-        cosdec = np.cos(dec)
-        sindec = np.sin(dec)
-        gvx = cosdec*np.cos(ra)
-        gvy = cosdec*np.sin(ra)
-        gvz = sindec
+        ngal = self.ngal
+        nthreads = max(1, int(nthreads))
         w = self.weight.astype(np.float64)
         isinner = self.isinner.astype(np.float64)
-        ngal = self.ngal
-        zbins = self.zbins.astype(np.int64)
+        zbins = self.zbins.astype(np.int32)
         nz = int(zbins.max()) + 1 if ngal else 1
 
-        # Add rng (with deterministic seed in case random choices are made)
-        rng = np.random.default_rng(seed=self.ngal) if shuffle in (1, 3) else None
+        # Positions and the trigonometry that every band carries along
+        gvx, gvy, gvz = np.empty(ngal), np.empty(ngal), np.empty(ngal)
+        ra, sindec, cosdec = np.empty(ngal), np.empty(ngal), np.empty(ngal)
+        self.clib.sphericalhash_positions(self.pos1, self.pos2, ngal,
+                                          gvx, gvy, gvz, ra, sindec, cosdec, nthreads)
 
-        # Optional spin-2 field to aggregate with parallel transport.
+        # Optional spin-2 field to aggregate with parallel transport
         do_shear = fields is not None
-        if do_shear:
-            e1_full = np.ascontiguousarray(fields[0], dtype=np.float64)
-            e2_full = np.ascontiguousarray(fields[1], dtype=np.float64)
+        do_wsq = do_shear and w2field
+        e1_full = np.ascontiguousarray(fields[0], dtype=np.float64) if do_shear else np.empty(0)
+        e2_full = np.ascontiguousarray(fields[1], dtype=np.float64) if do_shear else np.empty(0)
 
         # Init lists that hold multihash
         red_vx, red_vy, red_vz = [], [], []
@@ -825,126 +866,76 @@ class Catalog:
         cell_pix_list, cell_redbounds_list = [], []
         for r in range(nresos):
             ns_red = int(nsides[r])
-            ns_nav = nside_hash if ns_red==0 else ns_red
+            ns_nav = int(nside_hash) if ns_red==0 else ns_red
             nside_nav[r] = ns_nav
+
+            # Sort the tracers on their nested cell. A reduced band folds the tomographic bin
+            # into the key, so the same sort also groups the tracers that get collapsed.
+            ns_key = ns_nav if ns_red==0 else ns_red
+            nz_key = 1 if ns_red==0 else nz
+            key = np.empty(ngal, dtype=np.int64)
+            self.clib.sphericalhash_keys(gvx, gvy, gvz, ngal, ns_key, zbins, nz_key,
+                                         key, nthreads)
+            order = np.empty(ngal, dtype=np.int64)
+            key_sorted = np.empty(ngal, dtype=np.int64)
+            nbits = (12*ns_key*ns_key*nz_key).bit_length()
+            nocc = int(self.clib.sphericalhash_sort(key, ngal, nbits, order, key_sorted,
+                                                    nthreads))
+            check_clib_error(self.clib)
+
+            n_red = ngal if ns_red==0 else nocc
+            rvx, rvy, rvz = np.empty(n_red), np.empty(n_red), np.empty(n_red)
+            rra, rsdec, rcdec = np.empty(n_red), np.empty(n_red), np.empty(n_red)
+            rw, ris = np.empty(n_red), np.empty(n_red)
+            rz = np.empty(n_red, dtype=np.int32)
+            re1 = np.empty(n_red) if do_shear else np.empty(0)
+            re2 = np.empty(n_red) if do_shear else np.empty(0)
+            rwsq = np.empty(n_red) if do_wsq else np.empty(0)
+            cell_pix = np.empty(nocc, dtype=np.int64)
+            cell_redbounds = np.empty(nocc+1, dtype=np.int64)
 
             # Discrete band: Reduced galaxies are the galaxies themselves
             if ns_red == 0:
-                rvx, rvy, rvz = gvx, gvy, gvz
-                rra, rsdec, rcdec = ra, sindec, cosdec
-                rw, ris, rz = w, isinner, zbins
-                red_navpix = ang2pix(ns_nav, theta, phi, nest=True)
-                if do_shear:
-                    re1, re2 = e1_full, e2_full
-                    if w2field:
-                        rwsq = w*w
+                self.clib.sphericalhash_gather(
+                    order, key_sorted, ngal, gvx, gvy, gvz, ra, sindec, cosdec,
+                    w, isinner, zbins, e1_full, e2_full, do_shear, do_wsq,
+                    rvx, rvy, rvz, rra, rsdec, rcdec, rw, ris, rz, re1, re2, rwsq,
+                    cell_pix, cell_redbounds, nthreads)
+                ncells = nocc
             else:
-                # Paint galaxies to grid and get unique filled indices (one per z-bin)
-                gpix = ang2pix(ns_red, theta, phi, nest=True)
-                key = gpix*nz + zbins
-                occ_key, inv = np.unique(key, return_inverse=True)
-                nocc = len(occ_key)
-                sw = np.bincount(inv, weights=w, minlength=nocc)
-                sis = np.bincount(inv, weights=isinner, minlength=nocc)
-                pix_for_group = occ_key // nz
-                # Now do aggregation based on shuffle convention
-                if shuffle == 0:
-                    sx = np.bincount(inv, weights=w*gvx, minlength=nocc)
-                    sy = np.bincount(inv, weights=w*gvy, minlength=nocc)
-                    sz = np.bincount(inv, weights=w*gvz, minlength=nocc)
-                    norm = np.sqrt(sx*sx + sy*sy + sz*sz)
-                    norm[norm == 0] = 1.
-                    rvx, rvy, rvz = sx/norm, sy/norm, sz/norm
-                    rsdec = rvz
-                    rcdec = np.sqrt(np.maximum(0., 1.-rvz*rvz))
-                    rra = np.arctan2(rvy, rvx)%(2.*np.pi)
-                elif shuffle == 1:
-                    theta_s, phi_s = _randomhealpixshift(ns_red, pix_for_group, rng)
-                    dec_s = 0.5*np.pi - theta_s
-                    rra = phi_s
-                    rcdec = np.cos(dec_s)
-                    rsdec = np.sin(dec_s)
-                    rvx = rcdec * np.cos(rra)
-                    rvy = rcdec * np.sin(rra)
-                    rvz = rsdec
-                elif shuffle == 2:
-                    theta_c, phi_c = pix2ang(ns_red, pix_for_group, nest=True)
-                    dec_c = 0.5*np.pi - theta_c
-                    rra = phi_c
-                    rcdec = np.cos(dec_c)
-                    rsdec = np.sin(dec_c)
-                    rvx = rcdec * np.cos(rra)
-                    rvy = rcdec * np.sin(rra)
-                    rvz = rsdec
-                elif shuffle == 3:
-                    rand_key = rng.random(len(inv))
-                    order = np.lexsort((rand_key, inv))
-                    sorted_inv = inv[order]
-                    first_idx = np.searchsorted(sorted_inv, np.arange(nocc))
-                    chosen = order[first_idx]
-                    rvx, rvy, rvz = gvx[chosen], gvy[chosen], gvz[chosen]
-                    rra, rsdec, rcdec = ra[chosen], sindec[chosen], cosdec[chosen]
-                else:  # pragma: no cover
-                    # Unreachable as convention is validated in at start of function
-                    raise NotImplementedError("Only shuffle conventions 0,1,2,3 are implemented.")
+                # Optionally navigate reduced bands on a coarser nested grid than the reduction,
+                # so query_disc stays cheap at large separations. The reduced galaxies keep their
+                # ns_red positions; the nav cell is just their nested parent pixel.
+                navshift = 0
+                if nav_coarsen is not None:
+                    rmax_rad = reso_redges[r+1] * deg2rad
+                    ns_c = ns_red
+                    while ns_c>1 and nside2resol(ns_c//2) <= rmax_rad/nav_coarsen:
+                        ns_c//= 2
+                    if ns_c < ns_red:
+                        navshift = 2*(int(ns_red).bit_length() - int(ns_c).bit_length())
+                        nside_nav[r] = ns_c
+                ncells = int(self.clib.sphericalhash_reduce(
+                    order, key_sorted, ngal, nocc, ns_red, nz_key, shuffle, navshift,
+                    gvx, gvy, gvz, ra, sindec, cosdec, w, isinner,
+                    e1_full, e2_full, do_shear, do_wsq,
+                    rvx, rvy, rvz, rra, rsdec, rcdec, rw, ris, rz, re1, re2, rwsq,
+                    cell_pix, cell_redbounds, nthreads))
+                cell_pix = cell_pix[:ncells]
+                cell_redbounds = cell_redbounds[:ncells+1]
+            check_clib_error(self.clib)
 
-                rw = sw
-                ris = (sis > 0).astype(np.float64)
-                red_navpix = pix_for_group
-                rz = (occ_key%nz).astype(np.int64)
-
-                # Parallel transport the shapes to position of reduced galaxy
-                if do_shear:
-                    tra = rra[inv]; tsd = rsdec[inv]; tcd = rcdec[inv]
-                    dlam = ra - tra
-                    phi_cj = np.arctan2(tcd*sindec - tsd*cosdec*np.cos(dlam),  cosdec*np.sin(dlam))
-                    dlam_r = tra - ra
-                    phi_jc = np.arctan2(cosdec*tsd - sindec*tcd*np.cos(dlam_r), tcd*np.sin(dlam_r))
-                    gshear = w * (e1_full + 1j*e2_full) * np.exp(2j*((phi_cj+np.pi) - phi_jc))
-                    sw_safe = np.where(sw==0., 1., sw)
-                    re1 = np.bincount(inv, weights=gshear.real, minlength=nocc) / sw_safe
-                    re2 = np.bincount(inv, weights=gshear.imag, minlength=nocc) / sw_safe
-                    if w2field:
-                        rwsq = np.bincount(inv, weights=w*w, minlength=nocc)
-
-            # Obtain the main hashing arrays. This is kind of equivalent to what we do
-            # in the flat case with (index_matcher, pixs_galind_bounds, pix_gals). 
-            # To allow sparsity by only caring about the filled pixels, we need to argsort;
-            # the sparsity has the advantage that the memory does not blow up when choosing
-            # a large nside for a catalog on a small footprint
-            red_navpix = np.asarray(red_navpix)
-            # Optionally navigate reduced bands on a coarser nested grid than the reduction,
-            # so query_disc stays cheap at large separations. The reduced galaxies keep their
-            # ns_red positions; the nav cell is just their nested parent pixel.
-            if ns_red != 0 and nav_coarsen is not None:
-                rmax_rad = reso_redges[r+1] * deg2rad
-                ns_c = ns_red
-                while ns_c>1 and nside2resol(ns_c//2) <= rmax_rad/nav_coarsen:
-                    ns_c//= 2
-                if ns_c < ns_red:
-                    red_navpix = red_navpix >> (2*(int(ns_red).bit_length() - int(ns_c).bit_length()))
-                    nside_nav[r] = ns_c
-            order = np.argsort(red_navpix, kind='stable')
-            cell_pix, cell_counts = np.unique(red_navpix[order], return_counts=True)
-            ncells = len(cell_pix)
-            cell_redbounds = np.zeros(ncells+1, dtype=np.int64)
-            np.cumsum(cell_counts, out=cell_redbounds[1:])
-            rvx, rvy, rvz = rvx[order], rvy[order], rvz[order]
-            rra, rsdec, rcdec = rra[order], rsdec[order], rcdec[order]
-            rw, ris, rz = rw[order], ris[order], rz[order]
-
-            # Allocate the per-band bookkeeping
-            n_red = len(rvx)
+            # Update the per-band bookkeeping
             ngal_resos[r] = n_red
             ncells_resos[r] = ncells
             red_vx.append(rvx); red_vy.append(rvy); red_vz.append(rvz)
             red_ra.append(rra); red_sindec.append(rsdec); red_cosdec.append(rcdec)
             red_w.append(rw); red_isinner.append(ris); red_zbin.append(rz)
             if do_shear:
-                red_e1.append(re1[order]); red_e2.append(re2[order])
+                red_e1.append(re1); red_e2.append(re2)
                 if w2field:
-                    red_weightsq.append(rwsq[order])
-            cell_pix_list.append(cell_pix.astype(np.int64))
+                    red_weightsq.append(rwsq)
+            cell_pix_list.append(cell_pix)
             cell_redbounds_list.append(cell_redbounds)
 
             if verbose:
@@ -954,16 +945,16 @@ class Catalog:
         # Concatenate with per-band rshift offsets
         def _cat(arrs, dtype):
             return np.concatenate(arrs).astype(dtype) if arrs else np.empty(0, dtype=dtype)
-        
+
         rshift_red = np.zeros(nresos+1, dtype=np.int64)
         np.cumsum(ngal_resos, out=rshift_red[1:])
         rshift_cellpix = np.zeros(nresos+1, dtype=np.int64)
         np.cumsum(ncells_resos, out=rshift_cellpix[1:])
         rshift_cellbounds = np.zeros(nresos+1, dtype=np.int64)
         np.cumsum(ncells_resos+1, out=rshift_cellbounds[1:])
-        
-        # Flag reduced bands whose navigation was coarsened below the reduction. 
-        # Some functions reusenside_nav for cross-reso reduction hierarchy so they
+
+        # Flag reduced bands whose navigation was coarsened below the reduction.
+        # Some functions reuse nside_nav for cross-reso reduction hierarchy so they
         # complain early on by asserting on this flag
         nav_coarsened = bool(np.any((nsides > 0) & (nside_nav < nsides)))
 
@@ -989,8 +980,7 @@ class Catalog:
             rshift_cellbounds=rshift_cellbounds.astype(np.int32),
             cen_vx=gvx, cen_vy=gvy, cen_vz=gvz,
             cen_ra=ra, cen_sindec=sindec, cen_cosdec=cosdec,
-            cen_w=w, cen_isinner=isinner,
-        )
+            cen_w=w, cen_isinner=isinner)
         if do_shear:
             bundle['red_e1'] = _cat(red_e1, np.float64)
             bundle['red_e2'] = _cat(red_e2, np.float64)

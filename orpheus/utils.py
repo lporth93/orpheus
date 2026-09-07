@@ -80,9 +80,12 @@ def _load_clib():
     _check_openmp_runtimes()
     return library_path, clib
 
-def _randomhealpixshift(nside, pixel_idx, rng, oversampling=3):
+def _randomhealpixshift(nside, pixel_idx, rng, oversampling=3):  # pragma: no cover
     """Applies a random shift within a healpix pixel assuming NEST
-    ordering scheme. 
+    ordering scheme.
+
+    Currently unused: the spherical multihash draws its own shifts in C. Kept as the numpy
+    reference for that draw, so it is excluded from coverage rather than exercised.
     """
 
     ngal = len(pixel_idx)

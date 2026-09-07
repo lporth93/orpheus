@@ -205,7 +205,8 @@ class NNCorrelation(BinnedNPCF):
             sep2deg = convertunits(self.sep_units, 'deg')
             nsides, nside_hash = self.tree_resos_to_nsides()
             mh = cat.multihash_bundle(reso_redges=self.tree_redges*sep2deg, nsides=nsides,
-                                      shuffle=self.shuffle_pix, nside_hash=nside_hash, verbose=self._verbose_python)
+                                      shuffle=self.shuffle_pix, nside_hash=nside_hash,
+                                      nthreads=self.nthreads, verbose=self._verbose_python)
         else:
             # Here we need to cut the first reso if it corresponds to discrete catalog
             cutfirst = np.int32(self.tree_resos[0]==0.)
@@ -518,7 +519,7 @@ class GGCorrelation(BinnedNPCF):
             nsides, nside_hash = self.tree_resos_to_nsides()
             mh = cat.multihash_bundle(reso_redges=self.tree_redges*sep2deg, nsides=nsides,
                                       nside_hash=nside_hash, shuffle=self.shuffle_pix,
-                                      verbose=self._verbose_python)
+                                      nthreads=self.nthreads, verbose=self._verbose_python)
             extra = {'e1_resos': mh['red_e1'], 'e2_resos': mh['red_e2']}
         else:
             # Here we need to cut the first reso if it corresponds to discrete catalog

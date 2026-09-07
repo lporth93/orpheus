@@ -12,6 +12,7 @@ long hpx_query_disc_nest_ranges(long nside, const double *vec, double radius,
                                 long *out_lohi, long max_pairs);
 double hpx_nside2resol(long nside);
 long hpx_ang2pix_nest(long nside, const double *vec);
+void hpx_pix2vec_nest(long nside, long ipix, double *vec);
 
 #ifdef __cplusplus
 }
