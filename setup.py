@@ -297,6 +297,7 @@ clib_sources = [
     "orpheus/src/spatialhash.c",
     "orpheus/src/combinatorics.c",
     "orpheus/src/directestimator.c",
+    "orpheus/src/aperturemap.c",
     "orpheus/src/corrfunc_second.c",
     "orpheus/src/corrfunc_third.c",
     "orpheus/src/corrfunc_third_derived.c",
