@@ -23,6 +23,7 @@ from orpheus.direct import (Direct_Map3Unequal, Direct_MapnEqual, Direct_NapnEqu
 from orpheus.npcf_fourth import GGGGCorrelation_NoTomo, GNNNCorrelation_NoTomo, NNNNCorrelation_NoTomo
 from orpheus.npcf_second import GGCorrelation, NGCorrelation, NNCorrelation
 from orpheus.npcf_third import GGGCorrelation, GNNCorrelation, NGGCorrelation, NNNCorrelation
+from orpheus.sphericalmap import SphericalMap
 from orpheus.patchutils import cat2hpx, pickle_load, pickle_save
 
 from conftest import (CORRELATORS, MAX_SEP, MIN_SEP, NBINSR, NBINSZ, NTHREADS, PI,
@@ -1295,3 +1296,28 @@ def test_pickle_save_load_round_trip(tmp_path):
     assert sorted(back) == ["array", "text"]
     assert np.array_equal(back["array"], payload["array"])
     assert back["text"] == payload["text"]
+
+#################
+# FULL-SKY MAPS #
+#################
+
+# Make sure that the spherical aperture mass maps behave as expected for different method setups
+def test_sphericalmap_runs_on_a_sky_catalog():
+    nside, npix = 128, 12*128*128
+    cat = _sky_catalog('shear', 33)
+    for kwargs in (dict(method="Discrete"), dict(method="Tree"),
+                   dict(method="Tree", tree_nsides=[0, 256], rmin_pixsize=4)):
+        smap = SphericalMap(nside=nside, R_ap=30., sep_units='arcmin', nthreads=NTHREADS,
+                            **kwargs)
+        smap.process(cat, dotomo=False)
+        # Check expected shapes and physical values
+        assert np.shape(smap.Map) == (1, npix) and np.shape(smap.coverage) == (2, npix)
+        assert _finite(smap.Map) and np.any(np.asarray(smap.Map) != 0.)
+        assert np.all(np.asarray(smap.norm) >= 0.)
+        # Apertures that were never evaluated read as fully masked, not as pristine sky
+        outside = np.setdiff1d(np.arange(npix), smap.centers_pix)
+        assert np.all(np.asarray(smap.coverage)[:, outside] == 1.)
+        # Co-adding a map with itself leaves Map alone and doubles both norms
+        combo = smap + smap
+        assert np.allclose(combo.Map, smap.Map) and np.allclose(combo.norm, 2.*smap.norm)
+        assert np.allclose(combo.norm_Q, 2.*smap.norm_Q)

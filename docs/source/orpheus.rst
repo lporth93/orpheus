@@ -37,3 +37,12 @@ Direct
    :members:
    :undoc-members:
    :show-inheritance:
+
+
+Maps
+====
+
+.. automodule:: orpheus.sphericalmap
+   :members:
+   :undoc-members:
+   :show-inheritance:

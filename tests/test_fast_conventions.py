@@ -7,6 +7,7 @@ import pytest
 
 from orpheus.catalog import SpinTracerCatalog
 from orpheus.npcf_second import GGCorrelation, NGCorrelation
+from orpheus.sphericalmap import SphericalMap
 
 from conftest import (CORRELATORS, MAX_SEP, MIN_SEP, NBINSR, NTHREADS, RTOL_EXACT,
                       TREE_ONLY, build_correlator, correlator_ids, correlator_outputs,
@@ -107,3 +108,42 @@ def test_spins_match_the_number_of_polar_legs():
         inst = build_correlator(spec, min_sep=MIN_SEP, max_sep=MAX_SEP, nbinsr=NBINSR)
         assert int(np.sum(np.asarray(inst.spins) == 2)) == spec.nspin2, spec.cls.__name__
         assert len(np.asarray(inst.spins)) == spec.order, spec.cls.__name__
+
+# Make sure that aperture mass map of pure E-Mode field does not leak a B-Mode at high declination
+@pytest.mark.parametrize("dec0", [15., 80.])
+def test_sphericalmap_tangential_field_carries_no_cross_mode(dec0):
+    from healpy import ang2pix, pix2vec
+    nside, R_ap, gamma_t, ngal = 256, 20., .1, 4000
+    rng = np.random.default_rng(9)
+
+    # Take the center to be a pixel center, so the estimator evaluates exactly there
+    cpix = ang2pix(nside, np.radians(90.-dec0), np.radians(40.), nest=True)
+    cvec = np.asarray(pix2vec(nside, cpix, nest=True))
+    east = np.array([-cvec[1], cvec[0], 0.]); east /= np.linalg.norm(east)
+    north = np.cross(cvec, east)
+
+    # Tracers spread over the filter support around that center
+    theta = 4.*R_ap*np.pi/(180.*60.)*np.sqrt(rng.uniform(.01, 1., ngal))
+    phi = rng.uniform(0., 2.*np.pi, ngal)
+    gvec = (cvec[:, None]*np.cos(theta)
+            + np.sin(theta)*(np.cos(phi)*east[:, None] + np.sin(phi)*north[:, None]))
+    gvec /= np.linalg.norm(gvec, axis=0)
+    ra = np.degrees(np.arctan2(gvec[1], gvec[0]))%360.
+    dec = np.degrees(np.arcsin(np.clip(gvec[2], -1., 1.)))
+
+    # Map gamma_t to sphere. (Note that in some sense this just checks that we use the 
+    # same bearing convention in C...but it was also verified on "real" data.)
+    dsq = np.sum((gvec - cvec[:, None])**2, axis=0)
+    bear = np.arctan2((cvec[2] - gvec[2]) + .5*gvec[2]*dsq,
+                      gvec[0]*cvec[1] - gvec[1]*cvec[0])
+    ell = -gamma_t*np.exp(2j*bear)
+    cat = SpinTracerCatalog(spin=2, pos1=ra, pos2=dec, tracer_1=ell.real, tracer_2=ell.imag,
+                            weight=np.ones(ngal), geometry='spherical',
+                            units_pos1='deg', units_pos2='deg')
+
+    smap = SphericalMap(nside=nside, R_ap=R_ap, sep_units='arcmin', method="Discrete",
+                        nthreads=NTHREADS)
+    smap.process(cat, dotomo=False, centers=np.array([cpix]), approx_coverage=False)
+    got = smap.Map[0][cpix]
+    assert got.real > 0., "a purely tangential field has to give positive Map"
+    assert abs(got.imag) < RTOL_EXACT*abs(got.real)
