@@ -15,24 +15,23 @@ __all__ = ["SphericalMap"]
 ############################
 
 class SphericalMap:
-    """Aperture mass map of a spin-2 tracer catalog on a curved sky.
+    """Aperture mass map of a spin-2 tracer catalog on the curved sky.
 
-    The map lives on a HEALPix grid in NEST ordering whose pixel centers are the aperture
-    centers. For each center the estimator gathers every galaxy inside the filter support
-    and computes the aperture mass as
+    The map is evaluated on a HEALPix grid in NEST ordering whose pixel centers are the aperture
+    centers. For each center the estimator computes the aperture mass as
 
     .. math::
-        M_\\mathrm{ap} + i M_\\times = \\mathrm{supp}(Q)^2
+        M_\\mathrm{\\rm ap} + i M_\\times = \\mathrm{supp}(Q)^2
             \\frac{\\sum_g w_g Q(\\vartheta_g^2/R_\\mathrm{ap}^2) (e_t + i e_\\times)_g}
                  {\\sum_g w_g},
 
-    using the geodesic distance for the Q-filter and parallel-transporting the shapes to the
-    aperture center.
+    where supp(Q) denotes the support of the aperture filter and we use the geodesic distance for 
+    the Q-filter and parallel-transport the shapes to the aperture center.
 
-    Parameters
+    Attributes
     ----------
     nside : int
-        HEALPix resolution of the aperture centers and of all output maps.
+        Healpix resolution of the aperture centers.
     R_ap : float
         Aperture radius, in ``sep_units``.
     filter_form : str, optional
@@ -41,40 +40,42 @@ class SphericalMap:
     sep_units : str, optional
         Angular unit of ``R_ap``. Defaults to ``"arcmin"``.
     method : str, optional
-        ``"Discrete"`` gathers every galaxy at full resolution, ``"Tree"`` replaces the outer
-        part of the aperture by the reduced tracers of the multihash bands. 
+        The method to be employed for the estimator. Defaults to ``Tree``.
     tree_nsides : list of int, optional
-        Healpix resolutions of the multihash bands; ``tree_nsides[0]`` must be ``0``, marking
-        the discrete band. Ignored for ``method="Discrete"``. If left unset, the bands are
-        chosen at ``process`` time from the tracer density.
+        Healpix resolutions of the multihash bands; ``tree_nsides[0]`` must be ``0``, indicating
+        the discrete band.
+    shuffle_pix: int, optional
+        Choice of how to define centers of the cells in the spatial hash structure.
+        Defaults to ``0``, i.e. position at pixel center of mass.
     rmin_pixsize : float, optional
-        A band of cells of size ``reso`` starts at ``rmin_pixsize*reso``. Defaults to ``20``.
+        The limiting radial distance relative to the resolution of the spatial hash
+        after which one switches to the next resolution in the hierarchy. Defaults to ``20``.
     nside_hash : int, optional
-        Navigation resolution of the discrete band. Defaults to the smallest nside whose
-        pixels are no larger than half the discrete band's outer edge.
-    nthreads : int, optional
-        Number of OpenMP threads. Defaults to ``16``.
-    verbosity : int, optional
-        ``0`` silent, ``1`` python-level, ``2`` C-level progress bars.
-
-    Attributes
-    ----------
-    Map : array of complex, shape (nbinsz, npix)
+        The healpix resolution used for hashing subareas of the patches. Defaults to the smallest 
+        nside whose pixels are not larger than half the discrete band's outer edge.
+    nthreads: int, optional
+        The number of OpenMP threads used within the C kernels. Defaults to ``16``.
+    verbosity: int, optional
+        The level of verbosity during the computation. Level 0: No verbosity, 1: Progress verbosity
+        on python layer, 2: Progress verbosity also on C level, 3: Debug verbosity. Defaults to ``0``.
+    Map : numpy.ndarray
         ``Map + i*Mx``, zero outside the footprint.
-    norm : array of float, shape (nbinsz, npix)
+    norm : numpy.ndarray
         Identity-weighted aperture norm, :math:`\\sum_g w_g`.
-    norm_Q : array of float, shape (nbinsz, npix)
+    norm_Q : numpy.ndarray
         Q-weighted aperture norm, :math:`\\sum_g w_g Q_g`.
-    coverage : array of float, shape (2, npix)
+    var : numpy.ndarray
+        Shape-noise contribution to per-aperture variance of either component of ``Map``.
+    coverage : numpy.ndarray
         Masked area fraction of each aperture, raw and Q-weighted. Follows the mask
         convention of ``FlatDataGrid_2D``: 0 (unmasked) to 1 (fully masked). Apertures
         outside the footprint are never evaluated and are reported as fully masked.
-    centers_pix : array of int
+    centers_pix : numpy.ndarray
         Nested pixel indices of the apertures that were evaluated.
     """
 
     def __init__(self, nside, R_ap, filter_form="C02", sep_units="arcmin",
-                 method="Tree", tree_nsides=None, rmin_pixsize=20,
+                 method="Tree", shuffle_pix=0, tree_nsides=None, rmin_pixsize=20,
                  nside_hash=None, nthreads=16, verbosity=0):
 
         self.nside = int(nside)
@@ -83,12 +84,14 @@ class SphericalMap:
         self.filter_form = filter_form
         self.sep_units = sep_units
         self.method = method
+        self.shuffle_pix = shuffle_pix
         self.rmin_pixsize = rmin_pixsize
         self.nside_hash = nside_hash
         self.nthreads = np.int32(max(1, nthreads))
         self.verbosity = np.int32(verbosity)
         self._verbose_python = verbosity > 0
         self._verbose_c = verbosity > 1
+        self._verbose_debug = verbosity > 2
 
         self.filters_dict = {"S98":0, "C02":1, "Sch04":2, "PolyExp":3}
         self.filters_avail = list(self.filters_dict.keys())
@@ -115,6 +118,7 @@ class SphericalMap:
         self.Map = None
         self.norm = None
         self.norm_Q = None
+        self.var = None
         self.coverage = None
         self.centers_pix = None
 
@@ -138,12 +142,11 @@ class SphericalMap:
             p_f64, p_f64, p_f64, ct.c_long,
             p_f64, ct.c_long,
             ct.c_int32, ct.c_int32,
-            p_c128, p_f64, p_f64, p_f64]
+            p_c128, p_f64, p_f64, p_f64, p_f64]
 
         self.ind_filter = self.filters_dict[self.filter_form]
         self.supp = float(self.clib.getFilterSupp(ct.c_int32(self.ind_filter)))
 
-        # Init attributes consumed by build_tree_params_struct.
         self.tree_nresos = 1 if self.tree_nsides is None else int(len(self.tree_nsides))
         self.resoshift_leafs = 0
         self.minresoind_leaf = 0
@@ -158,34 +161,31 @@ class SphericalMap:
             ns *= 2
         return ns
 
+    # TODO: This only sets [0, dpix]. Should set [0, dpix, 2*dpix, ... 2^nmax*dpix]
     def _auto_tree_nsides(self, nbar_sr, target_occupancy=4., min_occupancy=1.):
-        """Reduction resolution inferred from the tracer density.
-
-        Two lower bounds meet: a band of cells of size ``reso`` starts only at
-        ``rmin_pixsize*reso``, and thinning saturates once a cell holds ``target_occupancy``
-        tracers. Returns ``None`` when the resulting cell merges next to nothing, in which
-        case the caller runs discrete.
-        """
+        """Estimate good tree nside resolution based on tracer density and binning setup."""
         from healpy import nside2pixarea
+        # Get nside estimates based on tree accuracy and nbar of catalog; choose finer one
         rsupp = self.supp*self.R_ap*convertunits(self.sep_units, 'rad')
-        ns_accuracy = self._nside_for(rsupp/self.rmin_pixsize)
-        ns_density = np.sqrt(np.pi*nbar_sr/(3.*target_occupancy))
-        ns_density = 1 << max(0, int(np.floor(np.log2(max(ns_density, 1.)))))
-        ns = max(ns_accuracy, ns_density)
+        nside_accuracy = self._nside_for(rsupp/self.rmin_pixsize)
+        nside_density = np.sqrt(np.pi*nbar_sr/(3.*target_occupancy))
+        nside_density = 1 << max(0, int(np.floor(np.log2(max(nside_density, 1.)))))
+        nside = max(nside_accuracy, nside_density)
 
-        mu = nside2pixarea(ns)*nbar_sr
-        if self._verbose_python:
-            print("NOTE: candidate band nside=%i holds %.2f tracers per cell."%(ns, mu))
+        # Check if using tree with nside is useful. If not .process will run Discrete.
+        mu = nside2pixarea(nside)*nbar_sr
+        if self._verbose_debug:
+            print("NOTE: candidate band nside=%i holds %.2f tracers per cell."%(nside, mu))
+
         if mu < min_occupancy:
-            return None
-        return np.asarray([0, ns], dtype=np.int64)
+            tree_nsides = None
+        else:
+            np.asarray([0, nside], dtype=np.int64)
+
+        return tree_nsides
 
     def _bands(self, nbar_sr=None):
-        """Band nsides and radial edges covering ``[0, supp*R_ap]``, edges in degrees.
-
-        The edges must tile the support without a gap: the kernel never visits a separation
-        below ``reso_redges[0]``.
-        """
+        """Get band nsides and radial edges covering ``[0, supp*R_ap]``, edges in degrees."""
         from healpy import nside2resol
         rad2deg = convertunits('rad', 'deg')
         rmax_deg = self.supp*self.R_ap*convertunits(self.sep_units, 'deg')
@@ -197,11 +197,9 @@ class SphericalMap:
             if tree_nsides is None:
                 tree_nsides = np.zeros(1, dtype=np.int64)
                 if self._verbose_python:
-                    print("NOTE: at this tracer density no reduction cell both thins the "
-                          "catalogue and covers useful radius; running discrete.")
+                    print("NOTE: Tree approximation provides no speedup for this setup; running discrete.")
             elif self._verbose_python:
-                print("NOTE: tree_nsides chosen from the tracer density: %s."
-                      %np.array2string(tree_nsides[1:]))
+                print("NOTE: tree_nsides chosen from the tracer density: %s."%np.array2string(tree_nsides[1:]))
 
         # Drop the bands whose inner edge already sits beyond the filter support
         redges = [0.]
@@ -213,14 +211,20 @@ class SphericalMap:
             redges.append(edge)
             nsides.append(ns)
         redges.append(rmax_deg)
-        if len(nsides) < len(tree_nsides) and self._verbose_python:
+        if len(nsides) < len(tree_nsides) and self._verbose_debug:
             print("NOTE: %i of %i tree_nsides start beyond the filter support (%.4g %s) and "
                   "are unused; the tree has %i band(s)."
                   %(len(tree_nsides)-len(nsides), len(tree_nsides), self.supp*self.R_ap,
                     self.sep_units, len(nsides)))
+        # The cell partition of the kernel needs the bands ordered from fine to coarse
+        assert(np.all(np.diff(redges) > 0.))
 
+        # Band 0 is partitioned along the cells of band 1, so its nav grid is that of band 1
+        # and must not be coarser when set by hand
         nside_hash = self.nside_hash
-        if nside_hash is None:
+        if len(nsides) > 1:
+            nside_hash = int(nsides[1]) if nside_hash is None else max(int(nside_hash), int(nsides[1]))
+        elif nside_hash is None:
             nside_hash = self._nside_for(0.5*redges[1]/rad2deg)
 
         return np.asarray(nsides, dtype=np.int64), np.asarray(redges, dtype=np.float64), nside_hash
@@ -245,29 +249,25 @@ class SphericalMap:
         occupied[inside >> k] = True
         return np.flatnonzero(occupied)
 
-    def _mask_from_catalog(self, cat, target_per_pixel):
-        """Binary footprint mask inferred from the tracer positions.
-
-        Two caps set the resolution. The coverage pass walks every mask pixel of every
-        aperture, so the cells are kept no finer than the reduction cells of the tree, whose
-        size is ``rsupp/rmin_pixsize``; the mask then never carries more pixels per aperture
-        than the kernel carries tracers. A cell holding of order one tracer would also let
-        Poisson holes punch spurious gaps through the interior, so the grid is coarsened until
-        it averages ``target_per_pixel`` tracers. Holes below the surviving resolution are
-        invisible; supply ``mask`` whenever the footprint is known.
-        """
+    def _mask_from_catalog(self, cat, target_per_pixel=10):
+        """Binary footprint mask estimated from the tracer positions."""
         from healpy import ang2pix
         theta = (90. - cat.pos2)*np.pi/180.
         phi = (cat.pos1*np.pi/180.)%(2.*np.pi)
-
-        rsupp = self.supp*self.R_ap*convertunits(self.sep_units, 'rad')
-        ns = self._nside_for(rsupp/self.rmin_pixsize)
+        # Get galaxy counts per cell at highest considered mask resolution in nest
+        if self.tree_nsides is not None and len(self.tree_nsides) > 1:
+            ns = int(np.min(self.tree_nsides[1:]))
+        else:
+            rsupp = self.supp*self.R_ap*convertunits(self.sep_units, 'rad')
+            ns = self._nside_for(rsupp/self.rmin_pixsize)
         counts = np.bincount(ang2pix(ns, theta, phi, nest=True), minlength=12*ns*ns)
         del theta, phi
-        # Nested children are contiguous, so coarsening is a sum over blocks of four
+        # If filled pixels contain less than the number of target galaxies, iteratively
+        # coarsen the resolution (using that nest ordering is contiguous)
         while ns > 1 and cat.ngal < target_per_pixel*np.count_nonzero(counts):
             counts = counts.reshape(-1, 4).sum(axis=1)
             ns //= 2
+        # Retrieve the mask at the inferred resolution
         if self._verbose_python:
             nocc = np.count_nonzero(counts)
             print("NOTE: no mask given; footprint inferred at nside=%i (%.1f tracers per "
@@ -313,13 +313,12 @@ class SphericalMap:
             nbinsz = cat.nbinsz
         self.nbinsz = nbinsz
 
-        # The dense output maps dominate the footprint; flag before allocating them
-        nel = 4*self.npix*nbinsz
+        # Make sure to not exceed memory in C
+        nel = self.npix*nbinsz
         if nel > 2e9:
-            raise MemoryError("SphericalMap outputs would need %.2g elements at nside=%i with "
-                              "nbinsz=%i, above the 2e9 contract. Lower nside or run one "
-                              "tomographic bin at a time."%(nel, self.nside, nbinsz))
-        if nel > 2e8 and self._verbose_python:
+            raise MemoryError("Output map exceeds memory; would need %.2g elements at nside=%i with "
+                              "nbinsz=%i. Lower nside or run one tomographic bin at a time."%(nel, self.nside, nbinsz))
+        if nel > 2e8 and self._verbose_debug:
             print("NOTE: SphericalMap outputs hold %.2g elements (%.1f GB)."
                   %(nel, nel*8./2**30))
 
@@ -358,38 +357,35 @@ class SphericalMap:
         cvz = np.ascontiguousarray(cvz)
 
         ## Multihash bundle and input structs ##
-        # _bands drops any band starting beyond the filter support, so the struct band count
-        # follows the bundle rather than the requested tree_nsides
+        # Setup multihash; only keep bands within the filter support
         nsides, redges, nside_hash = self._bands(nbar_sr)
         self.tree_nresos = int(len(nsides))
         self.maxresoind_leaf = self.tree_nresos - 1
         mh = cat.multihash_bundle(reso_redges=redges, nsides=nsides, nside_hash=nside_hash,
-                                  nthreads=self.nthreads, verbose=self._verbose_python)
-        # Whether the tree can pay for its extra hashing passes is decided by how far the
-        # reduced bands actually thin the catalogue, which depends on the tracer density and
-        # on the band cell sizes. Retentions near 100% mean the bands cost a full pass each
-        # and buy nothing, so report them rather than leaving it to be guessed.
-        if self._verbose_python and len(mh['ngal_resos']) > 1:
+                                  nthreads=self.nthreads, shuffle=self.shuffle_pix, verbose=self._verbose_python)
+        # Debug: Give number of galaxies per band; can be used to check inefficient setup
+        if self._verbose_debug and len(mh['ngal_resos']) > 1:
             frac = 100.*np.asarray(mh['ngal_resos'][1:])/float(mh['ngal_resos'][0])
             print("NOTE: reduced bands retain %s of the tracers."
                   %(", ".join("%.0f%%"%f for f in frac)))
-
+        # Build structs to be passed to C
         extra = {'e1_resos':mh['red_e1'], 'e2_resos':mh['red_e2']}
         cat_s, keep_cat = build_catalog_struct(mh, nbinsz, extra=extra)
         cat_s.nresos = int(self.tree_nresos)
         nav_s, keep_nav = build_navhash_struct(mh, cat_obj=cat)
         tree_s, keep_tree = build_tree_params_struct(self, mh)
-
+        # Define mask
         if mask is None:
             mask_arr = np.zeros(1, dtype=np.float64)
             nside_mask = 0
         else:
             mask_arr = np.ascontiguousarray(mask, dtype=np.float64)
             nside_mask = int(npix2nside(len(mask_arr)))
-
+        # Init output for C function
         _Map = np.zeros(nbinsz*ncenters, dtype=np.complex128)
         _norm = np.zeros(nbinsz*ncenters, dtype=np.float64)
         _normQ = np.zeros(nbinsz*ncenters, dtype=np.float64)
+        _var = np.zeros(nbinsz*ncenters, dtype=np.float64)
         _cov = np.zeros(2*ncenters, dtype=np.float64)
 
         # Keep numpy arrays backing ctypes pointer fields alive during the C call.
@@ -403,21 +399,21 @@ class SphericalMap:
             cvx, cvy, cvz, ct.c_long(ncenters),
             mask_arr, ct.c_long(nside_mask),
             ct.c_int32(int(self.nthreads)), ct.c_int32(int(self._verbose_c)),
-            _Map, _norm, _normQ, _cov)
+            _Map, _norm, _normQ, _var, _cov)
         check_clib_error(self.clib)
 
-        ## Scatter the compact results onto the dense grid ##
+        # Allocate output on healpix grid
+        # Note that we treat apertures outside footprint as fully covered
         self.centers_pix = centers_pix
         self.Map = np.zeros((nbinsz, self.npix), dtype=np.complex128)
         self.norm = np.zeros((nbinsz, self.npix), dtype=np.float64)
         self.norm_Q = np.zeros((nbinsz, self.npix), dtype=np.float64)
-        # Apertures outside the footprint are never evaluated. Leaving them at zero would
-        # claim they are fully unmasked, the opposite of the truth, and would let them pass
-        # the usual `coverage < threshold` selection; they start fully masked instead.
+        self.var = np.zeros((nbinsz, self.npix), dtype=np.float64)
         self.coverage = np.ones((2, self.npix), dtype=np.float64)
         self.Map[:, centers_pix] = _Map.reshape((nbinsz, ncenters))
         self.norm[:, centers_pix] = _norm.reshape((nbinsz, ncenters))
         self.norm_Q[:, centers_pix] = _normQ.reshape((nbinsz, ncenters))
+        self.var[:, centers_pix] = _var.reshape((nbinsz, ncenters))
         self.coverage[:, centers_pix] = _cov.reshape((2, ncenters))
 
         if not dotomo:
@@ -454,6 +450,7 @@ class SphericalMap:
         new.Map = self.Map.copy()
         new.norm = self.norm.copy()
         new.norm_Q = self.norm_Q.copy()
+        new.var = self.var.copy()
         new.coverage = self.coverage.copy()
         return new
 
@@ -466,6 +463,8 @@ class SphericalMap:
         new.norm_Q = self.norm_Q + other.norm_Q
         new.Map = np.divide(self.Map*self.norm + other.Map*other.norm, wtot,
                             out=np.zeros_like(self.Map), where=wtot > 0.)
+        new.var = np.divide(self.var*self.norm**2 + other.var*other.norm**2, wtot**2,
+                            out=np.zeros_like(self.var), where=wtot > 0.)
         new.coverage = np.divide(
             self.coverage*self.norm[0] + other.coverage*other.norm[0], wtot[0],
             out=np.ones_like(self.coverage), where=wtot[0] > 0.)
