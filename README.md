@@ -83,9 +83,7 @@ In addition, <span style="font-variant: small-caps;">orpheus</span> also impleme
 for aperture statistics of arbitrary order for pure scalar and polar correlators, as well as 
 curved-sky aperture mass maps from a shape catalog.
 
-Almost all correlators are featured in the [tutorial notebooks](https://orpheus.readthedocs.io/tutorial.html) --
-the exception is GNNN, for which no notebook is published yet. 
-In there you can also find worked examples on how to measure the statistics on realistic catalogs on the 
+Almost all correlators are featured in the [tutorial notebooks](https://orpheus.readthedocs.io/tutorial.html). In there you can also find worked examples on how to measure the statistics on realistic catalogs on the 
 celestial sphere, how to handle tomography and how to customize the level of accuracy of the estimators.
 
 ## Performance
