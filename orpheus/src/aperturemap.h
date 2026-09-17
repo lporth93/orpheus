@@ -11,6 +11,7 @@ void aperturemassmap_spherical(
     const double *cvx, const double *cvy, const double *cvz, long ncenters,
     const double *mask, long nside_mask,
     int nthreads, int verbose,
-    double complex *out_Map, double *out_norm, double *out_normQ, double *out_cov);
+    double complex *out_Map, double *out_norm, double *out_normQ, double *out_var,
+    double *out_cov);
 
 #endif // ORPHEUS_APERTUREMAP_H
