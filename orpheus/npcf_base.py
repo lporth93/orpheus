@@ -99,7 +99,7 @@ class BinnedNPCF:
         The level of verbosity during the computation. Level 0: No verbosity, 1: Progress verbosity
         on python layer, 2: Progress verbosity also on C level, 3: Debug verbosity. Defaults to ``0``.
     nthreads: int, optional
-        The number of openmp threads used for the reduction procedure. Defaults to ``16``.
+        The number of OpenMP threads used within the C kernels. Defaults to ``16``.
     bin_centers: numpy.ndarray
         The centers of the radial bins for each combination of tomographic redshifts.
     bin_centers_mean: numpy.ndarray

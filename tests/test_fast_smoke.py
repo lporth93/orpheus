@@ -1314,10 +1314,13 @@ def test_sphericalmap_runs_on_a_sky_catalog():
         assert np.shape(smap.Map) == (1, npix) and np.shape(smap.coverage) == (2, npix)
         assert _finite(smap.Map) and np.any(np.asarray(smap.Map) != 0.)
         assert np.all(np.asarray(smap.norm) >= 0.)
+        assert np.shape(smap.var) == (1, npix) and _finite(smap.var)
+        assert np.all((smap.var > 0.) == (smap.norm > 0.))
         # Apertures that were never evaluated read as fully masked, not as pristine sky
         outside = np.setdiff1d(np.arange(npix), smap.centers_pix)
         assert np.all(np.asarray(smap.coverage)[:, outside] == 1.)
-        # Co-adding a map with itself leaves Map alone and doubles both norms
+        # Co-adding a map with itself leaves Map alone, doubles norms and halves variance
         combo = smap + smap
         assert np.allclose(combo.Map, smap.Map) and np.allclose(combo.norm, 2.*smap.norm)
         assert np.allclose(combo.norm_Q, 2.*smap.norm_Q)
+        assert np.allclose(combo.var, .5*smap.var)
