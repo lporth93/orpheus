@@ -74,6 +74,35 @@ parallelised C kernels.
 
 ## Detailed changelog (*mainly updated by claude*)
 
+### Unreleased
+
+#### Added
+
+* **The covariance module, `GGCovariance` and `GGCovarianceNoTomo`.** Gaussian covariance of
+  the shear 2PCF from pair, triplet and quadruplet counts (S+02, L25), either measured on a
+  catalog, idealised Poisson counts or the continuum limit, with the integrals in
+  `orpheus/src/cov_postq.c`. It is importable from the package root but not yet in
+  `__all__`. Coming from the `covariance` branch, five things changed on the way in:
+  * The measured pair counts were twice the ordered pair counts. `GGCorrelation.norm`
+    already holds both orders of every pair, and the module doubled it again, which halved
+    the shape noise and quartered the mixed and cosmic-variance terms of every covariance
+    built from measured pairs. Cached pair counts carry a new key, so old ones are not
+    reused.
+  * The quadruplet density divided out the angular normalisation `2*pi/nbinsphi**2` that
+    `NNNNCorrelation_NoTomo.npcf` lost in 0.5.2. On main it would have scaled the measured
+    quadruplet density, and with it the cosmic-variance terms, by that factor.
+  * Combining the 4PCF of several patches raised `IndexError` on main, since
+    `NNNNCorrelation_NoTomo.multipoles2npcf` now also reads `npcf_multipoles_norm`.
+  * The shape noise of a pair of distinct tomographic bins was twice too large: its pairs
+    are now double counted like the ordered pairs within one bin.
+  * Given `nbar_ref`, the idealised multiplets and the constant quadruplet density of
+    `'frompairs'` are built at `nbar_ref` rather than at the first per-bin density, so they
+    share the reference the tomographic terms are rescaled from.
+
+  The multiplet measurements take `shuffle_pix` from the `catalog` dict, defaulting to random
+  positions within the cells. `tests/test_fast_covariance.py` checks the measured counts
+  against brute force and against the idealised counts.
+
 ### 0.6.0 — 2026-09-08
 
 #### Added

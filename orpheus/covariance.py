@@ -444,7 +444,9 @@ class GGCovarianceNoTomo:
         ``rmin_pixsize`` (default 40), ``tree_resos`` (default
         ``[0, 0.5, 1, 2, 4]``), ``npatches`` and ``nmaxs`` (required for the
         4PCF), plus optional ``method`` (4PCF tree method, default
-        ``'DoubleTree'``), ``verbosity`` and ``memory_bound``. The
+        ``'DoubleTree'``), ``shuffle_pix`` (cell positions of the tree,
+        default 1, i.e. random within the cell), ``verbosity`` and
+        ``memory_bound``. The
         measurement binning is derived from the covariance grids
         (``theta_edges`` for pairs, the oversampled triplet θ grid +
         ``phi_centers`` for triplets, ``q_theta`` / ``q_phi`` for
@@ -2526,20 +2528,25 @@ class GGCovarianceNoTomo:
         # estimators -- GGCorrelation never sees it.
         npatches = int(self._catalog_param('npatches', required=True))
         np_tag = () if npatches == 1 else (npatches,)
+        # Likewise the cell shuffling only enters when it is not the default.
+        shuffle_pix = int(self._catalog_param('shuffle_pix', 1))
+        sh_tag = () if shuffle_pix == 1 else (('shuffle_pix', shuffle_pix),)
         if stat == 'pairs':
+            # 'ordered': the counts are GGCorrelation's norm, which already holds
+            # both orders of every pair. Earlier caches held twice that.
             meta = ('pairs', float(self.theta_edges[0]),
-                    float(self.theta_edges[-1]), int(self.n_r)) + np_tag
+                    float(self.theta_edges[-1]), int(self.n_r), 'ordered') + np_tag + sh_tag
         elif stat == 'triplets':
             nmaxs = list(np.ravel(self._catalog_param('nmaxs', required=True)))
             meta = ('triplets', float(self.theta_edges[0]),
                     float(self.theta_edges[-1]), int(self.triplet_n_r),
-                    int(self.n_phi), nmaxs) + np_tag
+                    int(self.n_phi), nmaxs) + np_tag + sh_tag
         elif stat == 'quadruplets':
             nmaxs = list(np.ravel(self._catalog_param('nmaxs', required=True)))
             meta = ('quadruplets', float(self.q_theta_edges[0]),
                     float(self.q_theta_edges[-1]), int(self.q_n_r),
                     int(self.q_n_phi), nmaxs, npatches,
-                    self._catalog_param('method', 'DoubleTree'))
+                    self._catalog_param('method', 'DoubleTree')) + sh_tag
         else:
             raise ValueError(f"unknown stat '{stat}'")
         h.update(repr((meta, rmin_pixsize, tree_resos)).encode())
@@ -2608,11 +2615,13 @@ class GGCovarianceNoTomo:
                 max_sep=float(self.theta_edges[-1]), nbinsr=self.n_r,
                 rmin_pixsize=self._catalog_param('rmin_pixsize', 40),
                 tree_resos=self._catalog_param('tree_resos', [0., 0.5, 1., 2., 4.]),
-                shuffle_pix=1, verbosity=self._catalog_param('verbosity', 1),
+                shuffle_pix=self._catalog_param('shuffle_pix', 1),
+                verbosity=self._catalog_param('verbosity', 1),
                 nthreads=self.n_workers)
             gg.process(self._ensure_catalog('spin'))
-            # Factor 2: N_p counts ordered pairs (both (i,j) and (j,i)).
-            pairs = 2. * np.asarray(gg.norm[0], dtype=float)
+            # N_p counts ordered pairs (both (i,j) and (j,i)), which is what
+            # GGCorrelation's norm holds with or without do_dc.
+            pairs = np.asarray(gg.norm[0], dtype=float)
             bc = np.asarray(gg.bin_centers_mean, dtype=float)
             empty = bc == 0.
             if empty.any():
@@ -2646,7 +2655,8 @@ class GGCovarianceNoTomo:
                 nmaxs=self._nmaxs(), nbinsphi=self.n_phi,
                 rmin_pixsize=self._catalog_param('rmin_pixsize', 40),
                 tree_resos=self._catalog_param('tree_resos', [0., 0.5, 1., 2., 4.]),
-                shuffle_pix=1, verbosity=self._catalog_param('verbosity', 1),
+                shuffle_pix=self._catalog_param('shuffle_pix', 1),
+                verbosity=self._catalog_param('verbosity', 1),
                 nthreads=self.n_workers)
             ggg.process(self._ensure_catalog('spin'))
             # Only the norm is needed; 'X' skips the centroid rotation of the
@@ -2727,6 +2737,7 @@ class GGCovarianceNoTomo:
         method = self._catalog_param('method', 'DoubleTree')
         verbosity = self._catalog_param('verbosity', 1)
         memory_bound = self._catalog_param('memory_bound', 512.)
+        shuffle_pix = self._catalog_param('shuffle_pix', 1)
         min_sep = float(self.q_theta_edges[0])
         max_sep = float(self.q_theta_edges[-1])
         cat = self._ensure_catalog('scalar')   # spherical, already patched
@@ -2736,7 +2747,7 @@ class GGCovarianceNoTomo:
                 min_sep=min_sep, max_sep=max_sep, nbinsr=self.q_n_r,
                 nbinsphi=self.q_n_phi, nmaxs=nmaxs, method=method,
                 rmin_pixsize=rmin_pixsize, tree_resos=tree_resos,
-                shuffle_pix=1, verbosity=verbosity, nthreads=self.n_workers)
+                shuffle_pix=shuffle_pix, verbosity=verbosity, nthreads=self.n_workers)
 
         if npatches == 1:
             # Single (flat) footprint patch -- process it directly.
@@ -2780,7 +2791,10 @@ class GGCovarianceNoTomo:
 
         ## Combine: sum the per-patch multipoles, average the bin centers.
         nnnn = _new_nnnn()
+        # NNNN normalises by its own counts, so the multipoles are their own norm
+        # (as set in NNNNCorrelation_NoTomo.process).
         nnnn.npcf_multipoles = summed
+        nnnn.npcf_multipoles_norm = summed
         nnnn.bin_centers_mean = np.divide(
             centers, norm_centers, out=np.zeros_like(centers),
             where=norm_centers > 0)
@@ -2797,18 +2811,16 @@ class GGCovarianceNoTomo:
             q = N_q / V_q ,
             V_q = 2π A t1 dt1 t2 dt2 t3 dt3 dφ12 dφ13 ,
 
-        with the orpheus real-space angular normalisation
-        ``2π / q_n_phi²`` folded into N_q (matching the convention used with
+        where N_q is the real-space NNNN npcf, i.e. the quadruplet count of
+        each bin (matching the convention used with
         :meth:`set_quadruplets_from_counts`).
         """
         if self.area is None:
             raise ValueError("`area` is required to convert counts to density")
-        quadcounts_norm = 2. * np.pi / self.q_n_phi / self.q_n_phi
         q = np.array(counts, dtype=float)
         tdt = self.q_theta_centers * self.q_dtheta
         dp = self.q_dphi
         # V_q is separable -- divide axis by axis (see set_quadruplets_from_counts).
-        q *= quadcounts_norm
         q /= 2. * np.pi * self.area
         q /= tdt[:, None, None, None, None]
         q /= tdt[None, :, None, None, None]
@@ -3154,7 +3166,10 @@ class GGCovariance(GGCovarianceNoTomo):
                 raise ValueError(
                     f"nbar must be a scalar or length-{self.ntomo} array, "
                     f"got length {nb.size}")
-            kwargs['nbar'] = float(nb[0])
+            # The parent builds the idealised multiplets and the constant
+            # quadruplet density, which live at the reference density that
+            # the tomographic terms are rescaled from.
+            kwargs['nbar'] = float(nb[0]) if nbar_ref is None else float(nbar_ref)
         else:
             nb = None
 
@@ -3403,6 +3418,10 @@ class GGCovariance(GGCovarianceNoTomo):
                 if self.nbar_ref is not None:
                     Np = Np * (self.nbar[a] * self.nbar[b]
                                / self.nbar_ref**2)
+            # Np are ordered pairs within one bin. A pair between two bins is
+            # double counted on the same footing by taking it in both orders.
+            if a != b:
+                Np = 2. * Np
             self.D_tomo[bp] = se4 * ww_factor / Np
         return self.D_tomo
 
