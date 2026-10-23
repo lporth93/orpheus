@@ -82,7 +82,7 @@ parallelised C kernels.
   the shear 2PCF from pair, triplet and quadruplet counts (S+02, L25), either measured on a
   catalog, idealised Poisson counts or the continuum limit, with the integrals in
   `orpheus/src/cov_postq.c`. It is importable from the package root but not yet in
-  `__all__`. Coming from the `covariance` branch, five things changed on the way in:
+  `__all__`. Coming from the `covariance` branch, six things changed on the way in:
   * The measured pair counts were twice the ordered pair counts. `GGCorrelation.norm`
     already holds both orders of every pair, and the module doubled it again, which halved
     the shape noise and quartered the mixed and cosmic-variance terms of every covariance
@@ -98,6 +98,10 @@ parallelised C kernels.
   * Given `nbar_ref`, the idealised multiplets and the constant quadruplet density of
     `'frompairs'` are built at `nbar_ref` rather than at the first per-bin density, so they
     share the reference the tomographic terms are rescaled from.
+  * For a xi given as a plain callable, without the knots of an interpolator, the mixed term
+    tabulated xi only from the smallest bin upwards and dropped every triplet whose third
+    side is shorter, e.g. to 0.56 of its value in the first of 8 bins over 2-60 arcmin. It
+    now starts the table where the sample-variance kernels do.
 
   The multiplet measurements take `shuffle_pix` from the `catalog` dict, defaulting to random
   positions within the cells. `tests/test_fast_covariance.py` checks the measured counts

@@ -769,9 +769,10 @@ class GGCovarianceNoTomo:
         default 1024×1024 grids.
         """
         fn = self._clib.continuous_q_single
+        # The third side of a triplet reaches far below the smallest bin
         xi_x, xi_y_tables, xi_logx0, xi_inv_dlogx, xi_n = \
             self._xi_tables_from_splines(
-                [xi_func], lo=self.theta_edges[0], hi=2. * self.theta_edges[-1])
+                [xi_func], lo=self._xi_query_lo(), hi=2. * self.theta_edges[-1])
 
         alpha = int(nr_target // self.n_r)
         n_fine = alpha * self.n_r
@@ -1047,8 +1048,9 @@ class GGCovarianceNoTomo:
         (cos(4(φ−φ_jk))).
         """
         nr = len(tc)
+        # The third side of a triplet reaches far below the smallest bin
         xi_x, xi_y, logx0, inv_dlogx, xi_n = self._xi_tables_from_splines(
-            [xi_func], lo=min(tc[0], self.theta_edges[0]), hi=2. * tc[-1])
+            [xi_func], lo=min(tc[0], self._xi_query_lo()), hi=2. * tc[-1])
         out = np.zeros((nr, nr), dtype=np.float64)
         self._clib.triplet_term_reduce(
             np.ascontiguousarray(Nt, dtype=np.float64), nr, len(phic),

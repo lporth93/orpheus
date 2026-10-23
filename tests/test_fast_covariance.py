@@ -1,5 +1,5 @@
 # Here we check the multiplet counts that the covariance module measures from a catalog,
-# and the shape-noise term built from them. The setup is a single tomographic bin of a
+# and the terms built from them. The counts are measured on a single tomographic bin of a
 # few thousand uniform galaxies on a small patch near the equator, split into two patches
 # so that the per-patch measurements are combined as for a survey. The file is organised as:
 #
@@ -8,12 +8,14 @@
 # * Measured counts against the idealised counts: they have to agree up to the footprint
 #   edges, which we model exactly, and Poisson noise
 # * Densities of the tomographic covariance: shape noise and reference density
+# * Mixed term from triplets whose third side is shorter than the smallest bin
 
 import numpy as np
 import pytest
+from scipy.interpolate import interp1d
 from scipy.spatial import cKDTree
 
-from orpheus.covariance import GGCovariance
+from orpheus.covariance import GGCovariance, GGCovarianceNoTomo
 
 from conftest import NTHREADS, RTOL_EXACT, RTOL_LOOSE, RTOL_SHARP
 
@@ -201,3 +203,38 @@ def test_idealised_multiplets_live_at_the_reference_density(method_quadruplets):
     assert np.allclose(cov.pairs, 2.*np.pi*area*nbar_ref**2*tc*np.diff(THETA_EDGES),
                        rtol=RTOL_EXACT, atol=0.)
     assert np.isclose(cov._q_const, nbar_ref**4, rtol=RTOL_EXACT, atol=0.)
+
+
+#####################################
+# MIXED TERM BELOW THE SMALLEST BIN #
+#####################################
+
+# xi given with its own knots is tabulated on them, a plain callable on the range the
+# kernels query. The third side of a triplet reaches far below the smallest bin, so both
+# have to give the same mixed term.
+def _xi_with_knots():
+    theta = np.geomspace(1e-3, 1e3, 4000)
+    return interp1d(theta, _xi(theta))
+
+@pytest.mark.parametrize("qterm", ['getqpp_tomo', 'getqmm_tomo', 'getqpm_tomo'])
+def test_idealised_mixed_term_includes_short_triplet_sides(qterm):
+    phic, phie = _phibins(64)
+    kw = dict(theta_centers=_centers(THETA_EDGES), theta_edges=THETA_EDGES,
+              phi_centers=phic, phi_edges=phie, sigma_eps=SIGMA_EPS,
+              nbar=10./60.**2, area=100.*60.**2, n_workers=NTHREADS)
+    plain = getattr(GGCovariance(spline_xip=_xi, spline_xim=_xi, **kw), qterm)()
+    knots = getattr(GGCovariance(spline_xip=_xi_with_knots(), spline_xim=_xi_with_knots(),
+                                 **kw), qterm)()
+    for combo, block in knots.items():
+        assert np.max(np.abs(plain[combo]-block)) < RTOL_SHARP*np.max(np.abs(block))
+
+def test_continuous_mixed_term_includes_short_triplet_sides():
+    kw = dict(theta_centers=_centers(THETA_EDGES), theta_edges=THETA_EDGES,
+              method_pairs='continuous', method_triplets='continuous',
+              method_quadruplets='continuous', sigma_eps=SIGMA_EPS,
+              nbar=10./60.**2, area=100.*60.**2, n_workers=NTHREADS)
+    plain = GGCovarianceNoTomo(spline_xip=_xi, spline_xim=_xi, **kw)
+    knots = GGCovarianceNoTomo(spline_xip=_xi_with_knots(), spline_xim=_xi_with_knots(), **kw)
+    qplain = plain.getqpp_continuous(nr_target=256, nphi_target=256)
+    qknots = knots.getqpp_continuous(nr_target=256, nphi_target=256)
+    assert np.max(np.abs(qplain-qknots)) < RTOL_SHARP*np.max(np.abs(qknots))
