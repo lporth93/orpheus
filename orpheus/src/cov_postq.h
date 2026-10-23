@@ -3,24 +3,46 @@
 #ifndef COV_POSTQ_H
 #define COV_POSTQ_H
 
-///////////////////////////////////
-// Quadruplet (SVA) accumulation //
-///////////////////////////////////
+//////////////////////////////////////
+// Quadruplet density interpolation //
+//////////////////////////////////////
 
-void postq_accumulate_tomo(const double *q_vals,
-                           int nrb1, int nrb2, int nv1, int nv2c,
-                           const double *abs_a, const double *va,
-                           const double *abs_b, const double *vb,
-                           const double *v1_grid, const double *v2_chunk,
-                           const double *xi_x, int xi_n,
-                           double xi_logx0, double xi_inv_dlogx,
-                           int n_cb,
-                           const int *xi_a_idx, const int *xi_b_idx,
-                           const double *xi_y_tables, int n_xi_unique,
-                           const double *v1_w, const double *v2_wc,
-                           const int *w_ids, const int *out_idx,
-                           const double *wick_fac,
-                           int n_out, double *sub_accum);
+void interp4d(const double *q_slice, const double *r_centers, const double *phi_centers,
+             int nr, int nphi,
+             double r_min, double r_max, double logr0, double inv_dlogr,
+             double phi0, double inv_dphi,
+             const double *t2f, const double *t3f, const double *a12f, const double *a13f,
+             int n, double *out);
+
+////////////////////////////////
+// Quadruplet (SVA) integral   //
+////////////////////////////////
+
+void quadruplet_sva_integrate(const double *phi_grid, const double *phi_w,
+                              int n_phi, int n_r,
+                              const double *phi1_nodes,
+                              const double *phi1_weights, int ns1,
+                              const double *phi2_nodes,
+                              const double *phi2_weights, int ns2,
+                              const double *v1_grid, const double *v1_w, int nv1,
+                              const double *v2_grid, const double *v2_w, int nv2,
+                              int nr_block, int v2_block,
+                              const int *tiles, int n_tiles,
+                              int q_mode, const double *q_array,
+                              const double *q_r_centers,
+                              const double *q_phi_centers, int q_nr, int q_nphi,
+                              double q_const, const double *sup_t1,
+                              const double *sup_t2, const double *sup_t3,
+                              const double *xi_x, int xi_n,
+                              double xi_logx0, double xi_inv_dlogx,
+                              const double *xi_y_tables, int n_xi_unique,
+                              int n_cb,
+                              const int *xi_a_idx, const int *xi_b_idx,
+                              const int *w_ids, const int *out_idx,
+                              const double *wick_fac,
+                              int n_out, const int *symmetric_mask,
+                              const int *pair_mask,
+                              double *results, int nthreads, int verbose);
 
 /////////////////////////////////
 // Continuous-limit estimators //
