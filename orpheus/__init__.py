@@ -8,6 +8,7 @@ from .npcf_fourth import (GGGGCorrelation_NoTomo, GNNNCorrelation_NoTomo,
                           NNNNCorrelation_NoTomo)
 from .direct import (DirectEstimator, Direct_Map3Unequal, Direct_MapnEqual,
                      Direct_NapnEqual, MapCombinatorics)
+from .covariance import GGCovariance, GGCovarianceNoTomo
 from .flat2dgrid import FlatDataGrid_2D, FlatPixelGrid_2D
 from .sphericalmap import SphericalMap
 from .patchutils import (cat2hpx, frompatchindices_preparerot, gen_cat_patchindices,
@@ -16,12 +17,6 @@ from .utils import (check_clib_error, convertunits, flatlist,
                     gen_n2n3indices_Gtildefourth, gen_n2n3indices_Upsfourth,
                     gen_thetacombis_fourthorder, get_site_packages_dir, map_ztuples,
                     search_file_in_site_package, symmetrize_map3_multiscale)
-
-# TODO: Put in once public
-try:
-    from .covariance import *
-except ModuleNotFoundError:
-    pass
 
 __all__ = [
     "__version__",
@@ -35,6 +30,8 @@ __all__ = [
     # Direct estimators
     "DirectEstimator", "Direct_MapnEqual", "Direct_NapnEqual", "Direct_Map3Unequal",
     "MapCombinatorics",
+    # Covariance of the shear 2PCF
+    "GGCovariance", "GGCovarianceNoTomo",
     # Grids and helpers
     "FlatDataGrid_2D", "FlatPixelGrid_2D", "SphericalMap",
     "cat2hpx", "frompatchindices_preparerot", "gen_cat_patchindices", "toorigin",

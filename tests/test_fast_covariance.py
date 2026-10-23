@@ -1,7 +1,8 @@
 # Here we check the multiplet counts that the covariance module measures from a catalog,
-# and the terms built from them. The counts are measured on a single tomographic bin of a
-# few thousand uniform galaxies on a small patch near the equator, split into two patches
-# so that the per-patch measurements are combined as for a survey. The file is organised as:
+# the shape-noise term built from them, and how the covariance terms are put together. The
+# counts are measured on a single tomographic bin of a few thousand uniform galaxies on a
+# small patch near the equator, split into two patches so that the per-patch measurements
+# are combined as for a survey. The file is organised as:
 #
 # * Measured counts against brute-force counts: exact up to the few multiplets whose
 #   bin changes under the patch projection
@@ -9,13 +10,14 @@
 #   edges, which we model exactly, and Poisson noise
 # * Densities of the tomographic covariance: shape noise and reference density
 # * Mixed term from triplets whose third side is shorter than the smallest bin
+# * Split of the tomographic covariance into its terms
 
 import numpy as np
 import pytest
 from scipy.interpolate import interp1d
 from scipy.spatial import cKDTree
 
-from orpheus.covariance import GGCovariance, GGCovarianceNoTomo
+from orpheus import GGCovariance, GGCovarianceNoTomo
 
 from conftest import NTHREADS, RTOL_EXACT, RTOL_LOOSE, RTOL_SHARP
 
@@ -238,3 +240,28 @@ def test_continuous_mixed_term_includes_short_triplet_sides():
     qplain = plain.getqpp_continuous(nr_target=256, nphi_target=256)
     qknots = knots.getqpp_continuous(nr_target=256, nphi_target=256)
     assert np.max(np.abs(qplain-qknots)) < RTOL_SHARP*np.max(np.abs(qknots))
+
+
+#######################################
+# SPLIT OF THE TOMOGRAPHIC COVARIANCE #
+#######################################
+
+# The shape-noise, mixed and sample-variance terms sum to each block, and the shape
+# noise only sits on the diagonal of the auto bin-pair blocks of Cov_pp and Cov_mm.
+def test_covariance_terms_sum_to_the_tomographic_blocks():
+    cov = GGCovariance(
+        theta_centers=_centers(THETA_EDGES), theta_edges=THETA_EDGES,
+        spline_xip=[(0, 0, _xi), (0, 1, _xi), (1, 1, _xi)],
+        spline_xim=[(0, 0, _xi), (0, 1, _xi), (1, 1, _xi)],
+        sigma_eps=np.array([.3, .4]), nbar=np.array([2., 5.])/60.**2, area=100.*60.**2,
+        phi_grid=np.geomspace(.1, 100., 16),
+        varphi1_grid=np.linspace(0., 2.*np.pi, 16, endpoint=False),
+        varphi2_grid=np.linspace(0., 2.*np.pi, 16, endpoint=False), n_workers=NTHREADS)
+    terms = cov.get_cov_terms_tomo()
+    for block in ('pp', 'mm', 'pm'):
+        total = terms[block]['D']+terms[block]['mix']+terms[block]['sva']
+        assert np.allclose(total, getattr(cov, 'cov_%s_tomo' % block), rtol=RTOL_EXACT, atol=0.)
+    shapenoise = np.concatenate([cov.D_tomo[bp] for bp in cov.bp_list])
+    for block in ('pp', 'mm'):
+        assert np.array_equal(terms[block]['D'], np.diag(shapenoise))
+    assert not np.any(terms['pm']['D'])

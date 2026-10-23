@@ -81,8 +81,10 @@ parallelised C kernels.
 * **The covariance module, `GGCovariance` and `GGCovarianceNoTomo`.** Gaussian covariance of
   the shear 2PCF from pair, triplet and quadruplet counts (S+02, L25), either measured on a
   catalog, idealised Poisson counts or the continuum limit, with the integrals in
-  `orpheus/src/cov_postq.c`. It is importable from the package root but not yet in
-  `__all__`. Coming from the `covariance` branch, six things changed on the way in:
+  `orpheus/src/cov_postq.c`. Both classes are exported from the package root, and
+  `GGCovariance.get_cov_terms_tomo` returns the shape-noise, mixed and sample-variance terms
+  of each covariance block. Coming from the `covariance` branch, six things changed on the
+  way in:
   * The measured pair counts were twice the ordered pair counts. `GGCorrelation.norm`
     already holds both orders of every pair, and the module doubled it again, which halved
     the shape noise and quartered the mixed and cosmic-variance terms of every covariance

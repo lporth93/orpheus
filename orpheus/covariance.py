@@ -1792,6 +1792,7 @@ class GGCovarianceNoTomo:
             obj.cov_mm_tomo = None
             obj.cov_pm_tomo = None
             obj.cov_xipm_tomo = None
+            obj.cov_terms_tomo = {}
 
         return obj
 
@@ -3203,6 +3204,7 @@ class GGCovariance(GGCovarianceNoTomo):
         self.cov_mm_tomo = None
         self.cov_pm_tomo = None
         self.cov_xipm_tomo = None
+        self.cov_terms_tomo = {}
 
     #####################
     # Xi spline parsing #
@@ -3515,21 +3517,26 @@ class GGCovariance(GGCovarianceNoTomo):
         if not self.rterms_tomo:
             self.get_all_rterms_tomo(verbose=verbose)
         n = self.n_r
-        out = np.zeros((self.n_bp * n, self.n_bp * n))
+        # Shape-noise, mixed and sample-variance terms, kept apart for
+        # get_cov_terms_tomo
+        terms = {name: np.zeros((self.n_bp * n, self.n_bp * n))
+                 for name in ('D', 'mix', 'sva')}
         for idx1, bp1 in enumerate(self.bp_list):
             if with_D:
                 # Diagonal shape noise.
-                out[idx1*n:(idx1+1)*n, idx1*n:(idx1+1)*n] += np.diag(self.D_tomo[bp1])
+                terms['D'][idx1*n:(idx1+1)*n, idx1*n:(idx1+1)*n] += np.diag(self.D_tomo[bp1])
             for idx2, bp2 in enumerate(self.bp_list):
                 combo = (bp1, bp2) if bp1 <= bp2 else (bp2, bp1)
                 sl1 = slice(idx1 * n, (idx1 + 1) * n)
                 sl2 = slice(idx2 * n, (idx2 + 1) * n)
                 if combo in q_tomo:
-                    out[sl1, sl2] += q_tomo[combo]
+                    terms['mix'][sl1, sl2] += q_tomo[combo]
                 else:
-                    out[sl1, sl2] += q_tomo[(combo[1], combo[0])].T
+                    terms['mix'][sl1, sl2] += q_tomo[(combo[1], combo[0])].T
                 for rname in rnames:
-                    out[sl1, sl2] += self._rterm_block(rname, (bp1, bp2))
+                    terms['sva'][sl1, sl2] += self._rterm_block(rname, (bp1, bp2))
+        self.cov_terms_tomo[block] = terms
+        out = terms['D'] + terms['mix'] + terms['sva']
         setattr(self, 'cov_' + block + '_tomo', out)
         return out
 
@@ -3558,6 +3565,20 @@ class GGCovariance(GGCovarianceNoTomo):
         out[m:, m:] = self.cov_mm_tomo
         self.cov_xipm_tomo = out
         return out
+
+    def get_cov_terms_tomo(self, verbose=False):
+        """Split the tomo covariance blocks into their three terms.
+
+        Returns dict ``{block: {'D': ..., 'mix': ..., 'sva': ...}}`` for the
+        blocks ``'pp'``, ``'mm'`` and ``'pm'`` of :meth:`get_cov_xipm_tomo`:
+        the shape-noise, mixed (triplet) and sample-variance (quadruplet)
+        terms, each of shape (n_bp*n_r, n_bp*n_r). The three terms of a block
+        sum to that block.
+        """
+        for index, (block, *_) in enumerate(self.COVBLOCKS):
+            if block not in self.cov_terms_tomo:
+                self._get_cov_block_tomo(index, verbose)
+        return self.cov_terms_tomo
 
     def _fine_instance_from_catalog(self, new_tc, new_te, verbose=False):
         """Build a fine-grid tomo instance from this instance's catalogue.
