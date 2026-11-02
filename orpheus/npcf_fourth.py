@@ -48,6 +48,11 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
         self.nbinsz = 1
         self.nzcombis = 1
         self.process_spherical = bool(process_spherical)
+        if self.process_spherical and self.method == "DoubleTree":
+            raise NotImplementedError(
+                "Curved-sky (process_spherical=True) is implemented for method='Tree' "
+                "only; the DoubleTree spherical variant is validated against the Tree "
+                "oracle and not yet available.")
 
     def saveinst(self, path_save, fname, extr_pars=None):
         extras = dict(nbinsz=self.nbinsz, nzcombis=self.nzcombis,
@@ -200,11 +205,6 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
         # Build structs
         if use_spherical:
             from healpy import nside2resol
-            if self.method == "DoubleTree":
-                raise NotImplementedError(
-                    "Curved-sky (process_spherical=True) is implemented for method='Tree' "
-                    "only; the DoubleTree spherical variant is validated against the Tree "
-                    "oracle and not yet available.")
             only_multipoles = ("4pcf_multipole" in statistics and
                                "4pcf_real" not in statistics and not hasintegratedstats)
             if not only_multipoles:

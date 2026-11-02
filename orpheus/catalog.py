@@ -107,6 +107,7 @@ class Catalog:
             self.isinner = np.ones(self.ngal, dtype=np.float64)
         # Check geometry consistency
         assert(self.geometry in ['flat2d','spherical','3dbox'])
+        assert(np.all(np.isfinite(self.pos1)) and np.all(np.isfinite(self.pos2)))
         if self.geometry in ['flat2d','3dbox']:
             self.units_pos1 = None
             self.units_pos2 = None
@@ -114,12 +115,13 @@ class Catalog:
             assert(self.pos3 is not None)
             assert(len(self.pos3)==self.ngal)
         if self.geometry == 'spherical':
-            assert(self.units_pos1 in ['rad', 'deg', 'arcmin'])
-            assert(self.units_pos2 in ['rad', 'deg', 'arcmin'])
+            assert(self.units_pos1 in ['rad', 'deg', 'arcmin', 'arcsec'])
+            assert(self.units_pos2 in ['rad', 'deg', 'arcmin', 'arcsec'])
             self.pos1 *= convertunits(self.units_pos1, 'deg')
             self.pos2 *= convertunits(self.units_pos2, 'deg')
             self.units_pos1 = 'deg'
             self.units_pos2 = 'deg'
+            assert(np.all(np.abs(self.pos2)<=90.))
             # Make sure that footprint is contiguous
             # 1) Bin the ra circle and mark which bins hold tracers
             # 2) Interpret the longest run of empty bins as the largest hole in the footprint
@@ -147,6 +149,7 @@ class Catalog:
         assert(len(self.weight)==self.ngal)
         assert(len(self.zbins)==self.ngal)
         assert(np.min(self.weight)>0.)
+        assert(np.all(np.isfinite(self.weight)))
         # Consistency checks for zbin-dist arrays
         for _ in [self.zbins_mean, self.zbins_std]:
             if _ is not None:
@@ -1388,6 +1391,7 @@ class ScalarTracerCatalog(Catalog):
     def __init__(self, pos1, pos2, tracer, **kwargs):
         super().__init__(pos1=pos1, pos2=pos2, **kwargs)
         self.tracer = tracer
+        assert(len(self.tracer)==self.ngal and np.all(np.isfinite(self.tracer)))
         self.spin = 0
         
     def reduce(self, dpix, dpix2=None, relative_to_hash=None, normed=True, shuffle=0,
@@ -1488,6 +1492,8 @@ class SpinTracerCatalog(Catalog):
         self.tracer_1 = tracer_1.astype(np.float64)
         self.tracer_2 = tracer_2.astype(np.float64)
         self.spin = int(spin)
+        assert(len(self.tracer_1)==self.ngal and len(self.tracer_2)==self.ngal)
+        assert(np.all(np.isfinite(self.tracer_1)) and np.all(np.isfinite(self.tracer_2)))
         
     def reduce(self, dpix, dpix2=None, relative_to_hash=None, normed=True, shuffle=0,
                extent=[None,None,None,None], forcedivide=1, w2field=True,

@@ -128,7 +128,7 @@ def test_fejer_window_bounds_the_npcf_error_tail():
 
 # Setup for ggg computation
 PATCH_KW = dict(n_cfs=4, min_sep=10., max_sep=60., nbinsr=4, nmaxs=4, nbinsphi=10,
-                method='DoubleTree', tree_resos=[0., 2., 5.], rmin_pixsize=8,
+                method='DoubleTree', tree_resos=[0., 2., 4.], rmin_pixsize=8,
                 nthreads=NTHREADS)
 
 # Build a full-sky catalog. Note that .topatches mutates the instance so we have

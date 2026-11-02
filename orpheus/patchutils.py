@@ -137,6 +137,8 @@ def gen_cat_patchindices(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_ha
       is a few times smaller than the buffer region of the patches    
     """
 
+    if method not in ('kmeans_healpix', 'healpix'):
+        raise NotImplementedError(f"Unknown method: {method!r}")
 
     ## Step 1: Define theta/phi used lateron. ##
     if verbose:
@@ -200,8 +202,6 @@ def gen_cat_patchindices(ra_deg, dec_deg, npatches, patchextend_arcmin, nside_ha
         npatches = int(patchinds.max()) + 1
         if verbose:
             print("Took %.3f seconds" % (time() - t1))
-    else:
-        raise NotImplementedError(f"Unknown method: {method!r}")
 
     ## Step 3: Retrieve patch centers ##
     if verbose:

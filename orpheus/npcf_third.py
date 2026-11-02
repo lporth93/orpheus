@@ -311,6 +311,9 @@ class GGGCorrelation(BinnedNPCF):
 
         super().__init__(order=3, spins=np.array([2,2,2], dtype=np.int32), n_cfs=n_cfs, min_sep=min_sep, max_sep=max_sep, **kwargs)
         self.process_spherical = bool(process_spherical)
+        assert(self.n_cfs==4)
+        if self.process_spherical and self.method != "DoubleTree":
+            raise ValueError("Native curved-sky GGG (process_spherical=True) only supports method='DoubleTree'.")
         self.nmax = self.nmaxs[0]
         self.phi = self.phis[0]
         self.projection = None
@@ -450,8 +453,6 @@ class GGGCorrelation(BinnedNPCF):
         if cat.geometry == 'spherical' and not native_spherical and cat.patchinds is None:
             raise ValueError('Error: Spherical catalog needs to be first decomposed into patches '
                              'using the Catalog._topatches method, or process_spherical=True must be set.')
-        if native_spherical and self.method != "DoubleTree":
-            raise ValueError("Native curved-sky GGG (process_spherical=True) only supports method='DoubleTree'.")
 
         # Catalog consist of multiple patches
         if cat.patchinds is not None and not native_spherical:
