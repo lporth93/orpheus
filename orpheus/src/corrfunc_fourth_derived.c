@@ -531,13 +531,14 @@ void multipoles2npcf_gggg(double complex *upsilon_n, double complex *N_n, double
         
         int nbinsr2 = nbinsr*nbinsr;
         int nbinsr3 = nbinsr*nbinsr*nbinsr;
+        // long: n_cfs*nbinsr^3*nphi^2 and n_cfs*(2*nmax+1)^2*nbinsr^3 can exceed 2^31
         int mult_n1shift = nbinsr3;
-        int mult_n2shift = (2*nmax+1)*mult_n1shift;
-        int mult_compshift = (2*nmax+1)*mult_n2shift;
-        int npcf_r3shift = nbinsphi12*nbinsphi13;
-        int npcf_r2shift = nbinsr*npcf_r3shift;
-        int npcf_r1shift = nbinsr*npcf_r2shift;
-        int npcf_compshift = nbinsr*npcf_r1shift;
+        long mult_n2shift = (long)(2*nmax+1)*mult_n1shift;
+        long mult_compshift = (2*nmax+1)*mult_n2shift;
+        long npcf_r3shift = nbinsphi12*nbinsphi13;
+        long npcf_r2shift = nbinsr*npcf_r3shift;
+        long npcf_r1shift = nbinsr*npcf_r2shift;
+        long npcf_compshift = nbinsr*npcf_r1shift;
         
         int elr1 = nrcombi/nbinsr2;
         int elr2 = (nrcombi-elr1*nbinsr2)/nbinsr;
@@ -547,7 +548,7 @@ void multipoles2npcf_gggg(double complex *upsilon_n, double complex *N_n, double
         double complex *expphi13s = orpheus_calloc(2*nmax+1, sizeof(double complex));
         double complex *projdir = orpheus_calloc(n_cfs, sizeof(double complex));
         double complex nextang;
-        int ind_multi, ind_npcf;
+        long ind_multi, ind_npcf;
         double complex q1, q2, q3, q4;
         double complex qcbyq_1, qcbyq_2, qcbyq_3, qcbyq_4;
         double complex qbyqc_1, qbyqc_2, qbyqc_3, qbyqc_4;
@@ -1195,12 +1196,12 @@ void multipoles2npcf_gnnn(const double complex *Gtilde_n, const double complex *
         double complex *norm_slice = orpheus_calloc(nns*nns, sizeof(double complex));
         for (int n1=0;n1<nns;n1++){
             for (int n2=0;n2<nns;n2++){
-                int ind = (n1*nns+n2)*nbinsr3 + elr1*nbinsr2 + elr2*nbinsr + elr3;
+                long ind = (long)(n1*nns+n2)*nbinsr3 + elr1*nbinsr2 + elr2*nbinsr + elr3;
                 npcf_slice[n1*nns+n2] = Gtilde_n[ind];
                 norm_slice[n1*nns+n2] = N_n[ind];
             }
         }
-        int off = nrcombi*nphicombis;
+        long off = (long)nrcombi*nphicombis;
         multipoles2npcf_gnnn_singletheta(npcf_slice, norm_slice, nmax, nmax,
                                          sqrt(bin_edges[elr1]*bin_edges[elr1+1]),
                                          sqrt(bin_edges[elr2]*bin_edges[elr2+1]),
@@ -1845,9 +1846,11 @@ void multipoles2npcf_nnnn(double complex *N_n, const BinningParams *bin, const F
         multipoles2npcf_nnnn_singletheta(
             tmpNn, n1max,n2max, theta_centers[eltheta1], theta_centers[eltheta2], theta_centers[eltheta3],
             phis12, phis13, nbinsphi12, nbinsphi13, tmpnpcf);
+        // long: nbinsr^3*nphi^2 can exceed 2^31 (52 radial, 127 phi bins)
+        double complex *npcf_r = npcf + (long)nthetacombi*phi23combis;
         for (int elphi12=0; elphi12<nbinsphi12; elphi12++){
             for (int elphi13=0; elphi13<nbinsphi13; elphi13++){
-                npcf[nthetacombi*phi23combis+elphi12*nbinsphi13+elphi13] += tmpnpcf[elphi12*nbinsphi13+elphi13];
+                npcf_r[elphi12*nbinsphi13+elphi13] += tmpnpcf[elphi12*nbinsphi13+elphi13];
             }
         }
         free(tmpnpcf);
