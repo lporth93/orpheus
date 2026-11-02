@@ -76,8 +76,6 @@ class BinnedNPCF:
         Largest allowed sidelength for cell in tree. Defaults to ``4``.
     tree_resos: list, optional
         The cell sizes of the hierarchical spatial hash structure
-    tree_redges: list, optional
-        List of radii where the tree changes resolution.
     rmin_pixsize: int, optional
         The limiting radial distance relative to the cell of the spatial hash
         after which one switches to the next hash in the hierarchy. Defaults to ``20``.
@@ -133,20 +131,19 @@ class BinnedNPCF:
         
     def __init__(self, order, spins, n_cfs, min_sep, max_sep, nbinsr=None, binsize=None, sep_units="arcmin", nbinsphi=100, 
                  nmaxs=30, method="DoubleTree", multicountcorr=True, shuffle_pix=0, process_spherical=False,
-                 tree_alpha=None, tree_mincellsize=0.1, tree_maxcellsize=4., tree_resos=[0,0.25,0.5,1.,2.], tree_redges=None, rmin_pixsize=20, 
+                 tree_alpha=None, tree_mincellsize=0.1, tree_maxcellsize=4., tree_resos=[0,0.25,0.5,1.,2.], rmin_pixsize=20,
                  resoshift_leafs=0, minresoind_leaf=None, maxresoind_leaf=None, batch_membudget_mb=64,
                  methods_avail=["Discrete", "Tree", "BaseTree", "DoubleTree"], verbosity=0, nthreads=16,
                  count_floor=0.5, apodization="rect"):
 
         self.order = int(order)
+        self.spins = np.full(self.order, spins, dtype=np.int32)
         self.n_cfs = int(n_cfs)
         self.min_sep = float(min_sep)
         self.max_sep = float(max_sep)
-        self.sep_units = sep_units
-        assert self.sep_units in ('rad', 'deg', 'arcmin', 'arcsec'), \
-            "sep_units must be one of 'rad', 'deg', 'arcmin', 'arcsec'"
-        self.nbinsphi = nbinsphi
-        self.nmaxs = nmaxs
+        self.sep_units = str(sep_units)
+        self.nbinsphi = np.full(self.order-2, nbinsphi, dtype=np.int32)
+        self.nmaxs = np.full(self.order-2, nmaxs, dtype=np.int32)
         self.method = method
         self.multicountcorr = int(multicountcorr)
         self.shuffle_pix = shuffle_pix
@@ -157,7 +154,6 @@ class BinnedNPCF:
         self.tree_maxcellsize = tree_maxcellsize
         self.tree_resos = np.asarray(tree_resos, dtype=np.float64)
         self.tree_nresos = int(len(self.tree_resos))
-        self.tree_redges = tree_redges
         self.rmin_pixsize = rmin_pixsize
         self.resoshift_leafs = resoshift_leafs
         self.minresoind_leaf = minresoind_leaf
@@ -183,70 +179,40 @@ class BinnedNPCF:
         self._verbose_c = self.verbosity > 1
         self._verbose_debug = self.verbosity > 2
         
-        # Check types or arguments
-        if isinstance(self.nbinsphi, int):
-            self.nbinsphi = self.nbinsphi*np.ones(order-2)
-        self.nbinsphi =  self.nbinsphi.astype(np.int32)
-        if isinstance(self.nmaxs, int):
-            self.nmaxs = self.nmaxs*np.ones(order-2)
-        self.nmaxs = self.nmaxs.astype(np.int32)
-        if isinstance(spins, int):
-            spins = spins*np.ones(order).astype(np.int32)
-        self.spins = np.asarray(spins, dtype=np.int32)
-        assert(isinstance(self.order, int))
-        assert(isinstance(self.spins, np.ndarray))
-        assert(isinstance(self.spins[0], np.int32))
-        assert(len(spins)==self.order)
-        assert(isinstance(self.n_cfs, int))
-        assert(isinstance(self.min_sep, float))
-        assert(isinstance(self.max_sep, float))
-        if self.order>2:
-            assert(isinstance(self.nbinsphi, np.ndarray))
-            assert(isinstance(self.nbinsphi[0], np.int32))
-            assert(len(self.nbinsphi)==self.order-2)
-            assert(isinstance(self.nmaxs, np.ndarray))
-            assert(isinstance(self.nmaxs[0], np.int32))
-            assert(len(self.nmaxs)==self.order-2)
-        assert(self.method in self.methods_avail)
-        assert(isinstance(self.tree_resos, np.ndarray))
-        assert(isinstance(self.tree_resos[0], np.float64))
-        # The first entry is the discrete resolution, i.e. zero.
-        assert self.tree_resos[0] == 0., (
-            "tree_resos must start with 0., the discrete resolution; got %s"
-            %str(self.tree_resos))
-        assert self.apodization in ('rect', 'fejer'), \
-              "apodization must be one of 'rect', 'fejer'"
-        
+        # Basic checks for types and values of arguments
+        assert(self.order>1)
+        assert(self.min_sep>0)
+        assert(self.max_sep>self.min_sep)
+        assert self.sep_units in ('rad', 'deg', 'arcmin', 'arcsec'), \
+            "sep_units must be one of 'rad', 'deg', 'arcmin', 'arcsec'"
+        assert(self.rmin_pixsize>0)
+        assert(self.count_floor>=0)
+        assert(self.batch_membudget_mb>0)
+        assert(self.tree_mincellsize>0)
+        assert(self.tree_maxcellsize>self.tree_mincellsize)
+        assert(np.all(self.nbinsphi>=1))
+        assert(np.all(self.nmaxs>=0))
+        assert self.method in self.methods_avail, "method must be one of %s"%self.methods_avail
+        assert(self.shuffle_pix in {0,1,2,3})
+        assert self.tree_resos[0]==0., "tree_resos must start with 0.; got %s"%str(self.tree_resos)
+        assert(np.all(self.tree_resos[1:]>0))
+        assert np.all(self.tree_resos[2:]==2.*self.tree_resos[1:-1]), \
+            "tree_resos must double from level to level; got %s"%str(self.tree_resos)
+        assert self.apodization in ('rect', 'fejer'), "apodization must be one of 'rect', 'fejer'"
+
         # Setup radial bins
         # Note that we always have self.binsize <= binsize
-        assert((binsize!=None) or (nbinsr!=None))
-        if nbinsr != None:
+        assert (binsize is None) != (nbinsr is None), "pass exactly one of binsize, nbinsr"
+        if nbinsr is not None:
             self.nbinsr = int(nbinsr)
-        if binsize != None:
-            assert(isinstance(binsize, float) or isinstance(binsize, int))
+        else:
+            assert(binsize>0)
             self.nbinsr = int(np.ceil(np.log(self.max_sep/self.min_sep)/float(binsize)))
-        assert(isinstance(self.nbinsr, int))
+        assert(self.nbinsr>0)
         self.bin_edges = np.geomspace(self.min_sep, self.max_sep, self.nbinsr+1)
         self.binsize = np.log(self.bin_edges[1]/self.bin_edges[0])
         # Setup variable for tree estimator according to input
-        if self.tree_redges is not None:
-            assert(isinstance(self.tree_redges, np.ndarray))
-            self.tree_redges = self.tree_redges.astype(np.float64)
-            assert(len(self.tree_redges)==self.tree_nresos+1)
-            self.tree_redges = np.sort(self.tree_redges)
-            assert(self.tree_redges[0]==self.min_sep)
-            assert(self.tree_redges[-1]==self.max_sep)
-        else:
-            self.tree_redges = np.zeros(len(self.tree_resos)+1)
-            self.tree_redges[-1] = self.max_sep
-            for elreso, reso in enumerate(self.tree_resos):
-                self.tree_redges[elreso] = (reso==0.)*self.min_sep + (reso!=0.)*self.rmin_pixsize*reso
-        _tmpreso = 0
-        self.tree_resosatr = np.zeros(self.nbinsr, dtype=np.int32)
-        for elbin, rbin in enumerate(self.bin_edges[:-1]):
-            if rbin > self.tree_redges[_tmpreso+1]:
-                _tmpreso += 1
-            self.tree_resosatr[elbin] = _tmpreso
+        self._updatetree(self.tree_resos, include_shifts=False)
         # Update tree resolutions to make sure that `tree_redges` is monotonous
         # (This is i.e. not fulfilled for a default tree setup and a large value of `rmin`)
         _resomax = self.tree_resosatr[-1]
@@ -268,12 +234,13 @@ class BinnedNPCF:
             print("Error: Parameter minreso_leaf is out of bounds. Set to %i."%self.minresoind_leaf)
         if self.maxresoind_leaf<0:
             self.maxresoind_leaf = 0
-            print("Error: Parameter minreso_leaf is out of bounds. Set to 0.")
+            print("Error: Parameter maxreso_leaf is out of bounds. Set to 0.")
         if self.maxresoind_leaf>=self.tree_nresos:
             self.maxresoind_leaf = self.tree_nresos-1
-            print("Error: Parameter maxreso_leaf is out of bounds. Set to %i."%self.maxresoind_leaf) 
+            print("Error: Parameter maxreso_leaf is out of bounds. Set to %i."%self.maxresoind_leaf)
         if self.maxresoind_leaf<self.minresoind_leaf:
-            print("Error: Parameter maxreso_leaf is smaller than minreso_leaf. Set to %i."%self.minresoind_leaf) 
+            self.maxresoind_leaf = self.minresoind_leaf
+            print("Error: Parameter maxreso_leaf is smaller than minreso_leaf. Set to %i."%self.minresoind_leaf)
             
         # Setup phi bins
         for elp in range(self.order-2):

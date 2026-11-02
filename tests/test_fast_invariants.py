@@ -777,26 +777,28 @@ def test_spins_can_be_given_as_a_single_number():
                         nthreads=NTHREADS)
     assert np.array_equal(np.asarray(scalar.spins), np.zeros(3, dtype=np.int32))
 
-# tree_redges lets a user hand in the radii at which the tree changes resolution. Note that
-# __init__ only validates it here: the ladder is rebuilt from tree_resos further down, so
-# the value does not survive construction.
+# The radii at which the tree changes resolution follow from rmin_pixsize*tree_resos
+def test_tree_radial_edges_follow_from_rmin_pixsize():
+    ggg = GGGCorrelation(n_cfs=4, **SEPS, **ANGULAR, **TREE)
+    assert np.array_equal(ggg.tree_redges[1:-1], ggg.rmin_pixsize*ggg.tree_resos[1:])
+
 @pytest.mark.parametrize("cls,kwargs", [
     (GGGCorrelation, dict(n_cfs=4, **SEPS, **ANGULAR, nthreads=NTHREADS)),
     (Direct_MapnEqual, dict(order_max=3, Rmin=MIN_SEP, Rmax=MAX_SEP, nbinsr=NBINSR,
                             nthreads=NTHREADS)),])
-def test_tree_radial_edges_are_validated(cls, kwargs):
-    resos = [0., 2., 4.]
-    cls(**kwargs, tree_resos=resos,
-        tree_redges=np.array([MAX_SEP, MIN_SEP, 20., 40.]))
-    # One edge per level, plus the outer one
-    with pytest.raises(AssertionError):
-        cls(**kwargs, tree_resos=resos, tree_redges=np.array([MIN_SEP, 20., MAX_SEP]))
-    # And the ladder has to span exactly the separation range
-    with pytest.raises(AssertionError):
-        cls(**kwargs, tree_resos=resos, tree_redges=np.array([0., MIN_SEP, 20., MAX_SEP]))
-    with pytest.raises(AssertionError):
-        cls(**kwargs, tree_resos=resos,
-            tree_redges=np.array([MIN_SEP, 20., 40., 2.*MAX_SEP]))
+def test_tree_radial_edges_cannot_be_given(cls, kwargs):
+    with pytest.raises(TypeError):
+        cls(**kwargs, tree_resos=[0., 2., 4.], tree_redges=np.array([MIN_SEP, 20., 40., MAX_SEP]))
+
+# Arguments that would otherwise fail deep in the kernels, or not at all, are refused at construction
+@pytest.mark.parametrize("kwargs", [
+    dict(min_sep=0.), dict(max_sep=.5*MIN_SEP), dict(nbinsr=0), dict(binsize=.2),
+    dict(nmaxs=-1), dict(nbinsphi=0), dict(rmin_pixsize=0), dict(shuffle_pix=7),
+    dict(tree_resos=[1., 2.]), dict(tree_resos=[0., 2., 3.]), dict(sep_units='parsec'),
+    dict(apodization='hann'), dict(n_cfs=3), dict(process_spherical=True, method='Tree'),])
+def test_invalid_correlator_arguments_are_rejected(kwargs):
+    with pytest.raises((AssertionError, ValueError)):
+        GGGCorrelation(**dict(dict(n_cfs=4, **SEPS, **ANGULAR, **TREE), **kwargs))
 
 # Each out-of-range knob is pulled back into range and says so
 @pytest.mark.parametrize("kwargs,attr", [
@@ -977,6 +979,20 @@ def test_puremode_requires_a_processed_correlator():
 ###############################
 # The grid, mask, reduction, hashing and patch options the estimators never reach with
 # their defaults.
+
+# Non-finite entries, a Dec beyond the poles and a tracer of the wrong length are refused
+@pytest.mark.parametrize("bad", ['tracer_1', 'weight', 'pos2', 'tracer_2'])
+def test_catalog_rejects_invalid_entries(bad):
+    rng = np.random.default_rng(65)
+    ngal = 100
+    kwargs = dict(pos1=rng.uniform(10., 20., ngal), pos2=rng.uniform(-5., 5., ngal),
+                  tracer_1=rng.normal(0., .3, ngal), tracer_2=rng.normal(0., .3, ngal),
+                  weight=np.ones(ngal))
+    kwargs[bad] = {'tracer_1': np.r_[np.nan, kwargs['tracer_1'][1:]],
+                   'weight': np.r_[np.inf, kwargs['weight'][1:]],
+                   'pos2': kwargs['pos2']+90., 'tracer_2': kwargs['tracer_2'][:ngal//2]}[bad]
+    with pytest.raises(AssertionError):
+        SpinTracerCatalog(spin=2, geometry='spherical', units_pos1='deg', units_pos2='deg', **kwargs)
 
 # A field straddling RA=0 is put onto one contiguous branch of the coordinate
 def test_catalog_shifts_a_footprint_that_wraps_the_meridian(capsys):

@@ -74,6 +74,29 @@ parallelised C kernels.
 
 ## Detailed changelog (*mainly updated by claude*)
 
+### Unreleased
+
+#### Changed — please read before upgrading
+
+* **`tree_redges` is no longer an argument** of `BinnedNPCF` or `DirectEstimator`. The radii
+  at which the tree changes resolution are always `rmin_pixsize*tree_resos`. A hand-given
+  ladder never survived construction anyway (see 0.5.2), so no result changes.
+* **Arguments are validated at construction.** `BinnedNPCF` rejects non-positive `min_sep`,
+  `binsize`, `nbinsr` or `rmin_pixsize`, `max_sep <= min_sep`, `binsize` and `nbinsr` given
+  together, `nmaxs < 0`, `nbinsphi < 1`, `shuffle_pix` outside 0-3, and `tree_resos` that do
+  not double from level to level. `GGGCorrelation` requires `n_cfs=4`. `GGGCorrelation` and
+  `NNNNCorrelation_NoTomo` refuse an unsupported curved-sky method in `__init__` rather than
+  in `process()`. `Catalog` rejects non-finite positions, weights and tracers, a Dec beyond
+  ±90 deg and tracers of the wrong length, and accepts positions in `'arcsec'`.
+  `gen_cat_patchindices` checks `method` before converting the catalog.
+
+#### Fixed
+
+* **`nmaxs` and `nbinsphi` given as a list or numpy integer** raised `AttributeError` or
+  `AssertionError`. Like `spins`, they are now broadcast from any integer or sequence.
+* **A leaf band given out of order was reported but kept.** `maxresoind_leaf <
+  minresoind_leaf` now sets `maxresoind_leaf` to `minresoind_leaf`, as the message says.
+
 ### 0.6.0 — 2026-09-08
 
 #### Added

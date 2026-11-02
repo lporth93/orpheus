@@ -60,8 +60,6 @@ class DirectEstimator:
         Defaults to ``1``, i.e. random positioning.
     tree_resos : list, optional
         The cell sizes of the hierarchical spatial hash structure.
-    tree_redges : list, optional
-        Deprecated (possibly).
     rmin_pixsize : int, optional
         The limiting radial distance relative to the cell of the spatial hash
         after which one switches to the next hash in the hierarchy. At the moment
@@ -91,7 +89,7 @@ class DirectEstimator:
                  frac_covs=[0.,0.1,0.3,0.5,1.], dpix_hash=1.,
                  weight_outer=1., weight_inpainted=0.,
                  method="Discrete", multicountcorr=True, shuffle_pix=1,
-                 tree_resos=[0,0.25,0.5,1.,2.], tree_redges=None, rmin_pixsize=20,
+                 tree_resos=[0,0.25,0.5,1.,2.], rmin_pixsize=20,
                  resoshift_leafs=0, minresoind_leaf=None, maxresoind_leaf=None,
                  verbosity=0, nthreads=16):
 
@@ -110,7 +108,6 @@ class DirectEstimator:
         self.methods_avail = ["Discrete", "Tree", "BaseTree", "DoubleTree", "FFT"]
         self.tree_resos = np.asarray(tree_resos, dtype=np.float64)
         self.tree_nresos = int(len(self.tree_resos))
-        self.tree_redges = tree_redges
         self.rmin_pixsize = rmin_pixsize
         self.resoshift_leafs = resoshift_leafs
         self.minresoind_leaf = minresoind_leaf
@@ -141,19 +138,6 @@ class DirectEstimator:
             self.nbinsr = int(np.ceil(np.log(self.Rmax/self.Rmin)/binsize))
         assert(isinstance(self.nbinsr, int))
         self.radii = np.geomspace(self.Rmin, self.Rmax, self.nbinsr)
-        # Setup variable for tree estimator
-        if self.tree_redges is not None:
-            assert(isinstance(self.tree_redges, np.ndarray))
-            self.tree_redges = self.tree_redges.astype(np.float64)
-            assert(len(self.tree_redges)==self.tree_nresos+1)
-            self.tree_redges = np.sort(self.tree_redges)
-            assert(self.tree_redges[0]==self.Rmin)
-            assert(self.tree_redges[-1]==self.Rmax)
-        else:
-            self.tree_redges = np.zeros(len(self.tree_resos)+1)
-            self.tree_redges[-1] = self.Rmax
-            for elreso, reso in enumerate(self.tree_resos):
-                self.tree_redges[elreso] = (reso==0.)*self.Rmin + (reso!=0.)*self.rmin_pixsize*reso
         # Setup accuracies
         if (isinstance(self.accuracies, int) or isinstance(self.accuracies, float)):
             self.accuracies = self.accuracies*np.ones(self.nbinsr,dtype=np.float64)
@@ -180,7 +164,8 @@ class DirectEstimator:
             self.maxresoind_leaf = self.tree_nresos-1
             print("Error: Parameter maxreso_leaf is out of bounds. Set to %i."%self.maxresoind_leaf)
         if self.maxresoind_leaf<self.minresoind_leaf:
-            print("Error: Parameter maxreso_leaf is smaller than minreso_leaf. Set to %i."%self.minresoind_leaf) 
+            self.maxresoind_leaf = self.minresoind_leaf
+            print("Error: Parameter maxreso_leaf is smaller than minreso_leaf. Set to %i."%self.minresoind_leaf)
           
         #############################
         ## Link compiled libraries ##
@@ -322,7 +307,7 @@ class DirectEstimator:
 
             # Add the remaining attributes saved after the __init__ call, 
             # ie all that did require a .process() call.
-            skip = set(ctor) | {'tree_redges'}
+            skip = set(ctor)
             for k in d.files:
                 if k not in skip:
                     setattr(inst, k, _val(d[k]))
