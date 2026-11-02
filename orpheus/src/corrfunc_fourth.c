@@ -409,7 +409,7 @@ static void nnnn_reconstruct_batch(
             // OPTIONAL: Allocate 4PCF in multipole basis
             if (alloc_4pcfmultipoles==1){
                 for(int eln12=0;eln12<n2n3combis_rec;eln12++){
-                    int thisnrshift = eln12*N_nshift + elb1t*nbinsr*nbinsr + elb2t*nbinsr + elb3t;
+                    long thisnrshift = (long)eln12*N_nshift + elb1t*nbinsr*nbinsr + elb2t*nbinsr + elb3t;
                     if (accumulate==1){ N_n[thisnrshift] += thisN_n_rec[eln12]; }
                     else{ N_n[thisnrshift] = thisN_n_rec[eln12]; }
                 }
@@ -427,8 +427,8 @@ static void nnnn_reconstruct_batch(
             // OPTIONAL: Allocate 4pcf in real basis (Shape: (8,ntheta,ntheta,ntheta,nphi,nphi)
             if (alloc_4pcfreal==1){
                 for (int elphi12=0;elphi12<batchgamma_thetshift;elphi12++){
-                    int gamma_rshift = nbinsphi*nbinsphi;
-                    int gamma_phircombi = gamma_rshift*(elb1t*nbinsr*nbinsr+elb2t*nbinsr+elb3t)+elphi12;
+                    long gamma_rshift = nbinsphi*nbinsphi;
+                    long gamma_phircombi = gamma_rshift*(elb1t*nbinsr*nbinsr+elb2t*nbinsr+elb3t)+elphi12;
                     Counts[gamma_phircombi] = thisnpcf[elphi12];
                 }
             }
@@ -459,6 +459,400 @@ static void nnnn_reconstruct_batch(
             for(int i=0;i<n2n3combis;i++){ thisN_n[i] = 0; }
             for(int i=0;i<n2n3combis_rec;i++){ thisN_n_rec[i] = 0; }
         }
+    }
+}
+
+//////////////////////////////////////
+/// Batched NNNN multipole helpers ///
+//////////////////////////////////////
+
+// Leaves per chunk in the moment fill and galaxies per chunk in the triple accumulation,
+// chosen such that the operands of the inner loops stay in L1/L2.
+#define NNNN_LEAFCHUNK 512
+#define NNNN_GALCHUNK 256
+
+// Moments of a batch of base galaxies. As W_{-n} = conj(W_n) for real weights, only
+// n=0..nW of W_n = sum_j w_j e^{in phi_j} and W2_n = sum_j w_j^2 e^{in phi_j} are kept.
+// The layout is [rbin][n][galaxy] such that the triple accumulation runs over contiguous galaxies.
+typedef struct {
+    int cap, nbinsr, nW;
+    double *wre, *wim, *w2re, *w2im; // [nbinsr][nW+1][cap]
+    double *w3; // [nbinsr][cap], sum_j w_j^3
+    double *w1; // [cap], weight of the base galaxy
+} NnnnBatch;
+
+static void nnnn_batch_alloc(NnnnBatch *batch, int cap, int nbinsr, int nW){
+    long len = (long)nbinsr*(nW+1)*cap;
+    batch->cap = cap; batch->nbinsr = nbinsr; batch->nW = nW;
+    batch->wre = orpheus_malloc(len*sizeof(double));
+    batch->wim = orpheus_malloc(len*sizeof(double));
+    batch->w2re = orpheus_malloc(len*sizeof(double));
+    batch->w2im = orpheus_malloc(len*sizeof(double));
+    batch->w3 = orpheus_malloc((long)nbinsr*cap*sizeof(double));
+    batch->w1 = orpheus_malloc((long)cap*sizeof(double));
+}
+
+static void nnnn_batch_free(NnnnBatch *batch){
+    free(batch->wre); free(batch->wim); free(batch->w2re); free(batch->w2im);
+    free(batch->w3); free(batch->w1);
+}
+
+// Base galaxies per batch: 64 per thread for a balanced moment fill, capped by memory_bound (GiB)
+static int nnnn_batch_cap(long ncache, int nbinsr, int nW, double memory_bound, int nthreads){
+    long per_gal = ((long)4*nbinsr*(nW+1) + nbinsr + 1)*(long)sizeof(double);
+    long cap = 64L*nthreads;
+    if (memory_bound > 0){ cap = mymin(cap, (long)(memory_bound*1073741824.)/per_gal); }
+    cap = mymin(cap, ncache);
+    return (int)mymax(cap, 1L);
+}
+
+// Leaves of a single base galaxy (radial bin, weight, phase e^{i phi}), their copy sorted
+// by radial bin and the running powers of the phases. One per thread, grown on demand.
+typedef struct {
+    int n, cap, nbinsr;
+    int *rbin, *binstart, *cursor;
+    double *w, *zre, *zim, *sw, *szre, *szim, *pre, *pim;
+} NnnnLeaves;
+
+static void nnnn_leaves_alloc(NnnnLeaves *lv, int nbinsr){
+    lv->n = 0; lv->cap = 4096; lv->nbinsr = nbinsr;
+    lv->rbin = orpheus_malloc(lv->cap*sizeof(int));
+    lv->binstart = orpheus_malloc((nbinsr+1)*sizeof(int));
+    lv->cursor = orpheus_malloc(nbinsr*sizeof(int));
+    lv->w = orpheus_malloc(lv->cap*sizeof(double));
+    lv->zre = orpheus_malloc(lv->cap*sizeof(double));
+    lv->zim = orpheus_malloc(lv->cap*sizeof(double));
+    lv->sw = orpheus_malloc(lv->cap*sizeof(double));
+    lv->szre = orpheus_malloc(lv->cap*sizeof(double));
+    lv->szim = orpheus_malloc(lv->cap*sizeof(double));
+    lv->pre = orpheus_malloc(NNNN_LEAFCHUNK*sizeof(double));
+    lv->pim = orpheus_malloc(NNNN_LEAFCHUNK*sizeof(double));
+}
+
+static void nnnn_leaves_free(NnnnLeaves *lv){
+    free(lv->rbin); free(lv->binstart); free(lv->cursor); free(lv->w); free(lv->zre);
+    free(lv->zim); free(lv->sw); free(lv->szre); free(lv->szim); free(lv->pre); free(lv->pim);
+}
+
+static inline void nnnn_leaves_push(NnnnLeaves *lv, int rbin, double w, double zre, double zim){
+    if (lv->n == lv->cap){
+        lv->cap *= 2;
+        lv->rbin = realloc(lv->rbin, lv->cap*sizeof(int));
+        lv->w = realloc(lv->w, lv->cap*sizeof(double));
+        lv->zre = realloc(lv->zre, lv->cap*sizeof(double));
+        lv->zim = realloc(lv->zim, lv->cap*sizeof(double));
+        lv->sw = realloc(lv->sw, lv->cap*sizeof(double));
+        lv->szre = realloc(lv->szre, lv->cap*sizeof(double));
+        lv->szim = realloc(lv->szim, lv->cap*sizeof(double));
+    }
+    lv->rbin[lv->n] = rbin; lv->w[lv->n] = w; lv->zre[lv->n] = zre; lv->zim[lv->n] = zim;
+    lv->n += 1;
+}
+
+// Moments of one base galaxy from its leaves into slot ig of the batch. All bins of the slot
+// are written, so it needs no reset. The powers z^n are vectorised over the leaves of a bin.
+static void nnnn_fill_slot(NnnnLeaves *lv, NnnnBatch *batch, int ig, double w1){
+    int nbinsr = batch->nbinsr, nW = batch->nW;
+    long cap = batch->cap;
+    int *bs = lv->binstart;
+
+    // Counting sort of the leaves by radial bin
+    for (int b=0;b<=nbinsr;b++){ bs[b] = 0; }
+    for (int j=0;j<lv->n;j++){ bs[lv->rbin[j]+1] += 1; }
+    for (int b=0;b<nbinsr;b++){ bs[b+1] += bs[b]; lv->cursor[b] = bs[b]; }
+    for (int j=0;j<lv->n;j++){
+        int k = lv->cursor[lv->rbin[j]]++;
+        lv->sw[k] = lv->w[j]; lv->szre[k] = lv->zre[j]; lv->szim[k] = lv->zim[j];
+    }
+
+    batch->w1[ig] = w1;
+    for (int b=0;b<nbinsr;b++){
+        long off = (long)b*(nW+1)*cap + ig;
+        double w3 = 0.;
+        for (int k=bs[b];k<bs[b+1];k++){ w3 += lv->sw[k]*lv->sw[k]*lv->sw[k]; }
+        batch->w3[(long)b*cap+ig] = w3;
+        for (int n=0;n<=nW;n++){
+            batch->wre[off+n*cap] = 0.; batch->wim[off+n*cap] = 0.;
+            batch->w2re[off+n*cap] = 0.; batch->w2im[off+n*cap] = 0.;
+        }
+        for (int k0=bs[b];k0<bs[b+1];k0+=NNNN_LEAFCHUNK){
+            int nk = mymin(NNNN_LEAFCHUNK, bs[b+1]-k0);
+            const double *w = lv->sw+k0, *zr = lv->szre+k0, *zi = lv->szim+k0;
+            double *pr = lv->pre, *pi = lv->pim;
+            for (int k=0;k<nk;k++){ pr[k] = 1.; pi[k] = 0.; }
+            for (int n=0;n<=nW;n++){
+                double sr = 0., si = 0., s2r = 0., s2i = 0.;
+                #pragma omp simd reduction(+:sr,si,s2r,s2i)
+                for (int k=0;k<nk;k++){
+                    double wr = w[k]*pr[k], wi = w[k]*pi[k];
+                    sr += wr; si += wi;
+                    s2r += w[k]*wr; s2i += w[k]*wi;
+                    double tr = pr[k]*zr[k] - pi[k]*zi[k];
+                    pi[k] = pr[k]*zi[k] + pi[k]*zr[k];
+                    pr[k] = tr;
+                }
+                batch->wre[off+n*cap] += sr; batch->wim[off+n*cap] += si;
+                batch->w2re[off+n*cap] += s2r; batch->w2im[off+n*cap] += s2i;
+            }
+        }
+    }
+    lv->n = 0;
+}
+
+// Work list of the batched NNNN accumulation
+// * The wanted ordered radial triples, grouped by their two smaller bins (t1,t2). Pair p owns
+//   the triples pair_start[p]..pair_start[p+1]-1, sorted by t3, and pair_order lists the
+//   pairs by decreasing work.
+// * The half of the needed (n2,n3) with n3>0 or n3=0<=n2, grouped by n3. The other half
+//   follows from conjugation for real weights, nind_h/nind_conj map every nindex onto it.
+typedef struct {
+    int npairs, *pair_t1, *pair_t2, *pair_start, *pair_order;
+    int *trip_t3; long *trip_combi;
+    int nn3, nH, nW, maxrow, maxtrip;
+    int *n3_start, *n2s, *nind_h, *nind_conj;
+} NnnnPlan;
+
+static void nnnn_plan_build(NnnnPlan *p, const int *combis, long ncombis, int nbinsr,
+    const int *nindices, int len_nindices, int nmax){
+    int nbinsr2 = nbinsr*nbinsr;
+
+    // Group the triples by (t1,t2) and sort them by t3 within a pair
+    int *paircount = orpheus_calloc(nbinsr2+1, sizeof(int));
+    for (long c=0;c<ncombis;c++){ paircount[combis[c]/nbinsr+1] += 1; }
+    for (int k=0;k<nbinsr2;k++){ paircount[k+1] += paircount[k]; }
+    p->trip_t3 = orpheus_malloc((ncombis>0?ncombis:1)*sizeof(int));
+    p->trip_combi = orpheus_malloc((ncombis>0?ncombis:1)*sizeof(long));
+    int *fill = orpheus_calloc(nbinsr2, sizeof(int));
+    for (int e3=0;e3<nbinsr;e3++){
+        for (long c=0;c<ncombis;c++){
+            if (combis[c]%nbinsr != e3){ continue; }
+            int key = combis[c]/nbinsr;
+            long k = paircount[key] + fill[key]++;
+            p->trip_t3[k] = e3; p->trip_combi[k] = c;
+        }
+    }
+    p->npairs = 0;
+    for (int key=0;key<nbinsr2;key++){ if (paircount[key+1]>paircount[key]){ p->npairs += 1; } }
+    p->pair_t1 = orpheus_malloc((p->npairs>0?p->npairs:1)*sizeof(int));
+    p->pair_t2 = orpheus_malloc((p->npairs>0?p->npairs:1)*sizeof(int));
+    p->pair_start = orpheus_malloc((p->npairs+1)*sizeof(int));
+    p->pair_order = orpheus_malloc((p->npairs>0?p->npairs:1)*sizeof(int));
+    int ip = 0;
+    p->maxtrip = 1;
+    for (int key=0;key<nbinsr2;key++){
+        if (paircount[key+1] == paircount[key]){ continue; }
+        p->pair_t1[ip] = key/nbinsr; p->pair_t2[ip] = key%nbinsr;
+        p->pair_start[ip] = paircount[key];
+        p->maxtrip = mymax(p->maxtrip, paircount[key+1]-paircount[key]);
+        ip += 1;
+    }
+    p->pair_start[p->npairs] = (int)ncombis;
+    // Largest pairs first for the dynamic schedule
+    for (int k=0;k<p->npairs;k++){ p->pair_order[k] = k; }
+    for (int k=1;k<p->npairs;k++){
+        int cur = p->pair_order[k], ncur = p->pair_start[cur+1]-p->pair_start[cur], j = k-1;
+        while (j>=0 && p->pair_start[p->pair_order[j]+1]-p->pair_start[p->pair_order[j]] < ncur){
+            p->pair_order[j+1] = p->pair_order[j]; j--;
+        }
+        p->pair_order[j+1] = cur;
+    }
+    free(paircount); free(fill);
+
+    // Half of the multipole pairs, grouped by n3, and the map of every nindex onto it. Each
+    // (n2,n3) is represented by itself if n3>0 or n3=0<=n2, else by (-n2,-n3).
+    int nmax_alloc = 2*nmax+1, nnvals_Nn = 2*nmax_alloc+1, nzero_Nn = nmax_alloc;
+    int *hmap = orpheus_malloc(nnvals_Nn*nnvals_Nn*sizeof(int));
+    for (int i=0;i<nnvals_Nn*nnvals_Nn;i++){ hmap[i] = -1; }
+    p->nn3 = 0;
+    for (int i=0;i<len_nindices;i++){
+        int n2 = nindices[i]/nnvals_Nn - nzero_Nn, n3 = nindices[i]%nnvals_Nn - nzero_Nn;
+        int direct = (n3>0 || (n3==0 && n2>=0));
+        if (!direct){ n2 = -n2; n3 = -n3; }
+        p->nn3 = mymax(p->nn3, n3+1);
+        hmap[(n2+nzero_Nn)*nnvals_Nn + n3+nzero_Nn] = 0;
+    }
+    p->n3_start = orpheus_calloc(p->nn3+1, sizeof(int));
+    p->nH = 0; p->nW = 0; p->maxrow = 1;
+    for (int n3=0;n3<p->nn3;n3++){
+        p->n3_start[n3] = p->nH;
+        for (int n2=-nzero_Nn;n2<=nzero_Nn;n2++){
+            int idx = (n2+nzero_Nn)*nnvals_Nn + n3+nzero_Nn;
+            if (hmap[idx] != 0){ continue; }
+            hmap[idx] = 1 + p->nH++;
+            p->nW = mymax(p->nW, mymax(abs(n2), mymax(abs(n3), abs(n2+n3))));
+        }
+        p->maxrow = mymax(p->maxrow, p->nH-p->n3_start[n3]);
+    }
+    p->n3_start[p->nn3] = p->nH;
+    p->n2s = orpheus_malloc((p->nH>0?p->nH:1)*sizeof(int));
+    for (int idx=0;idx<nnvals_Nn*nnvals_Nn;idx++){
+        if (hmap[idx] > 0){ p->n2s[hmap[idx]-1] = idx/nnvals_Nn - nzero_Nn; }
+    }
+    p->nind_h = orpheus_malloc((len_nindices>0?len_nindices:1)*sizeof(int));
+    p->nind_conj = orpheus_malloc((len_nindices>0?len_nindices:1)*sizeof(int));
+    for (int i=0;i<len_nindices;i++){
+        int n2 = nindices[i]/nnvals_Nn - nzero_Nn, n3 = nindices[i]%nnvals_Nn - nzero_Nn;
+        int direct = (n3>0 || (n3==0 && n2>=0));
+        int idx = direct ? nindices[i] : (-n2+nzero_Nn)*nnvals_Nn + (-n3+nzero_Nn);
+        p->nind_h[i] = hmap[idx]-1;
+        p->nind_conj[i] = !direct;
+    }
+    free(hmap);
+}
+
+static void nnnn_plan_free(NnnnPlan *p){
+    free(p->pair_t1); free(p->pair_t2); free(p->pair_start); free(p->pair_order);
+    free(p->trip_t3); free(p->trip_combi); free(p->n3_start); free(p->n2s);
+    free(p->nind_h); free(p->nind_conj);
+}
+
+// Accumulate the batch into the triples of radial pair ip. Per n3 this is a complex GEMM over
+// the galaxies, N[n2][t3] = sum_g A[n2][g] B[g][t3] with
+//   A[n2][g] = w W_{n2+n3}(t1) conj(W_{n2}(t2)) - delta_{t1t2} w W2_{n3}(t1)
+//   B[g][t3] = conj(W_{n3}(t3)),
+// plus the remaining multiple-counting corrections (Porth+25, Tab. A.1) for t3=t2.
+// are/aim hold maxrow x NNNN_GALCHUNK and cre/cim maxrow x maxtrip doubles.
+static void nnnn_accum_pair(const NnnnBatch *batch, int ngal, const NnnnPlan *p, int ip,
+    double *are, double *aim, double *cre, double *cim, double complex *acc){
+    long cap = batch->cap, nshift = (long)(batch->nW+1)*cap;
+    const double *wre = batch->wre, *wim = batch->wim, *w2re = batch->w2re, *w2im = batch->w2im;
+    const double *w1 = batch->w1;
+    int t1 = p->pair_t1[ip], t2 = p->pair_t2[ip];
+    int j0 = p->pair_start[ip], nt3 = p->pair_start[ip+1]-j0;
+    int has_t2 = (p->trip_t3[j0] == t2);
+
+    for (int n3=0;n3<p->nn3;n3++){
+        int h0 = p->n3_start[n3], nrow = p->n3_start[n3+1]-h0;
+        if (nrow == 0){ continue; }
+        for (int i=0;i<nrow*nt3;i++){ cre[i] = 0.; cim[i] = 0.; }
+        for (int g0=0;g0<ngal;g0+=NNNN_GALCHUNK){
+            int ng = mymin(NNNN_GALCHUNK, ngal-g0);
+            const double *wg = w1+g0;
+
+            // Rows of A for this chunk of galaxies
+            for (int r=0;r<nrow;r++){
+                int n2 = p->n2s[h0+r], m = n2+n3;
+                double sm = (m<0) ? -1. : 1., s2 = (n2<0) ? 1. : -1.;
+                const double *xr = wre + t1*nshift + abs(m)*cap + g0, *xi = wim + t1*nshift + abs(m)*cap + g0;
+                const double *yr = wre + t2*nshift + abs(n2)*cap + g0, *yi = wim + t2*nshift + abs(n2)*cap + g0;
+                double *ar = are + (long)r*NNNN_GALCHUNK, *ai = aim + (long)r*NNNN_GALCHUNK;
+                #pragma omp simd
+                for (int g=0;g<ng;g++){
+                    double xig = sm*xi[g], yig = s2*yi[g];
+                    ar[g] = wg[g]*(xr[g]*yr[g] - xig*yig);
+                    ai[g] = wg[g]*(xr[g]*yig + xig*yr[g]);
+                }
+                if (t1 == t2){
+                    const double *ur = w2re + t1*nshift + n3*cap + g0, *ui = w2im + t1*nshift + n3*cap + g0;
+                    #pragma omp simd
+                    for (int g=0;g<ng;g++){ ar[g] -= wg[g]*ur[g]; ai[g] -= wg[g]*ui[g]; }
+                }
+            }
+
+            // C += A conj(W_{n3}(t3)) in blocks of two rows and two columns
+            for (int r=0;r<nrow;r+=2){
+                int rb = mymin(r+1, nrow-1);
+                const double *a0r = are + (long)r*NNNN_GALCHUNK, *a0i = aim + (long)r*NNNN_GALCHUNK;
+                const double *a1r = are + (long)rb*NNNN_GALCHUNK, *a1i = aim + (long)rb*NNNN_GALCHUNK;
+                for (int c=0;c<nt3;c+=2){
+                    int cb = mymin(c+1, nt3-1);
+                    long o0 = p->trip_t3[j0+c]*nshift + n3*cap + g0, o1 = p->trip_t3[j0+cb]*nshift + n3*cap + g0;
+                    const double *b0r = wre+o0, *b0i = wim+o0, *b1r = wre+o1, *b1i = wim+o1;
+                    double s00r = 0., s00i = 0., s01r = 0., s01i = 0.;
+                    double s10r = 0., s10i = 0., s11r = 0., s11i = 0.;
+                    #pragma omp simd reduction(+:s00r,s00i,s01r,s01i,s10r,s10i,s11r,s11i)
+                    for (int g=0;g<ng;g++){
+                        s00r += a0r[g]*b0r[g] + a0i[g]*b0i[g]; s00i += a0i[g]*b0r[g] - a0r[g]*b0i[g];
+                        s01r += a0r[g]*b1r[g] + a0i[g]*b1i[g]; s01i += a0i[g]*b1r[g] - a0r[g]*b1i[g];
+                        s10r += a1r[g]*b0r[g] + a1i[g]*b0i[g]; s10i += a1i[g]*b0r[g] - a1r[g]*b0i[g];
+                        s11r += a1r[g]*b1r[g] + a1i[g]*b1i[g]; s11i += a1i[g]*b1r[g] - a1r[g]*b1i[g];
+                    }
+                    cre[r*nt3+c] += s00r; cim[r*nt3+c] += s00i;
+                    if (cb != c){ cre[r*nt3+cb] += s01r; cim[r*nt3+cb] += s01i; }
+                    if (rb != r){
+                        cre[rb*nt3+c] += s10r; cim[rb*nt3+c] += s10i;
+                        if (cb != c){ cre[rb*nt3+cb] += s11r; cim[rb*nt3+cb] += s11i; }
+                    }
+                }
+            }
+
+            // Corrections for t3=t2: - w W_{n2+n3}(t1) W2_{-n2-n3}(t2), and for t1=t2=t3 also
+            // - w W2_{n2}(t1) conj(W_{n2}(t2)) + 2 w W3(t1)
+            if (has_t2){
+                for (int r=0;r<nrow;r++){
+                    int n2 = p->n2s[h0+r], m = n2+n3;
+                    double sm = (m<0) ? -1. : 1.;
+                    const double *xr = wre + t1*nshift + abs(m)*cap + g0, *xi = wim + t1*nshift + abs(m)*cap + g0;
+                    const double *ur = w2re + t2*nshift + abs(m)*cap + g0, *ui = w2im + t2*nshift + abs(m)*cap + g0;
+                    double dr = 0., di = 0.;
+                    #pragma omp simd reduction(+:dr,di)
+                    for (int g=0;g<ng;g++){
+                        double xig = sm*xi[g], uig = -sm*ui[g];
+                        dr -= wg[g]*(xr[g]*ur[g] - xig*uig);
+                        di -= wg[g]*(xr[g]*uig + xig*ur[g]);
+                    }
+                    if (t1 == t2){
+                        double s2 = (n2<0) ? -1. : 1.;
+                        const double *vr = w2re + t1*nshift + abs(n2)*cap + g0, *vi = w2im + t1*nshift + abs(n2)*cap + g0;
+                        const double *yr = wre + t2*nshift + abs(n2)*cap + g0, *yi = wim + t2*nshift + abs(n2)*cap + g0;
+                        const double *w3 = batch->w3 + t1*cap + g0;
+                        #pragma omp simd reduction(+:dr,di)
+                        for (int g=0;g<ng;g++){
+                            double vig = s2*vi[g], yig = -s2*yi[g];
+                            dr -= wg[g]*(vr[g]*yr[g] - vig*yig) - 2.*wg[g]*w3[g];
+                            di -= wg[g]*(vr[g]*yig + vig*yr[g]);
+                        }
+                    }
+                    cre[r*nt3] += dr; cim[r*nt3] += di;
+                }
+            }
+        }
+        for (int r=0;r<nrow;r++){
+            for (int c=0;c<nt3;c++){
+                acc[p->trip_combi[j0+c]*p->nH + h0 + r] += cre[r*nt3+c] + I*cim[r*nt3+c];
+            }
+        }
+    }
+}
+
+// Expand the half multipole set by conjugation and add all orderings of every triple to N_n
+static void nnnn_reconstruct_all(const double complex *acc, const NnnnPlan *p, const int *combis,
+    long ncombis, int nbinsr, int nmax, int *nindices, int len_nindices,
+    double complex *N_n, int nthreads){
+    int nmax_alloc = 2*nmax+1;
+    int nnvals_Nn = 2*nmax_alloc+1, nnvals_Nn_rec = 2*nmax+1;
+    int n2n3combis = nnvals_Nn*nnvals_Nn, n2n3combis_rec = nnvals_Nn_rec*nnvals_Nn_rec;
+    int N_nshift = nbinsr*nbinsr*nbinsr;
+    int chunk = 64;
+    #pragma omp parallel num_threads(nthreads)
+    {
+        double complex *batchN_n = orpheus_calloc((long)n2n3combis*chunk, sizeof(double complex));
+        double complex *thisN_n = orpheus_calloc(n2n3combis, sizeof(double complex));
+        double complex *thisN_n_rec = orpheus_calloc(n2n3combis_rec, sizeof(double complex));
+        int *elb1s = orpheus_malloc(chunk*sizeof(int));
+        int *elb2s = orpheus_malloc(chunk*sizeof(int));
+        int *elb3s = orpheus_malloc(chunk*sizeof(int));
+        #pragma omp for schedule(dynamic, 1)
+        for (long c0=0;c0<ncombis;c0+=chunk){
+            int nc = (int)mymin((long)chunk, ncombis-c0);
+            for (int k=0;k<nc;k++){
+                int combi = combis[c0+k];
+                elb1s[k] = combi/(nbinsr*nbinsr);
+                elb2s[k] = (combi-elb1s[k]*nbinsr*nbinsr)/nbinsr;
+                elb3s[k] = combi%nbinsr;
+                const double complex *a = acc + (c0+k)*p->nH;
+                for (int i=0;i<len_nindices;i++){
+                    double complex v = a[p->nind_h[i]];
+                    batchN_n[(long)nindices[i]*nc+k] = p->nind_conj[i] ? conj(v) : v;
+                }
+            }
+            nnnn_reconstruct_batch(batchN_n, nc, nc, elb1s, elb2s, elb3s,
+                                   nmax, nindices, len_nindices, n2n3combis, n2n3combis_rec,
+                                   thisN_n, thisN_n_rec, N_n, N_nshift, nbinsr, 1, 1,
+                                   0, NULL, NULL, NULL, NULL, 0, 0, 0, NULL, NULL, NULL,
+                                   NULL, NULL, 0, 0);
+        }
+        free(batchN_n); free(thisN_n); free(thisN_n_rec); free(elb1s); free(elb2s); free(elb3s);
     }
 }
 
@@ -3762,21 +4156,16 @@ void alloc_notomoNap4_tree_nnnn_highmem(const MultiresoCatalog *cat_base, const 
 
 
 // NNNN correlator using the tree approximation
-// This tries to find a good compromise between the "low-memory" and the 
-// "runtime-optimised" implementation discussed in Porth+25:
-// * A:  Divide the catalog in niter iterations such that the moment cache of
-//       each iteration does not surpass memory_bound memory
-// * B1: For each iteration, allocate the moment cache for the set of galaxies
-//       in parallel, where each thread uses a different selection of galaxies
-//       within the iterations chunk
-// * B2: From this moment cache update the Nn for this iteration in parallel
-//       where each thread uses a different set of radial bin combinations
-// * C:  Update the global Nn using the Nn from the last iteration
-// Note that we allow the cache of each chunk to surpass 2e9 elements by using a jagged array
+// * A:  Work list of the radial triples and multipoles, and batches of base galaxies whose
+//       moments fit into memory_bound
+// * B1: For each batch, the moments of its base galaxies in parallel over the galaxies
+// * B2: From these, update the multipoles of all triples in parallel over the radial pairs,
+//       each summing over all galaxies of the batch (nnnn_accum_pair)
+// * C:  Reconstruct all orderings of the triples once at the end
 void alloc_nnnn_tree(const MultiresoCatalog *cat_base, const MultiresoCatalog *cat_leaf,
     const NavHash *nav, const TreeResoParams *tree, const BinningParams *bin, const FourthParams *fourth,
     double memory_bound, int nthreads, int verbose, NPCFOutput *out){
-    
+
     // Dereference input args
     double *isinner = cat_base->isinner_resos, *weight = cat_base->weight_resos;
     double *pos1 = cat_base->pos1_resos, *pos2 = cat_base->pos2_resos;
@@ -3791,37 +4180,18 @@ void alloc_nnnn_tree(const MultiresoCatalog *cat_base, const MultiresoCatalog *c
     int nregions = nav->nregions;
     double pix1_start = nav->pix1_start, pix1_d = nav->pix1_d; int pix1_n = nav->pix1_n;
     double pix2_start = nav->pix2_start, pix2_d = nav->pix2_d; int pix2_n = nav->pix2_n;
-    int *thetacombis_batches = fourth->thetacombis_batches, *nthetacombis_batches = fourth->nthetacombis_batches;
+    int *thetacombis_batches = fourth->thetacombis_batches;
     int *cumthetacombis_batches = fourth->cumthetacombis_batches; int nthetbatches = fourth->nthetbatches;
     double *bin_centers = out->bin_centers;
     double complex *N_n = out->npcf;
 
-    int nmax_alloc = 2*nmax+1;
-    int nbinsz = 1;
-    int nnvals_Wn = 4*nmax_alloc+1;
-    int nnvals_Nn = 2*nmax_alloc+1;
-    int nnvals_Nn_rec = 2*nmax+1;
-    int nzero_Wn = 2*nmax_alloc;
-    int nzero_Nn = nmax_alloc;
-    int N_nshift = nbinsr*nbinsr*nbinsr;
-    int n2n3combis = nnvals_Nn*nnvals_Nn;
-    int n2n3combis_rec = nnvals_Nn_rec*nnvals_Nn_rec;
-    int nbinszr = nbinsz*nbinsr;
+    long ncombis = cumthetacombis_batches[nthetbatches];
     double drbin = (log(rmax)-log(rmin))/(nbinsr);
     int npix_hash = pix1_n*pix2_n;
 
     int *rshift_index_matcher_hash = orpheus_calloc(nresos, sizeof(int));
     int *rshift_pixs_galind_bounds = orpheus_calloc(nresos, sizeof(int));
     int *rshift_pix_gals = orpheus_calloc(nresos, sizeof(int));
-    // Bail out rather than dereference a failed allocation
-    if (orpheus_get_error()){
-        free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
-        return;
-    }
-    build_rshift_offsets(nresos, npix_hash, ngal_resos,
-                         rshift_index_matcher_hash, rshift_pixs_galind_bounds, rshift_pix_gals);
-
-
     double *tmp_totcounts = orpheus_calloc(nthreads*nbinsr, sizeof(double));
     double *tmp_totnorms  = orpheus_calloc(nthreads*nbinsr, sizeof(double));
     // Bail out rather than dereference a failed allocation
@@ -3830,11 +4200,12 @@ void alloc_nnnn_tree(const MultiresoCatalog *cat_base, const MultiresoCatalog *c
         free(tmp_totcounts); free(tmp_totnorms);
         return;
     }
+    build_rshift_offsets(nresos, npix_hash, ngal_resos,
+                         rshift_index_matcher_hash, rshift_pixs_galind_bounds, rshift_pix_gals);
 
-    // A: Compute how many iterations we need to process the full catalog //
+    // A: Work list, base galaxies and batches //
 
-    // Find length of cache (only inner galaxies count!) and how many galaxies fit in a single
-    // iteration such that memory_bound is fulfilled.
+    // Only inner galaxies are base galaxies
     long ngal_all = (long) pixs_galind_bounds[nregions];
     int *baseinds = orpheus_malloc((ngal_all>0?ngal_all:1)*sizeof(int));
     // Bail out rather than dereference a failed allocation
@@ -3847,222 +4218,112 @@ void alloc_nnnn_tree(const MultiresoCatalog *cat_base, const MultiresoCatalog *c
     for (long ig=0; ig<ngal_all; ig++){
         if (isinner[pix_gals[(int)ig]] >= 1e-5){ baseinds[ncache++] = (int)ig; }
     }
-    baseinds = realloc(baseinds, (ncache>0?ncache:1)*sizeof(int));
-    long wn_per_gal = (long) nnvals_Wn*nbinsr;
-    long bytes_per_gal = (2*wn_per_gal + nbinsr) * (long)sizeof(double complex);
-    int max_batch = 0;
-    for (int b=0;b<nthetbatches;b++){ if (nthetacombis_batches[b]>max_batch){ max_batch = nthetacombis_batches[b]; } }
-    long phase2_per_thread = ((long)max_batch*n2n3combis + n2n3combis + n2n3combis_rec) * (long)sizeof(double complex);
-    long reserve = (long)nthreads * phase2_per_thread;
-    long gals_per_iter;
-    if (memory_bound <= 0){
-        gals_per_iter = ncache;
-    } else {
-        long budget = (long)(memory_bound * 1073741824.0); // GiB to bytes
-        long avail = budget - reserve;
-        if (avail < bytes_per_gal){ avail = bytes_per_gal; } // at least one galaxy
-        gals_per_iter = avail / bytes_per_gal;
-    }
-    if (gals_per_iter > ncache){ gals_per_iter = ncache; }
-    if (gals_per_iter < 1){ gals_per_iter = 1; }
-    int n_iter = (int)((ncache + gals_per_iter - 1)/gals_per_iter);
 
-    // Within a iteration, split into chunks of save length to avoid any overflow errors
-    int gal_per_chunk = (int)(1000000000L / wn_per_gal); if (gal_per_chunk<1){gal_per_chunk=1;}
-    if ((long)gal_per_chunk > gals_per_iter){ gal_per_chunk = (int)gals_per_iter; }
-    int nchunks = (int)((gals_per_iter + (long)gal_per_chunk - 1)/(long)gal_per_chunk);
-
-    // Allocate the cache once as a jagged array
-    double complex **Wncache  = orpheus_malloc(nchunks*sizeof(double complex*));
-    double complex **W2ncache = orpheus_malloc(nchunks*sizeof(double complex*));
-    double complex **W3ncache = orpheus_malloc(nchunks*sizeof(double complex*));
+    NnnnPlan plan;
+    nnnn_plan_build(&plan, thetacombis_batches, ncombis, nbinsr, nindices, len_nindices, nmax);
+    int cap = nnnn_batch_cap(ncache, nbinsr, plan.nW, memory_bound, nthreads);
+    NnnnBatch batch;
+    nnnn_batch_alloc(&batch, cap, nbinsr, plan.nW);
+    double complex *acc = orpheus_calloc(ncombis*plan.nH, sizeof(double complex));
+    NnnnLeaves *leaves = orpheus_malloc(nthreads*sizeof(NnnnLeaves));
+    double *are = orpheus_malloc((long)nthreads*plan.maxrow*NNNN_GALCHUNK*sizeof(double));
+    double *aim = orpheus_malloc((long)nthreads*plan.maxrow*NNNN_GALCHUNK*sizeof(double));
+    double *cre = orpheus_malloc((long)nthreads*plan.maxrow*plan.maxtrip*sizeof(double));
+    double *cim = orpheus_malloc((long)nthreads*plan.maxrow*plan.maxtrip*sizeof(double));
+    for (int t=0;t<nthreads;t++){ nnnn_leaves_alloc(leaves+t, nbinsr); }
     // Bail out rather than dereference a failed allocation
     if (orpheus_get_error()){
+        for (int t=0;t<nthreads;t++){ nnnn_leaves_free(leaves+t); }
         free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
-        free(tmp_totcounts); free(tmp_totnorms); free(baseinds); free(Wncache); free(W2ncache);
-        free(W3ncache);
+        free(tmp_totcounts); free(tmp_totnorms); free(baseinds); nnnn_plan_free(&plan);
+        nnnn_batch_free(&batch); free(acc); free(leaves); free(are); free(aim); free(cre); free(cim);
         return;
     }
-    for (int c=0;c<nchunks;c++){
-        long chunkgals = gal_per_chunk;
-        if ((long)(c+1)*gal_per_chunk > gals_per_iter){ chunkgals = gals_per_iter - (long)c*gal_per_chunk; }
-        Wncache[c]  = orpheus_calloc(chunkgals*wn_per_gal, sizeof(double complex));
-        W2ncache[c] = orpheus_calloc(chunkgals*wn_per_gal, sizeof(double complex));
-        W3ncache[c] = orpheus_calloc(chunkgals*nbinsr, sizeof(double complex));
-        if (Wncache[c]==NULL || W2ncache[c]==NULL || W3ncache[c]==NULL){
-            fprintf(stderr, "alloc_nnnn_tree: FAILED to allocate moment cache chunk %d/%d "
-                    "(~%.1f GiB/chunk, memory_bound=%.1f GiB). Lower memory_bound or the number "
-                    "of parallel workers.\n", c, nchunks,
-                    chunkgals*bytes_per_gal/1073741824.0, memory_bound);
-            exit(1);
-        }
-    }
-    if (verbose>1){ printf("alloc_nnnn_tree: %ld inner / %ld total galaxies, %d block(s) of <=%ld gal (cache ~%.1f GiB), %d chunk(s)/block\n",
-           ncache, ngal_all, n_iter, gals_per_iter, gals_per_iter*bytes_per_gal/1073741824.0, nchunks); }
+    if (verbose>1){ printf("alloc_nnnn_tree: %ld inner / %ld total galaxies in batches of %d, %d radial pairs, "
+           "%d multipoles (%.2f GiB accumulator)\n", ncache, ngal_all, cap, plan.npairs, plan.nH,
+           ncombis*plan.nH*16./1073741824.); }
 
-    // B: Iterate over the catalog //
-    // Progress spans both B1 and B2, the latter reading each block once per theta
-    // batch; both are counted in cache-touch units. progscale keeps the int
-    // arguments of print_progress in range for large caches.
-    long nregionsdone = 0, progtot = ncache*(1L+nthetbatches);
+    // B: Iterate over the batches of base galaxies //
+    // Progress counts every galaxy once in B1 and once in B2
+    long ndone = 0, progtot = 2*ncache;
     long progscale = 1L + progtot/1000000000L;
     reset_progress();
-    for (int it=0; it<n_iter; it++){
+    for (long g0=0; g0<ncache; g0+=cap){
+        int ngal = (int)mymin((long)cap, ncache-g0);
 
-        // Get start and end galaxy indices of this iteratoin
-        long g0 = (long)it*gals_per_iter;
-        long g1 = g0 + gals_per_iter; if (g1>ncache){ g1 = ncache; }
-        long nblock = g1 - g0;
-
-        // B1: Build moment cache //
-        #pragma omp parallel for num_threads(nthreads)
-        for (long ib=0; ib<nblock; ib++){
+        // B1: Moments of the batch //
+        #pragma omp parallel for num_threads(nthreads) schedule(dynamic, 4)
+        for (int ig=0; ig<ngal; ig++){
             #pragma omp atomic
-            nregionsdone += 1;
-            print_progress((int)(nregionsdone/progscale), (int)(progtot/progscale), verbose);
+            ndone += 1;
+            print_progress((int)(ndone/progscale), (int)(progtot/progscale), verbose);
             int thisthread = omp_get_thread_num();
-            int ind_inpix1 = baseinds[g0+ib];
-            int ind_gal = pix_gals[ind_inpix1];
+            NnnnLeaves *lv = leaves + thisthread;
+            int ind_gal = pix_gals[baseinds[g0+ig]];
             double p11 = pos1[ind_gal];
             double p12 = pos2[ind_gal];
             double w1 = weight[ind_gal];
-            int chunk = (int)(ib/gal_per_chunk);
-            int loc = (int)(ib - (long)chunk*gal_per_chunk);
-
-            // Find this galaxies cache slot and reset it to zero
-            double complex *nextWns  = Wncache[chunk]  + (long)loc*wn_per_gal;
-            double complex *nextW2ns = W2ncache[chunk] + (long)loc*wn_per_gal;
-            double complex *nextW3ns = W3ncache[chunk] + (long)loc*nbinsr;
-            for (long k=0;k<wn_per_gal;k++){ nextWns[k]=0; nextW2ns[k]=0; }
-            for (int k=0;k<nbinsr;k++){ nextW3ns[k]=0; }
-            
-            // Allocate the galaxies cache slot
-            int ind_gal2, lower, upper;
-            double p21, p22, w2, w2_sq, rel1, rel2, dist, dphi;
-            double complex phirot, phirotc;
+            int lower, upper;
             for (int elreso=0;elreso<nresos;elreso++){
-                int rbin, zrshift, ind_Wn;
                 double rmin_reso = reso_redges[elreso];
                 double rmax_reso = reso_redges[elreso+1];
                 FLATCELL_FOREACH(
                     index_matcher_hash, rshift_index_matcher_hash[elreso], pixs_galind_bounds, rshift_pixs_galind_bounds[elreso],
                     p11, p12, rmax_reso, pix1_start, pix1_d, pix1_n, pix2_start, pix2_d, pix2_n, lower, upper){
                     for (int ind_inpix=lower; ind_inpix<upper; ind_inpix++){
-                        ind_gal2 = rshift_pix_gals[elreso] + pix_gals[rshift_pix_gals[elreso]+ind_inpix];
-                        p21 = pos1_resos[ind_gal2];
-                        p22 = pos2_resos[ind_gal2];
-                        w2 = weight_resos[ind_gal2];
-                        rel1 = p21 - p11;
-                        rel2 = p22 - p12;
-                        dist = sqrt(rel1*rel1 + rel2*rel2);
-                        if(dist < rmin_reso || dist >= rmax_reso) continue;
-                        rbin = (int) floor((log(dist)-log(rmin))/drbin);
-                        w2_sq = w2*w2;
-                        dphi = atan2(rel2,rel1);
-                        phirot = cexp(I*dphi);
-                        phirotc = conj(phirot);
-                        zrshift = 0*nbinsr + rbin;
-                        ind_Wn = nzero_Wn*nbinszr + zrshift;
-                        nextW3ns[zrshift] += w2_sq*w2;
-                        tmp_totcounts[thisthread*nbinsr+zrshift] += w1*w2*dist;
-                        tmp_totnorms[thisthread*nbinsr+zrshift]  += w1*w2;
-                        nnnn_fill_wn(nextWns, nextW2ns, 2*nmax_alloc, nbinszr, ind_Wn, w2, w2_sq, phirot, phirotc);
+                        int ind_gal2 = rshift_pix_gals[elreso] + pix_gals[rshift_pix_gals[elreso]+ind_inpix];
+                        double rel1 = pos1_resos[ind_gal2] - p11;
+                        double rel2 = pos2_resos[ind_gal2] - p12;
+                        double dist = sqrt(rel1*rel1 + rel2*rel2);
+                        if (dist < rmin_reso || dist >= rmax_reso){ continue; }
+                        int rbin = mymin((int) floor((log(dist)-log(rmin))/drbin), nbinsr-1);
+                        double w2 = weight_resos[ind_gal2];
+                        tmp_totcounts[thisthread*nbinsr+rbin] += w1*w2*dist;
+                        tmp_totnorms[thisthread*nbinsr+rbin]  += w1*w2;
+                        nnnn_leaves_push(lv, rbin, w2, rel1/dist, rel2/dist);
                     }
                 }
             }
+            nnnn_fill_slot(lv, &batch, ig, w1);
         }
 
-        // B2: Update the Nn for this iteration //
-        #pragma omp parallel for num_threads(nthreads)
-        for (int elthetbatch=0; elthetbatch<nthetbatches; elthetbatch++){
-
-            // Get the radial bin indices for this batch
-            int batch_nthetas = nthetacombis_batches[elthetbatch];
-            int batchN_nshift = batch_nthetas;
-            long batchN_compshift = (long)n2n3combis*batchN_nshift;
-            double complex *batchN_n = orpheus_calloc(batchN_compshift, sizeof(double complex));
-            int *elb1s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
-            int *elb2s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
-            int *elb3s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
-            for (int elb=0;elb<batch_nthetas;elb++){
-                int thisrcombi = thetacombis_batches[cumthetacombis_batches[elthetbatch]+elb];
-                elb1s_batch[elb] = thisrcombi/(nbinsr*nbinsr);
-                elb2s_batch[elb] = (thisrcombi-elb1s_batch[elb]*nbinsr*nbinsr)/nbinsr;
-                elb3s_batch[elb] = thisrcombi-elb1s_batch[elb]*nbinsr*nbinsr-elb2s_batch[elb]*nbinsr;
-            }
-
-            // For each theta combi, find the location in the caches and update Nn
-            for (long ib=0; ib<nblock; ib++){
-                int ind_inpix1 = baseinds[g0 + ib];
-                int ind_gal = pix_gals[ind_inpix1];
-                double w1 = weight[ind_gal];
-                int chunk = (int)(ib/gal_per_chunk);
-                int loc = (int)(ib - (long)chunk*gal_per_chunk);
-                double complex *nextWns  = Wncache[chunk]  + (long)loc*wn_per_gal;
-                double complex *nextW2ns = W2ncache[chunk] + (long)loc*wn_per_gal;
-                double complex *nextW3ns = W3ncache[chunk] + (long)loc*nbinsr;
-
-                nnnn_accum_batchNn(batchN_n, batch_nthetas, batchN_nshift,
-                                   elb1s_batch, elb2s_batch, elb3s_batch,
-                                   nextWns, nextW2ns, nextW3ns,
-                                   nindices, len_nindices, nnvals_Nn, nzero_Nn, nzero_Wn, nbinsr,
-                                   w1, 0, 0, 0);
-            }
-            #pragma omp atomic
-            nregionsdone += nblock;
-            print_progress((int)(nregionsdone/progscale), (int)(progtot/progscale), verbose);
-
-            // C: Update the global Nn using the Nn from the current iteration //
-            double complex *thisN_n = orpheus_calloc(n2n3combis, sizeof(double complex));
-            double complex *thisN_n_rec = orpheus_calloc(n2n3combis_rec, sizeof(double complex));
-            nnnn_reconstruct_batch(batchN_n, batch_nthetas, batchN_nshift,
-                                  elb1s_batch, elb2s_batch, elb3s_batch,
-                                  nmax, nindices, len_nindices, n2n3combis, n2n3combis_rec,
-                                  thisN_n, thisN_n_rec,
-                                  N_n, N_nshift, nbinsr, 1, 1,
-                                  0, NULL, NULL, NULL, NULL, 0, 0, 0, NULL, NULL, NULL,
-                                  NULL, NULL, 0, 0);
-
-            free(batchN_n);
-            free(elb1s_batch);
-            free(elb2s_batch);
-            free(elb3s_batch);
-            free(thisN_n);
-            free(thisN_n_rec);
+        // B2: Update the multipoles of all triples from the batch //
+        #pragma omp parallel for num_threads(nthreads) schedule(dynamic, 1)
+        for (int k=0; k<plan.npairs; k++){
+            long t = omp_get_thread_num();
+            nnnn_accum_pair(&batch, ngal, &plan, plan.pair_order[k],
+                            are + t*plan.maxrow*NNNN_GALCHUNK, aim + t*plan.maxrow*NNNN_GALCHUNK,
+                            cre + t*plan.maxrow*plan.maxtrip, cim + t*plan.maxrow*plan.maxtrip, acc);
         }
+        ndone += ngal;
+        print_progress((int)(ndone/progscale), (int)(progtot/progscale), verbose);
     }
+
+    // C: All orderings of every triple //
+    nnnn_reconstruct_all(acc, &plan, thetacombis_batches, ncombis, nbinsr, nmax,
+                         nindices, len_nindices, N_n, nthreads);
 
     // Get bin centers
-    double *totcounts = orpheus_calloc(nbinsr, sizeof(double));
-    double *totnorms  = orpheus_calloc(nbinsr, sizeof(double));
-    // Bail out rather than dereference a failed allocation
-    if (orpheus_get_error()){
-        free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
-        free(tmp_totcounts); free(tmp_totnorms); free(baseinds); free(Wncache); free(W2ncache);
-        free(W3ncache); free(totcounts); free(totnorms);
-        return;
-    }
-    for (int t=0;t<nthreads;t++){
+    for (int t=1;t<nthreads;t++){
         for (int b=0;b<nbinsr;b++){
-            totcounts[b] += tmp_totcounts[t*nbinsr+b];
-            totnorms[b]  += tmp_totnorms[t*nbinsr+b];
+            tmp_totcounts[b] += tmp_totcounts[t*nbinsr+b];
+            tmp_totnorms[b]  += tmp_totnorms[t*nbinsr+b];
         }
     }
-    for (int b=0;b<nbinsr;b++){ if (totnorms[b]!=0){ bin_centers[b] = totcounts[b]/totnorms[b]; } }
+    for (int b=0;b<nbinsr;b++){ if (tmp_totnorms[b]!=0){ bin_centers[b] = tmp_totcounts[b]/tmp_totnorms[b]; } }
 
     // Free all allocated quantities
-    for (int c=0;c<nchunks;c++){ free(Wncache[c]); free(W2ncache[c]); free(W3ncache[c]); }
-    free(Wncache); free(W2ncache); free(W3ncache);
-    free(tmp_totcounts); free(tmp_totnorms); free(totcounts); free(totnorms);
+    for (int t=0;t<nthreads;t++){ nnnn_leaves_free(leaves+t); }
     free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
+    free(tmp_totcounts); free(tmp_totnorms); free(baseinds); nnnn_plan_free(&plan);
+    nnnn_batch_free(&batch); free(acc); free(leaves); free(are); free(aim); free(cre); free(cim);
     if (verbose>0){ printf("\n"); }
-    free(baseinds);
 }
 
 
 // NNNN correlator using the tree approximation in spherical geometry
-// Besides the allocation of the caches, which use healpix navigation and spherical
-// geometry for the distances and bearing angle computation, it is the same as alloc_nnnn_tree.
+// Besides gathering the leaves, which uses healpix navigation and spherical geometry
+// for the distances and bearing angles, it is the same as alloc_nnnn_tree.
 // Recall that all separations are in radians.
 void alloc_nnnn_tree_spherical(const MultiresoCatalog *cat_base, const MultiresoCatalog *cat_leaf,
     const NavHash *nav, const TreeResoParams *tree, const BinningParams *bin, const FourthParams *fourth,
@@ -4071,7 +4332,6 @@ void alloc_nnnn_tree_spherical(const MultiresoCatalog *cat_base, const Multireso
     // Dereference input args
     double *isinner = cat_base->isinner_resos, *weight = cat_base->weight_resos;
     double *pos_vx = cat_base->vx_resos, *pos_vy = cat_base->vy_resos, *pos_vz = cat_base->vz_resos;
-    double *pos_ra = cat_base->ra_resos, *pos_sindec = cat_base->sindec_resos, *pos_cosdec = cat_base->cosdec_resos;
     int ngal = cat_base->ngal_resos[0];
     int nmax = bin->nmax, nbinsr = bin->nbinsr;
     double rmin = bin->rmin, rmax = bin->rmax;
@@ -4081,282 +4341,164 @@ void alloc_nnnn_tree_spherical(const MultiresoCatalog *cat_base, const Multireso
     long *nside_nav = nav->nside_nav;
     double *weight_resos = cat_leaf->weight_resos;
     double *vx_resos = cat_leaf->vx_resos, *vy_resos = cat_leaf->vy_resos, *vz_resos = cat_leaf->vz_resos;
-    double *ra_resos = cat_leaf->ra_resos, *sindec_resos = cat_leaf->sindec_resos, *cosdec_resos = cat_leaf->cosdec_resos;
     int *band_offset_leafgals = nav->rshift_red;
     long *cell_pixids = nav->cell_pix;
     int *cell_leafgal_bounds = nav->cell_redbounds, *band_offset_cellpixids = nav->rshift_cellpix, *band_offset_leafgal_bounds = nav->rshift_cellbounds;
-    int *thetacombis_batches = fourth->thetacombis_batches, *nthetacombis_batches = fourth->nthetacombis_batches;
+    int *thetacombis_batches = fourth->thetacombis_batches;
     int *cumthetacombis_batches = fourth->cumthetacombis_batches; int nthetbatches = fourth->nthetbatches;
     double *bin_centers = out->bin_centers;
     double complex *N_n = out->npcf;
 
-    int nmax_alloc = 2*nmax+1;
-    int nbinsz = 1;
-    int nnvals_Wn = 4*nmax_alloc+1;
-    int nnvals_Nn = 2*nmax_alloc+1;
-    int nnvals_Nn_rec = 2*nmax+1;
-    int nzero_Wn = 2*nmax_alloc;
-    int nzero_Nn = nmax_alloc;
-    int N_nshift = nbinsr*nbinsr*nbinsr;
-    int n2n3combis = nnvals_Nn*nnvals_Nn;
-    int n2n3combis_rec = nnvals_Nn_rec*nnvals_Nn_rec;
-    int nbinszr = nbinsz*nbinsr;
+    long ncombis = cumthetacombis_batches[nthetbatches];
     double drbin = (log(rmax)-log(rmin))/(nbinsr);
 
-    // A: Compute how many iterations we need to process the full catalog //
+    // A: Work list, base galaxies and batches //
 
-    // Find length of cache (only inner galaxies count!) and how many galaxies fit in a single
-    // iteration such that memory_bound is fulfilled.
+    // Only inner galaxies are base galaxies
     int *baseinds = orpheus_malloc((ngal>0?ngal:1)*sizeof(int));
+    double *tmp_totcounts = orpheus_calloc(nthreads*nbinsr, sizeof(double));
+    double *tmp_totnorms  = orpheus_calloc(nthreads*nbinsr, sizeof(double));
     // Bail out rather than dereference a failed allocation
-    if (orpheus_get_error()){free(baseinds); return;}
+    if (orpheus_get_error()){free(baseinds); free(tmp_totcounts); free(tmp_totnorms); return;}
     long ncache = 0;
     for (int ig=0; ig<ngal; ig++){
         if (isinner[ig] >= 1e-5){ baseinds[ncache++] = ig; }
     }
-    baseinds = realloc(baseinds, (ncache>0?ncache:1)*sizeof(int));
-    long wn_per_gal = (long) nnvals_Wn*nbinsr;
-    long bytes_per_gal = (2*wn_per_gal + nbinsr) * (long)sizeof(double complex);
-    int max_batch = 0;
-    for (int b=0;b<nthetbatches;b++){ if (nthetacombis_batches[b]>max_batch){ max_batch = nthetacombis_batches[b]; } }
-    long phase2_per_thread = ((long)max_batch*n2n3combis + n2n3combis + n2n3combis_rec) * (long)sizeof(double complex);
-    long reserve = (long)nthreads * phase2_per_thread;
-    long gals_per_iter;
-    if (memory_bound <= 0){
-        gals_per_iter = ncache;
-    } else {
-        long budget = (long)(memory_bound * 1073741824.0); // GiB to bytes
-        long avail = budget - reserve;
-        if (avail < bytes_per_gal){ avail = bytes_per_gal; } // at least one galaxy
-        gals_per_iter = avail / bytes_per_gal;
+
+    NnnnPlan plan;
+    nnnn_plan_build(&plan, thetacombis_batches, ncombis, nbinsr, nindices, len_nindices, nmax);
+    int cap = nnnn_batch_cap(ncache, nbinsr, plan.nW, memory_bound, nthreads);
+    NnnnBatch batch;
+    nnnn_batch_alloc(&batch, cap, nbinsr, plan.nW);
+    double complex *acc = orpheus_calloc(ncombis*plan.nH, sizeof(double complex));
+    NnnnLeaves *leaves = orpheus_malloc(nthreads*sizeof(NnnnLeaves));
+    double *are = orpheus_malloc((long)nthreads*plan.maxrow*NNNN_GALCHUNK*sizeof(double));
+    double *aim = orpheus_malloc((long)nthreads*plan.maxrow*NNNN_GALCHUNK*sizeof(double));
+    double *cre = orpheus_malloc((long)nthreads*plan.maxrow*plan.maxtrip*sizeof(double));
+    double *cim = orpheus_malloc((long)nthreads*plan.maxrow*plan.maxtrip*sizeof(double));
+    // Ranges returned by query_disc, one buffer per thread grown on demand
+    long *query_cap = orpheus_malloc(nthreads*sizeof(long));
+    long **ranges = orpheus_malloc(nthreads*sizeof(long*));
+    for (int t=0;t<nthreads;t++){
+        nnnn_leaves_alloc(leaves+t, nbinsr);
+        query_cap[t] = 2048;
+        ranges[t] = orpheus_malloc(2*query_cap[t]*sizeof(long));
     }
-    if (gals_per_iter > ncache){ gals_per_iter = ncache; }
-    if (gals_per_iter < 1){ gals_per_iter = 1; }
-    int n_iter = (int)((ncache + gals_per_iter - 1)/gals_per_iter);
-
-    // Within an iteration, split into chunks of safe length to avoid overflow errors
-    int gal_per_chunk = (int)(1000000000L / wn_per_gal); if (gal_per_chunk<1){gal_per_chunk=1;}
-    if ((long)gal_per_chunk > gals_per_iter){ gal_per_chunk = (int)gals_per_iter; }
-    int nchunks = (int)((gals_per_iter + (long)gal_per_chunk - 1)/(long)gal_per_chunk);
-
-    // Allocate the cache once as a jagged array
-    double complex **Wncache  = orpheus_malloc(nchunks*sizeof(double complex*));
-    double complex **W2ncache = orpheus_malloc(nchunks*sizeof(double complex*));
-    double complex **W3ncache = orpheus_malloc(nchunks*sizeof(double complex*));
-    // Bail out rather than dereference a failed allocation
-    if (orpheus_get_error()){free(baseinds); free(Wncache); free(W2ncache); free(W3ncache); return;}
-    for (int c=0;c<nchunks;c++){
-        long chunkgals = gal_per_chunk;
-        if ((long)(c+1)*gal_per_chunk > gals_per_iter){ chunkgals = gals_per_iter - (long)c*gal_per_chunk; }
-        Wncache[c]  = orpheus_calloc(chunkgals*wn_per_gal, sizeof(double complex));
-        W2ncache[c] = orpheus_calloc(chunkgals*wn_per_gal, sizeof(double complex));
-        W3ncache[c] = orpheus_calloc(chunkgals*nbinsr, sizeof(double complex));
-        if (Wncache[c]==NULL || W2ncache[c]==NULL || W3ncache[c]==NULL){
-            fprintf(stderr, "alloc_nnnn_tree_spherical: FAILED to allocate moment cache chunk %d/%d "
-                    "(~%.1f GiB/chunk, memory_bound=%.1f GiB). Lower memory_bound or the number "
-                    "of parallel workers.\n", c, nchunks,
-                    chunkgals*bytes_per_gal/1073741824.0, memory_bound);
-            exit(1);
-        }
-    }
-    if (verbose>1){ printf("alloc_nnnn_tree_spherical: %ld inner / %d total galaxies, %d block(s) of <=%ld gal (cache ~%.1f GiB), %d chunk(s)/block\n",
-           ncache, ngal, n_iter, gals_per_iter, gals_per_iter*bytes_per_gal/1073741824.0, nchunks); }
-
-    double *tmp_totcounts = orpheus_calloc(nthreads*nbinsr, sizeof(double));
-    double *tmp_totnorms  = orpheus_calloc(nthreads*nbinsr, sizeof(double));
     // Bail out rather than dereference a failed allocation
     if (orpheus_get_error()){
-        free(baseinds); free(Wncache); free(W2ncache); free(W3ncache); free(tmp_totcounts);
-        free(tmp_totnorms);
+        for (int t=0;t<nthreads;t++){ nnnn_leaves_free(leaves+t); free(ranges[t]); }
+        free(baseinds); free(tmp_totcounts); free(tmp_totnorms); nnnn_plan_free(&plan);
+        nnnn_batch_free(&batch); free(acc); free(leaves); free(are); free(aim); free(cre); free(cim);
+        free(query_cap); free(ranges);
         return;
     }
+    if (verbose>1){ printf("alloc_nnnn_tree_spherical: %ld inner / %d total galaxies in batches of %d, "
+           "%d radial pairs, %d multipoles (%.2f GiB accumulator)\n", ncache, ngal, cap, plan.npairs,
+           plan.nH, ncombis*plan.nH*16./1073741824.); }
 
-    // B: Iterate over the catalog //
-    // Progress spans both B1 and B2, the latter reading each block once per theta
-    // batch; both are counted in cache-touch units. progscale keeps the int
-    // arguments of print_progress in range for large caches.
-    long nregionsdone = 0, progtot = ncache*(1L+nthetbatches);
+    // B: Iterate over the batches of base galaxies //
+    // Progress counts every galaxy once in B1 and once in B2
+    long ndone = 0, progtot = 2*ncache;
     long progscale = 1L + progtot/1000000000L;
     reset_progress();
-    for (int it=0; it<n_iter; it++){
+    for (long g0=0; g0<ncache; g0+=cap){
+        int nbatch = (int)mymin((long)cap, ncache-g0);
 
-        // Get start and end galaxy indices of this iteration
-        long g0 = (long)it*gals_per_iter;
-        long g1 = g0 + gals_per_iter; if (g1>ncache){ g1 = ncache; }
-        long nblock = g1 - g0;
-
-        // B1: Build moment cache //
-        #pragma omp parallel for num_threads(nthreads)
-        for (long ib=0; ib<nblock; ib++){
+        // B1: Moments of the batch //
+        #pragma omp parallel for num_threads(nthreads) schedule(dynamic, 4)
+        for (int ig=0; ig<nbatch; ig++){
             #pragma omp atomic
-            nregionsdone += 1;
-            print_progress((int)(nregionsdone/progscale), (int)(progtot/progscale), verbose);
+            ndone += 1;
+            print_progress((int)(ndone/progscale), (int)(progtot/progscale), verbose);
             int thisthread = omp_get_thread_num();
-            int ind_gal = baseinds[g0 + ib];        // Base (apex) catalogue index
+            NnnnLeaves *lv = leaves + thisthread;
+            int ind_gal = baseinds[g0+ig];
             double bx = pos_vx[ind_gal], by = pos_vy[ind_gal], bz = pos_vz[ind_gal];
-            double bra = pos_ra[ind_gal], bsindec = pos_sindec[ind_gal], bcosdec = pos_cosdec[ind_gal];
-
-            int chunk = (int)(ib/gal_per_chunk);
-            int loc = (int)(ib - (long)chunk*gal_per_chunk);
-
-            // Find this galaxy's cache slot and reset it to zero
-            double complex *nextWns  = Wncache[chunk]  + (long)loc*wn_per_gal;
-            double complex *nextW2ns = W2ncache[chunk] + (long)loc*wn_per_gal;
-            double complex *nextW3ns = W3ncache[chunk] + (long)loc*nbinsr;
-            for (long k=0;k<wn_per_gal;k++){ nextWns[k]=0; nextW2ns[k]=0; }
-            for (int k=0;k<nbinsr;k++){ nextW3ns[k]=0; }
-
-            double w2, w2_sq, dist, dphi;
-            double complex phirot, phirotc;
-
-            // Helper arrays that hold the ranges returned by query_disc; usually 2048 ranges 
-            // (i.e. 2*2048 entries) should be sufficient, but we allow a dynamic resizing
-            long query_cap = 2048;
-            long *ranges = orpheus_malloc(2*query_cap*sizeof(long));
+            double w1 = weight[ind_gal];
             double bvec[3] = {bx, by, bz};
             for (int elreso=0;elreso<nresos;elreso++){
-                int rbin, zrshift, ind_Wn;
                 double rmin_reso = reso_redges[elreso];
                 double rmax_reso = reso_redges[elreso+1];
                 long ns_nav_r = nside_nav[elreso];
-                // Run query_disc and to get ranges and optionally resize
-                long nranges = hpx_query_disc_nest_ranges(ns_nav_r, bvec, rmax_reso, ranges, query_cap);
-                if (nranges > query_cap){
-                    query_cap = nranges;
-                    ranges = realloc(ranges, 2*query_cap*sizeof(long));
-                    nranges = hpx_query_disc_nest_ranges(ns_nav_r, bvec, rmax_reso, ranges, query_cap);
+                // Run query_disc to get the ranges and optionally resize
+                long nranges = hpx_query_disc_nest_ranges(ns_nav_r, bvec, rmax_reso, ranges[thisthread], query_cap[thisthread]);
+                if (nranges > query_cap[thisthread]){
+                    query_cap[thisthread] = nranges;
+                    ranges[thisthread] = realloc(ranges[thisthread], 2*nranges*sizeof(long));
+                    nranges = hpx_query_disc_nest_ranges(ns_nav_r, bvec, rmax_reso, ranges[thisthread], query_cap[thisthread]);
                 }
-                
-                // For each range returned by query_disc, go through it, get the corresponding galaxy index, 
-                // check whether its in the allowed range and then allocate the caches.
+                const long *thisranges = ranges[thisthread];
+
+                // For each range returned by query_disc, go through its stored cells and
+                // collect the leaves within this band.
                 const long *band_cellpixids = cell_pixids + band_offset_cellpixids[elreso];
                 const int  *band_leafgal_bounds = cell_leafgal_bounds + band_offset_leafgal_bounds[elreso];
                 int ncells_reso = ncells_resos[elreso];
                 long leafgal_offset = band_offset_leafgals[elreso];
                 int cell_idx = 0;
                 for (long range_idx=0; range_idx<nranges; range_idx++){
-                    long range_lo = ranges[2*range_idx], range_hi = ranges[2*range_idx+1];
+                    long range_lo = thisranges[2*range_idx], range_hi = thisranges[2*range_idx+1];
                     int loi = cell_idx, hii = ncells_reso;
-                    // As only the cells with galaxies in them are stored we need to find the smallest index of a stored 
-                    // within that range. This we can do quickly via binary search 
+                    // Only the cells with galaxies in them are stored, so binary search for the
+                    // first stored cell within this range
                     while (loi < hii){
-                         int m=(loi+hii)>>1; 
-                         if (band_cellpixids[m] < range_lo){ loi=m+1; } 
-                         else { hii=m; } 
+                         int m=(loi+hii)>>1;
+                         if (band_cellpixids[m] < range_lo){ loi=m+1; }
+                         else { hii=m; }
                     }
                     cell_idx = loi;
-                    // Now go through the range within the sparse array, so we need to make 
-                    // sure that we do not exceed range_hi (as imposed by query_disc) and ncells_reso
-                    // (as imposed by the survey footprint)
                     while (cell_idx < ncells_reso && band_cellpixids[cell_idx] < range_hi){
                         int clo = band_leafgal_bounds[cell_idx], chi = band_leafgal_bounds[cell_idx+1];
                         for (int j=clo; j<chi; j++){
                             long ind_leafgal = leafgal_offset + j;
-                            dist = sphere_dist(bx, by, bz, vx_resos[ind_leafgal], vy_resos[ind_leafgal], vz_resos[ind_leafgal]);
+                            double vx2 = vx_resos[ind_leafgal], vy2 = vy_resos[ind_leafgal], vz2 = vz_resos[ind_leafgal];
+                            double dist = sphere_dist(bx, by, bz, vx2, vy2, vz2);
                             if (dist < rmin_reso || dist >= rmax_reso) continue;
-                            w2 = weight_resos[ind_leafgal];
-                            rbin = (int) floor((log(dist)-log(rmin))/drbin);
-                            w2_sq = w2*w2;
-                            dphi = sphere_bearing(bra, bsindec, bcosdec,
-                                                  ra_resos[ind_leafgal], sindec_resos[ind_leafgal], cosdec_resos[ind_leafgal]);
-                            phirot = cexp(I*dphi);
-                            phirotc = conj(phirot);
-                            zrshift = 0*nbinsr + rbin;
-                            ind_Wn = nzero_Wn*nbinszr + zrshift;
-                            nextW3ns[zrshift] += w2_sq*w2;
-                            tmp_totcounts[thisthread*nbinsr+zrshift] += weight[ind_gal]*w2*dist;
-                            tmp_totnorms[thisthread*nbinsr+zrshift]  += weight[ind_gal]*w2;
-                            nnnn_fill_wn(nextWns, nextW2ns, 2*nmax_alloc, nbinszr, ind_Wn, w2, w2_sq, phirot, phirotc);
+                            int rbin = mymin((int) floor((log(dist)-log(rmin))/drbin), nbinsr-1);
+                            double w2 = weight_resos[ind_leafgal];
+                            double complex phirot = bearing_phirot(bearing_AB_cart(bx, by, bz, vx2, vy2, vz2));
+                            tmp_totcounts[thisthread*nbinsr+rbin] += w1*w2*dist;
+                            tmp_totnorms[thisthread*nbinsr+rbin]  += w1*w2;
+                            nnnn_leaves_push(lv, rbin, w2, creal(phirot), cimag(phirot));
                         }
                         cell_idx++;
                     }
                 }
             }
-            free(ranges);
+            nnnn_fill_slot(lv, &batch, ig, w1);
         }
 
-        // B2: Update the Nn for this iteration //
-        #pragma omp parallel for num_threads(nthreads)
-        for (int elthetbatch=0; elthetbatch<nthetbatches; elthetbatch++){
-
-            // Get the radial bin indices for this batch
-            int batch_nthetas = nthetacombis_batches[elthetbatch];
-            int batchN_nshift = batch_nthetas;
-            long batchN_compshift = (long)n2n3combis*batchN_nshift;
-            double complex *batchN_n = orpheus_calloc(batchN_compshift, sizeof(double complex));
-            int *elb1s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
-            int *elb2s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
-            int *elb3s_batch = orpheus_calloc(batch_nthetas, sizeof(int));
-            for (int elb=0;elb<batch_nthetas;elb++){
-                int thisrcombi = thetacombis_batches[cumthetacombis_batches[elthetbatch]+elb];
-                elb1s_batch[elb] = thisrcombi/(nbinsr*nbinsr);
-                elb2s_batch[elb] = (thisrcombi-elb1s_batch[elb]*nbinsr*nbinsr)/nbinsr;
-                elb3s_batch[elb] = thisrcombi-elb1s_batch[elb]*nbinsr*nbinsr-elb2s_batch[elb]*nbinsr;
-            }
-
-            // For each theta combi, find the location in the caches and update Nn
-            for (long ib=0; ib<nblock; ib++){
-                int ind_gal = baseinds[g0 + ib];
-                double w1 = weight[ind_gal];
-                int chunk = (int)(ib/gal_per_chunk);
-                int loc = (int)(ib - (long)chunk*gal_per_chunk);
-                double complex *nextWns  = Wncache[chunk]  + (long)loc*wn_per_gal;
-                double complex *nextW2ns = W2ncache[chunk] + (long)loc*wn_per_gal;
-                double complex *nextW3ns = W3ncache[chunk] + (long)loc*nbinsr;
-
-                nnnn_accum_batchNn(batchN_n, batch_nthetas, batchN_nshift,
-                                   elb1s_batch, elb2s_batch, elb3s_batch,
-                                   nextWns, nextW2ns, nextW3ns,
-                                   nindices, len_nindices, nnvals_Nn, nzero_Nn, nzero_Wn, nbinsr,
-                                   w1, 0, 0, 0);
-            }
-            #pragma omp atomic
-            nregionsdone += nblock;
-            print_progress((int)(nregionsdone/progscale), (int)(progtot/progscale), verbose);
-
-            // C: Update the global Nn using the Nn from the current iteration //
-            double complex *thisN_n = orpheus_calloc(n2n3combis, sizeof(double complex));
-            double complex *thisN_n_rec = orpheus_calloc(n2n3combis_rec, sizeof(double complex));
-            nnnn_reconstruct_batch(batchN_n, batch_nthetas, batchN_nshift,
-                                  elb1s_batch, elb2s_batch, elb3s_batch,
-                                  nmax, nindices, len_nindices, n2n3combis, n2n3combis_rec,
-                                  thisN_n, thisN_n_rec,
-                                  N_n, N_nshift, nbinsr, 1, 1,
-                                  0, NULL, NULL, NULL, NULL, 0, 0, 0, NULL, NULL, NULL,
-                                  NULL, NULL, 0, 0);
-
-            free(batchN_n);
-            free(elb1s_batch);
-            free(elb2s_batch);
-            free(elb3s_batch);
-            free(thisN_n);
-            free(thisN_n_rec);
+        // B2: Update the multipoles of all triples from the batch //
+        #pragma omp parallel for num_threads(nthreads) schedule(dynamic, 1)
+        for (int k=0; k<plan.npairs; k++){
+            long t = omp_get_thread_num();
+            nnnn_accum_pair(&batch, nbatch, &plan, plan.pair_order[k],
+                            are + t*plan.maxrow*NNNN_GALCHUNK, aim + t*plan.maxrow*NNNN_GALCHUNK,
+                            cre + t*plan.maxrow*plan.maxtrip, cim + t*plan.maxrow*plan.maxtrip, acc);
         }
+        ndone += nbatch;
+        print_progress((int)(ndone/progscale), (int)(progtot/progscale), verbose);
     }
+
+    // C: All orderings of every triple //
+    nnnn_reconstruct_all(acc, &plan, thetacombis_batches, ncombis, nbinsr, nmax,
+                         nindices, len_nindices, N_n, nthreads);
 
     // Get bin centers
-    double *totcounts = orpheus_calloc(nbinsr, sizeof(double));
-    double *totnorms  = orpheus_calloc(nbinsr, sizeof(double));
-    // Bail out rather than dereference a failed allocation
-    if (orpheus_get_error()){
-        free(baseinds); free(Wncache); free(W2ncache); free(W3ncache); free(tmp_totcounts);
-        free(tmp_totnorms); free(totcounts); free(totnorms);
-        return;
-    }
-    for (int t=0;t<nthreads;t++){
+    for (int t=1;t<nthreads;t++){
         for (int b=0;b<nbinsr;b++){
-            totcounts[b] += tmp_totcounts[t*nbinsr+b];
-            totnorms[b]  += tmp_totnorms[t*nbinsr+b];
+            tmp_totcounts[b] += tmp_totcounts[t*nbinsr+b];
+            tmp_totnorms[b]  += tmp_totnorms[t*nbinsr+b];
         }
     }
-    for (int b=0;b<nbinsr;b++){ if (totnorms[b]!=0){ bin_centers[b] = totcounts[b]/totnorms[b]; } }
+    for (int b=0;b<nbinsr;b++){ if (tmp_totnorms[b]!=0){ bin_centers[b] = tmp_totcounts[b]/tmp_totnorms[b]; } }
 
     // Free all allocated quantities
-    for (int c=0;c<nchunks;c++){ free(Wncache[c]); free(W2ncache[c]); free(W3ncache[c]); }
-    free(Wncache); free(W2ncache); free(W3ncache);
-    free(tmp_totcounts); free(tmp_totnorms); free(totcounts); free(totnorms);
+    for (int t=0;t<nthreads;t++){ nnnn_leaves_free(leaves+t); free(ranges[t]); }
+    free(baseinds); free(tmp_totcounts); free(tmp_totnorms); nnnn_plan_free(&plan);
+    nnnn_batch_free(&batch); free(acc); free(leaves); free(are); free(aim); free(cre); free(cim);
+    free(query_cap); free(ranges);
     if (verbose>0){ printf("\n"); }
-    free(baseinds);
 }
 
 
