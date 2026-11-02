@@ -122,6 +122,16 @@ parallelised C kernels.
   The multiplet measurements take `shuffle_pix` from the `catalog` dict, defaulting to random
   positions within the cells. `tests/test_fast_covariance.py` checks the measured counts
   against brute force and against the idealised counts.
+* **The NNNN `Tree` accumulates the multipoles for a batch of base galaxies at a time**, flat
+  and curved sky alike. The moments of a base galaxy are filled per radial bin, with the
+  powers of the phases vectorised over the leaves, and only up to the order the 4PCF reads,
+  `2*nmax+2`, as `W_{-n} = conj(W_n)` for real weights. Each radial pair then sums over all
+  galaxies of the batch at once, one complex matrix product per `n3`, into a single
+  accumulator holding half of the needed `(n2,n3)`; the other half follows by conjugation,
+  and the orderings of every radial triple are reconstructed once at the end. This replaces
+  the per-thread accumulators and the moment cache that every thread streamed through;
+  `memory_bound` now caps the moments of a batch. The curved-sky bearing no longer needs
+  trigonometric calls. Results agree with the previous kernels to round-off.
 
 #### Fixed
 
