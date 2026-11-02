@@ -482,13 +482,13 @@ typedef struct {
 } NnnnBatch;
 
 static void nnnn_batch_alloc(NnnnBatch *batch, int cap, int nbinsr, int nW){
-    long len = (long)nbinsr*(nW+1)*cap;
+    long len = mymax((long)nbinsr*(nW+1)*cap, 1L);
     batch->cap = cap; batch->nbinsr = nbinsr; batch->nW = nW;
     batch->wre = orpheus_malloc(len*sizeof(double));
     batch->wim = orpheus_malloc(len*sizeof(double));
     batch->w2re = orpheus_malloc(len*sizeof(double));
     batch->w2im = orpheus_malloc(len*sizeof(double));
-    batch->w3 = orpheus_malloc((long)nbinsr*cap*sizeof(double));
+    batch->w3 = orpheus_malloc(mymax((long)nbinsr*cap, 1L)*sizeof(double));
     batch->w1 = orpheus_malloc((long)cap*sizeof(double));
 }
 
@@ -706,96 +706,166 @@ static void nnnn_plan_free(NnnnPlan *p){
     free(p->nind_h); free(p->nind_conj);
 }
 
+// Apex objects of a batch per resolution band, with their moments. The Tree uses a single band
+// holding all radial bins. The DoubleTree has one band per tree resolution: the moments of its
+// apex objects (galaxies, or cells of that resolution) for the bins of the band, the w-weighted
+// moments of all finer bands summed per cell (agg rows [bin][n], bin<rind[band]) and the
+// parent of every object in the next coarser band.
+typedef struct {
+    int nbands;
+    const int *rind, *bin2band; // [nbands+1] first radial bin per band, [nbinsr] band of a bin
+    NnnnBatch *own; // [nbands]
+    int *nobj; // [nbands]
+    int **parent; // [nbands]
+    double **aggre, **aggim; // [nbands]
+    long *aggcap; // [nbands] row length of agg
+} NnnnBands;
+
+// Per-thread scratch of nnnn_accum_pair. The rows of A summed per cell of band k are kept in
+// sre[k]/sim[k], maxrow rows of length scap[k].
+typedef struct {
+    double *are, *aim; // maxrow x NNNN_GALCHUNK
+    double *cre, *cim; // maxrow x maxtrip
+    const double **bre, **bim; // maxtrip
+    double **sre, **sim;
+    long *scap;
+} NnnnScratch;
+
+// C[r][c0+c] += sum_g A[r][g] conj(B_c[g]) for the nrow rows of A (row length lda) and the ncol
+// rows B_c over ng objects, in blocks of two rows and two columns
+static inline void nnnn_gemm_chunk(const double *are, const double *aim, long lda, int nrow,
+    const double **bre, const double **bim, int ncol, int ng,
+    double *cre, double *cim, int ldc, int c0){
+    for (int r=0;r<nrow;r+=2){
+        int rb = mymin(r+1, nrow-1);
+        const double *a0r = are + r*lda, *a0i = aim + r*lda;
+        const double *a1r = are + rb*lda, *a1i = aim + rb*lda;
+        for (int c=0;c<ncol;c+=2){
+            int cb = mymin(c+1, ncol-1);
+            const double *b0r = bre[c], *b0i = bim[c], *b1r = bre[cb], *b1i = bim[cb];
+            double s00r = 0., s00i = 0., s01r = 0., s01i = 0.;
+            double s10r = 0., s10i = 0., s11r = 0., s11i = 0.;
+            #pragma omp simd reduction(+:s00r,s00i,s01r,s01i,s10r,s10i,s11r,s11i)
+            for (int g=0;g<ng;g++){
+                s00r += a0r[g]*b0r[g] + a0i[g]*b0i[g]; s00i += a0i[g]*b0r[g] - a0r[g]*b0i[g];
+                s01r += a0r[g]*b1r[g] + a0i[g]*b1i[g]; s01i += a0i[g]*b1r[g] - a0r[g]*b1i[g];
+                s10r += a1r[g]*b0r[g] + a1i[g]*b0i[g]; s10i += a1i[g]*b0r[g] - a1r[g]*b0i[g];
+                s11r += a1r[g]*b1r[g] + a1i[g]*b1i[g]; s11i += a1i[g]*b1r[g] - a1r[g]*b1i[g];
+            }
+            cre[r*ldc+c0+c] += s00r; cim[r*ldc+c0+c] += s00i;
+            if (cb != c){ cre[r*ldc+c0+cb] += s01r; cim[r*ldc+c0+cb] += s01i; }
+            if (rb != r){
+                cre[rb*ldc+c0+c] += s10r; cim[rb*ldc+c0+c] += s10i;
+                if (cb != c){ cre[rb*ldc+c0+cb] += s11r; cim[rb*ldc+c0+cb] += s11i; }
+            }
+        }
+    }
+}
+
+// Pointers to x_m(t1) for objects g0.. of band r2: w W_m(t1) for t1 in band r2 (weighted with
+// w in the caller), else the summed weighted moments of the finer band. sgn conjugates m<0.
+static inline void nnnn_xrow(const NnnnBands *bd, int t1, int r2, int m, int g0,
+    const double **xr, const double **xi, double *sgn){
+    const NnnnBatch *ob = bd->own + r2;
+    int nW1 = ob->nW+1;
+    *sgn = (m<0) ? -1. : 1.;
+    if (bd->bin2band[t1] == r2){
+        long o = ((long)(t1-bd->rind[r2])*nW1 + abs(m))*ob->cap + g0;
+        *xr = ob->wre + o; *xi = ob->wim + o;
+    } else {
+        long o = ((long)t1*nW1 + abs(m))*bd->aggcap[r2] + g0;
+        *xr = bd->aggre[r2] + o; *xi = bd->aggim[r2] + o;
+    }
+}
+
 // Accumulate the batch into the triples of radial pair ip. Per n3 this is a complex GEMM over
-// the galaxies, N[n2][t3] = sum_g A[n2][g] B[g][t3] with
-//   A[n2][g] = w W_{n2+n3}(t1) conj(W_{n2}(t2)) - delta_{t1t2} w W2_{n3}(t1)
-//   B[g][t3] = conj(W_{n3}(t3)),
-// plus the remaining multiple-counting corrections (Porth+25, Tab. A.1) for t3=t2.
-// are/aim hold maxrow x NNNN_GALCHUNK and cre/cim maxrow x maxtrip doubles.
-static void nnnn_accum_pair(const NnnnBatch *batch, int ngal, const NnnnPlan *p, int ip,
-    double *are, double *aim, double *cre, double *cim, double complex *acc){
-    long cap = batch->cap, nshift = (long)(batch->nW+1)*cap;
-    const double *wre = batch->wre, *wim = batch->wim, *w2re = batch->w2re, *w2im = batch->w2im;
-    const double *w1 = batch->w1;
+// the apex objects of the band r2 of t2,
+//   A[n2][o] = x_{n2+n3}(t1) conj(W_{n2}(t2)) - delta_{t1t2} w W2_{n3}(t1),
+// with x = w W(t1), or the summed weighted moments of the finer band of t1 (DoubleTree), times
+// B[o][t3] = conj(W_{n3}(t3)) for t3 in band r2. For a coarser t3 the rows of A are first summed
+// into the cells of its band (Porth+25, App. F). The remaining multiple-counting corrections
+// (Porth+25, Tab. A.1) only arise for t3=t2.
+static void nnnn_accum_pair(const NnnnBands *bd, const NnnnPlan *p, int ip, NnnnScratch *sc,
+    double complex *acc){
     int t1 = p->pair_t1[ip], t2 = p->pair_t2[ip];
+    int r2 = bd->bin2band[t2];
     int j0 = p->pair_start[ip], nt3 = p->pair_start[ip+1]-j0;
-    int has_t2 = (p->trip_t3[j0] == t2);
+    const NnnnBatch *ob = bd->own + r2;
+    long cap = ob->cap, nshift = (long)(ob->nW+1)*cap;
+    int nobj = bd->nobj[r2];
+    int b2 = t2-bd->rind[r2];
+    int same12 = (t1 == t2), has_t2 = (p->trip_t3[j0] == t2);
+    if (nobj == 0){ return; }
+    // The triples are sorted by t3, so those within band r2 come first
+    int nsame = 0;
+    while (nsame<nt3 && bd->bin2band[p->trip_t3[j0+nsame]] == r2){ nsame++; }
+    double *are = sc->are, *aim = sc->aim, *cre = sc->cre, *cim = sc->cim;
 
     for (int n3=0;n3<p->nn3;n3++){
         int h0 = p->n3_start[n3], nrow = p->n3_start[n3+1]-h0;
         if (nrow == 0){ continue; }
         for (int i=0;i<nrow*nt3;i++){ cre[i] = 0.; cim[i] = 0.; }
-        for (int g0=0;g0<ngal;g0+=NNNN_GALCHUNK){
-            int ng = mymin(NNNN_GALCHUNK, ngal-g0);
-            const double *wg = w1+g0;
+        if (nsame < nt3){
+            long len = (long)nrow*sc->scap[r2+1];
+            for (long i=0;i<len;i++){ sc->sre[r2+1][i] = 0.; sc->sim[r2+1][i] = 0.; }
+        }
+        for (int g0=0;g0<nobj;g0+=NNNN_GALCHUNK){
+            int ng = mymin(NNNN_GALCHUNK, nobj-g0);
+            const double *wg = ob->w1+g0;
 
-            // Rows of A for this chunk of galaxies
+            // Rows of A for this chunk of objects
             for (int r=0;r<nrow;r++){
-                int n2 = p->n2s[h0+r], m = n2+n3;
-                double sm = (m<0) ? -1. : 1., s2 = (n2<0) ? 1. : -1.;
-                const double *xr = wre + t1*nshift + abs(m)*cap + g0, *xi = wim + t1*nshift + abs(m)*cap + g0;
-                const double *yr = wre + t2*nshift + abs(n2)*cap + g0, *yi = wim + t2*nshift + abs(n2)*cap + g0;
+                int n2 = p->n2s[h0+r];
+                double sm, s2 = (n2<0) ? 1. : -1.;
+                const double *xr, *xi;
+                nnnn_xrow(bd, t1, r2, n2+n3, g0, &xr, &xi, &sm);
+                const double *yr = ob->wre + b2*nshift + abs(n2)*cap + g0, *yi = ob->wim + b2*nshift + abs(n2)*cap + g0;
                 double *ar = are + (long)r*NNNN_GALCHUNK, *ai = aim + (long)r*NNNN_GALCHUNK;
                 #pragma omp simd
                 for (int g=0;g<ng;g++){
                     double xig = sm*xi[g], yig = s2*yi[g];
-                    ar[g] = wg[g]*(xr[g]*yr[g] - xig*yig);
-                    ai[g] = wg[g]*(xr[g]*yig + xig*yr[g]);
+                    ar[g] = xr[g]*yr[g] - xig*yig;
+                    ai[g] = xr[g]*yig + xig*yr[g];
                 }
-                if (t1 == t2){
-                    const double *ur = w2re + t1*nshift + n3*cap + g0, *ui = w2im + t1*nshift + n3*cap + g0;
+                if (bd->bin2band[t1] == r2){
+                    #pragma omp simd
+                    for (int g=0;g<ng;g++){ ar[g] *= wg[g]; ai[g] *= wg[g]; }
+                }
+                if (same12){
+                    const double *ur = ob->w2re + b2*nshift + n3*cap + g0, *ui = ob->w2im + b2*nshift + n3*cap + g0;
                     #pragma omp simd
                     for (int g=0;g<ng;g++){ ar[g] -= wg[g]*ur[g]; ai[g] -= wg[g]*ui[g]; }
                 }
             }
 
-            // C += A conj(W_{n3}(t3)) in blocks of two rows and two columns
-            for (int r=0;r<nrow;r+=2){
-                int rb = mymin(r+1, nrow-1);
-                const double *a0r = are + (long)r*NNNN_GALCHUNK, *a0i = aim + (long)r*NNNN_GALCHUNK;
-                const double *a1r = are + (long)rb*NNNN_GALCHUNK, *a1i = aim + (long)rb*NNNN_GALCHUNK;
-                for (int c=0;c<nt3;c+=2){
-                    int cb = mymin(c+1, nt3-1);
-                    long o0 = p->trip_t3[j0+c]*nshift + n3*cap + g0, o1 = p->trip_t3[j0+cb]*nshift + n3*cap + g0;
-                    const double *b0r = wre+o0, *b0i = wim+o0, *b1r = wre+o1, *b1i = wim+o1;
-                    double s00r = 0., s00i = 0., s01r = 0., s01i = 0.;
-                    double s10r = 0., s10i = 0., s11r = 0., s11i = 0.;
-                    #pragma omp simd reduction(+:s00r,s00i,s01r,s01i,s10r,s10i,s11r,s11i)
-                    for (int g=0;g<ng;g++){
-                        s00r += a0r[g]*b0r[g] + a0i[g]*b0i[g]; s00i += a0i[g]*b0r[g] - a0r[g]*b0i[g];
-                        s01r += a0r[g]*b1r[g] + a0i[g]*b1i[g]; s01i += a0i[g]*b1r[g] - a0r[g]*b1i[g];
-                        s10r += a1r[g]*b0r[g] + a1i[g]*b0i[g]; s10i += a1i[g]*b0r[g] - a1r[g]*b0i[g];
-                        s11r += a1r[g]*b1r[g] + a1i[g]*b1i[g]; s11i += a1i[g]*b1r[g] - a1r[g]*b1i[g];
-                    }
-                    cre[r*nt3+c] += s00r; cim[r*nt3+c] += s00i;
-                    if (cb != c){ cre[r*nt3+cb] += s01r; cim[r*nt3+cb] += s01i; }
-                    if (rb != r){
-                        cre[rb*nt3+c] += s10r; cim[rb*nt3+c] += s10i;
-                        if (cb != c){ cre[rb*nt3+cb] += s11r; cim[rb*nt3+cb] += s11i; }
-                    }
-                }
+            // Triples with t3 in band r2
+            for (int c=0;c<nsame;c++){
+                long o = (long)(p->trip_t3[j0+c]-bd->rind[r2])*nshift + n3*cap + g0;
+                sc->bre[c] = ob->wre + o; sc->bim[c] = ob->wim + o;
             }
+            nnnn_gemm_chunk(are, aim, NNNN_GALCHUNK, nrow, sc->bre, sc->bim, nsame, ng, cre, cim, nt3, 0);
 
-            // Corrections for t3=t2: - w W_{n2+n3}(t1) W2_{-n2-n3}(t2), and for t1=t2=t3 also
+            // Corrections for t3=t2: - x_{n2+n3}(t1) W2_{-n2-n3}(t2), and for t1=t2=t3 also
             // - w W2_{n2}(t1) conj(W_{n2}(t2)) + 2 w W3(t1)
             if (has_t2){
                 for (int r=0;r<nrow;r++){
                     int n2 = p->n2s[h0+r], m = n2+n3;
-                    double sm = (m<0) ? -1. : 1.;
-                    const double *xr = wre + t1*nshift + abs(m)*cap + g0, *xi = wim + t1*nshift + abs(m)*cap + g0;
-                    const double *ur = w2re + t2*nshift + abs(m)*cap + g0, *ui = w2im + t2*nshift + abs(m)*cap + g0;
-                    double dr = 0., di = 0.;
+                    double sm;
+                    const double *xr, *xi;
+                    nnnn_xrow(bd, t1, r2, m, g0, &xr, &xi, &sm);
+                    const double *ur = ob->w2re + b2*nshift + abs(m)*cap + g0, *ui = ob->w2im + b2*nshift + abs(m)*cap + g0;
+                    double wx = (bd->bin2band[t1] == r2), dr = 0., di = 0.;
                     #pragma omp simd reduction(+:dr,di)
                     for (int g=0;g<ng;g++){
-                        double xig = sm*xi[g], uig = -sm*ui[g];
-                        dr -= wg[g]*(xr[g]*ur[g] - xig*uig);
-                        di -= wg[g]*(xr[g]*uig + xig*ur[g]);
+                        double xig = sm*xi[g], uig = -sm*ui[g], f = wx ? wg[g] : 1.;
+                        dr -= f*(xr[g]*ur[g] - xig*uig);
+                        di -= f*(xr[g]*uig + xig*ur[g]);
                     }
-                    if (t1 == t2){
+                    if (same12){
                         double s2 = (n2<0) ? -1. : 1.;
-                        const double *vr = w2re + t1*nshift + abs(n2)*cap + g0, *vi = w2im + t1*nshift + abs(n2)*cap + g0;
-                        const double *yr = wre + t2*nshift + abs(n2)*cap + g0, *yi = wim + t2*nshift + abs(n2)*cap + g0;
-                        const double *w3 = batch->w3 + t1*cap + g0;
+                        const double *vr = ob->w2re + b2*nshift + abs(n2)*cap + g0, *vi = ob->w2im + b2*nshift + abs(n2)*cap + g0;
+                        const double *yr = ob->wre + b2*nshift + abs(n2)*cap + g0, *yi = ob->wim + b2*nshift + abs(n2)*cap + g0;
+                        const double *w3 = ob->w3 + b2*cap + g0;
                         #pragma omp simd reduction(+:dr,di)
                         for (int g=0;g<ng;g++){
                             double vig = s2*vi[g], yig = -s2*yi[g];
@@ -806,13 +876,93 @@ static void nnnn_accum_pair(const NnnnBatch *batch, int ngal, const NnnnPlan *p,
                     cre[r*nt3] += dr; cim[r*nt3] += di;
                 }
             }
+
+            // Sum the rows of A into the cells of the next band
+            if (nsame < nt3){
+                const int *par = bd->parent[r2] + g0;
+                long ls = sc->scap[r2+1];
+                for (int r=0;r<nrow;r++){
+                    const double *ar = are + (long)r*NNNN_GALCHUNK, *ai = aim + (long)r*NNNN_GALCHUNK;
+                    double *pr = sc->sre[r2+1] + r*ls, *pi = sc->sim[r2+1] + r*ls;
+                    for (int g=0;g<ng;g++){ pr[par[g]] += ar[g]; pi[par[g]] += ai[g]; }
+                }
+            }
         }
+
+        // Triples with t3 in a coarser band, from the rows of A summed into its cells
+        int cur = r2+1;
+        for (int j=nsame;j<nt3;){
+            int r3 = bd->bin2band[p->trip_t3[j0+j]], je = j;
+            while (je<nt3 && bd->bin2band[p->trip_t3[j0+je]] == r3){ je++; }
+            for (;cur<r3;cur++){
+                long ls = sc->scap[cur], lt = sc->scap[cur+1];
+                const int *par = bd->parent[cur];
+                for (long i=0;i<(long)nrow*lt;i++){ sc->sre[cur+1][i] = 0.; sc->sim[cur+1][i] = 0.; }
+                for (int r=0;r<nrow;r++){
+                    const double *qr = sc->sre[cur] + r*ls, *qi = sc->sim[cur] + r*ls;
+                    double *pr = sc->sre[cur+1] + r*lt, *pi = sc->sim[cur+1] + r*lt;
+                    for (int c=0;c<bd->nobj[cur];c++){ pr[par[c]] += qr[c]; pi[par[c]] += qi[c]; }
+                }
+            }
+            const NnnnBatch *o3 = bd->own + r3;
+            long cap3 = o3->cap, nshift3 = (long)(o3->nW+1)*cap3;
+            for (int c0=0;c0<bd->nobj[r3];c0+=NNNN_GALCHUNK){
+                int nc = mymin(NNNN_GALCHUNK, bd->nobj[r3]-c0);
+                for (int c=j;c<je;c++){
+                    long o = (long)(p->trip_t3[j0+c]-bd->rind[r3])*nshift3 + n3*cap3 + c0;
+                    sc->bre[c-j] = o3->wre + o; sc->bim[c-j] = o3->wim + o;
+                }
+                nnnn_gemm_chunk(sc->sre[r3]+c0, sc->sim[r3]+c0, sc->scap[r3], nrow, sc->bre, sc->bim,
+                                je-j, nc, cre, cim, nt3, j);
+            }
+            j = je;
+        }
+
         for (int r=0;r<nrow;r++){
             for (int c=0;c<nt3;c++){
                 acc[p->trip_combi[j0+c]*p->nH + h0 + r] += cre[r*nt3+c] + I*cim[r*nt3+c];
             }
         }
     }
+}
+
+// Per-thread scratch for nbands bands, the summed rows of A initially empty
+static NnnnScratch *nnnn_scratch_alloc(int nthreads, int nbands, const NnnnPlan *p){
+    NnnnScratch *sc = orpheus_calloc(nthreads, sizeof(NnnnScratch));
+    for (int t=0;t<nthreads;t++){
+        sc[t].are = orpheus_malloc((long)p->maxrow*NNNN_GALCHUNK*sizeof(double));
+        sc[t].aim = orpheus_malloc((long)p->maxrow*NNNN_GALCHUNK*sizeof(double));
+        sc[t].cre = orpheus_malloc((long)p->maxrow*p->maxtrip*sizeof(double));
+        sc[t].cim = orpheus_malloc((long)p->maxrow*p->maxtrip*sizeof(double));
+        sc[t].bre = orpheus_malloc(p->maxtrip*sizeof(double*));
+        sc[t].bim = orpheus_malloc(p->maxtrip*sizeof(double*));
+        sc[t].sre = orpheus_calloc(nbands, sizeof(double*));
+        sc[t].sim = orpheus_calloc(nbands, sizeof(double*));
+        sc[t].scap = orpheus_calloc(nbands, sizeof(long));
+    }
+    return sc;
+}
+
+// Grow the summed rows of A of every band >= 1 to the objects of the current batch
+static void nnnn_scratch_reserve(NnnnScratch *sc, int nthreads, int nbands, const int *nobj, int maxrow){
+    for (int t=0;t<nthreads;t++){
+        for (int k=1;k<nbands;k++){
+            if (sc[t].scap[k] >= nobj[k]){ continue; }
+            sc[t].scap[k] = (long)(1.5*nobj[k]) + 1;
+            free(sc[t].sre[k]); free(sc[t].sim[k]);
+            sc[t].sre[k] = orpheus_malloc(maxrow*sc[t].scap[k]*sizeof(double));
+            sc[t].sim[k] = orpheus_malloc(maxrow*sc[t].scap[k]*sizeof(double));
+        }
+    }
+}
+
+static void nnnn_scratch_free(NnnnScratch *sc, int nthreads, int nbands){
+    for (int t=0;t<nthreads;t++){
+        for (int k=0;k<nbands;k++){ free(sc[t].sre[k]); free(sc[t].sim[k]); }
+        free(sc[t].are); free(sc[t].aim); free(sc[t].cre); free(sc[t].cim);
+        free(sc[t].bre); free(sc[t].bim); free(sc[t].sre); free(sc[t].sim); free(sc[t].scap);
+    }
+    free(sc);
 }
 
 // Expand the half multipole set by conjugation and add all orderings of every triple to N_n
@@ -4226,17 +4376,19 @@ void alloc_nnnn_tree(const MultiresoCatalog *cat_base, const MultiresoCatalog *c
     nnnn_batch_alloc(&batch, cap, nbinsr, plan.nW);
     double complex *acc = orpheus_calloc(ncombis*plan.nH, sizeof(double complex));
     NnnnLeaves *leaves = orpheus_malloc(nthreads*sizeof(NnnnLeaves));
-    double *are = orpheus_malloc((long)nthreads*plan.maxrow*NNNN_GALCHUNK*sizeof(double));
-    double *aim = orpheus_malloc((long)nthreads*plan.maxrow*NNNN_GALCHUNK*sizeof(double));
-    double *cre = orpheus_malloc((long)nthreads*plan.maxrow*plan.maxtrip*sizeof(double));
-    double *cim = orpheus_malloc((long)nthreads*plan.maxrow*plan.maxtrip*sizeof(double));
+    NnnnScratch *sc = nnnn_scratch_alloc(nthreads, 1, &plan);
+    // A single band holding all radial bins
+    int band_rind[2] = {0, nbinsr}, band_nobj[1] = {0};
+    int *bin2band = orpheus_calloc(nbinsr, sizeof(int));
+    NnnnBands bd = {1, band_rind, bin2band, &batch, band_nobj, NULL, NULL, NULL, NULL};
     for (int t=0;t<nthreads;t++){ nnnn_leaves_alloc(leaves+t, nbinsr); }
     // Bail out rather than dereference a failed allocation
     if (orpheus_get_error()){
         for (int t=0;t<nthreads;t++){ nnnn_leaves_free(leaves+t); }
         free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
         free(tmp_totcounts); free(tmp_totnorms); free(baseinds); nnnn_plan_free(&plan);
-        nnnn_batch_free(&batch); free(acc); free(leaves); free(are); free(aim); free(cre); free(cim);
+        nnnn_batch_free(&batch); free(acc); free(leaves); nnnn_scratch_free(sc, nthreads, 1);
+        free(bin2band);
         return;
     }
     if (verbose>1){ printf("alloc_nnnn_tree: %ld inner / %ld total galaxies in batches of %d, %d radial pairs, "
@@ -4288,12 +4440,10 @@ void alloc_nnnn_tree(const MultiresoCatalog *cat_base, const MultiresoCatalog *c
         }
 
         // B2: Update the multipoles of all triples from the batch //
+        band_nobj[0] = ngal;
         #pragma omp parallel for num_threads(nthreads) schedule(dynamic, 1)
         for (int k=0; k<plan.npairs; k++){
-            long t = omp_get_thread_num();
-            nnnn_accum_pair(&batch, ngal, &plan, plan.pair_order[k],
-                            are + t*plan.maxrow*NNNN_GALCHUNK, aim + t*plan.maxrow*NNNN_GALCHUNK,
-                            cre + t*plan.maxrow*plan.maxtrip, cim + t*plan.maxrow*plan.maxtrip, acc);
+            nnnn_accum_pair(&bd, &plan, plan.pair_order[k], sc+omp_get_thread_num(), acc);
         }
         ndone += ngal;
         print_progress((int)(ndone/progscale), (int)(progtot/progscale), verbose);
@@ -4316,7 +4466,8 @@ void alloc_nnnn_tree(const MultiresoCatalog *cat_base, const MultiresoCatalog *c
     for (int t=0;t<nthreads;t++){ nnnn_leaves_free(leaves+t); }
     free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
     free(tmp_totcounts); free(tmp_totnorms); free(baseinds); nnnn_plan_free(&plan);
-    nnnn_batch_free(&batch); free(acc); free(leaves); free(are); free(aim); free(cre); free(cim);
+    nnnn_batch_free(&batch); free(acc); free(leaves); nnnn_scratch_free(sc, nthreads, 1);
+    free(bin2band);
     if (verbose>0){ printf("\n"); }
 }
 
@@ -4372,10 +4523,11 @@ void alloc_nnnn_tree_spherical(const MultiresoCatalog *cat_base, const Multireso
     nnnn_batch_alloc(&batch, cap, nbinsr, plan.nW);
     double complex *acc = orpheus_calloc(ncombis*plan.nH, sizeof(double complex));
     NnnnLeaves *leaves = orpheus_malloc(nthreads*sizeof(NnnnLeaves));
-    double *are = orpheus_malloc((long)nthreads*plan.maxrow*NNNN_GALCHUNK*sizeof(double));
-    double *aim = orpheus_malloc((long)nthreads*plan.maxrow*NNNN_GALCHUNK*sizeof(double));
-    double *cre = orpheus_malloc((long)nthreads*plan.maxrow*plan.maxtrip*sizeof(double));
-    double *cim = orpheus_malloc((long)nthreads*plan.maxrow*plan.maxtrip*sizeof(double));
+    NnnnScratch *sc = nnnn_scratch_alloc(nthreads, 1, &plan);
+    // A single band holding all radial bins
+    int band_rind[2] = {0, nbinsr}, band_nobj[1] = {0};
+    int *bin2band = orpheus_calloc(nbinsr, sizeof(int));
+    NnnnBands bd = {1, band_rind, bin2band, &batch, band_nobj, NULL, NULL, NULL, NULL};
     // Ranges returned by query_disc, one buffer per thread grown on demand
     long *query_cap = orpheus_malloc(nthreads*sizeof(long));
     long **ranges = orpheus_malloc(nthreads*sizeof(long*));
@@ -4388,8 +4540,8 @@ void alloc_nnnn_tree_spherical(const MultiresoCatalog *cat_base, const Multireso
     if (orpheus_get_error()){
         for (int t=0;t<nthreads;t++){ nnnn_leaves_free(leaves+t); free(ranges[t]); }
         free(baseinds); free(tmp_totcounts); free(tmp_totnorms); nnnn_plan_free(&plan);
-        nnnn_batch_free(&batch); free(acc); free(leaves); free(are); free(aim); free(cre); free(cim);
-        free(query_cap); free(ranges);
+        nnnn_batch_free(&batch); free(acc); free(leaves); nnnn_scratch_free(sc, nthreads, 1);
+        free(bin2band); free(query_cap); free(ranges);
         return;
     }
     if (verbose>1){ printf("alloc_nnnn_tree_spherical: %ld inner / %d total galaxies in batches of %d, "
@@ -4469,12 +4621,10 @@ void alloc_nnnn_tree_spherical(const MultiresoCatalog *cat_base, const Multireso
         }
 
         // B2: Update the multipoles of all triples from the batch //
+        band_nobj[0] = nbatch;
         #pragma omp parallel for num_threads(nthreads) schedule(dynamic, 1)
         for (int k=0; k<plan.npairs; k++){
-            long t = omp_get_thread_num();
-            nnnn_accum_pair(&batch, nbatch, &plan, plan.pair_order[k],
-                            are + t*plan.maxrow*NNNN_GALCHUNK, aim + t*plan.maxrow*NNNN_GALCHUNK,
-                            cre + t*plan.maxrow*plan.maxtrip, cim + t*plan.maxrow*plan.maxtrip, acc);
+            nnnn_accum_pair(&bd, &plan, plan.pair_order[k], sc+omp_get_thread_num(), acc);
         }
         ndone += nbatch;
         print_progress((int)(ndone/progscale), (int)(progtot/progscale), verbose);
@@ -4496,17 +4646,157 @@ void alloc_nnnn_tree_spherical(const MultiresoCatalog *cat_base, const Multireso
     // Free all allocated quantities
     for (int t=0;t<nthreads;t++){ nnnn_leaves_free(leaves+t); free(ranges[t]); }
     free(baseinds); free(tmp_totcounts); free(tmp_totnorms); nnnn_plan_free(&plan);
-    nnnn_batch_free(&batch); free(acc); free(leaves); free(are); free(aim); free(cre); free(cim);
-    free(query_cap); free(ranges);
+    nnnn_batch_free(&batch); free(acc); free(leaves); nnnn_scratch_free(sc, nthreads, 1);
+    free(bin2band); free(query_cap); free(ranges);
     if (verbose>0){ printf("\n"); }
 }
 
 
-// DoubleTree implementation according to App. F in Porth+25
-// Still fairly developmental and inefficient....but should work.
-// Biggest todo is probably to try to move to jagged temp arrays that may
-// help to evade the forced thread-reduction for parts of the computation...
-void alloc_nnnn_doubletree(const MultiresoCatalog *cat_leaf, const NavHash *nav,
+// First radial bin of every resolution band: a band starts at the bin edge closest to its
+// switch radius, and the band changes at most once per bin.
+static void nnnn_reso_rindedges(int nresos, const double *reso_redges, double rmin, double drbin,
+    int nbinsr, int *reso_rindedges){
+    for (int r=0;r<=nresos;r++){ reso_rindedges[r] = 0; }
+    int tmpreso = 0; double tmpr = rmin;
+    for (int elr=0; elr<nbinsr; elr++){
+        tmpr *= exp(drbin);
+        double thisredge = reso_redges[mymin(nresos, tmpreso+1)];
+        if (thisredge < tmpr){
+            reso_rindedges[mymin(nresos, tmpreso+1)] = elr;
+            if ((tmpr-thisredge) < (thisredge-(tmpr/exp(drbin)))){ reso_rindedges[mymin(nresos, tmpreso+1)] += 1; }
+            tmpreso += 1;
+        }
+    }
+    reso_rindedges[nresos] = nbinsr;
+}
+
+// Apex objects of a batch of DoubleTree regions per band: their index into the multireso
+// catalogue and the index of their parent within the next coarser band of the batch
+typedef struct {
+    int nbands, *nobj, *cap;
+    long **obj;
+    int **parent;
+} NnnnRegions;
+
+static void nnnn_regions_alloc(NnnnRegions *rg, int nbands){
+    rg->nbands = nbands;
+    rg->nobj = orpheus_calloc(nbands, sizeof(int));
+    rg->cap = orpheus_malloc(nbands*sizeof(int));
+    rg->obj = orpheus_malloc(nbands*sizeof(long*));
+    rg->parent = orpheus_malloc(nbands*sizeof(int*));
+    for (int r=0;r<nbands;r++){
+        rg->cap[r] = 1024;
+        rg->obj[r] = orpheus_malloc(rg->cap[r]*sizeof(long));
+        rg->parent[r] = orpheus_malloc(rg->cap[r]*sizeof(int));
+    }
+}
+
+static void nnnn_regions_free(NnnnRegions *rg){
+    for (int r=0;r<rg->nbands;r++){ free(rg->obj[r]); free(rg->parent[r]); }
+    free(rg->nobj); free(rg->cap); free(rg->obj); free(rg->parent);
+}
+
+static inline void nnnn_regions_push(NnnnRegions *rg, int band, long obj, int parent){
+    if (rg->nobj[band] == rg->cap[band]){
+        rg->cap[band] *= 2;
+        rg->obj[band] = realloc(rg->obj[band], rg->cap[band]*sizeof(long));
+        rg->parent[band] = realloc(rg->parent[band], rg->cap[band]*sizeof(int));
+    }
+    rg->obj[band][rg->nobj[band]] = obj;
+    rg->parent[band][rg->nobj[band]] = parent;
+    rg->nobj[band] += 1;
+}
+
+// Moments and summed moments of the DoubleTree bands, grown to the objects of the current batch
+static void nnnn_bands_reserve(NnnnBands *bd, int nW){
+    for (int r=0;r<bd->nbands;r++){
+        int nbins = bd->rind[r+1]-bd->rind[r];
+        if (bd->own[r].cap < bd->nobj[r]){
+            if (bd->own[r].cap > 0){ nnnn_batch_free(bd->own+r); }
+            nnnn_batch_alloc(bd->own+r, (int)(1.5*bd->nobj[r])+1, nbins, nW);
+        }
+        if (r>0 && bd->aggcap[r] < bd->nobj[r]){
+            bd->aggcap[r] = (long)(1.5*bd->nobj[r]) + 1;
+            free(bd->aggre[r]); free(bd->aggim[r]);
+            bd->aggre[r] = orpheus_malloc((long)bd->rind[r]*(nW+1)*bd->aggcap[r]*sizeof(double));
+            bd->aggim[r] = orpheus_malloc((long)bd->rind[r]*(nW+1)*bd->aggcap[r]*sizeof(double));
+        }
+    }
+}
+
+// Sum the w-weighted moments of the finer bands into the cells of every band >= 1 (the
+// scatter of D.2.3 in the flat DoubleTree), band by band through the parent links
+static void nnnn_bands_aggregate(NnnnBands *bd, int nthreads){
+    for (int k=1;k<bd->nbands;k++){
+        const NnnnBatch *oc = bd->own + (k-1);
+        int nW1 = oc->nW+1, nch = bd->nobj[k-1], nobj = bd->nobj[k];
+        long ls = bd->aggcap[k-1], lt = bd->aggcap[k];
+        const int *par = bd->parent[k-1];
+        #pragma omp parallel for num_threads(nthreads) schedule(static)
+        for (int row=0;row<bd->rind[k]*nW1;row++){
+            int b = row/nW1, n = row%nW1;
+            double *dr = bd->aggre[k] + row*lt, *di = bd->aggim[k] + row*lt;
+            for (int c=0;c<nobj;c++){ dr[c] = 0.; di[c] = 0.; }
+            if (b >= bd->rind[k-1]){
+                const double *sr = oc->wre + ((long)(b-bd->rind[k-1])*nW1+n)*oc->cap;
+                const double *si = oc->wim + ((long)(b-bd->rind[k-1])*nW1+n)*oc->cap;
+                for (int c=0;c<nch;c++){ dr[par[c]] += oc->w1[c]*sr[c]; di[par[c]] += oc->w1[c]*si[c]; }
+            } else {
+                const double *sr = bd->aggre[k-1] + row*ls, *si = bd->aggim[k-1] + row*ls;
+                for (int c=0;c<nch;c++){ dr[par[c]] += sr[c]; di[par[c]] += si[c]; }
+            }
+        }
+    }
+}
+
+// Triples of a batch of DoubleTree regions: summed moments, then every radial pair in
+// parallel. Pairs whose t2 lies in a finer band run first, as they carry most of the work.
+static void nnnn_bands_triples(NnnnBands *bd, const NnnnPlan *p, const int *pair_order_dt,
+    NnnnScratch *sc, double complex *acc, int nthreads){
+    nnnn_bands_aggregate(bd, nthreads);
+    #pragma omp parallel for num_threads(nthreads) schedule(dynamic, 1)
+    for (int k=0;k<p->npairs;k++){
+        nnnn_accum_pair(bd, p, pair_order_dt[k], sc+omp_get_thread_num(), acc);
+    }
+}
+
+// Order of the radial pairs for the DoubleTree: by the band of t2, then by decreasing triples
+static int *nnnn_dt_pair_order(const NnnnPlan *p, const int *bin2band){
+    int *order = orpheus_malloc((p->npairs>0?p->npairs:1)*sizeof(int));
+    int n = 0, maxband = 0;
+    for (int k=0;k<p->npairs;k++){ maxband = mymax(maxband, bin2band[p->pair_t2[k]]); }
+    for (int band=0;band<=maxband;band++){
+        for (int k=0;k<p->npairs;k++){
+            int ip = p->pair_order[k];
+            if (bin2band[p->pair_t2[ip]] == band){ order[n++] = ip; }
+        }
+    }
+    return order;
+}
+
+// Number of finest-band apex objects per batch of regions: enough work for the threads in
+// every radial pair, capped by memory_bound (GiB) for the moments of the finest band
+static int nnnn_dt_batch_target(int nbins0, int nW, double memory_bound, int nthreads){
+    long per_obj = ((long)4*nbins0*(nW+1) + nbins0 + 1)*(long)sizeof(double);
+    long target = mymax(16384L, 128L*nthreads);
+    if (memory_bound > 0){ target = mymin(target, (long)(memory_bound*1073741824.)/(2*per_obj)); }
+    return (int)mymax(target, 1L);
+}
+
+static inline int nnnn_lower_bound_long(const long *cp, int n, long key){
+    int lo = 0, hi = n;
+    while (lo < hi){ int m = (lo+hi)>>1; if (cp[m] < key){ lo = m+1; } else { hi = m; } }
+    return lo;
+}
+
+// Flat-sky NNNN DoubleTree (Porth+25, App. F). Regions are the cells of the spatial hash. A batch
+// of regions is processed by all threads at once:
+// * B1: Moments of every apex object (galaxies of the discrete band, cells of the grid bands)
+//       for the bins of its band, from the leaves at the leaf resolution of that band
+// * B2: Weighted moments of the finer bands summed per cell, then the multipoles of all
+//       triples per radial pair (nnnn_accum_pair)
+// * C:  Reconstruct all orderings of the triples once at the end
+static void alloc_nnnn_doubletree_flat(const MultiresoCatalog *cat, const NavHash *nav,
     const TreeResoParams *tree, const BinningParams *bin, const FourthParams *fourth,
     double memory_bound, int nthreads, int verbose, NPCFOutput *out){
 
@@ -4514,9 +4804,9 @@ void alloc_nnnn_doubletree(const MultiresoCatalog *cat_leaf, const NavHash *nav,
     int nresos = tree->nresos, nresos_grid = tree->nresos_grid;
     double *dpix1_resos = tree->dpix1_resos, *dpix2_resos = tree->dpix2_resos, *reso_redges = tree->reso_redges;
     int resoshift_leafs = tree->resoshift_leafs, minresoind_leaf = tree->minresoind_leaf, maxresoind_leaf = tree->maxresoind_leaf;
-    double *isinner_resos = cat_leaf->isinner_resos, *weight_resos = cat_leaf->weight_resos;
-    double *pos1_resos = cat_leaf->pos1_resos, *pos2_resos = cat_leaf->pos2_resos;
-    int *ngal_resos = cat_leaf->ngal_resos;
+    double *isinner_resos = cat->isinner_resos, *weight_resos = cat->weight_resos;
+    double *pos1_resos = cat->pos1_resos, *pos2_resos = cat->pos2_resos;
+    int *ngal_resos = cat->ngal_resos;
     int nmax = bin->nmax, nbinsr = bin->nbinsr;
     double rmin = bin->rmin, rmax = bin->rmax;
     int *nindices = fourth->nindices, len_nindices = fourth->len_nindices;
@@ -4529,769 +4819,445 @@ void alloc_nnnn_doubletree(const MultiresoCatalog *cat_leaf, const NavHash *nav,
     int *cumthetacombis_batches = fourth->cumthetacombis_batches; int nthetbatches = fourth->nthetbatches;
     double *bin_centers = out->bin_centers;
     double complex *N_n = out->npcf;
-    
-    // A: General preparations //
 
-    // Multipole index bookkeeping
-    int nmax_alloc = 2*nmax+1; 
-    int nnvals_Wn = 4*nmax_alloc+1;
-    int nnvals_Nn = 2*nmax_alloc+1;
-    int nnvals_Nn_rec = 2*nmax+1;
-    int nzero_Wn = 2*nmax_alloc; 
-    int nzero_Nn = nmax_alloc;
-    int N_nshift = nbinsr*nbinsr*nbinsr;
-    int n2n3combis = nnvals_Nn*nnvals_Nn;
-    int n2n3combis_rec = nnvals_Nn_rec*nnvals_Nn_rec;
-    double drbin = (log(rmax)-log(rmin))/(nbinsr);   // logarithmic radial binning (Sect. 6.2)
+    int hasdiscrete = nresos - nresos_grid;
+    long ncombis = cumthetacombis_batches[nthetbatches];
+    double drbin = (log(rmax)-log(rmin))/(nbinsr);
     double logrmin = log(rmin);
     int npix_hash = pix1_n*pix2_n;
 
-    // Per-reso offsets into the concatenated reso catalogues
+    // A: Bands, work list and scratch //
     int *rshift_index_matcher_hash = orpheus_calloc(nresos, sizeof(int));
     int *rshift_pixs_galind_bounds = orpheus_calloc(nresos, sizeof(int));
     int *rshift_pix_gals = orpheus_calloc(nresos, sizeof(int));
+    int *rind = orpheus_calloc(nresos+1, sizeof(int));
+    int *bin2band = orpheus_calloc(nbinsr, sizeof(int));
+    double *tmp_totcounts = orpheus_calloc(nthreads*nbinsr, sizeof(double));
+    double *tmp_totnorms = orpheus_calloc(nthreads*nbinsr, sizeof(double));
     // Bail out rather than dereference a failed allocation
     if (orpheus_get_error()){
         free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
+        free(rind); free(bin2band); free(tmp_totcounts); free(tmp_totnorms);
         return;
     }
     build_rshift_offsets(nresos, npix_hash, ngal_resos,
                          rshift_index_matcher_hash, rshift_pixs_galind_bounds, rshift_pix_gals);
+    nnnn_reso_rindedges(nresos, reso_redges, rmin, drbin, nbinsr, rind);
+    for (int r=0;r<nresos;r++){ for (int b=rind[r];b<rind[r+1];b++){ bin2band[b] = r; } }
 
-    // Map radial bin indices to resolution levels
-    int *reso_rindedges = orpheus_calloc(nresos+1, sizeof(int));
+    NnnnPlan plan;
+    nnnn_plan_build(&plan, thetacombis_batches, ncombis, nbinsr, nindices, len_nindices, nmax);
+    int *pair_order_dt = nnnn_dt_pair_order(&plan, bin2band);
+    double complex *acc = orpheus_calloc(ncombis*plan.nH, sizeof(double complex));
+    NnnnScratch *sc = nnnn_scratch_alloc(nthreads, nresos, &plan);
+    NnnnLeaves *leaves = orpheus_malloc(nthreads*sizeof(NnnnLeaves));
+    for (int t=0;t<nthreads;t++){ nnnn_leaves_alloc(leaves+t, nbinsr); }
+    NnnnRegions rg;
+    nnnn_regions_alloc(&rg, nresos);
+    NnnnBands bd = {nresos, rind, bin2band, orpheus_calloc(nresos, sizeof(NnnnBatch)), rg.nobj,
+                    rg.parent, orpheus_calloc(nresos, sizeof(double*)),
+                    orpheus_calloc(nresos, sizeof(double*)), orpheus_calloc(nresos, sizeof(long))};
+    // Region-local index of the object in every grid pixel and the batch slot of every object
+    int **pix2redpix = orpheus_calloc(nresos_grid, sizeof(int*));
+    for (int elgrid=0;elgrid<nresos_grid;elgrid++){
+        int npix_side = 1 << (nresos_grid-elgrid-1);
+        pix2redpix[elgrid] = orpheus_malloc((long)npix_side*npix_side*sizeof(int));
+    }
+    int **slot_of_local = orpheus_calloc(nresos, sizeof(int*));
+    int *slot_cap = orpheus_calloc(nresos, sizeof(int));
+    int target = nnnn_dt_batch_target(rind[1]-rind[0], plan.nW, memory_bound, nthreads);
+    long nmissing = 0;
     // Bail out rather than dereference a failed allocation
     if (orpheus_get_error()){
-        free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
-        free(reso_rindedges);
-        return;
+        fprintf(stderr, "alloc_nnnn_doubletree: allocation of the work list or scratch failed\n");
+        exit(1);
     }
-    {
-        int tmpreso = 0; double tmpr = rmin;
-        for (int elr=0; elr<nbinsr; elr++){
-            tmpr *= exp(drbin);
-            double thisredge = reso_redges[mymin(nresos, tmpreso+1)];
-            if (thisredge < tmpr){
-                reso_rindedges[mymin(nresos, tmpreso+1)] = elr;
-                if ((tmpr-thisredge) < (thisredge-(tmpr/exp(drbin)))){ reso_rindedges[mymin(nresos, tmpreso+1)] += 1; }
-                tmpreso += 1;
-            }
-        }
-        reso_rindedges[nresos] = nbinsr;
-    }
-    if (verbose){
-        printf("alloc_nnnn_doubletree: nresos=%d nbinsr=%d -- reso radial-bin ranges:\n", nresos, nbinsr);
-        for (int r=0;r<nresos;r++){
-            int elreso_leaf = mymin(mymax(minresoind_leaf, r+resoshift_leafs), maxresoind_leaf);
-            printf("  reso %d: bins [%d,%d) leaf=%d\n", r, reso_rindedges[r], reso_rindedges[r+1], elreso_leaf);
-        }
-    }
+    if (verbose>1){ printf("alloc_nnnn_doubletree: %d filled regions in batches of >=%d apices, %d radial pairs, "
+           "%d multipoles (%.2f GiB accumulator)\n", nfilledregions, target, plan.npairs, plan.nH,
+           ncombis*plan.nH*16./1073741824.); }
 
-    // Temporary accumulators for bin center computation
-    double *tmp_totcounts = orpheus_calloc(nthreads*nbinsr, sizeof(double));
-    double *tmp_totnorms  = orpheus_calloc(nthreads*nbinsr, sizeof(double));
-    // Bail out rather than dereference a failed allocation
-    if (orpheus_get_error()){
-        free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
-        free(reso_rindedges); free(tmp_totcounts); free(tmp_totnorms);
-        return;
-    }
-     
-    // B: Radial bin triplet bookkeeping //
-
-    // Some small helpers
-    int hasdiscrete = nresos - nresos_grid;
-    int *bin2reso = orpheus_calloc(nbinsr, sizeof(int)); // inverse of reso_rindedges
-    // Bail out rather than dereference a failed allocation
-    if (orpheus_get_error()){
-        free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
-        free(reso_rindedges); free(tmp_totcounts); free(tmp_totnorms); free(bin2reso);
-        return;
-    }
-    for (int r=0;r<nresos;r++){ for (int b=reso_rindedges[r]; b<reso_rindedges[r+1]; b++){ bin2reso[b]=r; } }
-    long ntheta_tot = (long) cumthetacombis_batches[nthetbatches];
-    long Nn_size = (long)n2n3combis_rec * N_nshift;
-
-    // Membership mask of the wanted ordered radial triplets
-    char *wanted = orpheus_calloc((long)N_nshift, 1);
-    // Bail out rather than dereference a failed allocation
-    if (orpheus_get_error()){
-        free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
-        free(reso_rindedges); free(tmp_totcounts); free(tmp_totnorms); free(bin2reso);
-        free(wanted);
-        return;
-    }
-    for (long elt=0; elt<ntheta_tot; elt++){ wanted[thetacombis_batches[elt]] = 1; }
-
-    // Get number of radial triplets within the same reso bin and allocate some helpers needed lateron
-    long n_samereso = 0;
-    for (long elt=0; elt<ntheta_tot; elt++){
-        int c = thetacombis_batches[elt];
-        int e1=c/(nbinsr*nbinsr), e2=(c-e1*nbinsr*nbinsr)/nbinsr, e3=c-e1*nbinsr*nbinsr-e2*nbinsr;
-        if (bin2reso[e1]==bin2reso[e2] && bin2reso[e1]==bin2reso[e3]){ n_samereso++; }
-    }
-    int *samereso_e1 = orpheus_malloc((n_samereso>0?n_samereso:1)*sizeof(int));
-    int *samereso_e2 = orpheus_malloc((n_samereso>0?n_samereso:1)*sizeof(int));
-    int *samereso_e3 = orpheus_malloc((n_samereso>0?n_samereso:1)*sizeof(int));
-    int *samereso_lo = orpheus_calloc(nresos, sizeof(int));
-    int *samereso_hi = orpheus_calloc(nresos, sizeof(int));
-    // Bail out rather than dereference a failed allocation
-    if (orpheus_get_error()){
-        free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
-        free(reso_rindedges); free(tmp_totcounts); free(tmp_totnorms); free(bin2reso);
-        free(wanted); free(samereso_e1); free(samereso_e2); free(samereso_e3); free(samereso_lo);
-        free(samereso_hi);
-        return;
-    }
-    {
-        long k = 0;
-        for (int r=0;r<nresos;r++){
-            samereso_lo[r] = (int)k;
-            for (long elt=0; elt<ntheta_tot; elt++){
-                int c = thetacombis_batches[elt];
-                int e1=c/(nbinsr*nbinsr), e2=(c-e1*nbinsr*nbinsr)/nbinsr, e3=c-e1*nbinsr*nbinsr-e2*nbinsr;
-                if (bin2reso[e1]==r && bin2reso[e2]==r && bin2reso[e3]==r){ samereso_e1[k]=e1; samereso_e2[k]=e2; samereso_e3[k]=e3; k++; }
-            }
-            samereso_hi[r] = (int)k;
-        }
-    }
-
-    // C: Define memory model and optionally cap threads //
-
-    // Get worst case per-regtion size to bound the cross-reso thread count by memory_bound.
-    // Each thread holds: its N_n slice / region cell cache (Wn/wWn) /  discrete moment cache Wdisc
-    // / the streamed n-accumulator / small scratch. 
-    long max_ncells_allresos = 1; // There is at most one reduced galaxy in a cell
-    long max_ndisc = 1;           // There is at most one discrete galaxy per galaxy (trivial :D)
-    for (int fr=0; fr<nfilledregions; fr++){
-        int elregion = filledregions[fr];
-        long ts = 0;
-        for (int r=hasdiscrete; r<nresos; r++){
-            ts += pixs_galind_bounds[rshift_pixs_galind_bounds[r]+elregion+1]
-                - pixs_galind_bounds[rshift_pixs_galind_bounds[r]+elregion];
-        }
-        if (ts > max_ncells_allresos){ max_ncells_allresos = ts; }
-        if (hasdiscrete>=1){
-            long nd = pixs_galind_bounds[rshift_pixs_galind_bounds[0]+elregion+1]
-                    - pixs_galind_bounds[rshift_pixs_galind_bounds[0]+elregion];
-            if (nd > max_ndisc){ max_ndisc = nd; }
-        }
-    }
-    int ndiscbins_max = (hasdiscrete==1 && reso_rindedges[1] > reso_rindedges[0])
-                      ? (reso_rindedges[1]-reso_rindedges[0]) : 0;
-    long per_thread = Nn_size // tmpN_n slice
-        + 4L*nnvals_Wn*nbinsr*max_ncells_allresos // Wncache + wWncache + W2ncache + wW2ncache
-        + 2L*nnvals_Wn*ndiscbins_max*max_ndisc // Wdisc + W2disc (per-galaxy discrete)
-        + (long)nbinsr*n2n3combis // streamed n-accumulator
-        + (long)(n_samereso - samereso_lo[hasdiscrete<nresos?hasdiscrete:nresos-1])*n2n3combis // grid same-reso acc
-        + (long)max_ndisc*n2n3combis // discrete-discrete W12 cache
-        + 3L*nnvals_Wn*nbinsr; // scan scratch (Wn/W2n) + small
-    per_thread *= 16;
-    // Now limit the parallel threads for the cross-accumulation s.t. memory_bound will not be exceeded
-    int nthreads_cross = nthreads;
-    if (memory_bound > 0){
-        long cap = (long)(memory_bound*1073741824.0) / per_thread;
-        if (cap < 1){ cap = 1; }
-        if (cap < nthreads_cross){ nthreads_cross = (int)cap; }
-    }
-    double complex *tmpN_n = orpheus_calloc((long)nthreads_cross*Nn_size, sizeof(double complex));
-    // Bail out rather than dereference a failed allocation
-    if (orpheus_get_error()){
-        free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
-        free(reso_rindedges); free(tmp_totcounts); free(tmp_totnorms); free(bin2reso);
-        free(wanted); free(samereso_e1); free(samereso_e2); free(samereso_e3); free(samereso_lo);
-        free(samereso_hi); free(tmpN_n);
-        return;
-    }
-    if (tmpN_n==NULL){
-        fprintf(stderr,"alloc_nnnn_doubletree: cross-reso N_n accumulator alloc failed "
-                "(%d threads x %.2f GiB). Lower memory_bound/threads.\n",
-                nthreads_cross, Nn_size*16/1073741824.0); exit(1);
-    }
-    if (verbose){
-        printf("alloc_nnnn_doubletree: cross-reso using %d/%d threads (%d filled regions) "
-               "(per-thread est. %.2f GiB: N_n %.2f + cache %.2f + Wdisc %.2f)\n",
-               nthreads_cross, nthreads, nfilledregions, per_thread/1073741824.0,
-               Nn_size*16/1073741824.0, 2.0*nnvals_Wn*nbinsr*max_ncells_allresos*16/1073741824.0,
-               (double)nnvals_Wn*ndiscbins_max*max_ndisc*16/1073741824.0);
-    }
-
-    // Per-(thread,reso) timers: aperture scan, cell aggregation, same-reso combine; plus
-    // per-thread same-reso reconstruct and cross-reso combine. 
-    double *t_scan = orpheus_calloc((long)nthreads_cross*nresos, sizeof(double));
-    double *t_agg  = orpheus_calloc((long)nthreads_cross*nresos, sizeof(double));
-    double *t_samereso = orpheus_calloc((long)nthreads_cross*nresos, sizeof(double));
-    double *t_samereso_rec = orpheus_calloc(nthreads_cross, sizeof(double));
-    double *t_crossreso = orpheus_calloc(nthreads_cross, sizeof(double));
-    // Bail out rather than dereference a failed allocation
-    if (orpheus_get_error()){
-        free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
-        free(reso_rindedges); free(tmp_totcounts); free(tmp_totnorms); free(bin2reso);
-        free(wanted); free(samereso_e1); free(samereso_e2); free(samereso_e3); free(samereso_lo);
-        free(samereso_hi); free(tmpN_n); free(t_scan); free(t_agg); free(t_samereso);
-        free(t_samereso_rec); free(t_crossreso);
-        return;
-    }
-    double t_cb_wall0 = omp_get_wtime(); clock_t t_cb_cpu0 = clock();
-
-    // D: Main loop over regions //
-    // Compared to the paper we do parallelize over regions at the cost of duplicating the caches per thread
-    int nregionsdone = 0;
+    // B: Iterate over the batches of regions //
+    double t_mom = 0., t_tri = 0.;
+    int fr = 0;
     reset_progress();
-    #pragma omp parallel for num_threads(nthreads_cross) schedule(dynamic)
-    for (int fr=0; fr<nfilledregions; fr++){
-        #pragma omp atomic
-        nregionsdone += 1;
-        print_progress(nregionsdone, nfilledregions, verbose);
-        int thisthread = omp_get_thread_num();
-        int elregion = filledregions[fr];
-        double complex *myN_n = tmpN_n + (long)thisthread*Nn_size;
+    while (fr < nfilledregions){
 
-
-        // D.1 BaseTree bookkeeping within the region //
-
-        // Per-reso galaxies in region
-        int *ngal_in_pix = orpheus_calloc(nresos, sizeof(int));
-        for (int r=0;r<nresos;r++){
-            ngal_in_pix[r] = pixs_galind_bounds[rshift_pixs_galind_bounds[r]+elregion+1]
-                           - pixs_galind_bounds[rshift_pixs_galind_bounds[r]+elregion];
-        }
-        // Per-grid-reso offsets into the flat pix->cell matcher (grid resolutions only)
-        int *rshift_matchers = orpheus_calloc(nresos_grid+1, sizeof(int));
-        for (int elgrid=0; elgrid<nresos_grid; elgrid++){
-            int npix_side = 1 << (nresos_grid-elgrid-1);
-            rshift_matchers[elgrid+1] = rshift_matchers[elgrid] + npix_side*npix_side;
-        }
-        int len_matcher = rshift_matchers[nresos_grid];
-        // Per-reso cell offsets within the cache (discrete levels contribute no cells: their
-        // "cells" are individual galaxies and are handled by the Wdisc cache instead)
-        int *rshift_cells = orpheus_calloc(nresos+1, sizeof(int));
-        for (int r=0;r<nresos;r++){
-            rshift_cells[r+1] = rshift_cells[r] + ((r>=hasdiscrete) ? ngal_in_pix[r] : 0);
-        }
-        long ncells_allresos = rshift_cells[nresos];
-        long nshift_cache = (long)nbinsr*ncells_allresos;
-
-        // pixel -> reduced-cell map for each grid resolution
-        int elregion_fullhash = region_to_fullhash[elregion];
-        double hashpix_start1 = pix1_start + (elregion_fullhash%pix1_n)*pix1_d;
-        double hashpix_start2 = pix2_start + (elregion_fullhash/pix1_n)*pix2_d;
-        int *pix2redpix = orpheus_calloc(len_matcher>0?len_matcher:1, sizeof(int));
-        for (int elgrid=0; elgrid<nresos_grid; elgrid++){
-            int r = elgrid + hasdiscrete;
-            int npix_side = 1 << (nresos_grid-elgrid-1);
-            int lower = pixs_galind_bounds[rshift_pixs_galind_bounds[r]+elregion];
-            int upper = pixs_galind_bounds[rshift_pixs_galind_bounds[r]+elregion+1];
-            int cnt = 0;
-            for (int ind_inpix=lower; ind_inpix<upper; ind_inpix++){
-                int ind_gal = rshift_pix_gals[r] + pix_gals[rshift_pix_gals[r]+ind_inpix];
-                int eh1 = (int) floor((pos1_resos[ind_gal]-hashpix_start1)/dpix1_resos[elgrid]);
-                int eh2 = (int) floor((pos2_resos[ind_gal]-hashpix_start2)/dpix2_resos[elgrid]);
-                if (eh1<0){eh1=0;} if (eh1>=npix_side){eh1=npix_side-1;}
-                if (eh2<0){eh2=0;} if (eh2>=npix_side){eh2=npix_side-1;}
-                pix2redpix[rshift_matchers[elgrid] + eh2*npix_side + eh1] = cnt;
-                cnt += 1;
-            }
-        }
-
-        // Setup BaseTree caches (cf the xX_1 in eq F.6 of Porth+25)
-        double complex *Wncache  = orpheus_calloc(nnvals_Wn*nshift_cache, sizeof(double complex)); // X_1
-        double complex *wWncache = orpheus_calloc(nnvals_Wn*nshift_cache, sizeof(double complex)); // xX_1
-        double complex *W2ncache  = orpheus_calloc(nnvals_Wn*nshift_cache, sizeof(double complex)); // A.3 with m=2
-        double complex *wW2ncache = orpheus_calloc(nnvals_Wn*nshift_cache, sizeof(double complex)); // weighted A.3 with m=2
-        if (Wncache==NULL || wWncache==NULL || W2ncache==NULL || wW2ncache==NULL){
-            fprintf(stderr,"alloc_nnnn_doubletree: cross-reso cell cache alloc failed (region %d)\n", elregion); exit(1);
-        }
-
-        // Alloc moment caches for discrete-reso
-        int discbin_lo = (hasdiscrete>=1) ? reso_rindedges[0] : 0;
-        int discbin_hi = (hasdiscrete>=1) ? reso_rindedges[1] : 0;
-        int ndiscbins = discbin_hi - discbin_lo;
-        long ndisc = (hasdiscrete>=1) ? ngal_in_pix[0] : 0;
-        double *disc_p1=NULL, *disc_p2=NULL, *disc_w=NULL;
-        double complex *Wdisc=NULL, *W2disc=NULL, *W3disc=NULL;
-        if (ndiscbins>0 && ndisc>0){
-            disc_p1 = orpheus_calloc(ndisc, sizeof(double));
-            disc_p2 = orpheus_calloc(ndisc, sizeof(double));
-            disc_w  = orpheus_calloc(ndisc, sizeof(double));
-            Wdisc   = orpheus_calloc((long)ndisc*nnvals_Wn*ndiscbins, sizeof(double complex));
-            W2disc  = orpheus_calloc((long)ndisc*nnvals_Wn*ndiscbins, sizeof(double complex));
-            W3disc  = orpheus_calloc((long)ndisc*ndiscbins, sizeof(double complex));
-            if (Wdisc==NULL || W2disc==NULL || W3disc==NULL){
-                fprintf(stderr,"alloc_nnnn_doubletree: Wdisc alloc failed (region %d, %.2f GiB). "
-                        "Lower memory_bound/nmax or widen tree_resos.\n",
-                        elregion, (double)ndisc*nnvals_Wn*ndiscbins*16/1073741824.0); exit(1);
-            }
-        }
-
-         // D.2: For each reso, allocate Wns + aggregate into BaseTree grid cells & combine same resos //
-
-        // samereso_N holds only the grid-reso same-reso triplets.
-        int gridtrip_start = samereso_lo[hasdiscrete<nresos?hasdiscrete:nresos-1]; // first grid-reso triplet
-        long n_gridtrips = n_samereso - gridtrip_start;
-        double complex *nextWns  = orpheus_calloc(nnvals_Wn*nbinsr, sizeof(double complex)); // Base alloc W_n
-        double complex *nextW2ns = orpheus_calloc(nnvals_Wn*nbinsr, sizeof(double complex)); // Double-counting corrs  W^2_n
-        double complex *nextW3ns = orpheus_calloc(nbinsr, sizeof(double complex)); // Triple-counting corrs  W^3
-        double complex *samereso_N = orpheus_calloc(n_gridtrips>0?(long)n_gridtrips*n2n3combis:1, sizeof(double complex)); // same-reso for grid
-        for (int elreso=0; elreso<nresos; elreso++){
-            int rbinmin = reso_rindedges[elreso], rbinmax = reso_rindedges[elreso+1];
-            if (rbinmax<=rbinmin){ continue; }
-            int elreso_leaf = mymin(mymax(minresoind_leaf, elreso+resoshift_leafs), maxresoind_leaf);
-            double rmin_reso = rmin*exp(rbinmin*drbin), rmax_reso = rmin*exp(rbinmax*drbin);
-            int lower_base = pixs_galind_bounds[rshift_pixs_galind_bounds[elreso]+elregion];
-            int upper_base = pixs_galind_bounds[rshift_pixs_galind_bounds[elreso]+elregion+1];
-            for (int ind_inpix1=lower_base; ind_inpix1<upper_base; ind_inpix1++){
-                int ind_gal = rshift_pix_gals[elreso] + pix_gals[rshift_pix_gals[elreso]+ind_inpix1];
-                if (isinner_resos[ind_gal] < 1e-5){ continue; }
-                double p11 = pos1_resos[ind_gal], p12 = pos2_resos[ind_gal], w1 = weight_resos[ind_gal];
-                double tt0 = omp_get_wtime();
-                for (int i=0;i<nnvals_Wn*nbinsr;i++){ nextWns[i]=0; nextW2ns[i]=0; }
-                for (int b=rbinmin;b<rbinmax;b++){ nextW3ns[b]=0; }
-                int lower, upper;
-
-                // D.2.1: Allocate the Wn/W2n/W3n for this reso band
-                FLATCELL_FOREACH(
-                    index_matcher_hash, rshift_index_matcher_hash[elreso_leaf], pixs_galind_bounds, rshift_pixs_galind_bounds[elreso_leaf],
-                    p11, p12, rmax_reso, pix1_start, pix1_d, pix1_n, pix2_start, pix2_d, pix2_n, lower, upper){
+        // Collect regions until the batch holds enough apex objects of the finest band
+        for (int r=0;r<nresos;r++){ rg.nobj[r] = 0; }
+        while (fr < nfilledregions && rg.nobj[0] < target){
+            int elregion = filledregions[fr];
+            int elregion_fullhash = region_to_fullhash[elregion];
+            double hashpix_start1 = pix1_start + (elregion_fullhash%pix1_n)*pix1_d;
+            double hashpix_start2 = pix2_start + (elregion_fullhash/pix1_n)*pix2_d;
+            // Coarsest band first, such that every apex finds the slot of its parent
+            for (int r=nresos-1;r>=0;r--){
+                int lower = pixs_galind_bounds[rshift_pixs_galind_bounds[r]+elregion];
+                int upper = pixs_galind_bounds[rshift_pixs_galind_bounds[r]+elregion+1];
+                if (slot_cap[r] < upper-lower){
+                    slot_cap[r] = upper-lower;
+                    free(slot_of_local[r]); slot_of_local[r] = orpheus_malloc(slot_cap[r]*sizeof(int));
+                }
+                // Map the grid pixels of this region to the region-local index of their object
+                int elgrid = r - hasdiscrete;
+                if (elgrid >= 0){
+                    int npix_side = 1 << (nresos_grid-elgrid-1);
                     for (int ind_inpix=lower; ind_inpix<upper; ind_inpix++){
-                        int ind_gal2 = rshift_pix_gals[elreso_leaf] + pix_gals[rshift_pix_gals[elreso_leaf]+ind_inpix];
-                        double p21 = pos1_resos[ind_gal2], p22 = pos2_resos[ind_gal2];
-                        double rel1 = p21-p11, rel2 = p22-p12;
-                        double dist = sqrt(rel1*rel1+rel2*rel2);
+                        int ind_gal = rshift_pix_gals[r] + pix_gals[rshift_pix_gals[r]+ind_inpix];
+                        int eh1 = (int) floor((pos1_resos[ind_gal]-hashpix_start1)/dpix1_resos[elgrid]);
+                        int eh2 = (int) floor((pos2_resos[ind_gal]-hashpix_start2)/dpix2_resos[elgrid]);
+                        if (eh1<0){eh1=0;} if (eh1>=npix_side){eh1=npix_side-1;}
+                        if (eh2<0){eh2=0;} if (eh2>=npix_side){eh2=npix_side-1;}
+                        pix2redpix[elgrid][eh2*npix_side + eh1] = ind_inpix-lower;
+                    }
+                }
+                for (int ind_inpix=lower; ind_inpix<upper; ind_inpix++){
+                    int ind_gal = rshift_pix_gals[r] + pix_gals[rshift_pix_gals[r]+ind_inpix];
+                    slot_of_local[r][ind_inpix-lower] = -1;
+                    if (isinner_resos[ind_gal] < 1e-5){ continue; }
+                    int parent = -1;
+                    if (r < nresos-1){
+                        int elgrid2 = r+1 - hasdiscrete;
+                        int npix_side = 1 << (nresos_grid-elgrid2-1);
+                        int eh1 = (int) floor((pos1_resos[ind_gal]-hashpix_start1)/dpix1_resos[elgrid2]);
+                        int eh2 = (int) floor((pos2_resos[ind_gal]-hashpix_start2)/dpix2_resos[elgrid2]);
+                        if (eh1<0){eh1=0;} if (eh1>=npix_side){eh1=npix_side-1;}
+                        if (eh2<0){eh2=0;} if (eh2>=npix_side){eh2=npix_side-1;}
+                        parent = slot_of_local[r+1][pix2redpix[elgrid2][eh2*npix_side + eh1]];
+                        if (parent < 0){ nmissing += 1; continue; }
+                    }
+                    slot_of_local[r][ind_inpix-lower] = rg.nobj[r];
+                    nnnn_regions_push(&rg, r, ind_gal, parent);
+                }
+            }
+            fr += 1;
+        }
+        nnnn_bands_reserve(&bd, plan.nW);
+        nnnn_scratch_reserve(sc, nthreads, nresos, rg.nobj, plan.maxrow);
+        // Bail out rather than dereference a failed allocation
+        if (orpheus_get_error()){
+            fprintf(stderr, "alloc_nnnn_doubletree: allocation of the batch moments failed\n");
+            exit(1);
+        }
+
+        // B1: Moments of every apex object //
+        double t0 = omp_get_wtime();
+        long nall = 0;
+        for (int r=0;r<nresos;r++){ nall += rg.nobj[r]; }
+        #pragma omp parallel for num_threads(nthreads) schedule(dynamic, 4)
+        for (long io=0; io<nall; io++){
+            int thisthread = omp_get_thread_num();
+            NnnnLeaves *lv = leaves + thisthread;
+            int r = 0; long o = io;
+            while (o >= rg.nobj[r]){ o -= rg.nobj[r]; r++; }
+            int ind_gal = (int)rg.obj[r][o];
+            int rbinmin = rind[r], rbinmax = rind[r+1];
+            if (rbinmax <= rbinmin){ bd.own[r].w1[o] = weight_resos[ind_gal]; continue; }
+            int elreso_leaf = mymin(mymax(minresoind_leaf, r+resoshift_leafs), maxresoind_leaf);
+            double rmin_reso = rmin*exp(rbinmin*drbin), rmax_reso = rmin*exp(rbinmax*drbin);
+            double p11 = pos1_resos[ind_gal], p12 = pos2_resos[ind_gal];
+            int lower, upper;
+            FLATCELL_FOREACH(
+                index_matcher_hash, rshift_index_matcher_hash[elreso_leaf], pixs_galind_bounds, rshift_pixs_galind_bounds[elreso_leaf],
+                p11, p12, rmax_reso, pix1_start, pix1_d, pix1_n, pix2_start, pix2_d, pix2_n, lower, upper){
+                for (int ind_inpix=lower; ind_inpix<upper; ind_inpix++){
+                    int ind_gal2 = rshift_pix_gals[elreso_leaf] + pix_gals[rshift_pix_gals[elreso_leaf]+ind_inpix];
+                    double rel1 = pos1_resos[ind_gal2]-p11, rel2 = pos2_resos[ind_gal2]-p12;
+                    double dist = sqrt(rel1*rel1 + rel2*rel2);
+                    if (dist<rmin_reso || dist>=rmax_reso){ continue; }
+                    int rbin = (int) floor((log(dist)-logrmin)/drbin);
+                    if (rbin<rbinmin || rbin>=rbinmax){ continue; }
+                    double w2 = weight_resos[ind_gal2];
+                    tmp_totcounts[thisthread*nbinsr+rbin] += w2*dist;
+                    tmp_totnorms[thisthread*nbinsr+rbin]  += w2;
+                    nnnn_leaves_push(lv, rbin-rbinmin, w2, rel1/dist, rel2/dist);
+                }
+            }
+            nnnn_fill_slot(lv, bd.own+r, (int)o, weight_resos[ind_gal]);
+        }
+        double t1 = omp_get_wtime();
+
+        // B2: Multipoles of all triples from the batch //
+        nnnn_bands_triples(&bd, &plan, pair_order_dt, sc, acc, nthreads);
+        t_mom += t1-t0; t_tri += omp_get_wtime()-t1;
+        print_progress(fr, nfilledregions, verbose);
+    }
+    if (verbose>1){ printf("\nalloc_nnnn_doubletree: moments %.1fs, triples %.1fs (wall)", t_mom, t_tri); }
+    if (nmissing > 0){ fprintf(stderr, "alloc_nnnn_doubletree: %ld apices without a parent cell were skipped\n", nmissing); }
+
+    // C: All orderings of every triple //
+    nnnn_reconstruct_all(acc, &plan, thetacombis_batches, ncombis, nbinsr, nmax,
+                         nindices, len_nindices, N_n, nthreads);
+
+    // Get bin centers
+    for (int t=1;t<nthreads;t++){
+        for (int b=0;b<nbinsr;b++){
+            tmp_totcounts[b] += tmp_totcounts[t*nbinsr+b];
+            tmp_totnorms[b]  += tmp_totnorms[t*nbinsr+b];
+        }
+    }
+    for (int b=0;b<nbinsr;b++){ if (tmp_totnorms[b]!=0){ bin_centers[b] = tmp_totcounts[b]/tmp_totnorms[b]; } }
+
+    // Free all allocated quantities
+    for (int t=0;t<nthreads;t++){ nnnn_leaves_free(leaves+t); }
+    for (int r=0;r<nresos;r++){
+        if (bd.own[r].cap > 0){ nnnn_batch_free(bd.own+r); }
+        free(bd.aggre[r]); free(bd.aggim[r]); free(slot_of_local[r]);
+    }
+    for (int elgrid=0;elgrid<nresos_grid;elgrid++){ free(pix2redpix[elgrid]); }
+    free(bd.own); free(bd.aggre); free(bd.aggim); free(bd.aggcap);
+    nnnn_regions_free(&rg); nnnn_scratch_free(sc, nthreads, nresos); nnnn_plan_free(&plan);
+    free(pair_order_dt); free(acc); free(leaves); free(pix2redpix);
+    free(slot_of_local); free(slot_cap);
+    free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
+    free(rind); free(bin2band); free(tmp_totcounts); free(tmp_totnorms);
+    if (verbose>0){ printf("\n"); }
+}
+
+// Curved-sky NNNN DoubleTree. As alloc_nnnn_doubletree_flat, but the regions are healpix cells
+// at the coarsest navigation level, the parents follow from the nested pixel indices and the
+// leaves from query_disc. Recall that all separations are in radians.
+static void alloc_nnnn_doubletree_spherical(const MultiresoCatalog *cat, const NavHash *nav,
+    const TreeResoParams *tree, const BinningParams *bin, const FourthParams *fourth,
+    double memory_bound, int nthreads, int verbose, NPCFOutput *out){
+
+    // Dereference input args
+    int nresos = tree->nresos, nresos_grid = tree->nresos_grid;
+    double *reso_redges = tree->reso_redges;
+    int resoshift_leafs = tree->resoshift_leafs, minresoind_leaf = tree->minresoind_leaf, maxresoind_leaf = tree->maxresoind_leaf;
+    double *isinner = cat->isinner_resos, *weight = cat->weight_resos;
+    double *vx = cat->vx_resos, *vy = cat->vy_resos, *vz = cat->vz_resos;
+    int *ncells_resos = nav->ncells_resos;
+    long *nside_nav = nav->nside_nav, *cell_pix = nav->cell_pix;
+    int *cell_redbounds = nav->cell_redbounds;
+    int *rshift_red = nav->rshift_red, *rshift_cellpix = nav->rshift_cellpix, *rshift_cellbounds = nav->rshift_cellbounds;
+    int nmax = bin->nmax, nbinsr = bin->nbinsr;
+    double rmin = bin->rmin, rmax = bin->rmax;
+    int *nindices = fourth->nindices, len_nindices = fourth->len_nindices;
+    int *thetacombis_batches = fourth->thetacombis_batches;
+    int *cumthetacombis_batches = fourth->cumthetacombis_batches; int nthetbatches = fourth->nthetbatches;
+    double *bin_centers = out->bin_centers;
+    double complex *N_n = out->npcf;
+
+    int hasdiscrete = nresos - nresos_grid;
+    long ncombis = cumthetacombis_batches[nthetbatches];
+    double drbin = (log(rmax)-log(rmin))/(nbinsr);
+    double logrmin = log(rmin);
+
+    // A: Bands, regions, work list and scratch //
+    int *rind = orpheus_calloc(nresos+1, sizeof(int));
+    int *bin2band = orpheus_calloc(nbinsr, sizeof(int));
+    int *level = orpheus_calloc(nresos, sizeof(int));
+    int *slice_clo = orpheus_calloc(nresos, sizeof(int));
+    int *slice_chi = orpheus_calloc(nresos, sizeof(int));
+    double *tmp_totcounts = orpheus_calloc(nthreads*nbinsr, sizeof(double));
+    double *tmp_totnorms = orpheus_calloc(nthreads*nbinsr, sizeof(double));
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        free(rind); free(bin2band); free(level); free(slice_clo); free(slice_chi);
+        free(tmp_totcounts); free(tmp_totnorms);
+        return;
+    }
+    nnnn_reso_rindedges(nresos, reso_redges, rmin, drbin, nbinsr, rind);
+    for (int r=0;r<nresos;r++){ for (int b=rind[r];b<rind[r+1];b++){ bin2band[b] = r; } }
+    // Regions are the occupied cells of the coarsest navigation level. In nested ordering the
+    // descendants of a cell are a contiguous range of indices at any finer level.
+    int r_region = 0;
+    for (int r=0;r<nresos;r++){
+        level[r] = (nside_nav[r]>0) ? __builtin_ctzl((unsigned long)nside_nav[r]) : 0;
+        if (level[r] < level[r_region]){ r_region = r; }
+    }
+    int nregions = ncells_resos[r_region];
+    const long *region_cellpix = cell_pix + rshift_cellpix[r_region];
+
+    NnnnPlan plan;
+    nnnn_plan_build(&plan, thetacombis_batches, ncombis, nbinsr, nindices, len_nindices, nmax);
+    int *pair_order_dt = nnnn_dt_pair_order(&plan, bin2band);
+    double complex *acc = orpheus_calloc(ncombis*plan.nH, sizeof(double complex));
+    NnnnScratch *sc = nnnn_scratch_alloc(nthreads, nresos, &plan);
+    NnnnLeaves *leaves = orpheus_malloc(nthreads*sizeof(NnnnLeaves));
+    long *query_cap = orpheus_malloc(nthreads*sizeof(long));
+    long **ranges = orpheus_malloc(nthreads*sizeof(long*));
+    for (int t=0;t<nthreads;t++){
+        nnnn_leaves_alloc(leaves+t, nbinsr);
+        query_cap[t] = 2048;
+        ranges[t] = orpheus_malloc(2*query_cap[t]*sizeof(long));
+    }
+    NnnnRegions rg;
+    nnnn_regions_alloc(&rg, nresos);
+    NnnnBands bd = {nresos, rind, bin2band, orpheus_calloc(nresos, sizeof(NnnnBatch)), rg.nobj,
+                    rg.parent, orpheus_calloc(nresos, sizeof(double*)),
+                    orpheus_calloc(nresos, sizeof(double*)), orpheus_calloc(nresos, sizeof(long))};
+    // Slot in the batch of the apex in every cell of the region's slice (grid bands)
+    int **slot_of_cell = orpheus_calloc(nresos, sizeof(int*));
+    int *slot_cap = orpheus_calloc(nresos, sizeof(int));
+    int target = nnnn_dt_batch_target(rind[1]-rind[0], plan.nW, memory_bound, nthreads);
+    long nmissing = 0;
+    // Bail out rather than dereference a failed allocation
+    if (orpheus_get_error()){
+        fprintf(stderr, "alloc_nnnn_doubletree: allocation of the work list or scratch failed\n");
+        exit(1);
+    }
+    if (verbose>1){ printf("alloc_nnnn_doubletree: %d regions at nside %ld in batches of >=%d apices, %d radial pairs, "
+           "%d multipoles (%.2f GiB accumulator)\n", nregions, nside_nav[r_region], target, plan.npairs,
+           plan.nH, ncombis*plan.nH*16./1073741824.); }
+
+    // B: Iterate over the batches of regions //
+    double t_mom = 0., t_tri = 0.;
+    int er = 0;
+    reset_progress();
+    while (er < nregions){
+
+        // Collect regions until the batch holds enough apex objects of the finest band
+        for (int r=0;r<nresos;r++){ rg.nobj[r] = 0; }
+        while (er < nregions && rg.nobj[0] < target){
+            long region_id = region_cellpix[er];
+            // Coarsest band first, such that every apex finds the slot of its parent
+            for (int r=nresos-1;r>=0;r--){
+                const long *cp = cell_pix + rshift_cellpix[r];
+                const int *cb = cell_redbounds + rshift_cellbounds[r];
+                int shift = 2*(level[r]-level[r_region]);
+                slice_clo[r] = nnnn_lower_bound_long(cp, ncells_resos[r], region_id << shift);
+                slice_chi[r] = nnnn_lower_bound_long(cp, ncells_resos[r], (region_id+1) << shift);
+                int ncs = slice_chi[r]-slice_clo[r];
+                if (slot_cap[r] < ncs){
+                    slot_cap[r] = ncs;
+                    free(slot_of_cell[r]); slot_of_cell[r] = orpheus_malloc(slot_cap[r]*sizeof(int));
+                }
+                for (int c=slice_clo[r]; c<slice_chi[r]; c++){
+                    slot_of_cell[r][c-slice_clo[r]] = -1;
+                    for (int j=cb[c]; j<cb[c+1]; j++){
+                        long g = rshift_red[r] + j;
+                        if (isinner[g] < 1e-5){ continue; }
+                        int parent = -1;
+                        if (r < nresos-1){
+                            long ppix;
+                            if (r < hasdiscrete){
+                                double v[3] = {vx[g], vy[g], vz[g]};
+                                ppix = hpx_ang2pix_nest(nside_nav[r+1], v);
+                            } else {
+                                ppix = cp[c] >> 2*(level[r]-level[r+1]);
+                            }
+                            const long *cp2 = cell_pix + rshift_cellpix[r+1];
+                            int c2 = nnnn_lower_bound_long(cp2+slice_clo[r+1], slice_chi[r+1]-slice_clo[r+1], ppix) + slice_clo[r+1];
+                            if (c2 < slice_chi[r+1] && cp2[c2] == ppix){ parent = slot_of_cell[r+1][c2-slice_clo[r+1]]; }
+                            if (parent < 0){ nmissing += 1; continue; }
+                        }
+                        slot_of_cell[r][c-slice_clo[r]] = rg.nobj[r];
+                        nnnn_regions_push(&rg, r, g, parent);
+                    }
+                }
+            }
+            er += 1;
+        }
+        nnnn_bands_reserve(&bd, plan.nW);
+        nnnn_scratch_reserve(sc, nthreads, nresos, rg.nobj, plan.maxrow);
+        // Bail out rather than dereference a failed allocation
+        if (orpheus_get_error()){
+            fprintf(stderr, "alloc_nnnn_doubletree: allocation of the batch moments failed\n");
+            exit(1);
+        }
+
+        // B1: Moments of every apex object //
+        double t0 = omp_get_wtime();
+        long nall = 0;
+        for (int r=0;r<nresos;r++){ nall += rg.nobj[r]; }
+        #pragma omp parallel for num_threads(nthreads) schedule(dynamic, 4)
+        for (long io=0; io<nall; io++){
+            int thisthread = omp_get_thread_num();
+            NnnnLeaves *lv = leaves + thisthread;
+            int r = 0; long o = io;
+            while (o >= rg.nobj[r]){ o -= rg.nobj[r]; r++; }
+            long g1 = rg.obj[r][o];
+            int rbinmin = rind[r], rbinmax = rind[r+1];
+            if (rbinmax <= rbinmin){ bd.own[r].w1[o] = weight[g1]; continue; }
+            int elreso_leaf = mymin(mymax(minresoind_leaf, r+resoshift_leafs), maxresoind_leaf);
+            double rmin_reso = rmin*exp(rbinmin*drbin), rmax_reso = rmin*exp(rbinmax*drbin);
+            double bx = vx[g1], by = vy[g1], bz = vz[g1];
+            double bvec[3] = {bx, by, bz};
+            long ns_leaf = nside_nav[elreso_leaf];
+            long nranges = hpx_query_disc_nest_ranges(ns_leaf, bvec, rmax_reso, ranges[thisthread], query_cap[thisthread]);
+            if (nranges > query_cap[thisthread]){
+                query_cap[thisthread] = nranges;
+                ranges[thisthread] = realloc(ranges[thisthread], 2*nranges*sizeof(long));
+                nranges = hpx_query_disc_nest_ranges(ns_leaf, bvec, rmax_reso, ranges[thisthread], query_cap[thisthread]);
+            }
+            const long *thisranges = ranges[thisthread];
+            const long *cp = cell_pix + rshift_cellpix[elreso_leaf];
+            const int *cb = cell_redbounds + rshift_cellbounds[elreso_leaf];
+            int ncells_leaf = ncells_resos[elreso_leaf];
+            long leaf_off = rshift_red[elreso_leaf];
+            int ci = 0;
+            for (long rr=0; rr<nranges; rr++){
+                long plo = thisranges[2*rr], phi = thisranges[2*rr+1];
+                ci = nnnn_lower_bound_long(cp+ci, ncells_leaf-ci, plo) + ci;
+                while (ci < ncells_leaf && cp[ci] < phi){
+                    for (int j=cb[ci]; j<cb[ci+1]; j++){
+                        long g2 = leaf_off + j;
+                        double vx2 = vx[g2], vy2 = vy[g2], vz2 = vz[g2];
+                        double dist = sphere_dist(bx, by, bz, vx2, vy2, vz2);
                         if (dist<rmin_reso || dist>=rmax_reso){ continue; }
                         int rbin = (int) floor((log(dist)-logrmin)/drbin);
                         if (rbin<rbinmin || rbin>=rbinmax){ continue; }
-                        double w2 = weight_resos[ind_gal2], w2_sq = w2*w2;
-                        double dphi = atan2(rel2,rel1);
-                        double complex phirot = cexp(I*dphi), phirotc = conj(phirot);
-                        int ind_Wn = nzero_Wn*nbinsr + rbin;
-                        nextW3ns[rbin] += w2_sq*w2;
+                        double w2 = weight[g2];
+                        double complex phirot = bearing_phirot(bearing_AB_cart(bx, by, bz, vx2, vy2, vz2));
                         tmp_totcounts[thisthread*nbinsr+rbin] += w2*dist;
                         tmp_totnorms[thisthread*nbinsr+rbin]  += w2;
-                        nnnn_fill_wn(nextWns, nextW2ns, 2*nmax_alloc, nbinsr, ind_Wn, w2, w2_sq, phirot, phirotc);
+                        nnnn_leaves_push(lv, rbin-rbinmin, w2, creal(phirot), cimag(phirot));
                     }
-                }
-
-                // D.2.2: Update discrete moment cache
-                double tt1 = omp_get_wtime(); t_scan[(long)thisthread*nresos+elreso] += tt1-tt0;
-                if (elreso < hasdiscrete && Wdisc!=NULL){
-                    long ind_disc = ind_inpix1 - lower_base;
-                    disc_p1[ind_disc]=p11; disc_p2[ind_disc]=p12; disc_w[ind_disc]=w1;
-                    for (int n=0;n<nnvals_Wn;n++){
-                        for (int b=discbin_lo;b<discbin_hi;b++){
-                            Wdisc[((long)ind_disc*nnvals_Wn + n)*ndiscbins + (b-discbin_lo)]  = nextWns[n*nbinsr+b];
-                            W2disc[((long)ind_disc*nnvals_Wn + n)*ndiscbins + (b-discbin_lo)] = nextW2ns[n*nbinsr+b];
-                        }
-                    }
-                    for (int b=discbin_lo;b<discbin_hi;b++){ W3disc[(long)ind_disc*ndiscbins + (b-discbin_lo)] = nextW3ns[b]; }
-                }
-
-                // D.2.3: Scatter the cache update into the coarser resolution caches
-                for (int reso_coarse=mymax(elreso,hasdiscrete); reso_coarse<nresos; reso_coarse++){
-                    int elgrid = reso_coarse - hasdiscrete;
-                    int npix_side = 1 << (nresos_grid-elgrid-1);
-                    int eh1 = (int) floor((p11-hashpix_start1)/dpix1_resos[elgrid]);
-                    int eh2 = (int) floor((p12-hashpix_start2)/dpix2_resos[elgrid]);
-                    if (eh1<0){eh1=0;} if (eh1>=npix_side){eh1=npix_side-1;}
-                    if (eh2<0){eh2=0;} if (eh2>=npix_side){eh2=npix_side-1;}
-                    int cell = pix2redpix[rshift_matchers[elgrid] + eh2*npix_side + eh1];
-                    for (int n=0;n<nnvals_Wn;n++){
-                        long cbase = (long)n*nshift_cache + rshift_cells[reso_coarse] + cell;
-                        for (int b=rbinmin;b<rbinmax;b++){
-                            double complex nextwn = nextWns[n*nbinsr+b], nextw2n = nextW2ns[n*nbinsr+b];
-                            Wncache[cbase + (long)b*ncells_allresos]   += nextwn;
-                            wWncache[cbase + (long)b*ncells_allresos]  += w1*nextwn;
-                            W2ncache[cbase + (long)b*ncells_allresos]  += nextw2n;
-                            wW2ncache[cbase + (long)b*ncells_allresos] += w1*nextw2n;
-                        }
-                    }
-                }
-                double tt2 = omp_get_wtime(); t_agg[(long)thisthread*nresos+elreso] += tt2-tt1;
-
-                // D.2.4: Same-reso combination for grid resos //
-                if (elreso >= hasdiscrete){
-                  for (int k=samereso_lo[elreso]; k<samereso_hi[elreso]; k++){
-                    int e1=samereso_e1[k], e2=samereso_e2[k], e3=samereso_e3[k];
-                    long sbase = (long)(k-gridtrip_start)*n2n3combis;
-                    int eq12=(e1==e2), eq13=(e1==e3), eq23=(e2==e3); 
-                    // All bins different
-                    if (!eq12 && !eq13 && !eq23){
-                        for (int nindex=0; nindex<len_nindices; nindex++){
-                            int thisn2 = nindices[nindex]/nnvals_Nn - nzero_Nn;
-                            int thisn3 = nindices[nindex]%nnvals_Nn - nzero_Nn;
-                            if (thisn2>nzero_Nn || -thisn2>nzero_Nn || thisn3>nzero_Nn || -thisn3>nzero_Nn){ continue; }
-                            int thisn = thisn2+thisn3;
-                            samereso_N[sbase + (thisn2+nzero_Nn)*nnvals_Nn + (thisn3+nzero_Nn)] +=
-                                w1*nextWns[(nzero_Wn+thisn)*nbinsr+e1]*conj(nextWns[(nzero_Wn+thisn2)*nbinsr+e2])*conj(nextWns[(nzero_Wn+thisn3)*nbinsr+e3]);
-                        }
-                    } 
-                    else {
-                        // At least two bins the same --> apply multiple counting corrs
-                        for (int nindex=0; nindex<len_nindices; nindex++){
-                            int thisn2 = nindices[nindex]/nnvals_Nn - nzero_Nn;
-                            int thisn3 = nindices[nindex]%nnvals_Nn - nzero_Nn;
-                            if (thisn2>nzero_Nn || -thisn2>nzero_Nn || thisn3>nzero_Nn || -thisn3>nzero_Nn){ continue; }
-                            int thisn = thisn2+thisn3;
-                            int wsh_n2=(nzero_Wn+thisn2)*nbinsr, wsh_n3=(nzero_Wn+thisn3)*nbinsr, wsh_n=(nzero_Wn+thisn)*nbinsr;
-                            double complex acc = w1*nextWns[wsh_n+e1]*conj(nextWns[wsh_n2+e2])*conj(nextWns[wsh_n3+e3]);
-                            if (eq12&&eq13){ acc += 2*w1*nextW3ns[e1]; }                                            // Eq. (A.2), triple term
-                            if (eq12){ acc -= w1*nextW2ns[(nzero_Wn+thisn3)*nbinsr+e1]*conj(nextWns[wsh_n3+e3]); }   // Tab. A.1, Th1=Th2
-                            if (eq13){ acc -= w1*nextW2ns[(nzero_Wn+thisn2)*nbinsr+e1]*conj(nextWns[wsh_n2+e2]); }   // Tab. A.1, Th1=Th3
-                            if (eq23){ acc -= w1*nextW2ns[(nzero_Wn-thisn2-thisn3)*nbinsr+e2]*nextWns[wsh_n+e1]; }   // Tab. A.1, Th2=Th3
-                            samereso_N[sbase + (thisn2+nzero_Nn)*nnvals_Nn + (thisn3+nzero_Nn)] += acc;
-                        }
-                    }
-                  }
-                }
-                t_samereso[(long)thisthread*nresos+elreso] += omp_get_wtime()-tt2;
-            }
-        }
-        free(nextWns); free(nextW2ns); free(nextW3ns);
-
-        // D.3: Build the p(Delta^B_k | Delta^B_k')_i  symbol of F.6 //
-
-        // Parent maps: Cell at finer grid reso elgrid2 -> cell at coarser grid reso elgrid3
-        // Here we restrict ourselves to grid resos
-        int **parent = orpheus_calloc((long)nresos_grid*nresos_grid, sizeof(int*));
-        for (int elgrid2=0; elgrid2<nresos_grid; elgrid2++){
-            int r2 = elgrid2 + hasdiscrete;
-            int nps2 = 1 << (nresos_grid-elgrid2-1);
-            int lower2 = pixs_galind_bounds[rshift_pixs_galind_bounds[r2]+elregion];
-            int upper2 = pixs_galind_bounds[rshift_pixs_galind_bounds[r2]+elregion+1];
-            for (int elgrid3=elgrid2+1; elgrid3<nresos_grid; elgrid3++){
-                int nps3 = 1 << (nresos_grid-elgrid3-1);
-                int *cellmap = orpheus_calloc(ngal_in_pix[r2]>0?ngal_in_pix[r2]:1, sizeof(int));
-                for (int ind_inpix=lower2; ind_inpix<upper2; ind_inpix++){
-                    int ind_gal = rshift_pix_gals[r2] + pix_gals[rshift_pix_gals[r2]+ind_inpix];
-                    double p11 = pos1_resos[ind_gal], p12 = pos2_resos[ind_gal];
-                    int fine1 = (int) floor((p11-hashpix_start1)/dpix1_resos[elgrid2]);
-                    int fine2 = (int) floor((p12-hashpix_start2)/dpix2_resos[elgrid2]);
-                    if (fine1<0){fine1=0;} if (fine1>=nps2){fine1=nps2-1;}
-                    if (fine2<0){fine2=0;} if (fine2>=nps2){fine2=nps2-1;}
-                    int cell_fine = pix2redpix[rshift_matchers[elgrid2] + fine2*nps2 + fine1];
-                    int coarse1 = (int) floor((p11-hashpix_start1)/dpix1_resos[elgrid3]);
-                    int coarse2 = (int) floor((p12-hashpix_start2)/dpix2_resos[elgrid3]);
-                    if (coarse1<0){coarse1=0;} if (coarse1>=nps3){coarse1=nps3-1;}
-                    if (coarse2<0){coarse2=0;} if (coarse2>=nps3){coarse2=nps3-1;}
-                    cellmap[cell_fine] = pix2redpix[rshift_matchers[elgrid3] + coarse2*nps3 + coarse1];
-                }
-                parent[elgrid2*nresos_grid+elgrid3] = cellmap;
-            }
-        }
-        int maxcells_region = 1;
-        for (int r=0;r<nresos;r++){ if (ngal_in_pix[r]>maxcells_region){ maxcells_region = ngal_in_pix[r]; } }
-
-        // The discrete-level analogue of `parent` from above: p(Delta^B_k | discrete)_i.
-        int *disc_cell_all = NULL;
-        if (Wdisc!=NULL){
-            disc_cell_all = orpheus_malloc((long)nresos_grid*ndisc*sizeof(int));
-            for (int elgrid=0; elgrid<nresos_grid; elgrid++){
-                int nps = 1 << (nresos_grid-elgrid-1);
-                for (long ind_disc=0; ind_disc<ndisc; ind_disc++){
-                    int a1 = (int) floor((disc_p1[ind_disc]-hashpix_start1)/dpix1_resos[elgrid]);
-                    int a2 = (int) floor((disc_p2[ind_disc]-hashpix_start2)/dpix2_resos[elgrid]);
-                    if (a1<0){a1=0;} if (a1>=nps){a1=nps-1;}
-                    if (a2<0){a2=0;} if (a2>=nps){a2=nps-1;}
-                    disc_cell_all[(long)elgrid*ndisc+ind_disc] = pix2redpix[rshift_matchers[elgrid] + a2*nps + a1];
+                    ci++;
                 }
             }
+            nnnn_fill_slot(lv, bd.own+r, (int)o, weight[g1]);
         }
-        
-        // Some heavily reused helper arrays 
-        double complex *thisN_n = orpheus_calloc(n2n3combis, sizeof(double complex));
-        double complex *thisN_n_rec = orpheus_calloc(n2n3combis_rec, sizeof(double complex));
-        double complex *partial_cell = orpheus_calloc(maxcells_region, sizeof(double complex)); // per-(n2,n3) cell partial
-        double complex *accum = orpheus_calloc((long)nbinsr*n2n3combis, sizeof(double complex)); // [e3][n2,n3] over the n12-stream
-        // Discrete-discrete cross-reso: cache the per-galaxy product wWWdisc[ncombi][ind_disc]
-        // once per (theta1,theta2) and reuse across all coarse resos r3 (W12 reuse), ncombi-major.
-        double complex *wWWdisc = (Wdisc!=NULL) ? orpheus_malloc((long)ndisc*n2n3combis*sizeof(double complex)) : NULL;
+        double t1 = omp_get_wtime();
 
-
-        // D.4: Same resolution combinations for discrete triplet combis
-        if (hasdiscrete==1 && Wdisc!=NULL && discbin_hi>discbin_lo){
-            double t_db0 = omp_get_wtime();
-            int *t3_wanted = orpheus_malloc(ndiscbins*sizeof(int));
-            double complex *batch_N = orpheus_calloc((long)ndiscbins*n2n3combis, sizeof(double complex));
-            double complex *wWW = orpheus_malloc((long)n2n3combis*sizeof(double complex)); // this is xXX^-1 in F.6
-            for (int t1=discbin_lo; t1<discbin_hi; t1++){
-                for (int t2=t1; t2<discbin_hi; t2++){
-                    // Check if in this batch we have any valid combi, if not, skip
-                    int nt3=0;
-                    for (int t3=t2; t3<discbin_hi; t3++){
-                        if (wanted[t1*nbinsr*nbinsr + t2*nbinsr + t3]){ t3_wanted[nt3++]=t3; }
-                    }
-                    if (nt3==0){ continue; }
-                    // Reset relevant cache segment to zero
-                    for (long i=0;i<(long)nt3*n2n3combis;i++){ batch_N[i]=0; }
-                    int e1_disc=t1-discbin_lo, e2_disc=t2-discbin_lo, eq12=(t1==t2);
-                    int has_boundary_t3 = (t3_wanted[0]==t2); // the boundary triplet theta3==theta2 exists
-                    for (long ind_disc=0; ind_disc<ndisc; ind_disc++){
-                        double w1 = disc_w[ind_disc];
-                        if (w1==0){ continue; }
-                        const double complex *Wx  = Wdisc  + (long)ind_disc*nnvals_Wn*ndiscbins;
-                        const double complex *W2x = W2disc + (long)ind_disc*nnvals_Wn*ndiscbins;
-                        const double complex *W3x = W3disc + (long)ind_disc*ndiscbins;
-                        for (int nindex=0; nindex<len_nindices; nindex++){
-                            int thisn2 = nindices[nindex]/nnvals_Nn - nzero_Nn;
-                            int thisn3 = nindices[nindex]%nnvals_Nn - nzero_Nn;
-                            if (thisn2>nzero_Nn || -thisn2>nzero_Nn || thisn3>nzero_Nn || -thisn3>nzero_Nn){ continue; }
-                            int thisn = thisn2+thisn3;
-                            double complex _wWW = w1*Wx[(nzero_Wn+thisn)*ndiscbins+e1_disc]*conj(Wx[(nzero_Wn+thisn2)*ndiscbins+e2_disc]);
-                            if (eq12){ _wWW -= w1*W2x[(nzero_Wn+thisn3)*ndiscbins+e1_disc]; }
-                            wWW[(thisn2+nzero_Nn)*nnvals_Nn+(thisn3+nzero_Nn)] = _wWW;
-                        }
-                        // Now do inner loop (third factor of Eq. 28)
-                        for (int jj=0; jj<nt3; jj++){
-                            int e3_disc = t3_wanted[jj]-discbin_lo;
-                            long bbase = (long)jj*n2n3combis;
-                            for (int nindex=0; nindex<len_nindices; nindex++){
-                                int thisn2 = nindices[nindex]/nnvals_Nn - nzero_Nn;
-                                int thisn3 = nindices[nindex]%nnvals_Nn - nzero_Nn;
-                                if (thisn2>nzero_Nn || -thisn2>nzero_Nn || thisn3>nzero_Nn || -thisn3>nzero_Nn){ continue; }
-                                int ncombi = (thisn2+nzero_Nn)*nnvals_Nn+(thisn3+nzero_Nn);
-                                batch_N[bbase+ncombi] += wWW[ncombi]*conj(Wx[(nzero_Wn+thisn3)*ndiscbins+e3_disc]);
-                            }
-                        }
-                        // Apply multiple counting corrs
-                        // As theta1<=theta2<=theta3 thas has to happen at jj==0 (so bbase==0 below):
-                        if (has_boundary_t3){
-                            for (int nindex=0; nindex<len_nindices; nindex++){
-                                int thisn2 = nindices[nindex]/nnvals_Nn - nzero_Nn;
-                                int thisn3 = nindices[nindex]%nnvals_Nn - nzero_Nn;
-                                if (thisn2>nzero_Nn || -thisn2>nzero_Nn || thisn3>nzero_Nn || -thisn3>nzero_Nn){ continue; }
-                                int thisn = thisn2+thisn3;
-                                int ncombi = (thisn2+nzero_Nn)*nnvals_Nn+(thisn3+nzero_Nn);
-                                double complex corr = - w1*W2x[(nzero_Wn-thisn)*ndiscbins+e2_disc]*Wx[(nzero_Wn+thisn)*ndiscbins+e1_disc];
-                                if (eq12){
-                                    corr -= w1*W2x[(nzero_Wn+thisn2)*ndiscbins+e1_disc]*conj(Wx[(nzero_Wn+thisn2)*ndiscbins+e2_disc]); 
-                                    corr += 2*w1*W3x[e1_disc];
-                                }
-                                batch_N[ncombi] += corr;
-                            }
-                        }
-                    }
-
-                    // Restore all other radii triplet permutations using symmetries
-                    for (int jj=0; jj<nt3; jj++){
-                        int e1=t1, e2=t2, e3=t3_wanted[jj];
-                        for (int i=0;i<n2n3combis;i++){ thisN_n[i] = batch_N[(long)jj*n2n3combis+i]; }
-                        int tr[6][3];
-                        int ntrafos = build_bincombi_trafos(e1, e2, e3, tr);
-                        for (int t=0;t<ntrafos;t++){
-                            int e1t=tr[t][0], e2t=tr[t][1], e3t=tr[t][2];
-                            getMultipolesFromSymm_NNNN(thisN_n, nmax, t, nindices, len_nindices, thisN_n_rec);
-                            for(int kk=0;kk<n2n3combis_rec;kk++){
-                                myN_n[(long)kk*N_nshift + e1t*nbinsr*nbinsr + e2t*nbinsr + e3t] += thisN_n_rec[kk];
-                            }
-                            for(int kk=0;kk<n2n3combis_rec;kk++){ thisN_n_rec[kk]=0; }
-                        }
-                    }
-                }
-            }
-            free(t3_wanted); free(batch_N); free(wWW);
-            t_samereso[(long)thisthread*nresos+0] += omp_get_wtime()-t_db0;
-        }
-
-        // D.5: Same resolution combinations for triplet combis within the same grid reso
-        // As those were allocated earlier we just need to reconstruct the various theta-combi-orderings
-        double t_sbrec0 = omp_get_wtime();
-        for (long k=gridtrip_start;k<n_samereso;k++){
-            int e1=samereso_e1[k], e2=samereso_e2[k], e3=samereso_e3[k];
-            for (int i=0;i<n2n3combis;i++){ thisN_n[i] = samereso_N[(long)(k-gridtrip_start)*n2n3combis+i]; }
-            int tr[6][3];
-            int ntrafos = build_bincombi_trafos(e1, e2, e3, tr);
-            for (int t=0;t<ntrafos;t++){
-                int e1t=tr[t][0], e2t=tr[t][1], e3t=tr[t][2];
-                getMultipolesFromSymm_NNNN(thisN_n, nmax, t, nindices, len_nindices, thisN_n_rec);
-                for(int kk=0;kk<n2n3combis_rec;kk++){
-                    myN_n[(long)kk*N_nshift + e1t*nbinsr*nbinsr + e2t*nbinsr + e3t] += thisN_n_rec[kk];
-                }
-                for(int kk=0;kk<n2n3combis_rec;kk++){ thisN_n_rec[kk]=0; }
-            }
-        }
-        free(samereso_N);
-        t_samereso_rec[thisthread] += omp_get_wtime() - t_sbrec0;
-
-
-        // D.6: Cross-resolution combinations for triplet combis //
-        double t_xb0 = omp_get_wtime();
-        for (int e1=0; e1<nbinsr; e1++){
-            int elreso1 = bin2reso[e1];
-            for (int e2=e1; e2<nbinsr; e2++){
-                int elreso2 = bin2reso[e2];
-                int both_finer_disc = (elreso1==elreso2 && elreso1<hasdiscrete); 
-                int elgrid_finer = both_finer_disc ? 0 : (elreso2 - hasdiscrete); // finer-cell grid reso (r2 grid otherwise)
-                // Both smaller bins in discrete resolution band --> evaluate xX_2 of F.6 at discrete level
-                if (both_finer_disc && wWWdisc){
-                    for (int nindex=0; nindex<len_nindices; nindex++){
-                        int thisn2 = nindices[nindex]/nnvals_Nn - nzero_Nn;
-                        int thisn3 = nindices[nindex]%nnvals_Nn - nzero_Nn;
-                        if (thisn2>nzero_Nn || -thisn2>nzero_Nn || thisn3>nzero_Nn || -thisn3>nzero_Nn){ continue; }
-                        int thisn=thisn2+thisn3, mi=nzero_Wn+thisn, n2i=nzero_Wn+thisn2, n3i=nzero_Wn+thisn3;
-                        double complex *p = wWWdisc + (long)((thisn2+nzero_Nn)*nnvals_Nn+(thisn3+nzero_Nn))*ndisc;
-                        if (e1==e2){
-                            for (long ind_disc=0; ind_disc<ndisc; ind_disc++){
-                                p[ind_disc] = disc_w[ind_disc] * (Wdisc[((long)ind_disc*nnvals_Wn + mi)*ndiscbins + (e1-discbin_lo)]
-                                                       * conj(Wdisc[((long)ind_disc*nnvals_Wn + n2i)*ndiscbins + (e2-discbin_lo)])
-                                                     - W2disc[((long)ind_disc*nnvals_Wn + n3i)*ndiscbins + (e1-discbin_lo)]);
-                            }
-                        } else {
-                            for (long ind_disc=0; ind_disc<ndisc; ind_disc++){
-                                p[ind_disc] = disc_w[ind_disc] * Wdisc[((long)ind_disc*nnvals_Wn + mi)*ndiscbins + (e1-discbin_lo)]
-                                                  * conj(Wdisc[((long)ind_disc*nnvals_Wn + n2i)*ndiscbins + (e2-discbin_lo)]);
-                            }
-                        }
-                    }
-                }
-                for (int elreso3=mymax(elreso2,hasdiscrete); elreso3<nresos; elreso3++){
-                    int rb3lo = reso_rindedges[elreso3], rb3hi = reso_rindedges[elreso3+1];
-                    if (rb3hi<=rb3lo){ continue; }
-                    if (1 + (elreso2!=elreso1) + ((elreso3!=elreso2)&&(elreso3!=elreso1)) < 2){ continue; } // Skip triplets that all live in the same reso band
-                    int elgrid3 = elreso3 - hasdiscrete;
-                    int ncells_reso3 = ngal_in_pix[elreso3];
-                    long rshift_cells3 = rshift_cells[elreso3];
-                    int *parentmap = (elgrid_finer==elgrid3) ? NULL : parent[elgrid_finer*nresos_grid + elgrid3]; // finer cell -> r3 cell (grid path)
-                    for (int e3=rb3lo; e3<rb3hi; e3++){
-                        for (int k=0;k<n2n3combis;k++){ accum[(long)e3*n2n3combis+k]=0; }
-                    }
-                    for (int nindex=0; nindex<len_nindices; nindex++){
-                        int thisn2 = nindices[nindex]/nnvals_Nn - nzero_Nn;
-                        int thisn3 = nindices[nindex]%nnvals_Nn - nzero_Nn;
-                        if (thisn2>nzero_Nn || -thisn2>nzero_Nn || thisn3>nzero_Nn || -thisn3>nzero_Nn){ continue; }
-                        int thisn = thisn2+thisn3;
-                        int ncombi = (thisn2+nzero_Nn)*nnvals_Nn + (thisn3+nzero_Nn);
-                        for (int cell=0;cell<ncells_reso3;cell++){ partial_cell[cell]=0; }
-                        // Fine resos are at grid resolution
-                        // -> second/third line of Eq. (F.6): (x X_2) built at Delta^B_{Theta2}, then summed over p(Delta^B_{Theta3} | Delta^B_{Theta2}).
-                        if (!both_finer_disc){
-                            int ncells_reso2 = ngal_in_pix[elreso2];
-                            long off1 = (long)(nzero_Wn+thisn)*nshift_cache  + (long)e1*ncells_allresos + rshift_cells[elreso2];
-                            long off2 = (long)(nzero_Wn+thisn2)*nshift_cache + (long)e2*ncells_allresos + rshift_cells[elreso2];
-                            for (int cell2=0;cell2<ncells_reso2;cell2++){
-                                int cell3 = parentmap ? parentmap[cell2] : cell2;
-                                partial_cell[cell3] += conj(Wncache[off2+cell2]) * wWncache[off1+cell2];
-                            }
-                            // Include double-counting corr
-                            if (e1==e2){
-                                long offw2 = (long)(nzero_Wn+thisn3)*nshift_cache + (long)e1*ncells_allresos + rshift_cells[elreso2];
-                                for (int cell2=0;cell2<ncells_reso2;cell2++){
-                                    int cell3 = parentmap ? parentmap[cell2] : cell2;
-                                    partial_cell[cell3] -= wW2ncache[offw2+cell2];
-                                }
-                            }
-                        } 
-                        // Finer resos are discrete --> read the cached wWW, aggregate into r3-cells
-                        else {
-                            const int *disc_cell_reso3 = disc_cell_all + (long)elgrid3*ndisc;
-                            const double complex *p = wWWdisc + (long)ncombi*ndisc;
-                            for (long ind_disc=0; ind_disc<ndisc; ind_disc++){ partial_cell[disc_cell_reso3[ind_disc]] += p[ind_disc]; }
-                        }
-                        // Final line of Eq. (F.6): fold in the coarsest reso and sum over its cells.
-                        for (int e3=rb3lo; e3<rb3hi; e3++){
-                            if (e3<e2){ continue; }
-                            if (!wanted[e1*nbinsr*nbinsr + e2*nbinsr + e3]){ continue; }
-                            int elreso3b = bin2reso[e3];
-                            if (1 + (elreso2!=elreso1) + ((elreso3b!=elreso2)&&(elreso3b!=elreso1)) < 2){ continue; }
-                            // Nominal allocation
-                            long off3 = (long)(nzero_Wn+thisn3)*nshift_cache + (long)e3*ncells_allresos + rshift_cells3;
-                            double complex acc = 0;
-                            for (int cell3=0;cell3<ncells_reso3;cell3++){ acc += conj(Wncache[off3+cell3]) * partial_cell[cell3]; }
-                            // Fold in double-counting corr from W2 cache
-                            if (e3==e2){
-                                int ncells_reso2 = ngal_in_pix[elreso2];
-                                long o1 = (long)(nzero_Wn+thisn)*nshift_cache + (long)e1*ncells_allresos + rshift_cells[elreso2];
-                                long o2 = (long)(nzero_Wn-thisn)*nshift_cache + (long)e2*ncells_allresos + rshift_cells[elreso2];
-                                double complex cc = 0;
-                                for (int cell=0;cell<ncells_reso2;cell++){ cc += wWncache[o1+cell] * W2ncache[o2+cell]; }
-                                acc -= cc;
-                            }
-                            accum[(long)e3*n2n3combis + ncombi] += acc;
-                        }
-                    }
-
-                    // Restore all other radii triplet permutations using symmetries
-                    for (int e3=rb3lo; e3<rb3hi; e3++){
-                        if (e3<e2){ continue; }
-                        if (!wanted[e1*nbinsr*nbinsr + e2*nbinsr + e3]){ continue; }
-                        int elreso3b = bin2reso[e3];
-                        if (1 + (elreso2!=elreso1) + ((elreso3b!=elreso2)&&(elreso3b!=elreso1)) < 2){ continue; }
-                        for (int k=0;k<n2n3combis;k++){ thisN_n[k] = accum[(long)e3*n2n3combis+k]; }
-                        int tr[6][3];
-                        int ntrafos = build_bincombi_trafos(e1, e2, e3, tr);
-                        for (int t=0;t<ntrafos;t++){
-                            int e1t=tr[t][0], e2t=tr[t][1], e3t=tr[t][2];
-                            getMultipolesFromSymm_NNNN(thisN_n, nmax, t, nindices, len_nindices, thisN_n_rec);
-                            for(int k=0;k<n2n3combis_rec;k++){
-                                myN_n[(long)k*N_nshift + e1t*nbinsr*nbinsr + e2t*nbinsr + e3t] += thisN_n_rec[k];
-                            }
-                            for(int k=0;k<n2n3combis_rec;k++){ thisN_n_rec[k]=0; }
-                        }
-                    }
-                }
-            }
-        }
-        t_crossreso[thisthread] += omp_get_wtime() - t_xb0;
-
-
-        // Free all region-local quantities
-        for (int elgrid2=0; elgrid2<nresos_grid; elgrid2++){
-            for (int elgrid3=elgrid2+1; elgrid3<nresos_grid; elgrid3++){ free(parent[elgrid2*nresos_grid+elgrid3]); }
-        }
-        free(parent); free(partial_cell); free(accum); if (wWWdisc){ free(wWWdisc); }
-        if (Wdisc){ free(Wdisc); free(W2disc); free(W3disc); free(disc_p1); free(disc_p2); free(disc_w); free(disc_cell_all); }
-        free(thisN_n); free(thisN_n_rec);
-        free(Wncache); free(wWncache); free(W2ncache); free(wW2ncache); free(pix2redpix);
-        free(ngal_in_pix); free(rshift_matchers); free(rshift_cells);
+        // B2: Multipoles of all triples from the batch //
+        nnnn_bands_triples(&bd, &plan, pair_order_dt, sc, acc, nthreads);
+        t_mom += t1-t0; t_tri += omp_get_wtime()-t1;
+        print_progress(er, nregions, verbose);
     }
+    if (verbose>1){ printf("\nalloc_nnnn_doubletree: moments %.1fs, triples %.1fs (wall)", t_mom, t_tri); }
+    if (nmissing > 0){ fprintf(stderr, "alloc_nnnn_doubletree: %ld apices without a parent cell were skipped\n", nmissing); }
+
+    // C: All orderings of every triple //
+    nnnn_reconstruct_all(acc, &plan, thetacombis_batches, ncombis, nbinsr, nmax,
+                         nindices, len_nindices, N_n, nthreads);
+
+    // Get bin centers
+    for (int t=1;t<nthreads;t++){
+        for (int b=0;b<nbinsr;b++){
+            tmp_totcounts[b] += tmp_totcounts[t*nbinsr+b];
+            tmp_totnorms[b]  += tmp_totnorms[t*nbinsr+b];
+        }
+    }
+    for (int b=0;b<nbinsr;b++){ if (tmp_totnorms[b]!=0){ bin_centers[b] = tmp_totcounts[b]/tmp_totnorms[b]; } }
+
+    // Free all allocated quantities
+    for (int t=0;t<nthreads;t++){ nnnn_leaves_free(leaves+t); free(ranges[t]); }
+    for (int r=0;r<nresos;r++){
+        if (bd.own[r].cap > 0){ nnnn_batch_free(bd.own+r); }
+        free(bd.aggre[r]); free(bd.aggim[r]); free(slot_of_cell[r]);
+    }
+    free(bd.own); free(bd.aggre); free(bd.aggim); free(bd.aggcap);
+    nnnn_regions_free(&rg); nnnn_scratch_free(sc, nthreads, nresos); nnnn_plan_free(&plan);
+    free(pair_order_dt); free(acc); free(leaves); free(query_cap); free(ranges);
+    free(slot_of_cell); free(slot_cap);
+    free(rind); free(bin2band); free(level); free(slice_clo); free(slice_chi);
+    free(tmp_totcounts); free(tmp_totnorms);
     if (verbose>0){ printf("\n"); }
+}
 
-    // E: Finialise per-phase timers.
-    if (verbose){
-        double t_cb_wall = omp_get_wtime() - t_cb_wall0;
-        double t_cb_cpu  = (double)(clock() - t_cb_cpu0)/CLOCKS_PER_SEC;
-        double cpu_sbrec=0, cpu_xreso=0;
-        for (int t=0;t<nthreads_cross;t++){ cpu_sbrec += t_samereso_rec[t]; cpu_xreso += t_crossreso[t]; }
-        printf("alloc_nnnn_doubletree TIMERS [region-loop wall %.1fs | cpu %.1fs | cores %.1f] CPU-s breakdown:\n",
-               t_cb_wall, t_cb_cpu, t_cb_cpu/(t_cb_wall>0?t_cb_wall:1));
-        double tot_scan=0, tot_agg=0, tot_samereso=0;
-        for (int r=0;r<nresos;r++){
-            double s=0, a=0, c=0;
-            for (int t=0;t<nthreads_cross;t++){ s+=t_scan[(long)t*nresos+r]; a+=t_agg[(long)t*nresos+r]; c+=t_samereso[(long)t*nresos+r]; }
-            tot_scan+=s; tot_agg+=a; tot_samereso+=c;
-            printf("  reso %d [bins %d-%d]: aperture-scan %.1f | cell-agg %.1f | samereso-combine %.1f\n",
-                   r, reso_rindedges[r], reso_rindedges[r+1], s, a, c);
-        }
-        printf("  TOTALS: scan %.1f | cell-agg %.1f | samereso-combine %.1f | samereso-recon %.1f | cross-reso %.1f\n",
-               tot_scan, tot_agg, tot_samereso, cpu_sbrec, cpu_xreso);
+// Public entry point: Choose function based on passed metric.
+void alloc_nnnn_doubletree(const MultiresoCatalog *cat, const NavHash *nav,
+    const TreeResoParams *tree, const BinningParams *bin, const FourthParams *fourth,
+    double memory_bound, int nthreads, int verbose, NPCFOutput *out){
+    switch (cat->metric) {
+        case METRIC_SPHERICAL:
+            alloc_nnnn_doubletree_spherical(cat, nav, tree, bin, fourth, memory_bound, nthreads, verbose, out);
+            break;
+        case METRIC_FLAT:
+        default:
+            alloc_nnnn_doubletree_flat(cat, nav, tree, bin, fourth, memory_bound, nthreads, verbose, out);
+            break;
     }
-    free(t_scan); free(t_agg); free(t_samereso); free(t_samereso_rec); free(t_crossreso);
-
-    // F: Reduce the thread-private contributions into the global N_n
-    for (int t=0;t<nthreads_cross;t++){
-        double complex *src = tmpN_n + (long)t*Nn_size;
-        for (long i=0;i<Nn_size;i++){ N_n[i] += src[i]; }
-    }
-    free(tmpN_n); free(bin2reso); free(wanted);
-
-    // Get bin centers from the accumulated counts
-    double *totcounts = orpheus_calloc(nbinsr, sizeof(double));
-    double *totnorms  = orpheus_calloc(nbinsr, sizeof(double));
-    // Bail out rather than dereference a failed allocation
-    if (orpheus_get_error()){
-        // The scratch freed at the end of stages E and F above is deliberately not repeated
-        free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
-        free(reso_rindedges); free(tmp_totcounts); free(tmp_totnorms);
-        free(samereso_e1); free(samereso_e2); free(samereso_e3); free(samereso_lo);
-        free(samereso_hi); free(totcounts); free(totnorms);
-        return;
-    }
-    for (int t=0;t<nthreads;t++){
-        for (int b=0;b<nbinsr;b++){ totcounts[b]+=tmp_totcounts[t*nbinsr+b]; totnorms[b]+=tmp_totnorms[t*nbinsr+b]; }
-    }
-    for (int b=0;b<nbinsr;b++){ if (totnorms[b]!=0){ bin_centers[b] = totcounts[b]/totnorms[b]; } }
-
-    // Free all remaining allocated quantities
-    free(rshift_index_matcher_hash); free(rshift_pixs_galind_bounds); free(rshift_pix_gals);
-    free(reso_rindedges); free(tmp_totcounts); free(tmp_totnorms); free(totcounts); free(totnorms);
-    free(samereso_e1); free(samereso_e2); free(samereso_e3); free(samereso_lo); free(samereso_hi);
 }

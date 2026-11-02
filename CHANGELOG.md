@@ -102,6 +102,18 @@ parallelised C kernels.
   the per-thread accumulators and the moment cache that every thread streamed through;
   `memory_bound` now caps the moments of a batch. The curved-sky bearing no longer needs
   trigonometric calls. Results agree with the previous kernels to round-off.
+* **The NNNN `DoubleTree` runs on the curved sky** (`process_spherical=True`), and the flat and
+  curved sky share one implementation (Porth+25, App. F). All threads work on a batch of
+  regions together: the moments of the apex objects of every band (galaxies of the discrete
+  band, cells of the grid bands) are filled as for the `Tree`, the weighted moments of the
+  finer bands are summed into the cells along parent links, and every radial pair goes through
+  the `Tree`'s accumulation, its rows summed into the cells of the band of a coarser third
+  leg. This drops the per-thread copy of the full multipole array, which capped the threads
+  through `memory_bound`, and the reconstruction of all triple orderings in every region. On
+  the curved sky the regions are the healpix cells of the coarsest navigation level and the
+  parents follow from the nested pixel indices. The flat results agree with the previous
+  kernel to round-off; on the curved sky the `DoubleTree` departs from the `Tree` by less than
+  the flat one does from its `Tree`.
 
 #### Fixed
 

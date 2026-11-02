@@ -48,11 +48,6 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
         self.nbinsz = 1
         self.nzcombis = 1
         self.process_spherical = bool(process_spherical)
-        if self.process_spherical and self.method == "DoubleTree":
-            raise NotImplementedError(
-                "Curved-sky (process_spherical=True) is implemented for method='Tree' "
-                "only; the DoubleTree spherical variant is validated against the Tree "
-                "oracle and not yet available.")
 
     def saveinst(self, path_save, fname, extr_pars=None):
         extras = dict(nbinsz=self.nbinsz, nzcombis=self.nzcombis,
@@ -234,25 +229,33 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
                                        nside_hash=nside_hash, nthreads=self.nthreads,
                                        verbose=self._verbose_python)
             assert sph['geometry'] == 'spherical'
-            catc_s, keep_cc = build_spherical_central_catalog_struct(
-                sph['cen_isinner'], sph['cen_w'], sph['cen_vx'], sph['cen_vy'], sph['cen_vz'],
-                sph['cen_ra'], sph['cen_sindec'], sph['cen_cosdec'], self.nbinsz)
             catr_s, keep_cr = build_catalog_struct(sph, self.nbinsz)
             catr_s.nresos = int(self.tree_nresos)
             nav_s, keep_n = build_navhash_struct(sph)
             tree_s, keep_t = build_tree_params_struct(self, sph)
             bin_s = build_binning_struct(self, scale=_deg2rad, nmax=int(_nmax), dccorr=int(self.multicountcorr))
-            fourth_s, keep_f = build_fourth_params(count_floor=self.count_floor, 
+            fourth_s, keep_f = build_fourth_params(count_floor=self.count_floor,
                 nindices=_inds, len_nindices=len(_inds),
                 thetacombis_batches=thetacombis_batches, nthetacombis_batches=nthetacombis_batches,
                 cumthetacombis_batches=cumnthetacombis_batches, nthetbatches=nbatches)
             out_s = build_nnnn_output(bin_centers, N_n)
-            _alive = keep_cc + keep_cr + keep_n + keep_t + keep_f   # noqa: F841
-            self.clib.alloc_nnnn_tree_spherical(
-                ct.byref(catc_s), ct.byref(catr_s), ct.byref(nav_s), ct.byref(tree_s),
-                ct.byref(bin_s), ct.byref(fourth_s),
-                np.float64(memory_bound), np.int32(self.nthreads),
-                np.int32(self._verbose_c+self._verbose_debug), ct.byref(out_s))
+            _alive = keep_cr + keep_n + keep_t + keep_f   # noqa: F841
+            if self.method == "DoubleTree":
+                tree_s.nresos_grid = int(self.tree_nresos - (self.tree_resos[0]==0.))
+                self.clib.alloc_nnnn_doubletree(
+                    ct.byref(catr_s), ct.byref(nav_s), ct.byref(tree_s),
+                    ct.byref(bin_s), ct.byref(fourth_s),
+                    np.float64(memory_bound), np.int32(self.nthreads),
+                    np.int32(self._verbose_c+self._verbose_debug), ct.byref(out_s))
+            else:
+                catc_s, keep_cc = build_spherical_central_catalog_struct(
+                    sph['cen_isinner'], sph['cen_w'], sph['cen_vx'], sph['cen_vy'], sph['cen_vz'],
+                    sph['cen_ra'], sph['cen_sindec'], sph['cen_cosdec'], self.nbinsz)
+                self.clib.alloc_nnnn_tree_spherical(
+                    ct.byref(catc_s), ct.byref(catr_s), ct.byref(nav_s), ct.byref(tree_s),
+                    ct.byref(bin_s), ct.byref(fourth_s),
+                    np.float64(memory_bound), np.int32(self.nthreads),
+                    np.int32(self._verbose_c+self._verbose_debug), ct.byref(out_s))
             check_clib_error(self.clib)
         elif self.method=="Discrete" and not lowmem:  # pragma: no cover
             raise NotImplementedError
