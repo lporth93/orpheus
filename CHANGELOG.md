@@ -96,6 +96,11 @@ parallelised C kernels.
   `AssertionError`. Like `spins`, they are now broadcast from any integer or sequence.
 * **A leaf band given out of order was reported but kept.** `maxresoind_leaf <
   minresoind_leaf` now sets `maxresoind_leaf` to `minresoind_leaf`, as the message says.
+* **The real-space conversion of the fourth-order multipoles overflowed its 32-bit
+  offsets.** `NNNNCorrelation_NoTomo.multipoles2npcf` wrote outside its output and
+  segfaulted once `nbinsr**3*nbinsphi**2` exceeded `2**31`, e.g. for 52 radial and 127
+  angular bins. The GGGG and GNNN conversions used the same offsets, the GGGG one scaled by
+  its eight components. All three now index with 64-bit offsets.
 
 ### 0.6.0 — 2026-09-08
 
