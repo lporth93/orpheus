@@ -901,16 +901,23 @@ def test_gnnn_single_theta_transforms(gnnn_multipoles):
 # FOURTH-ORDER GUARD CLAUSES #
 ##############################
 
-# Make sure NNNN complains if it gets wrong catalog or wrong method
-def test_nnnn_curved_sky_needs_the_tree_kernel(scalar_catalog):
+# Make sure NNNN complains if it gets a flat catalog for the curved sky
+def test_nnnn_curved_sky_needs_a_spherical_catalog(scalar_catalog):
     with pytest.raises(ValueError, match="spherical catalog"):
         NNNNCorrelation_NoTomo(**SEPS, **TREE, **ANGULAR,
                                process_spherical=True).process(
                                    scalar_catalog, statistics='4pcf_multipole')
-    with pytest.raises(NotImplementedError, match="DoubleTree"):
-        NNNNCorrelation_NoTomo(**SEPS, **ANGULAR, nthreads=NTHREADS, method="DoubleTree",
-                               process_spherical=True, sep_units='arcmin').process(
-                                   _sky_catalog('scalar', 41), statistics='4pcf_multipole')
+
+# With a single, discrete band the curved-sky DoubleTree and Tree are both exact
+def test_nnnn_curved_sky_doubletree_matches_the_tree_when_discrete():
+    res = {}
+    for method in ("Tree", "DoubleTree"):
+        nnnn = NNNNCorrelation_NoTomo(**SEPS, **ANGULAR, nthreads=NTHREADS, method=method,
+                                      process_spherical=True, sep_units='arcmin', tree_resos=[0.])
+        nnnn.process(_sky_catalog('scalar', 41), statistics='4pcf_multipole')
+        res[method] = np.asarray(nnnn.npcf_multipoles)
+    assert np.any(res["Tree"] != 0.)
+    assert np.allclose(res["DoubleTree"], res["Tree"], rtol=1e-11, atol=1e-11*np.abs(res["Tree"]).max())
 
 # Make sure all admit that there is not edge correction
 def test_fourth_order_has_no_edge_correction(shear_catalog, scalar_catalog):
