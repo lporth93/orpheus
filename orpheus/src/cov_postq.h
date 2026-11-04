@@ -8,15 +8,15 @@
 //////////////////////////////////////
 
 void interp4d(const double *q_slice, const double *r_centers, const double *phi_centers,
-             int nr, int nphi,
-             double r_min, double r_max, double logr0, double inv_dlogr,
-             double phi0, double inv_dphi,
-             const double *t2f, const double *t3f, const double *a12f, const double *a13f,
-             int n, double *out);
+              int nr, int nphi,
+              double r_min, double r_max, double logr0, double inv_dlogr,
+              double phi0, double inv_dphi,
+              const double *t2f, const double *t3f, const double *a12f, const double *a13f,
+              int n, double *out);
 
-////////////////////////////////
-// Quadruplet (SVA) integral   //
-////////////////////////////////
+///////////////////////////////
+// Quadruplet (SVA) integral //
+///////////////////////////////
 
 void quadruplet_sva_integrate(const double *phi_grid, const double *phi_w,
                               int n_phi, int n_r,

@@ -62,7 +62,7 @@ def survey(tmp_path_factory):
         q_phi_centers=qphic, q_phi_edges=qphie,
         method_pairs='discrete', method_triplets='discrete', method_quadruplets='discrete',
         spline_xip=_xi, spline_xim=_xi, sigma_eps=SIGMA_EPS, nbar=NGAL/area, area=area,
-        catalog=catalog, n_workers=NTHREADS)
+        catalog=catalog, nthreads=NTHREADS)
     return ra, dec, area, cov
 
 
@@ -180,7 +180,7 @@ def test_tomographic_shape_noise_double_counts_cross_bin_pairs():
         theta_centers=tc, theta_edges=THETA_EDGES,
         spline_xip=[(0, 0, _xi), (0, 1, _xi), (1, 1, _xi)],
         spline_xim=[(0, 0, _xi), (0, 1, _xi), (1, 1, _xi)],
-        sigma_eps=sigma, nbar=nbar, area=area, n_workers=NTHREADS)
+        sigma_eps=sigma, nbar=nbar, area=area, nthreads=NTHREADS)
     cov.getD_tomo()
     ring = 2.*np.pi*area*tc*np.diff(THETA_EDGES)
     for a, b in cov.bp_list:
@@ -201,7 +201,7 @@ def test_idealised_multiplets_live_at_the_reference_density(method_quadruplets):
         spl_suppression_ww=lambda t: np.ones_like(np.asarray(t, dtype=float)),
         spline_xip=[(0, 0, _xi), (0, 1, _xi), (1, 1, _xi)],
         spline_xim=[(0, 0, _xi), (0, 1, _xi), (1, 1, _xi)],
-        sigma_eps=SIGMA_EPS, nbar=nbar, nbar_ref=nbar_ref, area=area, n_workers=NTHREADS)
+        sigma_eps=SIGMA_EPS, nbar=nbar, nbar_ref=nbar_ref, area=area, nthreads=NTHREADS)
     assert np.allclose(cov.pairs, 2.*np.pi*area*nbar_ref**2*tc*np.diff(THETA_EDGES),
                        rtol=RTOL_EXACT, atol=0.)
     assert np.isclose(cov._q_const, nbar_ref**4, rtol=RTOL_EXACT, atol=0.)
@@ -223,7 +223,7 @@ def test_idealised_mixed_term_includes_short_triplet_sides(qterm):
     phic, phie = _phibins(64)
     kw = dict(theta_centers=_centers(THETA_EDGES), theta_edges=THETA_EDGES,
               phi_centers=phic, phi_edges=phie, sigma_eps=SIGMA_EPS,
-              nbar=10./60.**2, area=100.*60.**2, n_workers=NTHREADS)
+              nbar=10./60.**2, area=100.*60.**2, nthreads=NTHREADS)
     plain = getattr(GGCovariance(spline_xip=_xi, spline_xim=_xi, **kw), qterm)()
     knots = getattr(GGCovariance(spline_xip=_xi_with_knots(), spline_xim=_xi_with_knots(),
                                  **kw), qterm)()
@@ -234,7 +234,7 @@ def test_continuous_mixed_term_includes_short_triplet_sides():
     kw = dict(theta_centers=_centers(THETA_EDGES), theta_edges=THETA_EDGES,
               method_pairs='continuous', method_triplets='continuous',
               method_quadruplets='continuous', sigma_eps=SIGMA_EPS,
-              nbar=10./60.**2, area=100.*60.**2, n_workers=NTHREADS)
+              nbar=10./60.**2, area=100.*60.**2, nthreads=NTHREADS)
     plain = GGCovarianceNoTomo(spline_xip=_xi, spline_xim=_xi, **kw)
     knots = GGCovarianceNoTomo(spline_xip=_xi_with_knots(), spline_xim=_xi_with_knots(), **kw)
     qplain = plain.getqpp_continuous(nr_target=256, nphi_target=256)
@@ -256,7 +256,7 @@ def test_covariance_terms_sum_to_the_tomographic_blocks():
         sigma_eps=np.array([.3, .4]), nbar=np.array([2., 5.])/60.**2, area=100.*60.**2,
         phi_grid=np.geomspace(.1, 100., 16),
         varphi1_grid=np.linspace(0., 2.*np.pi, 16, endpoint=False),
-        varphi2_grid=np.linspace(0., 2.*np.pi, 16, endpoint=False), n_workers=NTHREADS)
+        varphi2_grid=np.linspace(0., 2.*np.pi, 16, endpoint=False), nthreads=NTHREADS)
     terms = cov.get_cov_terms_tomo()
     for block in ('pp', 'mm', 'pm'):
         total = terms[block]['D']+terms[block]['mix']+terms[block]['sva']
