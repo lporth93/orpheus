@@ -44,7 +44,7 @@ the number of objects.
 `pip install orpheus-npcf` should get you the latest pre-compiled version.
 
 The computation of any higher-order correlation function follows the same pattern; below we 
-give an example to compute third-order shear statistics. For a fully worked example see the 
+give an example of how to compute third-order shear statistics. For a fully worked example see the 
 introductory [tutorial notebook](https://orpheus.readthedocs.io/notebooks/GGG_tutorial_basic.html)
 
 ```python
@@ -83,7 +83,7 @@ In addition, <span style="font-variant: small-caps;">orpheus</span> also impleme
 for aperture statistics of arbitrary order for pure scalar and polar correlators, as well as 
 curved-sky aperture mass maps from a shape catalog.
 
-Almost all correlators are featured in the [tutorial notebooks](https://orpheus.readthedocs.io/tutorial.html). In there you can also find worked examples on how to measure the statistics on realistic catalogs on the 
+Almost all correlators are featured in the [tutorial notebooks](https://orpheus.readthedocs.io/tutorial.html). In there you can also find worked examples on how to measure each of the statistics on realistic catalogs on the 
 celestial sphere, how to handle tomography and how to customize the level of accuracy of the estimators.
 
 ## Performance
@@ -116,7 +116,7 @@ against reference results based on a field with analytically tractable correlati
 aperture statistics. These tests are used to verify the implementations and to quantify the accuracy 
 of the available approximation schemes. 
 
-Below we show outcome of the test suite; for a full reference 
+Below we show the outcome of the test suite; for a full reference 
 including the derivation of the expressions and for a motivation of the test setup we refer to the 
 following [notes](docs/source/notes/analytic_shear_field.pdf).
 
@@ -139,7 +139,7 @@ are needed: the small HEALPix subset used by the curved-sky estimators is
 shipped with <span style="font-variant: small-caps;">orpheus</span>, in `orpheus/src/healpix/`.
 
 In case you want to compile the package from source you can do this by first cloning 
-the github repository 
+the GitHub repository 
 ```shell
 git clone git@github.com:lporth93/orpheus.git
 ```
