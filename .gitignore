@@ -6,10 +6,8 @@ data/
 Tutorials_private/
 scripts/
 
-# Covariance code, kept local and out of the distribution
-orpheus/covariance.py
+# Old covariance code, kept local and out of the distribution
 orpheus/covariance_old.py
-orpheus/src/cov_postq.c
 
 # Profiling artifacts
 *.stats
