@@ -35,6 +35,13 @@ def _theta_dtheta(edges):
     edges = np.asarray(edges, dtype=float)
     return .5 * np.diff(edges**2)
 
+def _bin_average_blocks(blocks, weights):
+    """Average blocks (..., n*ns, n*ns) over the ns sub-bins of each of the n bins, weights (n, ns)."""
+    n, ns = weights.shape
+    b = blocks.reshape(blocks.shape[:-2] + (n, ns, n, ns))
+    M = weights.sum(1)
+    return np.einsum('...aibj,ai,bj->...ab', b, weights, weights) / np.outer(M, M)
+
 def _periodic_weights(x, period=2. * np.pi):
     """Uniform weights for periodic function sampled on a full-period grid."""
     x = np.asarray(x, dtype=float)
@@ -898,8 +905,8 @@ class GGCovarianceNoTomo:
         return self._get_qterm(2, pair_mask)
 
     ## C-accelerated quadruplet integral ##
-    def _rterms_continuous_c(self):
-        """All five continuum-limit r-terms in one C call.
+    def _rterms_continuous_c(self, dlnt_target=.05):
+        """All five continuum-limit r-terms in one C call, averaged over sub-bins of each bin.
 
         The non-tomographic case has a single Wick pairing, without the factor 0.5 of
         :meth:`get_continuous_tomo_c`. The two side integrals of r_-0 and r_-1 coincide, so their
@@ -919,9 +926,11 @@ class GGCovarianceNoTomo:
         v = np.ascontiguousarray(self.varphi1_grid, dtype=np.float64)
         v_half = np.ascontiguousarray(v[v <= np.pi], dtype=np.float64)
         n = self.n_r
-        results = np.zeros(5 * n * n, dtype=np.float64)
+        nodes, weights = self._rterm_nodes(dlnt_target)
+        n_f = nodes.size
+        results = np.zeros(5 * n_f * n_f, dtype=np.float64)
         idx0 = np.zeros(1, dtype=np.int32)
-        fn(n, np.ascontiguousarray(self.theta_centers, dtype=np.float64),
+        fn(n_f, np.ascontiguousarray(nodes.ravel(), dtype=np.float64),
            np.ascontiguousarray(self.phi_grid, dtype=np.float64),
            np.ascontiguousarray(_trapz_weights(self.phi_grid), dtype=np.float64),
            len(self.phi_grid),
@@ -932,9 +941,21 @@ class GGCovarianceNoTomo:
            xi_x, xi_n, xi_logx0, xi_inv_dlogx, xi_y_tables, 2,
            1, idx0, idx0, idx0 + 1, idx0 + 1, idx0,
            5, results, int(self.nthreads), 0)
-        out = results.reshape(5, n, n)
+        out = _bin_average_blocks(results.reshape(5, n_f, n_f), weights)
         self._rterms_cont_cache = (self.phi_grid, self.varphi1_grid, n, out)
         return out
+
+    def _rterm_nodes(self, dlnt_target):
+        """Nodes (n_r, ns) and theta dtheta weights of equal log sub-bins no wider than dlnt_target.
+
+        With a single sub-bin per bin the node is the bin centre.
+        """
+        dlnt = np.diff(np.log(self.theta_edges))
+        ns = max(1, int(np.ceil(np.max(dlnt) / dlnt_target - 1e-9)))
+        if ns == 1:
+            return self.theta_centers[:, None], _theta_dtheta(self.theta_edges)[:, None]
+        sub = np.exp(np.log(self.theta_edges[:-1])[:, None] + np.outer(dlnt, np.arange(ns + 1) / ns))
+        return .5 * (sub[:, 1:] + sub[:, :-1]), .5 * (sub[:, 1:]**2 - sub[:, :-1]**2)
 
     def _xi_query_lo(self):
         """Smallest separation at which the quadruplet kernels evaluate xi_pm."""
@@ -942,7 +963,7 @@ class GGCovarianceNoTomo:
 
     def _xi_query_hi(self):
         """Largest separation at which the quadruplet kernels evaluate xi_pm."""
-        return self.phi_grid[-1] + self.theta_centers[-1]
+        return self.phi_grid[-1] + self.theta_edges[-1]
 
     @staticmethod
     def _xi_tables_from_splines(splines, lo=None, hi=None):
@@ -3340,10 +3361,11 @@ class GGCovariance(GGCovarianceNoTomo):
     # Continuous tomo equations (C/OpenMP) #
     ########################################
 
-    def get_continuous_tomo_c(self, verbose=False, nr_target=1024, nphi_target=1024):
+    def get_continuous_tomo_c(self, verbose=False, nr_target=1024, nphi_target=1024, dlnt_target=.05):
         """Compute D, the mixed and the r-terms of all tomographic blocks in the continuum limit.
 
-        Assembles and returns ``cov_xipm_tomo``.
+        The mixed terms are averaged over nr_target fine bins and the r-terms over sub-bins no wider
+        than dlnt_target in ln theta. Assembles and returns ``cov_xipm_tomo``.
         """
         lib = self._clib
 
@@ -3455,7 +3477,9 @@ class GGCovariance(GGCovarianceNoTomo):
         v_w_arr = np.ascontiguousarray(_periodic_weights(v), dtype=np.float64)
         v_half_c = np.ascontiguousarray(v_half, dtype=np.float64)
         v_half_w = np.ascontiguousarray(_trapz_weights(v_half), dtype=np.float64)
-        theta_c = np.ascontiguousarray(self.theta_centers, dtype=np.float64)
+        theta_nodes, theta_weights = self._rterm_nodes(dlnt_target)
+        n_f = theta_nodes.size
+        theta_c = np.ascontiguousarray(theta_nodes.ravel(), dtype=np.float64)
 
         ## Build the r-term work list ##
         # Five consecutive output blocks per ordered combo, as rpm needs all of them; the
@@ -3483,10 +3507,10 @@ class GGCovariance(GGCovarianceNoTomo):
 
         n_work = len(work_xi_a_p)
         n_r_out = len(r_out_keys)
-        r_results = np.zeros(n_r_out * n * n, dtype=np.float64)
+        r_results = np.zeros(n_r_out * n_f * n_f, dtype=np.float64)
 
         lib.continuous_rterms_tomo(
-            n, _ptr(theta_c),
+            n_f, _ptr(theta_c),
             _ptr(phi_grid), _ptr(phi_w), len(self.phi_grid),
             _ptr(v_grid), _ptr(v_w_arr), len(v),
             _ptr(v_half_c), _ptr(v_half_w), len(v_half),
@@ -3504,7 +3528,7 @@ class GGCovariance(GGCovarianceNoTomo):
             self.nthreads, int(verbose))
         check_clib_error(lib)
 
-        r_results = .5 * r_results.reshape(n_r_out, n, n)
+        r_results = .5 * _bin_average_blocks(r_results.reshape(n_r_out, n_f, n_f), theta_weights)
         symmetric = {'rp0', 'rp1', 'rm0', 'rm1'}
         self.rterms_tomo = {}
         for oi, (rname, combo) in enumerate(r_out_keys):
