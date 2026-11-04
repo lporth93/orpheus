@@ -97,7 +97,7 @@ parallelised C kernels.
   catalog, idealised Poisson counts or the continuum limit, with the integrals in
   `orpheus/src/cov_postq.c`. Both classes are exported from the package root, and
   `GGCovariance.get_cov_terms_tomo` returns the shape-noise, mixed and sample-variance terms
-  of each covariance block. Coming from the `covariance` branch, six things changed on the
+  of each covariance block. Coming from the `covariance` branch, seven things changed on the
   way in:
   * The measured pair counts were twice the ordered pair counts. `GGCorrelation.norm`
     already holds both orders of every pair, and the module doubled it again, which halved
@@ -118,6 +118,10 @@ parallelised C kernels.
     tabulated xi only from the smallest bin upwards and dropped every triplet whose third
     side is shorter, e.g. to 0.56 of its value in the first of 8 bins over 2-60 arcmin. It
     now starts the table where the sample-variance kernels do.
+  * The idealised pair and triplet counts and the radial weights of the r-terms and of the
+    sub-binning took the measure of an angular bin as `theta*dtheta` at its centre rather
+    than the annulus `(theta_max**2 - theta_min**2)/2`, which put the shape noise 0.55% high
+    for 24 log bins over 2-300 arcmin. The quadruplet volume still uses the bin centres.
 
   The multiplet measurements take `shuffle_pix` from the `catalog` dict, defaulting to random
   positions within the cells. `tests/test_fast_covariance.py` checks the measured counts

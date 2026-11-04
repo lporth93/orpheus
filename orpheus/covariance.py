@@ -30,6 +30,11 @@ def _trapz_weights(x):
     w[1:] += 0.5 * dx
     return w
 
+def _theta_dtheta(edges):
+    """Integral of theta dtheta over every bin, i.e. (theta_max^2 - theta_min^2) / 2."""
+    edges = np.asarray(edges, dtype=float)
+    return .5 * np.diff(edges**2)
+
 def _periodic_weights(x, period=2. * np.pi):
     """Uniform weights for periodic function sampled on a full-period grid."""
     x = np.asarray(x, dtype=float)
@@ -605,14 +610,14 @@ class GGCovarianceNoTomo:
 
         .. math::
 
-            N_p^\mathrm{ideal}(\theta) = 2\pi A \bar{n}^2 \langle w\rangle^2
-            \theta \Delta\theta\, s(\theta)
+            N_p^\mathrm{ideal}(\theta) = \pi A \bar{n}^2 \langle w\rangle^2
+            (\theta_\mathrm{max}^2 - \theta_\mathrm{min}^2)\, s(\theta)
         """
         if self.area is None or self.nbar is None:
             raise ValueError("`nbar` and `area` are required for analytic pairs")
         return (2. * np.pi * self.area * self.nbar**2
                 * self._w1**2
-                * self.theta_centers * self.dtheta
+                * _theta_dtheta(self.theta_edges)
                 * self._suppression(self.theta_centers))
 
     @staticmethod
@@ -627,7 +632,7 @@ class GGCovarianceNoTomo:
         theta_centers = np.asarray(theta_centers, dtype=float)
         theta_edges = np.asarray(theta_edges, dtype=float)
         ideal = (2. * np.pi * area * nbar**2 * weights_mean**2
-                * theta_centers * np.diff(theta_edges))
+                * _theta_dtheta(theta_edges))
         supp_vals = np.asarray(Np_meas, dtype=float) / ideal
 
         # Set to supp(thetamin) for theta<thetamin and zero for theta>thetamax
@@ -646,21 +651,23 @@ class GGCovarianceNoTomo:
         .. math::
 
             N_t^\mathrm{ideal}(\theta_1, \theta_2, \phi) = 2\pi A \bar{n}^3 \langle w\rangle^3
-            \theta_1 \Delta\theta_1\, \theta_2 \Delta\theta_2\, \Delta\phi\, s(\theta_1) s(\theta_2)
+            M_1 M_2\, \Delta\phi\, s(\theta_1) s(\theta_2)
+
+        with :math:`M = (\theta_\mathrm{max}^2 - \theta_\mathrm{min}^2)/2` the radial measure of a bin.
         """
         if self.area is None or self.nbar is None:
             raise ValueError("`nbar` and `area` are required for analytic triplets")
         T1, T2, PHI = np.meshgrid(self.triplet_theta_centers,
                                    self.triplet_theta_centers,
                                    self.phi_centers, indexing='ij')
-        DT1, DT2, DPHI = np.meshgrid(self.triplet_dtheta,
-                                      self.triplet_dtheta,
-                                      self.dphi, indexing='ij')
+        M1, M2, DPHI = np.meshgrid(_theta_dtheta(self.triplet_theta_edges),
+                                   _theta_dtheta(self.triplet_theta_edges),
+                                   self.dphi, indexing='ij')
         r_jk = np.sqrt(T1**2 + T2**2 - 2. * T1 * T2 * np.cos(PHI))
         s_factor = (self._suppression(T1) * self._suppression(T2))
         return (2. * np.pi * self.area * self.nbar**3
                 * self._w1**3
-                * T1 * DT1 * T2 * DT2 * DPHI
+                * M1 * M2 * DPHI
                 * s_factor)
 
     def quadruplets_analytic(self):
@@ -979,14 +986,14 @@ class GGCovarianceNoTomo:
         ## Radial integration nodes: one row of ns subgrid nodes per theta bin ##
         if self.phi1_subgrid_frac is None:
             phi1_nodes = self.theta_centers[:, None]
-            phi1_weights = (self.theta_centers * self.dtheta)[:, None]
+            phi1_weights = _theta_dtheta(self.theta_edges)[:, None]
         else:
             s1f = np.asarray(self.phi1_subgrid_frac, dtype=float)
             phi1_nodes = self.theta_centers[:, None] + np.outer(self.dtheta, s1f)
             phi1_weights = phi1_nodes * self.dtheta[:, None] * _trapz_weights(s1f)[None, :]
         if self.phi2_subgrid_frac is None:
             phi2_nodes = self.theta_centers[:, None]
-            phi2_weights = (self.theta_centers * self.dtheta)[:, None]
+            phi2_weights = _theta_dtheta(self.theta_edges)[:, None]
         else:
             s2f = np.asarray(self.phi2_subgrid_frac, dtype=float)
             phi2_nodes = self.theta_centers[:, None] + np.outer(self.dtheta, s2f)
@@ -1498,7 +1505,8 @@ class GGCovarianceNoTomo:
             Edges of the fine radial bins, shape (n_new+1,).
         new_pairs: numpy.ndarray, optional
             Measured fine pair counts, shape (n_new,). The components are then interpolated as the densities arr
-            N_p(theta1) N_p(theta2) / (theta1 dtheta1 theta2 dtheta2) and D is recomputed.
+            N_p(theta1) N_p(theta2) / (M_1 M_2), M the integral of theta dtheta over a bin, and D is
+            recomputed.
             Without them the components are interpolated directly.
         infer_pairs: bool, optional
             Estimate the fine pair counts from the coarse ratio N_p / N_p^ideal. Defaults to
@@ -1573,11 +1581,9 @@ class GGCovarianceNoTomo:
         if self.qpm is None: self.getqpm()
         self._ensure_all_rterms(verbose=verbose)
 
-        new_dtheta = np.diff(new_te)
         n_new = len(new_tc)
 
         tc = self.theta_centers
-        dthc = self.dtheta
 
         x_c = np.log(tc) if log_theta else tc
         x_new = np.log(new_tc) if log_theta else new_tc
@@ -1586,18 +1592,18 @@ class GGCovarianceNoTomo:
 
         ## D and 2-D component strategies ##
         Np_c = np.asarray(self.pairs)
-        phiw_c = tc * dthc # theta dtheta, coarse
+        phiw_c = _theta_dtheta(self.theta_edges) # int theta dtheta, coarse
 
         if infer_pairs and new_pairs is None:
             if self.area is None or self.nbar is None:
                 raise ValueError(
                     "`infer_pairs=True` requires `nbar` and `area` to be set")
             ideal_c = (2. * np.pi * self.area * self.nbar**2
-                          * self._w1**2 * tc * dthc
+                          * self._w1**2 * phiw_c
                           * self._suppression(tc))
             ratio_c = Np_c / ideal_c
             ideal_f = (2. * np.pi * self.area * self.nbar**2
-                          * self._w1**2 * new_tc * new_dtheta
+                          * self._w1**2 * _theta_dtheta(new_te)
                           * self._suppression(new_tc))
             log_ratio_f = np.interp(x_new, x_c, np.log(ratio_c))
             new_pairs = np.exp(log_ratio_f) * ideal_f
@@ -1607,7 +1613,7 @@ class GGCovarianceNoTomo:
             if Np_f.shape != (n_new,):
                 raise ValueError(
                     f"new_pairs must have shape ({n_new},), got {Np_f.shape}")
-            phiw_f = new_tc * new_dtheta
+            phiw_f = _theta_dtheta(new_te)
 
             # D N_p = sigma_eps^4 <w^2>^2 / <w>^2 is constant
             D_scale = float(np.mean(self.D * Np_c))
@@ -1629,10 +1635,10 @@ class GGCovarianceNoTomo:
                 return result * ow_phiw_f / ow_Np_f
 
         else:
-            # Without boundaries N_p ~ theta dtheta, so q and r do not depend on the bin width
-            D_scaled = self.D * dthc # ~ 1/theta, independent of the bin width
+            # Without boundaries N_p ~ int theta dtheta, so q and r do not depend on the bin width
+            D_scaled = self.D * phiw_c # independent of the bin width
             D_fine = np.exp(np.interp(x_new, x_c,
-                                        np.log(D_scaled))) / new_dtheta
+                                        np.log(D_scaled))) / _theta_dtheta(new_te)
             _interp = _interp_arr
 
         _specs = [('qpp', True), ('qmm', True), ('qpm', False),
@@ -2781,7 +2787,7 @@ class GGCovariance(GGCovarianceNoTomo):
                 Np = (2. * np.pi * self.area
                       * self.nbar[a] * self.nbar[b]
                       * self._w1**2
-                      * self.theta_centers * self.dtheta
+                      * _theta_dtheta(self.theta_edges)
                       * self._suppression(self.theta_centers))
             else:
                 Np = np.asarray(self.pairs)
@@ -3000,11 +3006,9 @@ class GGCovariance(GGCovarianceNoTomo):
         else:
             full_set = set()
 
-        new_dtheta = np.diff(new_te)
         n_new = len(new_tc)
 
         tc = self.theta_centers
-        dthc = self.dtheta
         x_c = np.log(tc)
         x_new = np.log(new_tc)
 
@@ -3013,9 +3017,9 @@ class GGCovariance(GGCovarianceNoTomo):
         ## Interpolate D for all bin pairs ##
         D_fine = {}
         for bp in self.bp_list:
-            D_scaled = self.D_tomo[bp] * dthc
+            D_scaled = self.D_tomo[bp] * _theta_dtheta(self.theta_edges)
             D_fine[bp] = np.exp(np.interp(
-                x_new, x_c, np.log(D_scaled))) / new_dtheta
+                x_new, x_c, np.log(D_scaled))) / _theta_dtheta(new_te)
 
         ## Interpolate q-terms ##
         qpp_fine = {}

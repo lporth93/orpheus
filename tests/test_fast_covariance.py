@@ -182,7 +182,7 @@ def test_tomographic_shape_noise_double_counts_cross_bin_pairs():
         spline_xim=[(0, 0, _xi), (0, 1, _xi), (1, 1, _xi)],
         sigma_eps=sigma, nbar=nbar, area=area, nthreads=NTHREADS)
     cov.getD_tomo()
-    ring = 2.*np.pi*area*tc*np.diff(THETA_EDGES)
+    ring = np.pi*area*np.diff(THETA_EDGES**2)
     for a, b in cov.bp_list:
         npairs = ring*nbar[a]*nbar[b]*(1. if a == b else 2.)
         assert np.allclose(cov.D_tomo[(a, b)], sigma[a]**2*sigma[b]**2/npairs,
@@ -202,7 +202,7 @@ def test_idealised_multiplets_live_at_the_reference_density(method_quadruplets):
         spline_xip=[(0, 0, _xi), (0, 1, _xi), (1, 1, _xi)],
         spline_xim=[(0, 0, _xi), (0, 1, _xi), (1, 1, _xi)],
         sigma_eps=SIGMA_EPS, nbar=nbar, nbar_ref=nbar_ref, area=area, nthreads=NTHREADS)
-    assert np.allclose(cov.pairs, 2.*np.pi*area*nbar_ref**2*tc*np.diff(THETA_EDGES),
+    assert np.allclose(cov.pairs, np.pi*area*nbar_ref**2*np.diff(THETA_EDGES**2),
                        rtol=RTOL_EXACT, atol=0.)
     assert np.isclose(cov._q_const, nbar_ref**4, rtol=RTOL_EXACT, atol=0.)
 
