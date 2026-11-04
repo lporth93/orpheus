@@ -1846,7 +1846,7 @@ void multipoles2npcf_nnnn(double complex *N_n, const BinningParams *bin, const F
         multipoles2npcf_nnnn_singletheta(
             tmpNn, n1max,n2max, theta_centers[eltheta1], theta_centers[eltheta2], theta_centers[eltheta3],
             phis12, phis13, nbinsphi12, nbinsphi13, tmpnpcf);
-        // long: nbinsr^3*nphi^2 can exceed 2^31 (52 radial, 127 phi bins)
+        // Make long as nbinsr^3*nphi^2 can exceed 2^31 elements easily
         double complex *npcf_r = npcf + (long)nthetacombi*phi23combis;
         for (int elphi12=0; elphi12<nbinsphi12; elphi12++){
             for (int elphi13=0; elphi13<nbinsphi13; elphi13++){
