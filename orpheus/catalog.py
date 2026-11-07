@@ -854,7 +854,7 @@ class Catalog:
 
         # Optional spin-2 field to aggregate with parallel transport
         do_shear = fields is not None
-        do_wsq = do_shear and w2field
+        do_wsq = bool(w2field)
         e1_full = np.ascontiguousarray(fields[0], dtype=np.float64) if do_shear else np.empty(0)
         e2_full = np.ascontiguousarray(fields[1], dtype=np.float64) if do_shear else np.empty(0)
 
@@ -936,8 +936,8 @@ class Catalog:
             red_w.append(rw); red_isinner.append(ris); red_zbin.append(rz)
             if do_shear:
                 red_e1.append(re1); red_e2.append(re2)
-                if w2field:
-                    red_weightsq.append(rwsq)
+            if do_wsq:
+                red_weightsq.append(rwsq)
             cell_pix_list.append(cell_pix)
             cell_redbounds_list.append(cell_redbounds)
 
@@ -987,8 +987,8 @@ class Catalog:
         if do_shear:
             bundle['red_e1'] = _cat(red_e1, np.float64)
             bundle['red_e2'] = _cat(red_e2, np.float64)
-            if w2field:
-                bundle['red_weightsq'] = _cat(red_weightsq, np.float64)
+        if do_wsq:
+            bundle['red_weightsq'] = _cat(red_weightsq, np.float64)
 
         return bundle
 
@@ -1443,7 +1443,9 @@ class ScalarTracerCatalog(Catalog):
     
     def _multihash_fields(self, geometry, w2field):
         r"""The scalar tracer field, reduced only along the flat path."""
-        return [self.tracer] if geometry == 'flat2d' else None
+        if geometry != 'flat2d':
+            return None
+        return [self.tracer, self.weight] if w2field else [self.tracer]
     
     
     def frompatchind(self, index):

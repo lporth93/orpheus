@@ -92,6 +92,12 @@ parallelised C kernels.
 
 #### Added
 
+* **`NNNCorrelation(base_weightsq=True)` counts `w_i**2 w_j w_k`**, with the squared weight on
+  the base galaxy, as the mixed term of the 2PCF covariance needs. The base galaxies and cells
+  take the sum of the squared weights, which the multihash of a scalar catalog now aggregates
+  with `w2field=True` in both geometries; the curved-sky multihash no longer ties it to a shear
+  field. Without tree levels the counts agree with brute force to 1e-15 on the sphere, on a
+  flat catalog and on a flat patch.
 * **The NNNN `Tree` accumulates the multipoles for a batch of base galaxies at a time**, flat
   and curved sky alike. The moments of a base galaxy are filled per radial bin, with the
   powers of the phases vectorised over the leaves, and only up to the order the 4PCF reads,

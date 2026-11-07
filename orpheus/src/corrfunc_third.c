@@ -1798,6 +1798,7 @@ static void alloc_nnn_doubletree_flat(const MultiresoCatalog *cat, const NavHash
     int minresoind_leaf = tree->minresoind_leaf, maxresoind_leaf = tree->maxresoind_leaf;
     int *ngal_resos = cat->ngal_resos, nbinsz = cat->nbinsz;
     double *isinner_resos = cat->isinner_resos, *weight_resos = cat->weight_resos;
+    double *base_weight_resos = cat->weightsq_resos ? cat->weightsq_resos : cat->weight_resos;
     double *pos1_resos = cat->pos1_resos, *pos2_resos = cat->pos2_resos;
     int *zbin_resos = cat->zbin_resos;
     int *index_matcher = nav->index_matcher;
@@ -1931,7 +1932,7 @@ static void alloc_nnn_doubletree_flat(const MultiresoCatalog *cat, const NavHash
                     int z_gal1 = zbin_resos[ind_gal1];
                     double pos1_gal1 = pos1_resos[ind_gal1];
                     double pos2_gal1 = pos2_resos[ind_gal1];
-                    double w_gal1 = innergal*weight_resos[ind_gal1];
+                    double w_gal1 = innergal*base_weight_resos[ind_gal1];
 
                     for (int elreso_leaf = _leaf_lo; elreso_leaf <= _leaf_hi; elreso_leaf++) {
                         double _rmin_sub2, _rmax_sub2;
@@ -2030,6 +2031,7 @@ static void alloc_nnn_doubletree_spherical(const MultiresoCatalog *cat, const Na
     int minresoind_leaf = tree->minresoind_leaf, maxresoind_leaf = tree->maxresoind_leaf;
     int nbinsz = cat->nbinsz;
     double *isinner = cat->isinner_resos, *weight = cat->weight_resos;
+    double *base_weight = cat->weightsq_resos ? cat->weightsq_resos : cat->weight_resos;
     double *vx = cat->vx_resos, *vy = cat->vy_resos, *vz = cat->vz_resos;
     int *zbin = cat->zbin_resos;
     int *ncells_resos = nav->ncells_resos;
@@ -2181,7 +2183,7 @@ static void alloc_nnn_doubletree_spherical(const MultiresoCatalog *cat, const Na
                         if (innergal<1e-5){continue;}
                         int z_gal1 = zbin[g1];
                         double cx = vx[g1], cy = vy[g1], cz = vz[g1];
-                        double w_gal1 = innergal*weight[g1];
+                        double w_gal1 = innergal*base_weight[g1];
 
                         // Neighbours via query_disc at the leaf reso (merge-join vs cell_pix).
                         double v1[3] = {cx, cy, cz};

@@ -39,20 +39,25 @@ class NNNCorrelation(BinnedNPCF):
     process_spherical: bool, optional
         Process spherical catalogs using curved-sky geometry and not via flat-sky
         patches. Defaults to ``False``.
+    base_weightsq: bool, optional
+        Weight the base galaxy of each triplet with its squared weight, i.e. count
+        :math:`w_i^2 w_j w_k`, as in the mixed term of the 2PCF covariance.
+        Defaults to ``False``.
 
     Notes
     -----
     Inherits all other parameters and attributes from :class:`BinnedNPCF`.
-    Additional child-specific parameters can be passed via ``kwargs``. 
+    Additional child-specific parameters can be passed via ``kwargs``.
     Either ``nbinsr`` or ``binsize`` has to be provided to fix the binning scheme.
     """
 
-    def __init__(self, min_sep, max_sep, process_spherical=False, **kwargs):
+    def __init__(self, min_sep, max_sep, process_spherical=False, base_weightsq=False, **kwargs):
 
         super().__init__(order=3, spins=np.array([0,0,0], dtype=np.int32), n_cfs=1,
                          min_sep=min_sep, max_sep=max_sep,
                          methods_avail=["DoubleTree"], **kwargs)
         self.process_spherical = bool(process_spherical)
+        self.base_weightsq = bool(base_weightsq)
         self.nmax = self.nmaxs[0]
         self.phi = self.phis[0]
         self.projection = None
@@ -60,12 +65,13 @@ class NNNCorrelation(BinnedNPCF):
         self.nbinsz = None
         self.nzcombis = None
         self.zeta = None
- 
+
         self._initprojections(self)
 
     def saveinst(self, path_save, fname, extr_pars=None):
         r"""Serialise the instance to a ``.npz`` archive."""
-        extras = dict(nbinsz=self.nbinsz, nzcombis=self.nzcombis, zeta=self.zeta)
+        extras = dict(nbinsz=self.nbinsz, nzcombis=self.nzcombis, zeta=self.zeta,
+                      base_weightsq=self.base_weightsq)
         if extr_pars: extras.update(extr_pars)
         super().saveinst(path_save, fname, extr_pars=extras)
 
@@ -89,6 +95,8 @@ class NNNCorrelation(BinnedNPCF):
         # If a random catalog is present, estimate zeta via the LS-like estimator.
         if cat_random is not None:
             assert(isinstance(cat_random, ScalarTracerCatalog))
+            if self.base_weightsq:
+                raise ValueError("base_weightsq is not available with a random catalog.")
             return self.__compute_zeta(cat, cat_random, dotomo=dotomo, adjust_tree=adjust_tree)
 
         if self.method != "DoubleTree":
@@ -118,18 +126,27 @@ class NNNCorrelation(BinnedNPCF):
             nsides, nside_hash = self.tree_resos_to_nsides()
             mh = cat.multihash_bundle(reso_redges=self.tree_redges*sep2deg, nsides=nsides,
                                       nside_hash=nside_hash, shuffle=self.shuffle_pix,
-                                      nthreads=self.nthreads, verbose=self._verbose_python)
+                                      w2field=self.base_weightsq, nthreads=self.nthreads,
+                                      verbose=self._verbose_python)
             assert not mh['nav_coarsened'], (
                 "nav_coarsen is incompatible with the NNN doubletree: it reuses "
                 "nside_nav for the cross-reso reduction hierarchy, which requires "
                 "nside_nav == the reduction nside.")
+            extra = {'weightsq_resos': mh['red_weightsq']} if self.base_weightsq else None
         else:
             cutfirst = np.int32(self.tree_resos[0]==0.)
             mh = cat.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.dpix_hash,
-                                      shuffle=self.shuffle_pix, normed=True, nthreads=self.nthreads)
+                                      shuffle=self.shuffle_pix, w2field=self.base_weightsq,
+                                      normed=True, nthreads=self.nthreads)
+            extra = None
+            if self.base_weightsq:
+                # Multihash averages pixels, such that weightsq_resos = sum(w^2)/sum(w), so times
+                # the cell weight it is sum(w^2)
+                weightsq_resos = np.concatenate([mh['allfields'][i][1] for i in range(len(mh['allfields']))])
+                extra = {'weightsq_resos': weightsq_resos.astype(np.float64)*mh['weight_resos']}
 
         ## Build the four input structs + output arrays ##
-        cat_s, keep_cat = build_catalog_struct(mh, nbinsz)
+        cat_s, keep_cat = build_catalog_struct(mh, nbinsz, extra=extra)
         cat_s.nresos = int(self.tree_nresos)
         nav_s, keep_nav = build_navhash_struct(mh, cat_obj=cat)
         tree_s, keep_tree = build_tree_params_struct(self, mh)
