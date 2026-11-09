@@ -137,6 +137,9 @@ parallelised C kernels.
   with `w2field=True` in both geometries; the curved-sky multihash no longer ties it to a shear
   field. Without tree levels the counts agree with brute force to 1e-15 on the sphere, on a
   flat catalog and on a flat patch.
+* **`Catalog.max_separation` bounds the largest separation in a catalog** from above, in deg on
+  the sphere and in the units of the positions for a flat catalog, to within 2%, on the sphere
+  for footprints wider than about 1.5 deg.
 * **The NNNN `Tree` accumulates the multipoles for a batch of base galaxies at a time**, flat
   and curved sky alike. The moments of a base galaxy are filled per radial bin, with the
   powers of the phases vectorised over the leaves, and only up to the order the 4PCF reads,
