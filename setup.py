@@ -1,9 +1,16 @@
 import os
 import sys
 import shutil
+import platform
 import subprocess
 from setuptools import setup, Extension
 from setuptools.command.build_ext import build_ext
+
+# A universal2 Python (e.g. from python.org) links for arm64 and x86_64, while the C sources
+# and libomp are built for the host only. Build for the host unless the caller (e.g.
+# cibuildwheel) has chosen the architectures.
+if sys.platform == "darwin":
+    os.environ.setdefault("ARCHFLAGS", "-arch " + platform.machine())
 
 # IEEE-safe optimisation defaults
 OPT_CFLAGS = ["-O3", "-fno-math-errno", "-fno-trapping-math", "-fcx-limited-range"]

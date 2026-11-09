@@ -135,6 +135,10 @@ parallelised C kernels.
   segfaulted once `nbinsr**3*nbinsphi**2` exceeded `2**31`, e.g. for 52 radial and 127
   angular bins. The GGGG and GNNN conversions used the same offsets, the GGGG one scaled by
   its eight components. All three now index with 64-bit offsets.
+* **Building from source with a universal2 Python on macOS failed at the link**, e.g. with
+  the python.org Python 3.12. Such a Python links the extension for arm64 and x86_64, while
+  the C sources and libomp are built for the host only. `setup.py` now builds for the host
+  architecture unless `ARCHFLAGS` is set, as cibuildwheel does.
 
 ### 0.6.0 — 2026-09-08
 
