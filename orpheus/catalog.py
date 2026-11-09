@@ -1102,8 +1102,48 @@ class Catalog:
                            isinner=isinner_red.astype(np.float64)), fields_red
             
         return w_red, pos1_red, pos2_red, zbins_red, isinner_red, fields_red
-    
-    
+
+
+    def max_separation(self):
+        """Upper bound on the largest separation between two galaxies on a footprint."""
+
+        # Largest distance between the cell centers, one block of rows at a time
+        def _maxdist(p, spherical, chunk=512):
+            out = 0.
+            for i in range(0, len(p), chunk):
+                if spherical:
+                    out = max(out, np.arccos(np.clip(np.min(p[i:i+chunk] @ p.T), -1., 1.)))
+                else:
+                    d2 = (np.sum(p[i:i+chunk]**2, axis=1)[:, None] + np.sum(p**2, axis=1)[None, :]
+                          - 2.*p[i:i+chunk] @ p.T)
+                    out = max(out, np.sqrt(max(np.max(d2), 0.)))
+            return out
+
+        # Sphere --> Recusively increase nside until we reach good pixelsize
+        if self.geometry == 'spherical':
+            import healpy as hp
+            theta, phi = np.radians(90. - self.pos2), np.radians(self.pos1)
+            nside = 16
+            pix = np.unique(hp.ang2pix(nside, theta, phi))
+            dmax = _maxdist(np.array(hp.pix2vec(nside, pix)).T, True) + 2.*hp.max_pixrad(nside)
+            while nside < 4096 and hp.max_pixrad(nside) > .01 * dmax:
+                nside *= 2
+                pix = np.unique(hp.ang2pix(nside, theta, phi))
+                dmax = _maxdist(np.array(hp.pix2vec(nside, pix)).T, True) + 2.*hp.max_pixrad(nside)
+            return np.degrees(min(dmax, np.pi))
+        # Flat --> Cellsize given by bounding box
+        if self.geometry == 'flat2d':
+            p = np.c_[self.pos1, self.pos2]
+            ext = np.max(np.ptp(p, axis=0))
+            if ext == 0.:
+                return 0.
+            cell = .02 * ext/np.sqrt(2.)
+            centers = (np.unique(np.floor((p - p.min(axis=0))/cell), axis=0) + .5) * cell
+            return _maxdist(centers, False) + np.sqrt(2.)*cell
+
+        raise ValueError(f"geometry must be 'spherical' or 'flat2d', got '{self.geometry}'")
+
+
     def _jointextent(self, others, extend=0):
         r"""Draws largest possible rectangle over set of catalogs.
         
