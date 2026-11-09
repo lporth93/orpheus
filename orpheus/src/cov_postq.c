@@ -38,7 +38,7 @@ typedef struct {
     const double *r_centers, *phi_centers;
     int nr, nphi;
     double r_min, r_max, logr0, inv_dlogr, phi0, inv_dphi;
-    long s_i2, s_i3; // long: nr^2*nphi^2 can exceed 2^31 at large grids
+    long s_i2, s_i3;
 } Interp4dGrid;
 
 static inline Interp4dGrid interp4d_grid(
@@ -110,7 +110,8 @@ static inline __attribute__((always_inline)) Interp4dAxis interp4d_axis_phi(
     return ax;
 }
 
-// The 16-corner sum over the four resolved axes
+// The 16-corner sum over the four resolved axes, as bilinear sums over the angular axes at the
+// four radial corners
 static inline __attribute__((always_inline)) double interp4d_gather(
     const double *q_slice, const Interp4dGrid *g, const Interp4dAxis *a2,
     const Interp4dAxis *a3, const Interp4dAxis *a12, const Interp4dAxis *a13){
@@ -127,23 +128,17 @@ static inline __attribute__((always_inline)) double interp4d_gather(
     long b_i12 = (long)a12->i*nphi;
     long b_i12p = (long)a12->ip*nphi;
 
-    return
-        mw2*mw3*mw12*mw13*q_slice[b_i2+b_i3+b_i12+i13]
-        + mw2*mw3*mw12*w13*q_slice[b_i2+b_i3+b_i12+i13p]
-        + mw2*mw3*w12*mw13*q_slice[b_i2+b_i3+b_i12p+i13]
-        + mw2*mw3*w12*w13*q_slice[b_i2+b_i3+b_i12p+i13p]
-        + w2*mw3*mw12*mw13*q_slice[b_i2p+b_i3+b_i12+i13]
-        + w2*mw3*mw12*w13*q_slice[b_i2p+b_i3+b_i12+i13p]
-        + w2*mw3*w12*mw13*q_slice[b_i2p+b_i3+b_i12p+i13]
-        + w2*mw3*w12*w13*q_slice[b_i2p+b_i3+b_i12p+i13p]
-        + mw2*w3*mw12*mw13*q_slice[b_i2+b_i3p+b_i12+i13]
-        + mw2*w3*mw12*w13*q_slice[b_i2+b_i3p+b_i12+i13p]
-        + mw2*w3*w12*mw13*q_slice[b_i2+b_i3p+b_i12p+i13]
-        + mw2*w3*w12*w13*q_slice[b_i2+b_i3p+b_i12p+i13p]
-        + w2*w3*mw12*mw13*q_slice[b_i2p+b_i3p+b_i12+i13]
-        + w2*w3*mw12*w13*q_slice[b_i2p+b_i3p+b_i12+i13p]
-        + w2*w3*w12*mw13*q_slice[b_i2p+b_i3p+b_i12p+i13]
-        + w2*w3*w12*w13*q_slice[b_i2p+b_i3p+b_i12p+i13p];
+    // Batching together some repeated multiplication
+    double m2m3=mw2*mw3, w2m3=w2*mw3, m2w3=mw2*w3, w2w3=w2*w3;
+    double m12m13=mw12*mw13, m12w13=mw12*w13, w12m13=w12*mw13, w12w13=w12*w13;
+    const double *q00 = q_slice+b_i2+b_i3,  *q10 = q_slice+b_i2p+b_i3;
+    const double *q01 = q_slice+b_i2+b_i3p, *q11 = q_slice+b_i2p+b_i3p;
+    double s00 = m12m13*q00[b_i12+i13] + m12w13*q00[b_i12+i13p] + w12m13*q00[b_i12p+i13] + w12w13*q00[b_i12p+i13p];
+    double s10 = m12m13*q10[b_i12+i13] + m12w13*q10[b_i12+i13p] + w12m13*q10[b_i12p+i13] + w12w13*q10[b_i12p+i13p];
+    double s01 = m12m13*q01[b_i12+i13] + m12w13*q01[b_i12+i13p] + w12m13*q01[b_i12p+i13] + w12w13*q01[b_i12p+i13p];
+    double s11 = m12m13*q11[b_i12+i13] + m12w13*q11[b_i12+i13p] + w12m13*q11[b_i12p+i13] + w12w13*q11[b_i12p+i13p];
+
+    return m2m3*s00 + w2m3*s10 + m2w3*s01 + w2w3*s11;
 }
 
 // Quadrilinear lookup q(t2, t3, a12, a13) on a (nr, nr, nphi, nphi) slice
@@ -160,6 +155,8 @@ static inline __attribute__((always_inline)) double interp4d_point(
 
 // Quadrilinear interpolation of a (nr, nr, nphi, nphi) quadruplet-density slice at n points,
 // log-uniform in the two radial and periodic in the two angular axes
+// * q_slice: (nr, nr, nphi, nphi) over (theta2, theta3, phi12, phi13)
+// * t2f, t3f, a12f, a13f, out: (n), out is overwritten
 void interp4d(
     const double *q_slice, const double *r_centers, const double *phi_centers,
     int nr, int nphi, double r_min, double r_max, double logr0, double inv_dlogr,
@@ -179,7 +176,8 @@ void interp4d(
 // Quadruplet (SVA) integral //
 ///////////////////////////////
 
-// One callback summed over the (varphi1, varphi2) grid of one (theta1, theta2) pair.
+// The varphi2 sums of one callback on the (varphi1, varphi2) grid of one (theta1, theta2) pair,
+// one per varphi1. They depend on wid and xi_b only, so callbacks that differ in xi_a share them.
 // wid is constant per instantiation, so the inner loop is branch free and vectorises.
 #define SVA_SLICE_BODY(WEXPR)                                                 \
     for (int iv1 = 0; iv1 < nv1; iv1++) {                                     \
@@ -192,15 +190,14 @@ void interp4d(
         _Pragma("omp simd reduction(+:s)")                                    \
         for (int iv2 = 0; iv2 < nv2c; iv2++)                                  \
             s += q[iv2]*xib[iv2]*(WEXPR);                                     \
-        sum += xia[iv1]*s;                                                    \
+        s_v1[iv1] = s;                                                        \
     }
 
-static inline __attribute__((always_inline)) double sva_slice(
-    int wid, const double *qslice, const double *xia, const double *xib,
+static inline __attribute__((always_inline)) void sva_slice(
+    int wid, const double *qslice, const double *xib,
     const double *wtab1, const double *wtab2, const double *w_v1v2,
-    int nv1, int nv2c){
+    int nv1, int nv2c, double *s_v1){
 
-    double sum = 0.;
     switch (wid) {
     case 0: { SVA_SLICE_BODY(1.) } break;
     case 1: { SVA_SLICE_BODY(w1[iv2]) } break;
@@ -208,13 +205,27 @@ static inline __attribute__((always_inline)) double sva_slice(
     case 3: { SVA_SLICE_BODY(wv[iv2]) } break;
     default: { SVA_SLICE_BODY(1.) } break; // wid 4 is folded into xib
     }
-    return sum;
 }
 
 // Cosmic-variance (r-term) integral of all callbacks over the phi grid: outer products of the
 // side integrals over psi_a = phi - theta1 e(V1) and psi_b = phi + theta2 e(V2), weighted by
-// the quadruplet density (q_mode 0: tensor, 1: constant, 2: separable). The per-thread
-// accumulators are summed in thread order, so the result is reproducible run to run.
+// the quadruplet density (q_mode 0: tensor, 1: constant, 2: separable). Output oi keeps the
+// (theta1, theta2) elements of mask mask_idx[oi] of pair_masks, and a callback is evaluated only
+// where its output keeps the element. The per-thread accumulators are summed in thread order,
+// so the result is reproducible run to run.
+// * phi_grid, phi_w: (n_phi). phi1_nodes, phi1_weights: (n_r, ns1). phi2_nodes, phi2_weights:
+//   (n_r, ns2). v1_grid, v1_w: (nv1). v2_grid, v2_w: (nv2)
+// * tiles: (n_tiles, 2), the first theta1 and theta2 bin of each tile of nr_block bins
+// * q_mode 0: q_array (q_nr, q_nr, q_nr, q_nphi, q_nphi) over (theta1, theta2, theta3, phi12, phi13)
+//   on the log-uniform q_r_centers and the uniform q_phi_centers
+// * q_mode 1: q = q_const
+// * q_mode 2: q = q_const sup_t1 sup_t2 sup_t3, with sup_t1 (n_phi), sup_t2 (n_r, ns1) and
+//   sup_t3 (n_phi, n_r, ns2, nv2)
+// * xi_y_tables: (n_xi_unique, xi_n) on the log-uniform xi_x
+// * Callbacks, each (n_cb): xi tables xi_a_idx and xi_b_idx of the two pairs, angular weight w_ids
+//   (0-4 for rp0, rp1, rm0, rm1, rpm), output out_idx and factor wick_fac
+// * symmetric_mask, mask_idx: (n_out). pair_masks: (n_mask, n_r, n_r)
+// * results: (n_out, n_r, n_r), added to, so the caller zeroes it
 void quadruplet_sva_integrate(
     const double *phi_grid, const double *phi_w, int n_phi, int n_r,
     const double *phi1_nodes, const double *phi1_weights, int ns1,
@@ -229,7 +240,8 @@ void quadruplet_sva_integrate(
     const double *xi_y_tables, int n_xi_unique,
     int n_cb, const int *xi_a_idx, const int *xi_b_idx,
     const int *w_ids, const int *out_idx, const double *wick_fac,
-    int n_out, const int *symmetric_mask, const int *pair_mask,
+    int n_out, const int *symmetric_mask,
+    int n_mask, const int *pair_masks, const int *mask_idx,
     double *results, int nthreads, int verbose){
 
     long block = (long)n_r*n_r;
@@ -317,6 +329,7 @@ void quadruplet_sva_integrate(
         double *wtab1 = (double *)orpheus_malloc((size_t)nv1*nv2max*sizeof(double));
         double *wtab2 = (double *)orpheus_malloc((size_t)nv1*nv2max*sizeof(double));
         double *xib_scr = (double *)orpheus_malloc((size_t)nv2max*sizeof(double));
+        double *s_v1 = (double *)orpheus_malloc((size_t)nv1*sizeof(double));
         double *q_vals = (double *)orpheus_malloc(
             (size_t)m1max*m2max*nv1*nv2max*sizeof(double));
         double *c_accum = (double *)orpheus_malloc((size_t)n_out*m1max*m2max*sizeof(double));
@@ -327,10 +340,12 @@ void quadruplet_sva_integrate(
             (size_t)m2max*nv2max*sizeof(Interp4dAxis)) : NULL);
         Interp4dAxis *axis_b_p = (q_mode == 0 ? (Interp4dAxis *)orpheus_malloc(
             (size_t)m2max*nv2max*sizeof(Interp4dAxis)) : NULL);
+        int *tile_mask = (int *)orpheus_malloc((size_t)n_mask*m1max*m2max*sizeof(int));
+        int *tile_keep = (int *)orpheus_malloc((size_t)m1max*m2max*sizeof(int));
 
         if (!(abs_a && va && cos4va && sin4va && abs_b && vb && cos4vb && sin4vb
               && xi_a_tab && xi_b_tab && w_v1v2 && w_r2v2 && wtab1 && wtab2
-              && xib_scr && q_vals && c_accum && sub_accum
+              && xib_scr && s_v1 && q_vals && c_accum && sub_accum && tile_mask && tile_keep
               && (q_mode != 0 || (q_slice && axis_b_r && axis_b_p)))) {
             #pragma omp atomic write
             alloc_ok = 0;
@@ -399,6 +414,21 @@ void quadruplet_sva_integrate(
                             xi_logx0, xi_inv_dlogx, abs_a[j]);
                 }
 
+                // Masks of the tile on its (theta1, theta2) nodes, and the nodes that any
+                // output keeps. The others are skipped.
+                long mstride = (long)m1*m2;
+                for (int ia = 0; ia < m1; ia++) {
+                    for (int ib = 0; ib < m2; ib++) {
+                        long e = (long)(i1 + ia/ns1)*n_r + i2 + ib/ns2;
+                        int ip = ia*m2 + ib, keep = 0;
+                        for (int im = 0; im < n_mask; im++) {
+                            tile_mask[im*mstride + ip] = pair_masks[im*block + e];
+                            keep |= pair_masks[im*block + e];
+                        }
+                        tile_keep[ip] = keep;
+                    }
+                }
+
                 for (int j0 = 0; j0 < nv2; j0 += v2_block) {
                     int nv2c = v2_block < nv2-j0 ? v2_block : nv2-j0;
                     int n_b = m2*nv2c;
@@ -447,12 +477,14 @@ void quadruplet_sva_integrate(
                                 + sin4v2[iv2]*sin4vb[idx]);
                         }
 
-                    // q on the (theta1, |psi_b|, V1, varphi_b) tile
+                    // q on the (theta1, |psi_b|, V1, varphi_b) tile, at the nodes that any
+                    // output keeps
                     long q_stride = (long)nv1*nv2c;
                     if (q_mode == 0) {
                         for (int ia = 0; ia < m1; ia++) {
                             const Interp4dAxis *x2 = &axis_t1[i1*ns1 + ia];
                             for (int ib = 0; ib < m2; ib++) {
+                                if (!tile_keep[ia*m2 + ib]) continue;
                                 double *dst = q_vals
                                     + ((long)ia*m2 + ib)*q_stride;
                                 for (int iv1 = 0; iv1 < nv1; iv1++) {
@@ -473,6 +505,7 @@ void quadruplet_sva_integrate(
                         for (int ia = 0; ia < m1; ia++) {
                             double s12 = s1phi*sup_t2[i1*ns1 + ia];
                             for (int ib = 0; ib < m2; ib++) {
+                                if (!tile_keep[ia*m2 + ib]) continue;
                                 const double *s3 = sup3
                                     + (long)(i2*ns2 + ib)*nv2 + j0;
                                 double *dst = q_vals
@@ -488,6 +521,7 @@ void quadruplet_sva_integrate(
 
                     // Fold the varphi quadrature weights into q
                     for (long ip = 0; ip < (long)m1*m2; ip++) {
+                        if (!tile_keep[ip]) continue;
                         double *dst = q_vals + ip*q_stride;
                         for (int iv1 = 0; iv1 < nv1; iv1++) {
                             double w1 = v1_w[iv1];
@@ -502,10 +536,14 @@ void quadruplet_sva_integrate(
                     // Callback loop. The (theta1, theta2) pair is the outer level, so the q
                     // slice and the weight tables are built once for all n_cb callbacks;
                     // moving the callbacks outside the r and varphi2 tiling measured 2x slower.
+                    // A callback is evaluated only where its output keeps the node. The
+                    // callbacks come sorted by (wid, xi_b), and the varphi2 sums are recomputed
+                    // only when that pair changes.
                     for (int ir1 = 0; ir1 < m1; ir1++) {
                         for (int ir2 = 0; ir2 < m2; ir2++) {
-                            const double *qslice = q_vals
-                                + ((long)ir1*m2 + ir2)*q_stride;
+                            int ip = ir1*m2 + ir2;
+                            if (!tile_keep[ip]) continue;
+                            const double *qslice = q_vals + (long)ip*q_stride;
                             const double *cvb = cos4vb + ir2*nv2c;
                             const double *svb = sin4vb + ir2*nv2c;
 
@@ -526,21 +564,29 @@ void quadruplet_sva_integrate(
                                 }
                             }
 
+                            int s_wid = -1, s_xib = -1;
                             for (int k = 0; k < n_cb; k++) {
-                                int wid = w_ids[k];
+                                if (!tile_mask[mask_idx[out_idx[k]]*mstride + ip]) continue;
+                                if (w_ids[k] != s_wid || xi_b_idx[k] != s_xib) {
+                                    s_wid = w_ids[k];
+                                    s_xib = xi_b_idx[k];
+                                    const double *xib = xi_b_tab
+                                        + (long)s_xib*n_b + ir2*nv2c;
+                                    if (s_wid == 4) {
+                                        const double *wr = w_r2v2 + ir2*nv2c;
+                                        for (int j = 0; j < nv2c; j++)
+                                            xib_scr[j] = xib[j]*wr[j];
+                                        xib = xib_scr;
+                                    }
+                                    sva_slice(s_wid, qslice, xib, wtab1, wtab2, w_v1v2,
+                                              nv1, nv2c, s_v1);
+                                }
                                 const double *xia = xi_a_tab
                                     + (long)xi_a_idx[k]*n_a + ir1*nv1;
-                                const double *xib = xi_b_tab
-                                    + (long)xi_b_idx[k]*n_b + ir2*nv2c;
-                                if (wid == 4) {
-                                    const double *wr = w_r2v2 + ir2*nv2c;
-                                    for (int j = 0; j < nv2c; j++)
-                                        xib_scr[j] = xib[j]*wr[j];
-                                    xib = xib_scr;
-                                }
-                                c_accum[(long)out_idx[k]*m1*m2 + ir1*m2 + ir2]
-                                    += wick_fac[k]*sva_slice(wid, qslice, xia,
-                                        xib, wtab1, wtab2, w_v1v2, nv1, nv2c);
+                                double sum = 0.;
+                                for (int iv1 = 0; iv1 < nv1; iv1++)
+                                    sum += xia[iv1]*s_v1[iv1];
+                                c_accum[out_idx[k]*mstride + ip] += wick_fac[k]*sum;
                             }
                         }
                     }
@@ -565,21 +611,23 @@ void quadruplet_sva_integrate(
                 }
             }
 
-            // Mask, symmetrise and fold this phi node into the thread total
+            // Symmetrise and fold this phi node into the thread total, within the mask of each
+            // output
             double common = phi*phi_w[kphi];
             double half = .5*common;
             for (int oi = 0; oi < n_out; oi++) {
-                double *cur = sub_accum + (long)oi*block;
+                const double *cur = sub_accum + (long)oi*block;
+                const int *mask = pair_masks + (long)mask_idx[oi]*block;
                 double *p = part + (long)oi*block;
-                for (long j = 0; j < block; j++)
-                    if (!pair_mask[j]) cur[j] = 0.;
-                if (symmetric_mask[oi])
+                if (symmetric_mask[oi]) {
                     for (int i = 0; i < n_r; i++)
                         for (int j = 0; j < n_r; j++)
-                            p[i*n_r+j] += half*(cur[i*n_r+j] + cur[j*n_r+i]);
-                else
+                            if (mask[i*n_r+j])
+                                p[i*n_r+j] += half*(cur[i*n_r+j] + cur[j*n_r+i]);
+                } else {
                     for (long j = 0; j < block; j++)
-                        p[j] += common*cur[j];
+                        if (mask[j]) p[j] += common*cur[j];
+                }
             }
             #pragma omp atomic
             ndone += 1;
@@ -589,9 +637,9 @@ void quadruplet_sva_integrate(
         free(abs_a); free(va); free(cos4va); free(sin4va);
         free(abs_b); free(vb); free(cos4vb); free(sin4vb);
         free(xi_a_tab); free(xi_b_tab);
-        free(w_v1v2); free(w_r2v2); free(wtab1); free(wtab2); free(xib_scr);
+        free(w_v1v2); free(w_r2v2); free(wtab1); free(wtab2); free(xib_scr); free(s_v1);
         free(q_vals); free(c_accum); free(sub_accum); free(q_slice);
-        free(axis_b_r); free(axis_b_p);
+        free(axis_b_r); free(axis_b_p); free(tile_mask); free(tile_keep);
     }
     if (verbose > 0) { printf("\n"); fflush(stdout); }
 
@@ -614,6 +662,10 @@ void quadruplet_sva_integrate(
 
 // Continuous q-term (triplet) of one xi on a fine (alpha*n_r) grid, bin-averaged to (n_r, n_r).
 // w_type: 0 = qpp (w = 1), 1 = qmm (cos(4*PHI)), 2 = qpm (cos(4*(PHI-phi_jk)))
+// * fine_centers, fine_weights: (n_fine), n_fine = alpha*n_r. phi_centers, dphi: (n_phi)
+// * xi_y: (xi_n) on the log-uniform xi_x
+// * Np: (n_r), not used
+// * out: (n_r, n_r), added to
 void continuous_q_single(
     int n_r, int alpha, const double *fine_centers, const double *fine_weights,
     const double *phi_centers, const double *dphi, int n_fine, int n_phi,
@@ -676,6 +728,10 @@ void continuous_q_single(
 
 
 // Build q-terms for all tomo combos, in continuous approximation
+// * Grids and Np as in continuous_q_single. xi_y_tables: (n_xi_unique, xi_n)
+// * Calls, each (n_calls): xi table call_xi_idx, w_type call_w_type, output call_out_idx and
+//   factor call_factor
+// * results: (n_out, n_r, n_r), added to
 void continuous_q_tomo(
     int n_r, int alpha, const double *fine_centers, const double *fine_weights,
     const double *phi_centers, const double *dphi, int n_fine, int n_phi,
@@ -720,6 +776,13 @@ void continuous_q_tomo(
 
 // Build r-terms for all tomo combos, in continuous approximation. The side integrals are
 // shared across work units, the outer products parallelise over (combo, Wick pairing).
+// * theta_centers: (n_r) radial nodes. phi_grid, phi_w: (n_phi). v_grid, v_w: (n_v) on [0, 2 pi).
+//   v_half, v_half_w: (n_vh) on [0, pi]
+// * xi_y_tables: (n_xi_unique, xi_n) on the log-uniform xi_x
+// * Work units, each (n_work): xi_+ and xi_- tables of the two pairs, work_xi_a_p, work_xi_a_m,
+//   work_xi_b_p and work_xi_b_m, and work_out_idx, the first of five consecutive outputs
+//   rp0, rp1, rm0, rm1, rpm
+// * results: (n_out, n_r, n_r), added to
 void continuous_rterms_tomo(
     int n_r, const double *theta_centers, const double *phi_grid, const double *phi_w, int n_phi,
     const double *v_grid, const double *v_w, int n_v,
@@ -958,6 +1021,9 @@ void continuous_rterms_tomo(
 //////////////////////////////////
 
 // Sum of the triplet counts against weight*xi(r_jk) over phi, for one mixed term
+// * Nt: (nr, nr, nphi) over (theta1, theta2, phi). tc: (nr). phic: (nphi)
+// * weight_type as w_type of continuous_q_single. xi_y: (xi_n) on the log-uniform xi_x
+// * out: (nr, nr), overwritten
 void triplet_term_reduce(
     const double *Nt, int nr, int nphi, const double *tc, const double *phic, int weight_type,
     const double *xi_x, int xi_n, double xi_logx0, double xi_inv_dlogx,

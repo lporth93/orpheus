@@ -7,6 +7,7 @@
 // Quadruplet density interpolation //
 //////////////////////////////////////
 
+// Quadrilinear interpolation of a quadruplet-density slice at n points
 void interp4d(const double *q_slice, const double *r_centers, const double *phi_centers,
               int nr, int nphi,
               double r_min, double r_max, double logr0, double inv_dlogr,
@@ -18,6 +19,7 @@ void interp4d(const double *q_slice, const double *r_centers, const double *phi_
 // Quadruplet (SVA) integral //
 ///////////////////////////////
 
+// Cosmic-variance (r-term) integral of all callbacks over the phi grid
 void quadruplet_sva_integrate(const double *phi_grid, const double *phi_w,
                               int n_phi, int n_r,
                               const double *phi1_nodes,
@@ -41,13 +43,15 @@ void quadruplet_sva_integrate(const double *phi_grid, const double *phi_w,
                               const int *w_ids, const int *out_idx,
                               const double *wick_fac,
                               int n_out, const int *symmetric_mask,
-                              const int *pair_mask,
+                              int n_mask, const int *pair_masks,
+                              const int *mask_idx,
                               double *results, int nthreads, int verbose);
 
 /////////////////////////////////
 // Continuous-limit estimators //
 /////////////////////////////////
 
+// Continuous q-term of one xi, bin-averaged from a fine (alpha*n_r) grid
 void continuous_q_single(int n_r, int alpha,
                          const double *fine_centers, const double *fine_weights,
                          const double *phi_centers, const double *dphi,
@@ -59,6 +63,7 @@ void continuous_q_single(int n_r, int alpha,
                          double sigma_eps2, double area, double nbar,
                          const double *Np, double *out);
 
+// Continuous q-terms of all tomo combos, one continuous_q_single per call
 void continuous_q_tomo(int n_r, int alpha,
                        const double *fine_centers, const double *fine_weights,
                        const double *phi_centers, const double *dphi,
@@ -74,6 +79,7 @@ void continuous_q_tomo(int n_r, int alpha,
                        int n_out, double *results,
                        int nthreads, int verbose);
 
+// Continuous r-terms of all tomo combos
 void continuous_rterms_tomo(int n_r, const double *theta_centers,
                             const double *phi_grid, const double *phi_w, int n_phi,
                             const double *v_grid, const double *v_w, int n_v,
@@ -93,6 +99,7 @@ void continuous_rterms_tomo(int n_r, const double *theta_centers,
 // Phi-reduction of mixed terms //
 //////////////////////////////////
 
+// Sum of the triplet counts against weight*xi(r_jk) over phi, for one mixed term
 void triplet_term_reduce(const double *Nt, int nr, int nphi,
                          const double *tc, const double *phic,
                          int weight_type,
