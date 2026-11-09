@@ -1531,7 +1531,7 @@ class NGGCorrelation(BinnedNPCF):
 
     def __process_3dbox(self, cat_source, cat_lens, cat_random, Pi,
                         dpix=None, dpix_z=None, dotomo_source=True, dotomo_lens=True):
-        r"""Computes S(D-R)^2/RRR in projected slabs of width +-Pi along z-direction in 3dbox.
+        r"""Computes (D-R)SS/RRR in projected slabs of width +-Pi along z-direction in 3dbox.
 
         Note that the random counts are normalised by the factor :math:`f = W_S/W_R` per tomo
         bin to to effective number of observed shapes, so i.e. :math:`\Gamma_{RSS} \sim RSS / f RRR`.
