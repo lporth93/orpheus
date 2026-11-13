@@ -58,6 +58,10 @@ class MultiresoCatalog(ctypes.Structure):
         ("e1_resos", _p_f64),
         ("e2_resos", _p_f64),
         ("weightsq_resos", _p_f64),
+        # Summed squared and cubed weights per reduced object (NNNN multiple-counting corrections)
+        ("weightcb_resos", _p_f64),
+        # Summed shape powers per reduced object, 7 per object (GGGG multiple-counting corrections)
+        ("shapepowers_resos", _p_f64),
     ]
 
 
@@ -291,12 +295,14 @@ def build_catalog_struct(mh, nbinsz, extra=None):
         s.sindec_resos = _ptr_f64(sd)
         s.cosdec_resos = _ptr_f64(cd)
 
-    # Shear-only arrays (NULL for NN).
+    # Shear arrays, and the summed weight powers of the NNNN corrections (NULL otherwise)
     s.e1_resos = _null(_p_f64)
     s.e2_resos = _null(_p_f64)
     s.weightsq_resos = _null(_p_f64)
+    s.weightcb_resos = _null(_p_f64)
+    s.shapepowers_resos = _null(_p_f64)
     if extra is not None:
-        for name in ('e1_resos', 'e2_resos', 'weightsq_resos'):
+        for name in ('e1_resos', 'e2_resos', 'weightsq_resos', 'weightcb_resos', 'shapepowers_resos'):
             if name in extra:
                 arr = np.ascontiguousarray(extra[name], dtype=np.float64)
                 keepers.append(arr)

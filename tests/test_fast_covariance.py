@@ -127,8 +127,8 @@ def test_quadruplet_density_matches_brute_force(survey):
     nbins = len(Q_THETA_EDGES)-1
     brute = np.array([[[_distinct_products(c, (a, b, d)) for d in range(nbins)]
                        for b in range(nbins)] for a in range(nbins)])
-    # Undo the density normalisation q = N_q/V_q and sum over both angles
-    rdr = cov.q_theta_centers*cov.q_dtheta
+    # Undo the density normalisation q = N_q/V_q (exact annulus per leg), sum over both angles
+    rdr = _exact_rdr(Q_THETA_EDGES)
     vol_r = 2.*np.pi*area*np.einsum('a,b,c->abc', rdr, rdr, rdr)
     counts = vol_r*np.einsum('abcij,i,j->abc', cov.quadruplets, cov.q_dphi, cov.q_dphi)
     assert np.allclose(counts, brute, rtol=RTOL_SHARP, atol=0.)
@@ -157,11 +157,11 @@ def test_counts_scale_as_the_idealised_counts(survey):
     ratio = cov.triplets.sum(axis=-1)/cov.triplets_analytic().sum(axis=-1)
     assert np.allclose(ratio, exp_trip, rtol=2.*RTOL_LOOSE, atol=0.)
 
-    # The idealised quadruplet density is constant, nbar^4
+    # The idealised quadruplet density is constant, nbar^4, and the measured one is
+    # normalised by the exact annulus of every leg already
     qtc, qbins = cov.q_theta_centers, len(Q_THETA_EDGES)-1
-    qleg = _exact_rdr(Q_THETA_EDGES)/(qtc*cov.q_dtheta)
     ratio = cov.quadruplets.mean(axis=(-1, -2))/cov.nbar**4
-    exp_quad = np.array([[[_inside_fraction([qtc[a], qtc[b], qtc[d]])*qleg[a]*qleg[b]*qleg[d]
+    exp_quad = np.array([[[_inside_fraction([qtc[a], qtc[b], qtc[d]])
                            for d in range(qbins)] for b in range(qbins)] for a in range(qbins)])
     assert np.allclose(ratio, exp_quad, rtol=3.*RTOL_LOOSE, atol=0.)
 
@@ -205,6 +205,36 @@ def test_idealised_multiplets_live_at_the_reference_density(method_quadruplets):
     assert np.allclose(cov.pairs, np.pi*area*nbar_ref**2*np.diff(THETA_EDGES**2),
                        rtol=RTOL_EXACT, atol=0.)
     assert np.isclose(cov._q_const, nbar_ref**4, rtol=RTOL_EXACT, atol=0.)
+
+
+##########################################
+# PERIODIC ANGLES OF THE QUADRUPLET GRID #
+##########################################
+
+# The sample-variance kernel looks q up at angles below the first and above the last angular
+# center, e.g. for the second pair of a quadruplet at small theta2/phi. There it has to
+# interpolate across 0 = 2 pi between the last and the first center, as for any other angle.
+def test_quadruplet_lookup_is_periodic_in_both_angles():
+    cov = GGCovarianceNoTomo(theta_centers=_centers(THETA_EDGES), theta_edges=THETA_EDGES,
+                             method_pairs='continuous', method_triplets='continuous',
+                             method_quadruplets='continuous', spline_xip=_xi, spline_xim=_xi,
+                             sigma_eps=SIGMA_EPS, nbar=10./60.**2, area=100.*60.**2,
+                             nthreads=NTHREADS)
+    nr, nphi = 3, 16
+    rc = np.geomspace(1., 4., nr)
+    pc = (np.arange(nphi) + .5)*2.*np.pi/nphi
+    f = lambda a12, a13: 2. + np.cos(a12) + .5*np.sin(2.*a13 + .3)
+    q = np.ascontiguousarray(np.broadcast_to(f(pc[:, None], pc[None, :]), (nr, nr, nphi, nphi)))
+    a = np.array([-.3, -.05, 0., .05, .1, 2., 2.*np.pi - .1, 2.*np.pi - .02, 2.*np.pi, 2.*np.pi + .2])
+    a12, a13 = [np.ascontiguousarray(x.ravel()) for x in np.meshgrid(a, a[::-1])]
+    t = np.full(len(a12), rc[1])
+    out = np.zeros(len(a12))
+    cov._clib.interp4d(q.ravel(), rc, pc, nr, nphi, rc[0], rc[-1], np.log(rc[0]),
+                       1./np.log(rc[1]/rc[0]), pc[0], nphi/(2.*np.pi), t, t, a12, a13, len(t), out)
+    # Bilinear interpolation of the periodic samples, separable here
+    lin = lambda x, y: np.interp(np.mod(x, 2.*np.pi), pc, y, period=2.*np.pi)
+    expected = 2. + lin(a12, np.cos(pc)) + .5*lin(a13, np.sin(2.*pc + .3))
+    assert np.allclose(out, expected, rtol=RTOL_EXACT, atol=0.)
 
 
 #####################################

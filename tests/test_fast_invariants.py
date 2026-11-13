@@ -23,7 +23,7 @@ from orpheus.direct import (Direct_Map3Unequal, Direct_MapnEqual, Direct_NapnEqu
                             MapCombinatorics)
 from orpheus.flat2dgrid import FlatDataGrid_2D, FlatPixelGrid_2D
 from orpheus.npcf_second import GGCorrelation, NGCorrelation, NNCorrelation
-from orpheus.npcf_fourth import GGGGCorrelation_NoTomo, GNNNCorrelation_NoTomo
+from orpheus.npcf_fourth import GGGGCorrelation_NoTomo, GNNNCorrelation_NoTomo, NNNNCorrelation_NoTomo
 from orpheus.npcf_third import GGGCorrelation, GNNCorrelation, NGGCorrelation, NNNCorrelation
 import orpheus
 import orpheus.utils
@@ -551,6 +551,51 @@ def test_landy_szalay_stays_finite_without_random_pairs(sparse_catalogs):
 # AGREEMENT BETWEEN CODE PATHS #
 ################################
 # The same quantity computed two ways has to come out the same.
+
+# Clumps of galaxies with random weights and shapes share one position and lie further apart
+# than the diagonal of the largest cell, so every reduced object is a single clump at its own
+# position. The tree counts then have to equal those on the galaxies, which holds only if the
+# multiple-counting corrections use the self-terms summed over the galaxies of a cell, as two or
+# three legs in one radial bin may end in the same cell. With rmin_pixsize=2 the finer cells
+# start below min_sep, which the Tree leaf loops must not bin.
+FOURTH_CLUMPS = [('NNNN', 'Tree', 'flat2d'), ('NNNN', 'DoubleTree', 'flat2d'),
+                 ('NNNN', 'DoubleTree', 'spherical'), ('GGGG', 'Tree', 'flat2d'),
+                 ('GNNN', 'Tree', 'flat2d')]
+
+@pytest.mark.parametrize("corr,method,geometry", FOURTH_CLUMPS, ids=['-'.join(c) for c in FOURTH_CLUMPS])
+def test_fourth_order_trees_count_clumps_exactly(corr, method, geometry):
+    rng = np.random.default_rng(3)
+    nside, spacing, jitter = 12, 8., 1.
+    grid = (np.arange(nside) + .5)*spacing
+    c1, c2 = [a.ravel() + rng.uniform(-jitter, jitter, nside**2) for a in np.meshgrid(grid, grid)]
+    mult = rng.integers(1, 6, nside**2)
+    pos1, pos2 = np.repeat(c1, mult), np.repeat(c2, mult)
+    w = rng.uniform(.5, 1.5, len(pos1))
+    e1, e2 = rng.normal(0., .3, (2, len(pos1)))
+    seps, resos = np.array([10., 60.]), np.array([0., 1., 2., 4.])
+    pos = dict(pos1=pos1, pos2=pos2, weight=w, geometry='flat2d')
+    extra = {}
+    if geometry == 'spherical':
+        # The curved-sky NNNN works in degrees
+        seps, resos, extra = seps/60., resos/60., dict(process_spherical=True)
+        pos = dict(pos1=30. + pos1/60., pos2=pos2/60. - 1., weight=w, geometry='spherical',
+                   units_pos1='deg', units_pos2='deg')
+    scalar = ScalarTracerCatalog(tracer=np.ones(len(w)), **pos)
+    shear = SpinTracerCatalog(spin=2, tracer_1=e1, tracer_2=e2, **pos)
+    cls = {'NNNN': NNNNCorrelation_NoTomo, 'GGGG': GGGGCorrelation_NoTomo,
+           'GNNN': GNNNCorrelation_NoTomo}[corr]
+    cats = {'NNNN': (scalar,), 'GGGG': (shear,), 'GNNN': (shear, scalar)}[corr]
+    out = []
+    for meth, tree_resos in (('Tree', resos[:1]), (method, resos)):
+        inst = cls(min_sep=seps[0], max_sep=seps[1], nbinsr=4, nbinsphi=8, nmaxs=3, shuffle_pix=0,
+                   rmin_pixsize=2, nthreads=NTHREADS, method=meth, tree_resos=list(tree_resos),
+                   **extra)
+        inst.process(*cats, statistics='4pcf_multipole', lowmem=True)
+        out.append([np.asarray(inst.npcf_multipoles)]
+                   + ([np.asarray(inst.npcf_multipoles_norm)] if corr != 'NNNN' else []))
+    for ref, tree in zip(*out):
+        assert np.abs(ref).max() > 0.
+        assert np.allclose(tree, ref, rtol=0., atol=1e-12*np.abs(ref).max())
 
 # Make sure that DoubleTree with maxresoind_leaf=0 produces the same result as BaseTree
 def test_doubletree_with_a_pinned_leaf_band_reproduces_basetree(shear_catalog):

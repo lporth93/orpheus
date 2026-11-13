@@ -121,7 +121,9 @@ parallelised C kernels.
   * The idealised pair and triplet counts and the radial weights of the r-terms and of the
     sub-binning took the measure of an angular bin as `theta*dtheta` at its centre rather
     than the annulus `(theta_max**2 - theta_min**2)/2`, which put the shape noise 0.55% high
-    for 24 log bins over 2-300 arcmin. The quadruplet volume still uses the bin centres.
+    for 24 log bins over 2-300 arcmin. The volume of the measured quadruplet density did the
+    same with the count-weighted bin centres, which put the density 0.8% low for bins of 0.2
+    in ln theta, and now uses the annulus too.
   * In the continuum limit the sample-variance r-terms were evaluated at the bin centres
     while the mixed term and the shape noise are bin averages, which put the xi+xi- sample
     variance up to 30% off at large theta for 24 log bins over 2-300 arcmin.
@@ -156,6 +158,33 @@ parallelised C kernels.
 
 #### Fixed
 
+* **The fourth-order tree counts dropped the pairs of galaxies that share a cell.** When two
+  or three legs fall into one radial bin, the multiple-counting corrections subtract the
+  self-pairs and self-triplets with the squared and cubed weights (and shapes) of the leaves.
+  For a cell these were the powers of its summed weight and shape, which also removed every
+  pair of distinct galaxies in the cell. This put the 4PCF low wherever two legs of one radial
+  bin point at nearly the same angle, by ~(cell size)^2/(theta dtheta) integrated over the
+  angle; for the quadruplet density of a 500k galaxy footprint with the default cells 1-1.5%
+  at 30-90 arcmin, which the multipole truncation spreads over ~0.1 rad and which drives the
+  B-mode sample variance of the discrete covariance. The reduced catalogs now carry the
+  self-terms summed over their galaxies (`Catalog.multihash_bundle(wpowers=True,
+  shapepowers=True)`, the new `MultiresoCatalog.weightcb_resos` and `shapepowers_resos` next to
+  `weightsq_resos`), which the NNNN (`Tree`, `DoubleTree`, flat and curved sky, `Nap4`), GGGG
+  and GNNN (lens leg) trees use. On clumped catalogs, whose cells hold one clump at its own
+  position, the trees now reproduce the counts on the galaxies to round-off, where they were
+  8-66% off before (`test_fourth_order_trees_count_clumps_exactly`).
+* **The sample-variance kernel extrapolated the quadruplet density across 0 = 2 pi.** The
+  angular lookup of `q` clamped its stencil to the inner pairs of centers, so angles below the
+  first or above the last center extrapolated linearly from one side instead of interpolating
+  between the last and the first center. This is where the second pair of a quadruplet sits
+  for small theta2/phi. The lookup is now periodic and requires `q_phi_centers` to be uniform
+  over 2 pi (`test_quadruplet_lookup_is_periodic_in_both_angles`).
+* **The fourth-order `Tree` corrupted the heap when its finer cells start below `min_sep`.**
+  For `rmin_pixsize*tree_resos[1] < min_sep` the first resolution bands lie partly below
+  `min_sep`, and the leaf loops of the NNNN `Tree` (flat and curved sky), the NNNN `Nap4`
+  and the GGGG and GNNN trees binned those leaves into negative radial bins ("double free or
+  corruption", e.g. for `rmin_pixsize=2`, `tree_resos=[0, 1, 2, 4]`, `min_sep=10`). The bands
+  now start at `min_sep`.
 * **`nmaxs` and `nbinsphi` given as a list or numpy integer** raised `AttributeError` or
   `AssertionError`. Like `spins`, they are now broadcast from any integer or sequence.
 * **A leaf band given out of order was reported but kept.** `maxresoind_leaf <

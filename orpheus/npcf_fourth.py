@@ -227,9 +227,13 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
             nside_hash = _nside_for(max(self.min_sep, 0.5*self.tree_redges[1])*_deg2rad)
             sph = cat.multihash_bundle(reso_redges=self.tree_redges, nsides=nsides,
                                        nside_hash=nside_hash, nthreads=self.nthreads,
-                                       verbose=self._verbose_python)
+                                       wpowers=True, verbose=self._verbose_python)
             assert sph['geometry'] == 'spherical'
-            catr_s, keep_cr = build_catalog_struct(sph, self.nbinsz)
+            # The multiple-counting corrections need the summed weight powers of every reduced
+            # galaxy, not the powers of its summed weight
+            catr_s, keep_cr = build_catalog_struct(
+                sph, self.nbinsz, extra={'weightsq_resos': sph['weightsq_resos'],
+                                         'weightcb_resos': sph['weightcb_resos']})
             catr_s.nresos = int(self.tree_nresos)
             nav_s, keep_n = build_navhash_struct(sph)
             tree_s, keep_t = build_tree_params_struct(self, sph)
@@ -275,11 +279,16 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
             # Prepare reduced catalogs
             cutfirst = np.int32(self.tree_resos[0]==0.)
             mh = cat.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.dpix_hash,
-                                      shuffle=self.shuffle_pix, normed=False, nthreads=self.nthreads)
+                                      shuffle=self.shuffle_pix, normed=False, wpowers=True,
+                                      nthreads=self.nthreads)
             _zb = np.zeros(cat.ngal, dtype=np.int32)   # notomo: zbins unused by C
             catc_s, keep_cc = build_flat_catalog_struct(cat.pos1, cat.pos2, cat.weight, _zb,
                                                         self.nbinsz, cat.isinner)
-            catr_s, keep_cr = build_catalog_struct(mh, self.nbinsz)
+            # The multiple-counting corrections need the summed weight powers of every reduced
+            # galaxy, not the powers of its summed weight
+            catr_s, keep_cr = build_catalog_struct(
+                mh, self.nbinsz, extra={'weightsq_resos': mh['weightsq_resos'],
+                                        'weightcb_resos': mh['weightcb_resos']})
             catr_s.nresos = int(self.tree_nresos)
             nav_s, keep_n = build_navhash_struct(mh, cat_obj=cat)
             tree_s, keep_t = build_tree_params_struct(self, mh)
@@ -684,14 +693,21 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
             _shape, _inds, _n2s, _n3s = gen_n2n3indices_Upsfourth(self.nmaxs[0])
             cutfirst = np.int32(self.tree_resos[0]==0.)
             mh = cat.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.dpix_hash,
-                                      shuffle=self.shuffle_pix, w2field=True, normed=True, nthreads=self.nthreads)
+                                      shuffle=self.shuffle_pix, w2field=True, normed=True,
+                                      wpowers=True, shapepowers=True, nthreads=self.nthreads)
             allfields = mh['allfields']
             e1_resos = np.concatenate([allfields[i][0] for i in range(len(allfields))]).astype(np.float64)
             e2_resos = np.concatenate([allfields[i][1] for i in range(len(allfields))]).astype(np.float64)
             catc_s, keep_cc = build_flat_catalog_struct(cat.pos1, cat.pos2, cat.weight, _zb,
                                                         self.nbinsz, cat.isinner,
                                                         e1=cat.tracer_1, e2=cat.tracer_2)
-            catr_s, keep_cr = build_catalog_struct(mh, self.nbinsz, extra={'e1_resos': e1_resos, 'e2_resos': e2_resos})
+            # The multiple-counting corrections need the self-terms summed over the galaxies of
+            # every cell, not the powers of its summed weight and shape
+            catr_s, keep_cr = build_catalog_struct(
+                mh, self.nbinsz, extra={'e1_resos': e1_resos, 'e2_resos': e2_resos,
+                                        'weightsq_resos': mh['weightsq_resos'],
+                                        'weightcb_resos': mh['weightcb_resos'],
+                                        'shapepowers_resos': mh['shapepowers_resos']})
             catr_s.nresos = int(self.tree_nresos)
             nav_s, keep_n = build_navhash_struct(mh, cat_obj=cat)
             tree_s, keep_t = build_tree_params_struct(self, mh)
@@ -1383,13 +1399,17 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
             # Prepare reduced catalogs 
             cutfirst = np.int32(self.tree_resos[0]==0.)
             mhl = cat_lens.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.dpix_hash,
-                                            shuffle=self.shuffle_pix, normed=True, nthreads=self.nthreads)
+                                            shuffle=self.shuffle_pix, normed=True, wpowers=True,
+                                            nthreads=self.nthreads)
             cats_s, keep_cs = build_flat_catalog_struct(
                 cat_source.pos1, cat_source.pos2, cat_source.weight, _zbz_source,
                 self.nbinsz_source, cat_source.isinner,
                 e1=cat_source.tracer_1, e2=cat_source.tracer_2)
             navs_s, keep_ns = build_flat_navhash_struct(cat_source)
-            catl_s, keep_cl = build_catalog_struct(mhl, self.nbinsz_lens)
+            # Summed weight powers of the lens cells for the multiple-counting corrections
+            catl_s, keep_cl = build_catalog_struct(
+                mhl, self.nbinsz_lens, extra={'weightsq_resos': mhl['weightsq_resos'],
+                                              'weightcb_resos': mhl['weightcb_resos']})
             catl_s.nresos = int(self.tree_nresos)
             navl_s, keep_nl = build_navhash_struct(mhl, cat_obj=cat_lens)
             tree_s, keep_tree = build_tree_params_struct(self, mhl)

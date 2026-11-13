@@ -213,6 +213,8 @@ class GGCovarianceNoTomo:
         Catalog of the discrete measurements with the keys ``ra``, ``dec`` (deg), ``path_save``,
         ``npatches`` and ``nmaxs``, and optionally ``weight``, ``rmin_pixsize`` (40),
         ``tree_resos`` ([0, 0.5, 1, 2, 4]), ``method`` ('DoubleTree'), ``shuffle_pix`` (1),
+        per-measurement overrides ``rmin_pixsize_<stat>`` and ``tree_resos_<stat>`` with
+        ``<stat>`` one of ``pairs``, ``triplets``, ``quadruplets`` (see :meth:`_tree_param`),
         ``verbosity`` and ``memory_bound``. The measured radial grids must be log-uniform.
     store_multiplets: bool, optional
         Keep the measured count tensors on disk, while the 4PCF patch files are always removed.
@@ -734,10 +736,12 @@ class GGCovarianceNoTomo:
 
         .. math::
 
-            V_q = 2\pi A\, \theta_1 \Delta\theta_1\, \theta_2 \Delta\theta_2\,
-            \theta_3 \Delta\theta_3\, \Delta\phi_{12} \Delta\phi_{13}
+            V_q = 2\pi A\, \Theta_1 \Theta_2 \Theta_3\, \Delta\phi_{12} \Delta\phi_{13},
 
-        The grids default to the quadruplet grids of the instance.
+        with the exact annulus :math:`\Theta_i = (\theta_{i,\max}^2 - \theta_{i,\min}^2)/2` of the
+        radial bins of the instance, or :math:`\Theta_i = \theta_i \Delta\theta_i` if
+        ``theta_centers`` or ``dtheta_bin`` is given. The grids default to the quadruplet grids of
+        the instance.
         """
         if self.area is None:
             raise ValueError("`area` is required to convert counts to density")
@@ -751,7 +755,10 @@ class GGCovarianceNoTomo:
         dp = (self.q_dphi if dphi_bin is None
               else np.asarray(dphi_bin, dtype=float))
         # V_q is separable, so divide axis by axis
-        tdt = rc * dt
+        if theta_centers is None and dtheta_bin is None:
+            tdt = _theta_dtheta(self.q_theta_edges)
+        else:
+            tdt = rc * dt
         q = np.array(N_q, dtype=float)
         q /= 2. * np.pi * self.area
         q /= tdt[:, None, None, None, None]
@@ -1048,6 +1055,10 @@ class GGCovarianceNoTomo:
             q_array = _f(self.quadruplets)
             q_rc, q_pc = _f(self.q_theta_centers), _f(self.q_phi_centers)
             q_nr, q_nphi = len(q_rc), len(q_pc)
+            # The kernel interpolates the angles periodically on a uniform grid over 2 pi
+            dphi_q = 2.*np.pi/q_nphi
+            if q_nphi < 2 or not np.allclose(np.diff(q_pc), dphi_q, rtol=1e-8, atol=0.):
+                raise ValueError("q_phi_centers must be uniform with spacing 2 pi/len(q_phi_centers)")
             sup_t1 = sup_t2 = sup_t3 = dummy
         else:
             if self.method_quadruplets not in ('analytic', 'frompairs'):
@@ -2020,6 +2031,17 @@ class GGCovarianceNoTomo:
             raise ValueError(f"catalog['{name}'] is required")
         return default
 
+    def _tree_param(self, stat, name, default):
+        """Tree setting ``name`` (rmin_pixsize or tree_resos) of the measurement ``stat``.
+
+        ``catalog[name + '_' + stat]`` (e.g. ``tree_resos_triplets``) if given, else
+        ``catalog[name]``. The cells bias the triplet counts at small opening angles, where the
+        mixed term of xi_- is largest (q_-- about 10 per cent low just above rmin_pixsize times
+        a cell size), so the triplets may need finer settings than the quadruplets.
+        """
+        val = self.catalog.get(name + '_' + stat, None)
+        return val if val is not None else self._catalog_param(name, default)
+
     def _nmaxs(self):
         """``catalog['nmaxs']`` as an int or an array, since the NPCF constructors take no lists."""
         nmaxs = self._catalog_param('nmaxs', required=True)
@@ -2072,9 +2094,11 @@ class GGCovarianceNoTomo:
         h = hashlib.sha1()
         for a in (ra, dec, w):
             h.update(np.ascontiguousarray(a, dtype=np.float64).tobytes())
-        rmin_pixsize = self._catalog_param('rmin_pixsize', 40)
-        tree_resos = list(np.ravel(self._catalog_param(
-            'tree_resos', [0., 0.5, 1., 2., 4.])))
+        # the settings of this measurement (equal to the shared ones without an override, which
+        # keeps older caches valid)
+        rmin_pixsize = self._tree_param(stat, 'rmin_pixsize', 40)
+        tree_resos = list(np.ravel(self._tree_param(
+            stat, 'tree_resos', [0., 0.5, 1., 2., 4.])))
         # npatches and shuffle_pix enter only if they differ from their defaults, which keeps
         # older caches valid. nmaxs does not enter the pairs.
         npatches = int(self._catalog_param('npatches', required=True))
@@ -2146,8 +2170,8 @@ class GGCovarianceNoTomo:
             gg = GGCorrelation(
                 min_sep=float(self.theta_edges[0]),
                 max_sep=float(self.theta_edges[-1]), nbinsr=self.n_r,
-                rmin_pixsize=self._catalog_param('rmin_pixsize', 40),
-                tree_resos=self._catalog_param('tree_resos', [0., 0.5, 1., 2., 4.]),
+                rmin_pixsize=self._tree_param('pairs', 'rmin_pixsize', 40),
+                tree_resos=self._tree_param('pairs', 'tree_resos', [0., 0.5, 1., 2., 4.]),
                 shuffle_pix=self._catalog_param('shuffle_pix', 1),
                 verbosity=self._catalog_param('verbosity', 1),
                 nthreads=self.nthreads)
@@ -2186,8 +2210,8 @@ class GGCovarianceNoTomo:
                 n_cfs=4, min_sep=float(self.theta_edges[0]),
                 max_sep=float(self.theta_edges[-1]), nbinsr=self.triplet_n_r,
                 nmaxs=self._nmaxs(), nbinsphi=self.n_phi,
-                rmin_pixsize=self._catalog_param('rmin_pixsize', 40),
-                tree_resos=self._catalog_param('tree_resos', [0., 0.5, 1., 2., 4.]),
+                rmin_pixsize=self._tree_param('triplets', 'rmin_pixsize', 40),
+                tree_resos=self._tree_param('triplets', 'tree_resos', [0., 0.5, 1., 2., 4.]),
                 shuffle_pix=self._catalog_param('shuffle_pix', 1),
                 verbosity=self._catalog_param('verbosity', 1),
                 nthreads=self.nthreads)
@@ -2251,8 +2275,8 @@ class GGCovarianceNoTomo:
         path_save = self.catalog['path_save']
         npatches = int(self._catalog_param('npatches', required=True))
         nmaxs = self._nmaxs()
-        rmin_pixsize = self._catalog_param('rmin_pixsize', 40)
-        tree_resos = self._catalog_param('tree_resos', [0., 0.5, 1., 2., 4.])
+        rmin_pixsize = self._tree_param('quadruplets', 'rmin_pixsize', 40)
+        tree_resos = self._tree_param('quadruplets', 'tree_resos', [0., 0.5, 1., 2., 4.])
         method = self._catalog_param('method', 'DoubleTree')
         verbosity = self._catalog_param('verbosity', 1)
         memory_bound = self._catalog_param('memory_bound', 512.)
@@ -2328,7 +2352,10 @@ class GGCovarianceNoTomo:
         if self.area is None:
             raise ValueError("`area` is required to convert counts to density")
         q = np.array(counts, dtype=float)
-        tdt = self.q_theta_centers * self.q_dtheta
+        # Exact annulus of every radial bin: the count-weighted bin centers (q_theta_centers
+        # after the measurement) times the width overestimate it, by 0.3 per cent per spoke for
+        # bins of 0.2 in ln theta
+        tdt = _theta_dtheta(self.q_theta_edges)
         dp = self.q_dphi
         # V_q is separable, so divide axis by axis (like in set_quadruplets_from_counts)
         q /= 2. * np.pi * self.area
@@ -2619,6 +2646,7 @@ class GGCovariance(GGCovarianceNoTomo):
         ## Tomo output storage ##
         self.rterms_tomo = {}
         self.D_tomo = None
+        self.Dxi_tomo = None
         self.qpp_tomo = None
         self.qmm_tomo = None
         self.qpm_tomo = None
@@ -2797,6 +2825,26 @@ class GGCovariance(GGCovarianceNoTomo):
     # Shape noise (D) #
     ###################
 
+    def _pairs_tomo(self, bp):
+        """Ordered pair counts (n_r,) of the bin pair ``bp``, as the shape-noise term uses them."""
+        a, b = bp
+        if self.method_pairs in ('analytic', 'continuous'):
+            Np = (2. * np.pi * self.area
+                  * self.nbar[a] * self.nbar[b]
+                  * self._w1**2
+                  * _theta_dtheta(self.theta_edges)
+                  * self._suppression(self.theta_centers))
+        else:
+            Np = np.asarray(self.pairs)
+            if self.nbar_ref is not None:
+                Np = Np * (self.nbar[a] * self.nbar[b]
+                           / self.nbar_ref**2)
+        # Np are ordered pairs within one bin. A pair between two bins is
+        # double counted on the same footing by taking it in both orders.
+        if a != b:
+            Np = 2. * Np
+        return Np
+
     def getD_tomo(self):
         """Shape-noise term ``{(a, b): (n_r,)}`` of each bin pair, nonzero in auto blocks only."""
         ww_factor = self._w2**2 / self._w1**2 if self._w1 != 0 else 0.
@@ -2804,35 +2852,45 @@ class GGCovariance(GGCovarianceNoTomo):
         for bp in self.bp_list:
             a, b = bp
             se4 = self.sigma_eps[a]**2 * self.sigma_eps[b]**2
-            if self.method_pairs in ('analytic', 'continuous'):
-                Np = (2. * np.pi * self.area
-                      * self.nbar[a] * self.nbar[b]
-                      * self._w1**2
-                      * _theta_dtheta(self.theta_edges)
-                      * self._suppression(self.theta_centers))
-            else:
-                Np = np.asarray(self.pairs)
-                if self.nbar_ref is not None:
-                    Np = Np * (self.nbar[a] * self.nbar[b]
-                               / self.nbar_ref**2)
-            # Np are ordered pairs within one bin. A pair between two bins is
-            # double counted on the same footing by taking it in both orders.
-            if a != b:
-                Np = 2. * Np
-            self.D_tomo[bp] = se4 * ww_factor / Np
+            self.D_tomo[bp] = se4 * ww_factor / self._pairs_tomo(bp)
         return self.D_tomo
+
+    def getDxi_tomo(self):
+        """Gaussian variance of identical pairs ``{(a, b): {'pp', 'mm', 'pm': (n_r,)}}``.
+
+        The contractions <e_i e_j*><e_j e_i*> and <e_i e_j><e_i* e_j*> of a pair with itself. They
+        depend on theta, so sigma_eps (which may contain xi_+(0)) cannot absorb them, and they
+        have zero measure in the quadruplet integral. Per pair they give xi_+^2 + xi_-^2 for pp
+        and mm and 2 xi_+ xi_- for pm, with the normalisation of the shape-noise term. Negligible
+        against sigma_eps^4 for realistic shape noise, but not for noise-free mocks.
+        """
+        ww_factor = self._w2**2 / self._w1**2 if self._w1 != 0 else 0.
+        self.Dxi_tomo = {}
+        for bp in self.bp_list:
+            a, b = bp
+            xp = np.asarray(self._xi('p', a, b)(self.theta_centers), dtype=float)
+            xm = np.asarray(self._xi('m', a, b)(self.theta_centers), dtype=float)
+            pre = ww_factor / self._pairs_tomo(bp)
+            self.Dxi_tomo[bp] = {'pp': (xp**2 + xm**2) * pre,
+                                 'mm': (xp**2 + xm**2) * pre,
+                                 'pm': 2. * xp * xm * pre}
+        return self.Dxi_tomo
 
     ########################
     # Triplet terms (tomo) #
     ########################
 
-    def _triplet_tomo_block(self, weight_type, xi_pm, combo):
+    def _triplet_tomo_block(self, weight_type, xi_pm, combo, cache=None):
         """Mixed term of one tomographic combo.
 
         The shared galaxy of the two pairs (a, b) and (c, d) lies in a common bin. Each such case
         adds the triplet term with xi of the two other bins and with sigma_eps and nbar of the
         shared bin, and the factor 1/4 matches the four cases of the non-tomographic term.
+        The triplet sum only depends on (weight_type, xi), as sigma_eps^2 and nbar_fac are plain
+        prefactors, so it is kept in ``cache`` (a dict) and shared by the combos of one call.
         """
+        if cache is None:
+            cache = {}
         (a, b), (c, d) = combo
         n = self.n_r
         block = np.zeros((n, n))
@@ -2846,21 +2904,92 @@ class GGCovariance(GGCovarianceNoTomo):
                 (a, c, b, d, a, nf_a), (a, d, b, c, a, nf_a),
                 (b, c, a, d, b, nf_b), (b, d, a, c, b, nf_b)]:
             if shared_a == shared_b:
-                block += self._triplet_term(
-                    weight_type, self._xi(xi_pm, xi_i, xi_j),
-                    sigma_eps_sq=self.sigma_eps[sig]**2, nbar_fac=nf)
+                key = (min(xi_i, xi_j), max(xi_i, xi_j))
+                if key not in cache:
+                    cache[key] = self._triplet_term(
+                        weight_type, self._xi(xi_pm, xi_i, xi_j),
+                        sigma_eps_sq=1., nbar_fac=1.)
+                block += (self.sigma_eps[sig]**2 * nf) * cache[key]
         return .25 * block
+
+    def _triplet_angular_sums(self):
+        """Sums S_0 = sum_phi N_t and S_4 = sum_phi N_t cos(4 phi) of the triplet counts.
+
+        On the oversampled grid, shape (triplet_n_r, triplet_n_r) each, cached. ``None`` without
+        triplet counts (``method_triplets='continuous'``).
+        """
+        cached = getattr(self, '_triplet_sums', None)
+        if cached is not None and cached[0] is self.triplets:
+            return cached[1]
+        if self.triplets is None:
+            return None
+        Nt = np.asarray(self.triplets)
+        sums = (Nt.sum(axis=2), Nt @ np.cos(4. * self.phi_centers))
+        self._triplet_sums = (self.triplets, sums)
+        return sums
+
+    def _degenerate_triplet_tomo_block(self, name, combo):
+        """Triplet term without shape noise of one tomographic combo, the counterpart of Dxi_tomo.
+
+        Two pairs (i, j) at theta_1 and (i, l) at theta_2 that share the galaxy i have, besides
+        the mixed term sigma_eps^2 xi(r_jl) w(phi), the contractions <e_i e_l*><e_j* e_i> and
+        <e_i e_l><e_j* e_i*> (and their analogues for xi_-), the products of the xi of the two
+        sides at the shared galaxy. They do not contain sigma_eps, so sigma_eps (which may
+        contain xi_+(0)) cannot absorb them, and they have zero measure in the quadruplet
+        integral. Summed over the four sharing cases they give, with S_0 = sum_phi N_t and
+        S_4 = sum_phi N_t cos(4 phi),
+
+            q_++: 2 [xi_+(t1) xi_+(t2) S_0 + xi_-(t1) xi_-(t2) S_4] / (N_p(t1) N_p(t2))
+            q_--: 2 [xi_-(t1) xi_-(t2) S_0 + xi_+(t1) xi_+(t2) S_4] / (N_p(t1) N_p(t2))
+            q_+-: 2 [xi_+(t1) xi_-(t2) S_0 + xi_-(t1) xi_+(t2) S_4] / (N_p(t1) N_p(t2))
+
+        (rows xi_+ for q_+-), with the xi between the bin of the shared galaxy and the bin of the
+        other galaxy of each pair. The tomographic cases, nbar factors and the factor 1/4 are
+        those of :meth:`_triplet_tomo_block`. About 2 xi(t1) xi(t2) / N_gal, negligible for
+        realistic shape noise but not for noise-free mocks.
+        """
+        sums = self._triplet_angular_sums()
+        n = self.n_r
+        if sums is None:
+            return np.zeros((n, n))
+        S0, S4 = sums
+        alpha = self.triplet_oversample
+        tc = self.triplet_theta_centers
+        Np = np.asarray(self.pairs)
+        (a, b), (c, d) = combo
+        if self.nbar_ref is not None:
+            nf_a = self.nbar_ref / self.nbar[a]
+            nf_b = self.nbar_ref / self.nbar[b]
+        else:
+            nf_a = nf_b = 1.
+        # (xi of side 1, xi of side 2) multiplying S_0 and S_4
+        pm1, pm2 = {'qpp': ('pp', 'mm'), 'qmm': ('mm', 'pp'), 'qpm': ('pm', 'mp')}[name]
+        fine = np.zeros((len(tc), len(tc)))
+        for shared_a, shared_b, xi_i, xi_j, sig, nf in [
+                (a, c, b, d, a, nf_a), (a, d, b, c, a, nf_a),
+                (b, c, a, d, b, nf_b), (b, d, a, c, b, nf_b)]:
+            if shared_a == shared_b:
+                for (p1, p2), S in ((pm1, S0), (pm2, S4)):
+                    side1 = np.asarray(self._xi(p1, sig, xi_i)(tc), dtype=float)
+                    side2 = np.asarray(self._xi(p2, sig, xi_j)(tc), dtype=float)
+                    fine += nf * np.outer(side1, side2) * S
+        if alpha > 1:
+            fine = fine.reshape(n, alpha, n, alpha).sum(axis=(1, 3))
+        return .25 * 2. * fine / np.outer(Np, Np)
 
     def _q_tomo_blocks(self, index, xi_pm):
         """All tomographic blocks of one mixed term, by its position in :attr:`QTERMS`.
 
-        Auto combos of q_++ and q_-- are symmetrised, q_+- is not.
+        Auto combos of q_++ and q_-- are symmetrised, q_+- is not. Includes the triplet term
+        without shape noise, see :meth:`_degenerate_triplet_tomo_block`.
         """
         name, weight_type, _ = self.QTERMS[index]
         symmetrise = name in ('qpp', 'qmm')
         blocks = {}
+        cache = {}
         for combo in self._tomo_combos():
-            block = self._triplet_tomo_block(weight_type, xi_pm, combo)
+            block = self._triplet_tomo_block(weight_type, xi_pm, combo, cache)
+            block = block + self._degenerate_triplet_tomo_block(name, combo)
             if symmetrise and combo[0] == combo[1]:
                 block = .5 * (block + block.T)
             blocks[combo] = block
@@ -2900,6 +3029,9 @@ class GGCovariance(GGCovarianceNoTomo):
         q_tomo = getattr(self, qname + '_tomo')
         if with_D and self.D_tomo is None:
             self.getD_tomo()
+        # Set in getDxi_tomo, missing on instances built by _from_components (subbin_tomo)
+        if getattr(self, 'Dxi_tomo', None) is None:
+            self.getDxi_tomo()
         if q_tomo is None:
             q_tomo = getattr(self, 'get' + qname + '_tomo')()
         if not self.rterms_tomo:
@@ -2913,6 +3045,9 @@ class GGCovariance(GGCovarianceNoTomo):
             if with_D:
                 # Diagonal shape noise.
                 terms['D'][idx1*n:(idx1+1)*n, idx1*n:(idx1+1)*n] += np.diag(self.D_tomo[bp1])
+            # Identical-pair term in the sample variance, since it is cosmic variance (and the
+            # shot noise of pm is not used downstream)
+            terms['sva'][idx1*n:(idx1+1)*n, idx1*n:(idx1+1)*n] += np.diag(self.Dxi_tomo[bp1][block])
             for idx2, bp2 in enumerate(self.bp_list):
                 combo = (bp1, bp2) if bp1 <= bp2 else (bp2, bp1)
                 sl1 = slice(idx1 * n, (idx1 + 1) * n)
