@@ -533,7 +533,8 @@ class Catalog:
                          extent=[None,None,None,None], forcedivide=1, nthreads=1,
                          reso_redges=None, nsides=None, nside_hash=None, nav_coarsen=None,
                          dpix_z=None, extent_z=[None,None],
-                         w2field=False, verbose=False):
+                         w2field=False, wpowers=False, shapepowers=False,
+                         verbose=False):
         r"""Constructs a hierarchy of reduced catalogs and their associated spatial hashes.
 
         This method is geometry-aware and each geometry returns a single dict, which can be
@@ -594,6 +595,17 @@ class Catalog:
             default to the catalog extent.
         w2field: bool, optional, default ``False``
             Also aggregate the squared tracer weights for non-scalar catalogs.
+        wpowers: bool, optional, default ``False``
+            Also return the summed squared and cubed weights of the galaxies merged into each
+            reduced object, as ``weightsq_resos`` and ``weightcb_resos`` in the layout of the
+            reduced weights (``flat2d`` and ``spherical``). The multiple-counting corrections
+            need them, since a reduced object of weight W stands for several galaxies whose
+            squared weights do not add up to W**2.
+        shapepowers: bool, optional, default ``False``
+            For spin-2 catalogs, also return the summed self-terms of the weighted shapes
+            ``s = w*(tracer_1 + 1j*tracer_2)`` of the galaxies merged into each reduced object as
+            ``shapepowers_resos`` of shape ``(nobj, 7)``: ``s**2`` (real, imaginary), ``|s|**2``,
+            ``s**3`` (real, imaginary) and ``s**2 conj(s)`` (real, imaginary). ``flat2d`` only.
 
         Returns
         -------
@@ -602,13 +614,44 @@ class Catalog:
         """
         fields = self._multihash_fields(self.geometry, w2field)
         if self.geometry == 'flat2d':
-            return self.multihash_flat(dpixs=dpixs, fields=fields, dpix_hash=dpix_hash,
-                                       normed=normed, shuffle=shuffle, extent=extent,
-                                       forcedivide=forcedivide, nthreads=nthreads)
+            # The sums over the merged galaxies are reduced as extra fields f, as the reduction
+            # sums w*f over the galaxies of a cell
+            fields = list(fields) if fields is not None else []
+            nfields = len(fields)
+            extra = []
+            w = self.weight.astype(np.float64)
+            if wpowers:
+                extra += [w, w**2]
+            if shapepowers:
+                if getattr(self, 'spin', 0) != 2:
+                    raise ValueError("shapepowers requires a spin-2 catalog")
+                e = self.tracer_1 + 1j*self.tracer_2
+                extra += [w*e**2, (w*np.abs(e)**2).astype(np.complex128), w**2*e**3, w**2*e**2*np.conj(e)]
+            bundle = self.multihash_flat(dpixs=dpixs, fields=(fields + extra) or None,
+                                         dpix_hash=dpix_hash, normed=normed, shuffle=shuffle,
+                                         extent=extent, forcedivide=forcedivide, nthreads=nthreads)
+            # The reduction returns sum(w*f) (normed=False) or sum(w*f)/sum(w) (normed=True), and
+            # the base level carries w*f or f, respectively
+            def _summed(k):
+                return np.concatenate([np.asarray(allf[k])*(wl if normed else 1.)
+                                       for allf, wl in zip(bundle['allfields'], bundle['weights'])])
+            k = nfields
+            if wpowers:
+                bundle['weightsq_resos'] = np.real(_summed(k)).astype(np.float64)
+                bundle['weightcb_resos'] = np.real(_summed(k+1)).astype(np.float64)
+                k += 2
+            if shapepowers:
+                s2, s1s1c, s3, s2s1c = (_summed(k+j) for j in range(4))
+                bundle['shapepowers_resos'] = np.ascontiguousarray(np.stack(
+                    [s2.real, s2.imag, s1s1c.real, s3.real, s3.imag, s2s1c.real, s2s1c.imag],
+                    axis=-1), dtype=np.float64)
+            return bundle
         elif self.geometry == 'spherical':
+            if shapepowers:
+                raise NotImplementedError("shapepowers is only implemented for flat2d catalogs")
             return self.multihash_spherical(reso_redges=reso_redges, nsides=nsides,
                                             nside_hash=nside_hash, shuffle=shuffle,
-                                            fields=fields, w2field=w2field,
+                                            fields=fields, w2field=w2field, wpowers=wpowers,
                                             nav_coarsen=nav_coarsen, verbose=verbose,
                                             nthreads=nthreads)
         elif self.geometry == '3dbox':
@@ -812,8 +855,8 @@ class Catalog:
         return bundle
 
     def multihash_spherical(self, reso_redges, nsides, nside_hash, shuffle=0,
-                            fields=None, w2field=False, nav_coarsen=None, verbose=False,
-                            nthreads=1):
+                            fields=None, w2field=False, wpowers=False, nav_coarsen=None,
+                            verbose=False, nthreads=1):
         r"""Builds spatialhash for a base catalog with geometry ``spherical`` and its reductions.
 
         Returns
@@ -863,6 +906,7 @@ class Catalog:
         red_ra, red_sindec, red_cosdec = [], [], []
         red_w, red_isinner, red_zbin = [], [], []
         red_e1, red_e2, red_weightsq = [], [], []
+        red_wpow2, red_wpow3 = [], []
         ngal_resos = np.zeros(nresos, dtype=np.int64)
         ncells_resos = np.zeros(nresos, dtype=np.int64)
         nside_nav = np.zeros(nresos, dtype=np.int64)
@@ -928,6 +972,20 @@ class Catalog:
                 cell_redbounds = cell_redbounds[:ncells+1]
             check_clib_error(self.clib)
 
+            # Summed squared and cubed weights per reduced galaxy: the reduced galaxy ic of a
+            # reduced band collects the ic-th run of equal keys in the sorted order
+            if wpowers:
+                if ns_red == 0:
+                    red_wpow2.append(rw**2); red_wpow3.append(rw**3)
+                elif ngal > 0:
+                    starts = np.flatnonzero(np.r_[True, key_sorted[1:] != key_sorted[:-1]])
+                    assert len(starts) == n_red
+                    wg = w[order]
+                    red_wpow2.append(np.add.reduceat(wg**2, starts))
+                    red_wpow3.append(np.add.reduceat(wg**3, starts))
+                else:
+                    red_wpow2.append(np.empty(0)); red_wpow3.append(np.empty(0))
+
             # Update the per-band bookkeeping
             ngal_resos[r] = n_red
             ncells_resos[r] = ncells
@@ -984,6 +1042,9 @@ class Catalog:
             cen_vx=gvx, cen_vy=gvy, cen_vz=gvz,
             cen_ra=ra, cen_sindec=sindec, cen_cosdec=cosdec,
             cen_w=w, cen_isinner=isinner)
+        if wpowers:
+            bundle['weightsq_resos'] = _cat(red_wpow2, np.float64)
+            bundle['weightcb_resos'] = _cat(red_wpow3, np.float64)
         if do_shear:
             bundle['red_e1'] = _cat(red_e1, np.float64)
             bundle['red_e2'] = _cat(red_e2, np.float64)

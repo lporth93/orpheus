@@ -35,6 +35,12 @@ typedef struct {
     double *e1_resos;
     double *e2_resos;
     double *weightsq_resos;
+    // Summed cubed weights of the galaxies merged into each reduced object; together with
+    // weightsq_resos it enters the multiple-counting corrections of the NNNN correlators
+    double *weightcb_resos;
+    // Summed (w e)^2 (re, im), |w e|^2, (w e)^3 (re, im) and (w e)^2 (w e)* (re, im) of the
+    // galaxies merged into each reduced object, 7 per object (GGGG multiple-counting corrections)
+    double *shapepowers_resos;
 } MultiresoCatalog;
 
 // Quantities neccessary to navigate through a multihash nested spatial hashing structur
