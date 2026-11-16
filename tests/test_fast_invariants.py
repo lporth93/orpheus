@@ -567,6 +567,25 @@ def test_doubletree_with_a_pinned_leaf_band_reproduces_basetree(shear_catalog):
     assert _deviation(ref, out[0]) > 1e-3, "the leaf band is not changing anything"
     assert _deviation(ref, out[1]) < RTOL_EXACT, _deviation(ref, out[1])
 
+# Make sure that for the Tree scheme doesnt use any band for which is below rmin based on the
+# chosen tree_resos and rmin_pixsize.
+BELOW_MIN_SEP = [(s, lowmem) for s in correlators(orders=(3, 4), exclude=('NNNCorrelation', 'GNNCorrelation'))
+                 for lowmem in ((True, False) if s.order == 4 else (None,))]
+
+@pytest.mark.parametrize("spec,lowmem", BELOW_MIN_SEP,
+                         ids=['%s-%s' % (s.cls.__name__, lowmem) for s, lowmem in BELOW_MIN_SEP])
+def test_tree_bands_below_min_sep_stay_empty(spec, lowmem, small_catalogs):
+    shear, scalar = small_catalogs
+    kwargs = {} if lowmem is None else dict(statistics='4pcf_multipole', lowmem=lowmem)
+    out = []
+    for tree_resos, rmin_pixsize in (([0., 1., 2., 4.], 2.), ([0., 4.], 2.5)):
+        inst = build_correlator(spec, min_sep=10., max_sep=MAX_SEP, nbinsr=NBINSR, **ANGULAR,
+                                method='Tree', tree_resos=tree_resos, rmin_pixsize=rmin_pixsize,
+                                nthreads=NTHREADS)
+        run_correlator(spec, inst, shear, scalar, **kwargs)
+        out.append(np.asarray(inst.npcf_multipoles))
+    assert _deviation(out[1], out[0]) < RTOL_EXACT, _deviation(out[1], out[0])
+
 # TODO: GNNN FAILS SLIGNTLY WHEN ENAABLING MULTIPLE COUNTIG CORRS, TREE IS CORRECT
 # Make sure lowmem and highmem give the same result of GNNN
 @pytest.mark.parametrize("spec", correlators(orders=4), ids=correlator_ids(correlators(orders=4)))

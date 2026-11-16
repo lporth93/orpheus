@@ -126,6 +126,11 @@ parallelised C kernels.
 
 #### Fixed
 
+* **Tree leaves in a band below `min_sep` were written outside their arrays.** When
+  `rmin_pixsize*tree_resos` put a band below `min_sep`, e.g. `rmin_pixsize=2` and
+  `min_sep=10`, GGG `Tree`, NGG `Tree` and the fourth-order `Tree` kernels binned those leaves
+  at a negative radial index, which corrupted the heap and segfaulted. They are now skipped
+  (`test_tree_bands_below_min_sep_stay_empty`).
 * **`nmaxs` and `nbinsphi` given as a list or numpy integer** raised `AttributeError` or
   `AssertionError`. Like `spins`, they are now broadcast from any integer or sequence.
 * **A leaf band given out of order was reported but kept.** `maxresoind_leaf <

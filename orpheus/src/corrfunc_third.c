@@ -2714,7 +2714,7 @@ void alloc_Gammans_tree_ggg(const MultiresoCatalog *cat, const MultiresoCatalog 
                             rel1 = p21 - p11;
                             rel2 = p22 - p12;
                             dist = sqrt(rel1*rel1 + rel2*rel2);
-                            if(dist < reso_redges[elreso] || dist >= reso_redges[elreso+1]) continue;
+                            if(dist < mymax(reso_redges[elreso], rmin) || dist >= reso_redges[elreso+1]) continue;
                             if (rbins[0] < 0){
                                 rbin = (int) floor((log(dist)-log(rmin))/drbin);
                             }
@@ -4989,7 +4989,8 @@ void alloc_Gammans_tree_NGG(const MultiresoCatalog *cat_source, const NavHash *n
                 z1shift = zbin_gal1*nbinsz_source*nbinsr;                
                 
                 for (int elreso=0;elreso<nresos;elreso++){
-                    double rmin_sq = reso_redges[elreso]*reso_redges[elreso];
+                    double rmin_reso = mymax(reso_redges[elreso], rmin);
+                    double rmin_sq = rmin_reso*rmin_reso;
                     double rmax_sq = reso_redges[elreso+1]*reso_redges[elreso+1];
                     FLATCELL_FOREACH(
                         index_matcher_source, rshift_index_matcher[elreso], pixs_galind_bounds_source, rshift_pixs_galind_bounds[elreso],

@@ -1740,7 +1740,7 @@ void alloc_notomoGammans_tree_gggg(const MultiresoCatalog *cat_base, const Multi
                 // Allocate Gn, Wn and their multiple-couting corrections
                 for (int elreso=0; elreso<nresos; elreso++){
                     int rbin, zrshift, ind_Gn, ind_G2n, ind_Wn;
-                    double rmin_reso = reso_redges[elreso];
+                    double rmin_reso = mymax(reso_redges[elreso], rmin);
                     double rmin_reso2 = rmin_reso*rmin_reso;
                     double rmax_reso = reso_redges[elreso+1];
                     double rmax_reso2 = rmax_reso*rmax_reso;
@@ -2667,7 +2667,7 @@ void alloc_notomoMap4_tree_gggg(const MultiresoCatalog *cat_base, const Multires
                 for (int i=0; i<nbinszr; i++){nextW3ns[i]=0;}
                 for (int elreso=reso_min_batch; elreso<=reso_max_batch; elreso++){
                     int rbin, zrshift, ind_Gn, ind_G2n, ind_Wn;
-                    double rmin_reso = reso_redges[elreso];
+                    double rmin_reso = mymax(reso_redges[elreso], rmin);
                     double rmin_reso2 = rmin_reso*rmin_reso;
                     double rmax_reso = reso_redges[elreso+1];
                     double rmax_reso2 = rmax_reso*rmax_reso;
@@ -3326,7 +3326,7 @@ void alloc_notomoGammans_tree_gnnn(const MultiresoCatalog *cat_source, const Nav
                 for (int i=0; i<nnvals_W3n*nbinszr; i++){nextW3ns[i]=0;}
                 for (int elreso=0; elreso<nresos; elreso++){
                     int rbin, zrshift, ind_Wn;
-                    double rmin_reso = reso_redges[elreso];
+                    double rmin_reso = mymax(reso_redges[elreso], rmin);
                     double rmax_reso = reso_redges[elreso+1];
                     FLATCELL_FOREACH(
                         index_matcher_lens, rshift_index_matcher[elreso], pixs_galind_bounds_lens, rshift_pixs_galind_bounds[elreso],
@@ -3715,7 +3715,7 @@ void alloc_notomoMapNap3_tree_gnnn(const MultiresoCatalog *cat_source, const Nav
                 for (int i=0; i<nnvals_W3n*nbinszr; i++){nextW3ns[i]=0;}
                 for (int elreso=reso_min_batch; elreso<=reso_max_batch; elreso++){
                     int rbin, zrshift, ind_Wn;
-                    double rmin_reso = reso_redges[elreso];
+                    double rmin_reso = mymax(reso_redges[elreso], rmin);
                     double rmax_reso = reso_redges[elreso+1];
                     FLATCELL_FOREACH(
                         index_matcher_lens, rshift_index_matcher[elreso], pixs_galind_bounds_lens, rshift_pixs_galind_bounds[elreso],
@@ -4109,7 +4109,7 @@ void alloc_notomoNap4_tree_nnnn(const MultiresoCatalog *cat_base, const Multires
                 for (int i=0; i<nbinszr; i++){nextW3ns[i]=0;}
                 for (int elreso=reso_min_batch; elreso<=reso_max_batch; elreso++){
                     int rbin, zrshift, ind_Wn;
-                    double rmin_reso = reso_redges[elreso];
+                    double rmin_reso = mymax(reso_redges[elreso], rmin);
                     double rmax_reso = reso_redges[elreso+1];
                     FLATCELL_FOREACH(
                         index_matcher_hash, rshift_index_matcher_hash[elreso], pixs_galind_bounds, rshift_pixs_galind_bounds[elreso],
@@ -4376,7 +4376,7 @@ void alloc_notomoNap4_tree_nnnn_highmem(const MultiresoCatalog *cat_base, const 
         double complex phirot, phirotc;
         for (int elreso=0; elreso<nresos; elreso++){
             int rbin, zrshift, ind_Wn;
-            double rmin_reso = reso_redges[elreso];
+            double rmin_reso = mymax(reso_redges[elreso], rmin);
             double rmax_reso = reso_redges[elreso+1];
             FLATCELL_FOREACH(
                 index_matcher_hash, rshift_index_matcher_hash[elreso], pixs_galind_bounds, rshift_pixs_galind_bounds[elreso],
@@ -4634,7 +4634,7 @@ void alloc_nnnn_tree(const MultiresoCatalog *cat_base, const MultiresoCatalog *c
             double w1 = weight[ind_gal];
             int lower, upper;
             for (int elreso=0; elreso<nresos; elreso++){
-                double rmin_reso = reso_redges[elreso];
+                double rmin_reso = mymax(reso_redges[elreso], rmin);
                 double rmax_reso = reso_redges[elreso+1];
                 FLATCELL_FOREACH(
                     index_matcher_hash, rshift_index_matcher_hash[elreso], pixs_galind_bounds, rshift_pixs_galind_bounds[elreso],
@@ -4790,7 +4790,7 @@ void alloc_nnnn_tree_spherical(const MultiresoCatalog *cat_base, const Multireso
             double w1 = weight[ind_gal];
             double bvec[3] = {bx, by, bz};
             for (int elreso=0; elreso<nresos; elreso++){
-                double rmin_reso = reso_redges[elreso];
+                double rmin_reso = mymax(reso_redges[elreso], rmin);
                 double rmax_reso = reso_redges[elreso+1];
                 long ns_nav_r = nside_nav[elreso];
                 // Run query_disc to get the ranges and optionally resize
