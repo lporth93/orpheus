@@ -266,7 +266,7 @@ def test_weighted_covariance_terms_are_invariant_under_a_weight_scale(tmp_path):
             phi_grid=np.geomspace(.1, 20., 16),
             varphi1_grid=np.linspace(0., 2.*np.pi, 16, endpoint=False),
             varphi2_grid=np.linspace(0., 2.*np.pi, 16, endpoint=False), nthreads=NTHREADS)
-        terms.append(cov.get_cov_terms_tomo())
+        terms.append(cov.get_cov_terms())
     for block in ('pp', 'mm', 'pm'):
         for term in ('D', 'mix', 'sva'):
             assert np.allclose(terms[1][block][term], terms[0][block][term], rtol=RTOL_EXACT,
@@ -303,7 +303,7 @@ def test_stored_multiplets_reproduce_the_measured_covariance(tmp_path):
     stored = GGCovariance(**files, **kw)
     for name in ('theta_centers', 'triplet_theta_centers', 'q_theta_centers', 'pairs_wsq'):
         assert np.array_equal(getattr(stored, name), getattr(measured, name))
-    terms_m, terms_s = measured.get_cov_terms_tomo(), stored.get_cov_terms_tomo()
+    terms_m, terms_s = measured.get_cov_terms(), stored.get_cov_terms()
     for block in ('pp', 'mm', 'pm'):
         for term in ('D', 'mix', 'sva'):
             assert np.allclose(terms_s[block][term], terms_m[block][term], rtol=RTOL_EXACT,
@@ -357,7 +357,7 @@ def test_tomographic_shape_noise_double_counts_cross_bin_pairs():
         spline_xip=[(0, 0, _xi), (0, 1, _xi), (1, 1, _xi)],
         spline_xim=[(0, 0, _xi), (0, 1, _xi), (1, 1, _xi)],
         sigma_eps=sigma, nbar=nbar, area=area, nthreads=NTHREADS)
-    cov.getD_tomo()
+    cov.getD()
     ring = np.pi*area*np.diff(THETA_EDGES**2)
     for a, b in cov.tomopairs_list:
         npairs = ring*nbar[a]*nbar[b]*(1. if a == b else 2.)
@@ -395,7 +395,7 @@ def _xi_with_knots():
     theta = np.geomspace(1e-3, 1e3, 4000)
     return interp1d(theta, _xi(theta))
 
-@pytest.mark.parametrize("qterm", ['getqpp_tomo', 'getqmm_tomo', 'getqpm_tomo'])
+@pytest.mark.parametrize("qterm", ['getqpp', 'getqmm', 'getqpm'])
 @pytest.mark.parametrize("edges, nbinsphi", [(THETA_EDGES, 64), (np.geomspace(.5, 8., 5), 128)])
 def test_idealised_mixed_term_includes_short_triplet_sides(qterm, edges, nbinsphi):
     phic, phie = _phibins(nbinsphi)
@@ -410,7 +410,6 @@ def test_idealised_mixed_term_includes_short_triplet_sides(qterm, edges, nbinsph
 
 @pytest.mark.parametrize("edges", [THETA_EDGES, np.geomspace(.5, 8., 5)])
 def test_continuous_mixed_term_includes_short_triplet_sides(edges):
-    # Coarse grids for the r-terms, which get_continuous_tomo_c evaluates as well
     kw = dict(theta_centers=_centers(edges), theta_edges=edges,
               method_pairs='continuous', method_triplets='continuous',
               method_quadruplets='continuous', sigma_eps=SIGMA_EPS,
@@ -427,7 +426,7 @@ def test_continuous_mixed_term_includes_short_triplet_sides(edges):
     plain = GGCovariance(spline_xip=_xi, spline_xim=_xi, **kw)
     knots = GGCovariance(spline_xip=_xi_with_knots(), spline_xim=_xi_with_knots(), **kw)
     for cov in (plain, knots):
-        cov.get_continuous_tomo_c(nr_target=128, nphi_target=128, dlnt_target=.2)
+        cov._qterms_continuous_tomo_c(nr_target=128, nphi_target=128)
     for qterm in ('qpp_tomo', 'qmm_tomo', 'qpm_tomo'):
         for combo, block in getattr(knots, qterm).items():
             assert (np.max(np.abs(getattr(plain, qterm)[combo]-block))
@@ -449,7 +448,7 @@ def test_covariance_terms_sum_to_the_tomographic_blocks():
         phi_grid=np.geomspace(.1, 100., 16),
         varphi1_grid=np.linspace(0., 2.*np.pi, 16, endpoint=False),
         varphi2_grid=np.linspace(0., 2.*np.pi, 16, endpoint=False), nthreads=NTHREADS)
-    terms = cov.get_cov_terms_tomo()
+    terms = cov.get_cov_terms()
     for block in ('pp', 'mm', 'pm'):
         total = terms[block]['D']+terms[block]['mix']+terms[block]['sva']
         assert np.allclose(total, getattr(cov, 'cov_%s_tomo' % block), rtol=RTOL_EXACT, atol=0.)
@@ -457,6 +456,33 @@ def test_covariance_terms_sum_to_the_tomographic_blocks():
     for block in ('pp', 'mm'):
         assert np.array_equal(terms[block]['D'], np.diag(shapenoise))
     assert not np.any(terms['pm']['D'])
+
+# In the continuum limit the tomographic class integrates its terms when they are first asked
+# for, and for a single bin they equal the ones of GGCovarianceNoTomo. The getters of a single
+# bin pair that it inherits refuse to run.
+def test_tomographic_continuum_matches_the_single_bin_class():
+    kw = dict(theta_centers=_centers(THETA_EDGES), theta_edges=THETA_EDGES, spline_xip=_xi,
+              spline_xim=_xi, method_pairs='continuous', method_triplets='continuous',
+              method_quadruplets='continuous', sigma_eps=SIGMA_EPS, nbar=10./60.**2,
+              area=100.*60.**2, phi_grid=np.geomspace(.1, 100., 16),
+              varphi1_grid=np.linspace(0., 2.*np.pi, 16, endpoint=False),
+              varphi2_grid=np.linspace(0., 2.*np.pi, 16, endpoint=False), nthreads=NTHREADS)
+    tomo, single = GGCovariance(**kw), GGCovarianceNoTomo(**kw)
+    # The mixed terms on coarse grids, as their continuum kernel is slow on the default ones. The
+    # getters then return them as they are, while the r-terms are integrated when first needed.
+    tomo._qterms_continuous_tomo_c(nr_target=128, nphi_target=128)
+    terms = tomo.get_cov_terms()
+    for block, qterm, rterms in [('pp', 'qpp', ('rp0', 'rp1')), ('mm', 'qmm', ('rm0', 'rm1')),
+                                 ('pm', 'qpm', ('rpm',))]:
+        assert getattr(tomo, 'get'+qterm)() is getattr(tomo, qterm+'_tomo')
+        mix = getattr(single, 'get%s_continuous' % qterm)(nr_target=128, nphi_target=128)
+        assert np.max(np.abs(terms[block]['mix']-mix)) < RTOL_SHARP*np.max(np.abs(mix))
+        sva = sum(getattr(single, 'get'+rterm)() for rterm in rterms)
+        assert np.max(np.abs(terms[block]['sva']-sva)) < RTOL_EXACT*np.max(np.abs(sva))
+    assert np.allclose(np.diag(terms['pp']['D']), single.getD(), rtol=RTOL_EXACT, atol=0.)
+    for getter in ('getrp0', 'getrpm_continuous', 'getqpp_continuous', 'getD_discrete'):
+        with pytest.raises(NotImplementedError):
+            getattr(tomo, getter)()
 
 
 ##########################################

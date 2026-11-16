@@ -96,8 +96,8 @@ parallelised C kernels.
   the shear 2PCF from pair, triplet and quadruplet counts (S+02, L25), either measured on a
   catalog, idealised Poisson counts or the continuum limit, with the integrals in
   `orpheus/src/cov_postq.c`. Both classes are exported from the package root, and
-  `GGCovariance.get_cov_terms_tomo` returns the shape-noise, mixed and sample-variance terms
-  of each covariance block. Coming from the `covariance` branch, eighteen things changed on the
+  `GGCovariance.get_cov_terms` returns the shape-noise, mixed and sample-variance terms
+  of each covariance block. Coming from the `covariance` branch, nineteen things changed on the
   way in:
   * The measured pair counts were twice the ordered pair counts. `GGCorrelation.norm`
     already holds both orders of every pair, and the module doubled it again, which halved
@@ -121,7 +121,7 @@ parallelised C kernels.
     0.5 arcmin and 128 angular bins. The continuum mixed term, whose angular nodes start at
     phi = 0, had the same floor, e.g. 9%, 46% and 6.5% off for theta_min = 0.5 arcmin and
     still 6% for q_-- at 2 arcmin. Its table now starts below its shortest nonzero third side,
-    and `get_continuous_tomo_c` tabulates xi for the mixed terms apart from the r-terms.
+    and the tomographic continuum tabulates xi for the mixed terms apart from the r-terms.
   * The idealised pair and triplet counts and the radial weights of the r-terms and of the
     sub-binning took the measure of an angular bin as `theta*dtheta` at its centre rather
     than the annulus `(theta_max**2 - theta_min**2)/2`, which put the shape noise 0.55% high
@@ -129,7 +129,7 @@ parallelised C kernels.
   * In the continuum limit the sample-variance r-terms were evaluated at the bin centres
     while the mixed term and the shape noise are bin averages, which put the xi+xi- sample
     variance up to 30% off at large theta for 24 log bins over 2-300 arcmin.
-    `_rterms_continuous_c` and `get_continuous_tomo_c` now average them over log sub-bins no
+    The continuum r-terms of both classes now average them over log sub-bins no
     wider than `dlnt_target=0.05`.
   * The pairs, triplets and quadruplets were measured on flat patches of the catalog,
     although GG, GGG and NNNN all run on the sphere. They are now measured on the full
@@ -189,20 +189,21 @@ parallelised C kernels.
     of Cov_pp from 26-40% to below 0.5% off. Any separable density degrades once theta
     approaches the narrowest extent of the footprint, e.g. 20-50% off at 100 arcmin on a
     2x50 deg strip.
-  * `subbin` and `subbin_tomo` evaluated D and the mixed terms of the fine grid only in the
+  * `subbin` evaluated D and the mixed terms of the fine grid only in the
     diagonal band unless `recompute_full` was given, although the fine instance holds the
     triplets of the whole fine grid either way and the three mixed terms take 0.7 s there
     for 500 bins and 512 angles. With a fine instance both are now evaluated on the whole
     fine grid, and only the r-terms keep the band. `recompute_full` and the `dry` run of
     `subbin` are gone, as is the `pair_mask` of `getqpp`, `getqmm`, `getqpm` and of `getrp0`
-    ... `getrpm`. A banded `get_all_rterms` or `get_all_rterms_tomo` no longer stores its
+    ... `getrpm`. A banded `get_all_rterms` no longer stores its
     partial r-terms on the instance, where a later `get_cov_xipm` took them for the whole
     r-terms. The accessors `get_pairs` and `get_triplets` are gone as well; the counts are
-    the attributes `pairs` and `triplets`. `subbin_tomo` takes `slab_nr_block` and sizes the
-    tiles of its banded pass as `subbin` does, rather than with the `nr_block` of the fine
+    the attributes `pairs` and `triplets`. `subbin` of `GGCovariance` takes `slab_nr_block` and
+    sizes the tiles of its banded pass as the one of `GGCovarianceNoTomo` does, rather than with
+    the `nr_block` of the fine
     instance, which makes the pass 1.4x faster for 120 fine bins with `nr_block=25` and 3.7x
     without one. The banded pass evaluates each r-term only on the band of its own block,
-    `pair_mask` of `get_all_rterms` and `get_all_rterms_tomo` taking one mask per block, and
+    `pair_mask` of `get_all_rterms` taking one mask per block, and
     skips the elements of a tile outside every band, which makes it another 1.3-1.5x faster
     for 200 fine bins with the bands 1.35 (pp, mm) and 1.9 (pm). Independent of subbin, the
     quadruplet kernel now sorts its callbacks by weight and xi_b and computes their sums
@@ -214,10 +215,10 @@ parallelised C kernels.
   * `cov_of_statistic` took the width of a log bin as `theta*(exp(binsize)-1)`, which holds
     only for `theta` at the lower edge. At the bin centre it is `exp(binsize/2)` too wide, so
     the Map2 and COSEBI weights came out that much too large and their covariances
-    `exp(binsize)` too large, also in `cov_of_statistic_tomo`, e.g. 28% for 20 log bins over
+    `exp(binsize)` too large, in both classes, e.g. 28% for 20 log bins over
     2-300 arcmin and still 1.2% for 512 bins over 0.5-250 arcmin. The weights now take the
     widths of the xi_pm bins. The pure-mode correlation functions were not affected.
-  * `subbin` and `subbin_tomo` interpolate the r-terms, and without a fine instance the mixed
+  * `subbin` interpolates the r-terms, and without a fine instance the mixed
     terms, via the correlation coefficient. For a block whose coefficients were all positive
     this ran in log and left the coefficient on the fine diagonal below one between the coarse
     nodes, e.g. the diagonal of q_++ up to 30% of its peak off instead of 6.5% for 20 to 60 log
@@ -231,6 +232,13 @@ parallelised C kernels.
     continuum limit, is gone, as it shifted the COSEBI covariance by 3-16% rather than only
     removing the stripes. `cov_of_statistic` returns the weights of the statistic with
     `return_weights=True`, formerly the private `_return_weights`.
+  * The methods of `GGCovariance` carried a `_tomo` suffix, while the names it inherited without
+    one computed the covariance of the first bin pair alone. They now share the names of
+    `GGCovarianceNoTomo`: `get_cov_xipm`, `get_cov_terms`, `get_cov_pp`, `get_cov_mm`,
+    `get_cov_pm`, `getD`, `getqpp`, `getqmm`, `getqpm`, `get_all_rterms`, `subbin` and
+    `cov_of_statistic`. In the continuum limit they integrate the terms when these are first
+    needed, so `get_continuous_tomo_c` is gone. The getters of a single bin pair, `getrp0` ...
+    `getrpm` and the `_continuous` and `_discrete` getters, raise on `GGCovariance`.
 
   `tests/test_fast_covariance.py` checks the measured counts, with and without weights,
   against brute force and against the idealised counts.

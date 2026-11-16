@@ -1895,7 +1895,7 @@ class GGCovariance(GGCovarianceNoTomo):
     # Covariance of any GG statistics #
     ###################################
 
-    def cov_of_statistic_tomo(self, filter_type, split_components=False,
+    def cov_of_statistic(self, filter_type, split_components=False,
                               xipm_nbinstarget=None, **kwargs):
         """Covariance of a statistic that is linear in xi_pm, for all tomographic bin pairs.
 
@@ -1912,7 +1912,7 @@ class GGCovariance(GGCovarianceNoTomo):
             Defaults to ``False``.
         xipm_nbinstarget: int, optional
             Number of log-uniform xi_pm bins of the statistic, interpolated with
-            :meth:`subbin_tomo`. Defaults to ``None``, i.e. the binning of this instance.
+            :meth:`subbin`. Defaults to ``None``, i.e. the binning of this instance.
         **kwargs
             Further parameters of :meth:`GGCovarianceNoTomo.cov_of_statistic`.
 
@@ -1927,12 +1927,12 @@ class GGCovariance(GGCovarianceNoTomo):
             n_t = int(xipm_nbinstarget)
             new_te = np.geomspace(self.theta_edges[0], self.theta_edges[-1], n_t + 1)
             new_tc = np.sqrt(new_te[:-1] * new_te[1:])
-            resampled = self.subbin_tomo(new_tc, new_te)
-            return resampled.cov_of_statistic_tomo(
+            resampled = self.subbin(new_tc, new_te)
+            return resampled.cov_of_statistic(
                 filter_type, split_components=split_components, **kwargs)
 
         if self.cov_xipm_tomo is None:
-            self.get_cov_xipm_tomo()
+            self.get_cov_xipm()
 
         n = self.n_r
         ntp = self.n_tomopairs
@@ -2081,7 +2081,7 @@ class GGCovariance(GGCovarianceNoTomo):
     # Resampling to a finer binning #
     #################################
 
-    def subbin_tomo(self, new_theta_centers, new_theta_edges,
+    def subbin(self, new_theta_centers, new_theta_edges,
                     new_pairs=None, recompute_slab=False, slab_width=None,
                     slab_nr_block=None, slab_instance=None, verbose=False):
         """Resample the tomographic covariance to a finer radial binning.
@@ -2115,10 +2115,10 @@ class GGCovariance(GGCovarianceNoTomo):
 
         ## D and the mixed terms, interpolated without a fine instance ##
         if fine is None:
-            if self.D_tomo is None: self.getD_tomo()
-            if self.qpp_tomo is None: self.getqpp_tomo()
-            if self.qmm_tomo is None: self.getqmm_tomo()
-            if self.qpm_tomo is None: self.getqpm_tomo()
+            if self.D_tomo is None: self.getD()
+            if self.qpp_tomo is None: self.getqpp()
+            if self.qmm_tomo is None: self.getqmm()
+            if self.qpm_tomo is None: self.getqpm()
             D_fine = {}
             for tp in self.tomopairs_list:
                 D_scaled = self.D_tomo[tp] * _theta_dtheta(self.theta_edges)
@@ -2135,16 +2135,16 @@ class GGCovariance(GGCovarianceNoTomo):
                 if combo in self.qpm_tomo:
                     qpm_fine[combo] = _interp(self.qpm_tomo[combo], sym=False)
         else:
-            fine.getD_tomo()
-            fine.getqpp_tomo()
-            fine.getqmm_tomo()
-            fine.getqpm_tomo()
+            fine.getD()
+            fine.getqpp()
+            fine.getqmm()
+            fine.getqpm()
             D_fine, qpp_fine, qmm_fine, qpm_fine = (fine.D_tomo, fine.qpp_tomo, fine.qmm_tomo,
                                                     fine.qpm_tomo)
 
         ## Interpolate r-terms ##
         if not self.rterms_tomo:
-            self.get_all_rterms_tomo(verbose=verbose)
+            self.get_all_rterms(verbose=verbose)
         rterms_fine = {}
         for key, block in self.rterms_tomo.items():
             rname, combo = key
@@ -2164,14 +2164,14 @@ class GGCovariance(GGCovarianceNoTomo):
             mask_max = masks['pp'] | masks['mm'] | masks['pm']
             # Optionally print some numbers regarding allocated elements on the grids
             if verbose:
-                print("  subbin_tomo: %d -> %d bins, r-terms of the band w = %.3g (pp), %.3g (mm), "
+                print("  subbin: %d -> %d bins, r-terms of the band w = %.3g (pp), %.3g (mm), "
                       "%.3g (pm) on the fine grid, %.1f%% of its elements"
                       % (self.n_r, n_new, widths['pp'], widths['mm'], widths['pm'],
                          100.*mask_max.mean()))
             # If there is sth to compute, first set up tiles for good caching and then get the required r-terms
             if mask_max.any():
                 self._set_slab_tiles(fine, new_tc, widths, slab_nr_block)
-                slab_rterms = fine.get_all_rterms_tomo(
+                slab_rterms = fine.get_all_rterms(
                     verbose=verbose, pair_mask=masks)
                 # Overwrite the slab band in interpolated r-terms
                 for key, block in slab_rterms.items():
@@ -2198,7 +2198,7 @@ class GGCovariance(GGCovarianceNoTomo):
             qpm_tomo=qpm_fine, rterms_tomo=rterms_fine)
 
     def _fine_instance_from_catalog(self, new_tc, new_te, verbose=False):
-        """Build a fine-grid instance for :meth:`subbin_tomo` from the catalog of this instance.
+        """Build a fine-grid instance for :meth:`subbin` from the catalog of this instance.
 
         The fine pairs and triplets are measured, the quadruplet density is reused.
         """
@@ -2209,7 +2209,7 @@ class GGCovariance(GGCovarianceNoTomo):
         xip_list = [(i, j, spl) for (i, j), spl in self._xip.items()]
         xim_list = [(i, j, spl) for (i, j), spl in self._xim.items()]
         if verbose:
-            print("  subbin_tomo: auto-building fine instance (n_fine=%d) -- "
+            print("  subbin: auto-building fine instance (n_fine=%d) -- "
                   "measuring fine pairs/triplets, reusing q density"
                   % len(new_tc))
         return GGCovariance(**self._grid_kwargs(
@@ -2223,11 +2223,11 @@ class GGCovariance(GGCovarianceNoTomo):
     # Covariance of xi_pm #
     #######################
 
-    def get_cov_xipm_tomo(self, verbose=False):
+    def get_cov_xipm(self, verbose=False):
         """Assemble the full (2*n_tp*n_r, 2*n_tp*n_r) tomo covariance."""
-        if self.cov_pp_tomo is None: self.get_cov_pp_tomo(verbose=verbose)
-        if self.cov_mm_tomo is None: self.get_cov_mm_tomo(verbose=verbose)
-        if self.cov_pm_tomo is None: self.get_cov_pm_tomo(verbose=verbose)
+        if self.cov_pp_tomo is None: self.get_cov_pp(verbose=verbose)
+        if self.cov_mm_tomo is None: self.get_cov_mm(verbose=verbose)
+        if self.cov_pm_tomo is None: self.get_cov_pm(verbose=verbose)
         m = self.n_tomopairs * self.n_r
         out = np.zeros((2 * m, 2 * m))
         out[:m, :m] = self.cov_pp_tomo
@@ -2237,11 +2237,11 @@ class GGCovariance(GGCovarianceNoTomo):
         self.cov_xipm_tomo = out
         return out
 
-    def get_cov_terms_tomo(self, verbose=False):
+    def get_cov_terms(self, verbose=False):
         """Shape-noise, mixed and sample-variance terms of the tomographic covariance blocks.
 
         Returns ``{block: {'D': ..., 'mix': ..., 'sva': ...}}`` for the blocks ``'pp'``, ``'mm'``
-        and ``'pm'`` of :meth:`get_cov_xipm_tomo`, each term of shape (n_tp*n_r, n_tp*n_r), and the
+        and ``'pm'`` of :meth:`get_cov_xipm`, each term of shape (n_tp*n_r, n_tp*n_r), and the
         three terms of a block sum to it.
         """
         for index, (block, *_) in enumerate(self.COVBLOCKS):
@@ -2249,15 +2249,15 @@ class GGCovariance(GGCovarianceNoTomo):
                 self._get_cov_block_tomo(index, verbose)
         return self.cov_terms_tomo
 
-    def get_cov_pp_tomo(self, verbose=False):
+    def get_cov_pp(self, verbose=False):
         """Assemble the full Cov_pp tomo matrix."""
         return self._get_cov_block_tomo(0, verbose)
 
-    def get_cov_mm_tomo(self, verbose=False):
+    def get_cov_mm(self, verbose=False):
         """Assemble the full Cov_mm tomo matrix."""
         return self._get_cov_block_tomo(1, verbose)
 
-    def get_cov_pm_tomo(self, verbose=False):
+    def get_cov_pm(self, verbose=False):
         """Assemble the full Cov_pm tomo matrix (no diagonal D term)."""
         return self._get_cov_block_tomo(2, verbose)
 
@@ -2266,14 +2266,14 @@ class GGCovariance(GGCovarianceNoTomo):
         block, _, qname, rnames, with_D = self.COVBLOCKS[index]
         q_tomo = getattr(self, qname + '_tomo')
         if with_D and self.D_tomo is None:
-            self.getD_tomo()
+            self.getD()
         if q_tomo is None:
-            q_tomo = getattr(self, 'get' + qname + '_tomo')()
+            q_tomo = getattr(self, 'get' + qname)()
         if not self.rterms_tomo:
-            self.get_all_rterms_tomo(verbose=verbose)
+            self.get_all_rterms(verbose=verbose)
         n = self.n_r
         # Shape-noise, mixed and sample-variance terms, kept apart for
-        # get_cov_terms_tomo
+        # get_cov_terms
         terms = {name: np.zeros((self.n_tomopairs * n, self.n_tomopairs * n))
                  for name in ('D', 'mix', 'sva')}
         for idx1, tp1 in enumerate(self.tomopairs_list):
@@ -2297,7 +2297,7 @@ class GGCovariance(GGCovarianceNoTomo):
 
     ## Shape noise and mixed terms ##
 
-    def getD_tomo(self):
+    def getD(self):
         """Shape-noise term ``{(a, b): (n_r,)}`` of each bin pair, nonzero in auto blocks only."""
         ww_factor = self._w2**2 / self._w1**2 if self._w1 != 0 else 0.
         self.D_tomo = {}
@@ -2328,22 +2328,32 @@ class GGCovariance(GGCovarianceNoTomo):
             self.D_tomo[tp] = se4 * (ww_factor / Np if Pw is None else Pw / Np**2)
         return self.D_tomo
 
-    def getqpp_tomo(self):
+    def getqpp(self):
         """Triplet q_++ for all tomo combos."""
-        return self._q_tomo_blocks(0)
+        return self._q_tomo(0)
 
-    def getqmm_tomo(self):
+    def getqmm(self):
         """Triplet q_-- for all tomo combos."""
-        return self._q_tomo_blocks(1)
+        return self._q_tomo(1)
 
-    def getqpm_tomo(self):
+    def getqpm(self):
         """Triplet q_+- for all tomo combos."""
-        return self._q_tomo_blocks(2)
+        return self._q_tomo(2)
+
+    def _q_tomo(self, index):
+        """One mixed term of all tomo combos, by its position in :attr:`QTERMS`, from the triplet
+        counts or in the continuum limit."""
+        if self.method_triplets != 'continuous':
+            return self._q_tomo_blocks(index)
+        # The continuum limit integrates all three mixed terms at once
+        name = self.QTERMS[index][0]
+        if getattr(self, name + '_tomo') is None:
+            self._qterms_continuous_tomo_c()
+        return getattr(self, name + '_tomo')
 
     ## Cosmic variance ##
 
-    def get_all_rterms_tomo(self, verbose=False, pair_mask=None,
-                            nthreads=None):
+    def get_all_rterms(self, verbose=False, pair_mask=None, nthreads=None):
         """Compute all tomographic r-term blocks in one pass.
 
         Returns ``{(rterm, ((a,b),(c,d))): (n_r, n_r)}``. Blocks restricted by ``pair_mask`` are
@@ -2351,11 +2361,28 @@ class GGCovariance(GGCovarianceNoTomo):
         """
         if nthreads is None:
             nthreads = self.nthreads
-        rterms = self._quadruplet_density_terms_tomo_c(
-            verbose=verbose, pair_mask=pair_mask, nthreads=nthreads)
+        if self.method_quadruplets == 'continuous':
+            if pair_mask is not None:
+                raise ValueError("The continuum r-terms are computed on the whole grid, without a pair_mask.")
+            rterms = self._rterms_continuous_tomo_c(verbose=verbose)
+        else:
+            rterms = self._quadruplet_density_terms_tomo_c(
+                verbose=verbose, pair_mask=pair_mask, nthreads=nthreads)
         if pair_mask is None:
             self.rterms_tomo = rterms
         return rterms
+
+    ## Getters of GGCovarianceNoTomo for a single bin pair ##
+
+    def _notomo_only(self, *_args, **_kwargs):
+        raise NotImplementedError(
+            "This getter of GGCovarianceNoTomo returns a single bin pair. GGCovariance holds every bin "
+            "combination, see getD, getqpp, getqmm, getqpm and get_all_rterms.")
+
+    getD_discrete = getD_continuous = _notomo_only
+    getqpp_continuous = getqmm_continuous = getqpm_continuous = _notomo_only
+    getrp0 = getrp1 = getrm0 = getrm1 = getrpm = _notomo_only
+    getrp0_continuous = getrp1_continuous = getrm0_continuous = getrm1_continuous = getrpm_continuous = _notomo_only
 
     ########################
     # Discrete expressions #
@@ -2432,7 +2459,7 @@ class GGCovariance(GGCovarianceNoTomo):
         ((r-term, combo) of each output) and ``n_out``.
         """
         combos_sym = self._tomo_combos() # upper-triangle for symmetric rterms
-        combos_all = self._tomo_combos_all() # all ordered pairs for rpm
+        combos_all = [(tp1, tp2) for tp1 in self.tomopairs_list for tp2 in self.tomopairs_list]
 
         # R-term types: (name, weight_id, xi_type_a, xi_type_b)
         rterm_types = [(name, wid, *self.RTERM_XI[name]) for wid, name in enumerate(self.RTERMS)]
@@ -2508,36 +2535,17 @@ class GGCovariance(GGCovarianceNoTomo):
     # Continuous expressions #
     ##########################
 
-    def get_continuous_tomo_c(self, verbose=False, nr_target=1024, nphi_target=1024, dlnt_target=.05):
-        """Compute D, the mixed and the r-terms of all tomographic blocks in the continuum limit.
-
-        The mixed terms are averaged over nr_target fine bins and the r-terms over sub-bins no wider
-        than dlnt_target in ln theta. Assembles and returns ``cov_xipm_tomo``.
-        """
-
-        ## Helpers
+    def _qterms_continuous_tomo_c(self, verbose=False, nr_target=1024, nphi_target=1024):
+        """Mixed terms of all tomographic combos in the continuum limit, averaged over nr_target fine
+        bins, stored in ``qpp_tomo``, ``qmm_tomo`` and ``qpm_tomo``."""
         def _ptr(a): return np.ascontiguousarray(a, dtype=np.float64)
         def _iptr(a): return np.ascontiguousarray(a, dtype=np.int32)
         lib = self._clib
         n = self.n_r
         combos_sym = self._tomo_combos()
-        combos_all = self._tomo_combos_all()
-
-        ## Build xi tables
-        xi_keys = sorted({(pm, i, j)
-                          for pm in ('p', 'm')
-                          for i in range(self.ntomo)
-                          for j in range(i, self.ntomo)})
-        xi_key_to_idx = {k: idx for idx, k in enumerate(xi_keys)}
-        for pm, i, j in list(xi_key_to_idx.keys()):
-            xi_key_to_idx[(pm, j, i)] = xi_key_to_idx[(pm, i, j)]
-        xi_x, xi_y_tables, xi_logx0, xi_inv_dlogx, xi_n = self._build_xi_tables(xi_keys)
+        xi_keys, xi_key_to_idx = self._xi_keys()
         n_xi = len(xi_keys)
 
-        ## Get D term
-        self.getD_tomo()
-
-        ## Get q terms
         if verbose: print("  continuous q-terms (C/OpenMP) ...")
         alpha = max(1, int(nr_target // n))
         n_fine = alpha * n
@@ -2612,6 +2620,17 @@ class GGCovariance(GGCovarianceNoTomo):
                 block = .5 * (block + block.T)
             getattr(self, qname + '_tomo')[combo] = block
 
+    def _rterms_continuous_tomo_c(self, verbose=False, dlnt_target=.05):
+        """r-terms of all tomographic combos in the continuum limit, averaged over log sub-bins no
+        wider than dlnt_target, as ``{(rterm, ((a,b),(c,d))): (n_r, n_r)}``."""
+        def _ptr(a): return np.ascontiguousarray(a, dtype=np.float64)
+        def _iptr(a): return np.ascontiguousarray(a, dtype=np.int32)
+        lib = self._clib
+        combos_all = [(tp1, tp2) for tp1 in self.tomopairs_list for tp2 in self.tomopairs_list]
+        xi_keys, xi_key_to_idx = self._xi_keys()
+        xi_x, xi_y_tables, xi_logx0, xi_inv_dlogx, xi_n = self._build_xi_tables(xi_keys)
+        n_xi = len(xi_keys)
+
         ## R terms via C ##
         if verbose: print("  continuous r-terms (C/OpenMP) ...")
         v = self.varphi1_grid
@@ -2673,23 +2692,29 @@ class GGCovariance(GGCovarianceNoTomo):
         check_clib_error(lib)
 
         r_results = .5 * _bin_average_blocks(r_results.reshape(n_r_out, n_f, n_f), theta_weights)
-        self.rterms_tomo = {}
+        rterms = {}
         for oi, (rname, combo) in enumerate(r_out_keys):
             if rname in self.RTERMS_SYM and combo[0] > combo[1]:
                 continue
             block = r_results[oi]
             if rname in self.RTERMS_SYM and combo[0] == combo[1]:
                 block = .5 * (block + block.T)
-            self.rterms_tomo[(rname, combo)] = block
+            rterms[(rname, combo)] = block
 
-        ## Assemble ##
-        if verbose: print("  assembling cov_xipm_tomo ...")
-        self.get_cov_xipm_tomo()
-        return self.cov_xipm_tomo
+        return rterms
 
     ###################
     # General helpers #
     ###################
+
+    def _xi_keys(self):
+        """Keys (pm, i, j) with i <= j of the tabulated xi_pm, and their index for either order of
+        the bins."""
+        keys = sorted({(pm, i, j) for pm in ('p', 'm') for i in range(self.ntomo) for j in range(i, self.ntomo)})
+        index = {key: k for k, key in enumerate(keys)}
+        for pm, i, j in keys:
+            index[(pm, j, i)] = index[(pm, i, j)]
+        return keys, index
 
     def _xi(self, pm, i, j):
         """Look up xi_+(i,j) or xi_-(i,j) spline, handling index ordering."""
@@ -2722,7 +2747,3 @@ class GGCovariance(GGCovarianceNoTomo):
             for tp2 in self.tomopairs_list[idx1:]:
                 combos.append((tp1, tp2))
         return combos
-
-    def _tomo_combos_all(self):
-        """All ordered combos ((a,b),(c,d)), since Cov_pm is not symmetric under their exchange."""
-        return [(tp1, tp2) for tp1 in self.tomopairs_list for tp2 in self.tomopairs_list]
