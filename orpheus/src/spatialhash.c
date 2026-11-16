@@ -515,6 +515,18 @@ long sphericalhash_sort(const long *key, long ngal, int nbits,
     return nocc;
 }
 
+// Add all nontrivial spin-combinations of powers of weighted shapes, split into im and re
+static inline void wepow_add(double *acc, double complex wshape, int npow){
+    double complex wshape_sq = wshape*wshape;
+    acc[0] += creal(wshape_sq); acc[1] += cimag(wshape_sq); // spin-4
+    acc[2] += creal(wshape*conj(wshape)); // spin-0
+    if (npow == 3){
+        double complex wshape_cube = wshape_sq*wshape, wshapesqwshapec = wshape_sq*conj(wshape);
+        acc[3] += creal(wshape_cube); acc[4] += cimag(wshape_cube); // spin-6
+        acc[5] += creal(wshapesqwshapec); acc[6] += cimag(wshapesqwshapec); // spin-2
+    }
+}
+
 // Allocate Discrete band of spherical hash 
 // --> The reduced tracers are the tracers themselves, so the band is only permuted
 //     into hash order and cut into cells
@@ -523,13 +535,14 @@ void sphericalhash_gather(
     const double *vx, const double *vy, const double *vz,
     const double *ra, const double *sindec, const double *cosdec,
     const double *w, const double *isinner, const int *zbins,
-    const double *e1, const double *e2, int do_shear, int do_wsq,
+    const double *e1, const double *e2, int do_shear, int npow,
     double *red_vx, double *red_vy, double *red_vz,
     double *red_ra, double *red_sindec, double *red_cosdec,
     double *red_w, double *red_isinner, int *red_zbin,
-    double *red_e1, double *red_e2, double *red_wsq,
+    double *red_e1, double *red_e2, double *red_wpow, double *red_wepow,
     long *cell_pix, long *cell_redbounds, int nthreads){
 
+    int nwepow = (npow==3) ? 7 : 3;
     #pragma omp parallel for num_threads(nthreads) schedule(static)
     for (long i=0; i<ngal; i++){
         long g = order[i];
@@ -537,7 +550,13 @@ void sphericalhash_gather(
         red_ra[i] = ra[g]; red_sindec[i] = sindec[g]; red_cosdec[i] = cosdec[g];
         red_w[i] = w[g]; red_isinner[i] = isinner[g]; red_zbin[i] = zbins[g];
         if (do_shear){ red_e1[i] = e1[g]; red_e2[i] = e2[g]; }
-        if (do_wsq){ red_wsq[i] = w[g]*w[g]; }
+        if (npow >= 2){ red_wpow[i*(npow-1)] = w[g]*w[g]; }
+        if (npow == 3){ red_wpow[i*(npow-1)+1] = w[g]*w[g]*w[g]; }
+        if (do_shear && npow){
+            double *acc = red_wepow + i*nwepow;
+            for (int k=0; k<nwepow; k++){ acc[k] = 0.; }
+            wepow_add(acc, w[g]*(e1[g] + I*e2[g]), npow);
+        }
     }
 
     long ncells = 0;
@@ -570,11 +589,11 @@ long sphericalhash_reduce(
     const double *vx, const double *vy, const double *vz,
     const double *ra, const double *sindec, const double *cosdec,
     const double *w, const double *isinner,
-    const double *e1, const double *e2, int do_shear, int do_wsq,
+    const double *e1, const double *e2, int do_shear, int npow,
     double *red_vx, double *red_vy, double *red_vz,
     double *red_ra, double *red_sindec, double *red_cosdec,
     double *red_w, double *red_isinner, int *red_zbin,
-    double *red_e1, double *red_e2, double *red_wsq,
+    double *red_e1, double *red_e2, double *red_wpow, double *red_wepow,
     long *cell_pix, long *cell_redbounds, int nthreads){
 
     long *occbounds = orpheus_malloc((size_t)(nocc+1)*sizeof(long));
@@ -588,17 +607,18 @@ long sphericalhash_reduce(
     int nsplit = 10;
     while (nsplit>0 && (nside<<nsplit) > (1L<<29)){ nsplit -= 1; }
 
+    int nwepow = (npow==3) ? 7 : 3;
     #pragma omp parallel for num_threads(nthreads) schedule(static)
     for (long ic=0; ic<nocc; ic++){
 
         // Compute helpers for centroid computation within the pixel
-        double sumw = 0., sumis = 0., sumwsq = 0., sumx = 0., sumy = 0., sumz = 0.;
+        double sumw = 0., sumis = 0., sumwsq = 0., sumwcb = 0., sumx = 0., sumy = 0., sumz = 0.;
         for (long i=occbounds[ic]; i<occbounds[ic+1]; i++){
             long g = order[i];
             double wg = w[g];
             sumw += wg; sumis += isinner[g];
             sumx += wg*vx[g]; sumy += wg*vy[g]; sumz += wg*vz[g];
-            if (do_wsq){ sumwsq += wg*wg; }
+            sumwsq += wg*wg; sumwcb += wg*wg*wg;
         }
 
         // Get pixel index 
@@ -647,11 +667,12 @@ long sphericalhash_reduce(
         red_w[ic] = sumw;
         red_isinner[ic] = (sumis>0.) ? 1. : 0.;
         red_zbin[ic] = (int) (key_sorted[occbounds[ic]]%nz);
-        if (do_wsq){ red_wsq[ic] = sumwsq; }
+        if (npow >= 2){ red_wpow[ic*(npow-1)] = sumwsq; }
+        if (npow == 3){ red_wpow[ic*(npow-1)+1] = sumwcb; }
 
         // Parallel transport the shear of each discrete galaxy to the chosen pixel center
         if (do_shear){
-            double sume1 = 0., sume2 = 0.;
+            double sume1 = 0., sume2 = 0., acc[7] = {0.};
             for (long i=occbounds[ic]; i<occbounds[ic+1]; i++){
                 long g = order[i];
                 double dphi = 2.*(sphere_bearing(cra, csindec, ccosdec,
@@ -661,9 +682,11 @@ long sphericalhash_reduce(
                                                    cra, csindec, ccosdec));
                 double complex wshape = w[g]*(e1[g] + I*e2[g])*cexp(I*dphi);
                 sume1 += creal(wshape); sume2 += cimag(wshape);
+                if (npow){ wepow_add(acc, wshape, npow); }
             }
             double norm = (sumw==0.) ? 1. : sumw;
             red_e1[ic] = sume1/norm; red_e2[ic] = sume2/norm;
+            if (npow){ for (int k=0; k<nwepow; k++){ red_wepow[ic*nwepow+k] = acc[k]; } }
         }
     }
 

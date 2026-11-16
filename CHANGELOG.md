@@ -89,6 +89,16 @@ parallelised C kernels.
   in `process()`. `Catalog` rejects non-finite positions, weights and tracers, a Dec beyond
   ±90 deg and tracers of the wrong length, and accepts positions in `'arcsec'`.
   `gen_cat_patchindices` checks `method` before converting the catalog.
+* **`Catalog.multihash_bundle` takes `wpowers` instead of `w2field`.** With `wpowers=2` or `3`
+  the bundle holds per object the sums over its galaxies of `w**2` (and `w**3`) as
+  `wpow_resos` and, for shear catalogs, of `(we)**2`, `|we|**2` (and `(we)**3`,
+  `(we)**2 (we)*`) as `wepow_resos`, which `build_catalog_struct` passes on to C. `w2field`,
+  the bundle key `red_weightsq` and `MultiresoCatalog.weightsq_resos` are gone, and
+  `NNNCorrelation(base_weightsq=True)` reads the summed squared weights from `wpow_resos`
+  through `BinningParams.base_weightsq`. For a shear catalog `w2field` had reduced `weight**2`
+  as a field and so held the sum of `w**3` on the reduced levels; no kernel read it.
+  `SpinTracerCatalog.reduce` lost its `w2field` for the same reason and returns only the two
+  shear components as fields.
 
 #### Added
 
@@ -270,10 +280,9 @@ parallelised C kernels.
   against brute force and against the idealised counts.
 * **`NNNCorrelation(base_weightsq=True)` counts `w_i**2 w_j w_k`**, with the squared weight on
   the base galaxy, as the mixed term of the 2PCF covariance needs. The base galaxies and cells
-  take the sum of the squared weights, which the multihash of a scalar catalog now aggregates
-  with `w2field=True` in both geometries; the curved-sky multihash no longer ties it to a shear
-  field. Without tree levels the counts agree with brute force to 1e-15 on the sphere, on a
-  flat catalog and on a flat patch.
+  take the sum of the squared weights, `wpow_resos` of the multihash, in both geometries.
+  Without tree levels the counts agree with brute force to 1e-15 on the sphere, on a flat
+  catalog and on a flat patch.
 * **`Catalog.max_separation` bounds the largest separation in a catalog** from above, in deg on
   the sphere and in the units of the positions for a flat catalog, to within 2%, on the sphere
   for footprints wider than about 1.5 deg.
@@ -302,6 +311,26 @@ parallelised C kernels.
 
 #### Fixed
 
+* **The tree estimators dropped the multiplets of distinct galaxies that share a cell.** The
+  multiple-counting corrections subtract, for legs ending in one radial bin, the terms in which
+  two or three legs land on the same object. For a reduced cell they took the powers of its
+  summed weight and shape, e.g. `(sum w)**2`, instead of the sums of the powers over its
+  galaxies, `sum w**2`, and so also removed every pair and triplet of distinct galaxies in the
+  cell. This affected NNN `DoubleTree`, GGG `Tree` and `DoubleTree`, GNN `DoubleTree`, NGG
+  `Tree` and `DoubleTree`, NNNN `Tree` and `DoubleTree`, GGGG `Tree` and the lens leg of GNNN
+  `Tree`, on the flat and the curved sky; `Discrete` and GGG `BaseTree` were not affected. The
+  bias sits in configurations whose legs share a radial bin at small opening angle, which the
+  tests averaged away: on a catalog of clumps of coincident galaxies the multipoles were off by
+  1.8% (NNN), 16% (GGG), 1.4% (GNN), 15% (NGG), 5% (NNNN), 31% (GGGG) and 6% (GNNN), and for a
+  Poisson catalog with `rmin_pixsize=20` the GGG triplet count at `r1=r2` and the smallest angle
+  was 2.8% low. The kernels now take the sums from `wpow_resos` and `wepow_resos`, on the sphere
+  after transporting every shape to the cell centre, and reproduce the exact counts of such
+  catalogs to 1e-15 (`test_trees_count_clumps_exactly`).
+* **Tree leaves in a band below `min_sep` were written outside their arrays.** When
+  `rmin_pixsize*tree_resos` put a band below `min_sep`, e.g. `rmin_pixsize=2` and
+  `min_sep=10`, GGG `Tree`, NGG `Tree` and the fourth-order `Tree` kernels binned those leaves
+  at a negative radial index, which corrupted the heap and segfaulted. They are now skipped
+  (`test_tree_bands_below_min_sep_stay_empty`).
 * **`nmaxs` and `nbinsphi` given as a list or numpy integer** raised `AttributeError` or
   `AssertionError`. Like `spins`, they are now broadcast from any integer or sequence.
 * **A leaf band given out of order was reported but kept.** `maxresoind_leaf <

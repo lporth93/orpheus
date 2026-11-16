@@ -149,7 +149,7 @@ def sky_catalog_for_hashing():
                              zbins=rng.integers(0, 2, ngal), geometry='spherical',
                              units_pos1='deg', units_pos2='deg')
 
- # Create scalar and polar catalogs with either doubled weights or two galaxies 
+# Create scalar and polar catalogs with either doubled weights or two galaxies
 # at the same positions
 @pytest.fixture(scope="module")
 def duplicated_catalogs():
@@ -177,6 +177,28 @@ def duplicated_catalogs():
         shear_repeated=_cat(SpinTracerCatalog, weight, spin),
         scalar_doubled=_cat(ScalarTracerCatalog, doubled, scalar),
         scalar_repeated=_cat(ScalarTracerCatalog, weight, scalar))
+
+# Clumps of one to five galaxies with random weights and shapes at one position each, further
+# apart than the largest tree cell, on a flat patch (arcmin) and on the sphere (deg)
+@pytest.fixture(scope="module")
+def clump_catalogs():
+    rng = np.random.default_rng(3)
+    nside, spacing, jitter = 12, 8., 1.
+    grid = (np.arange(nside) + .5)*spacing
+    c1, c2 = [a.ravel() + rng.uniform(-jitter, jitter, nside**2) for a in np.meshgrid(grid, grid)]
+    mult = rng.integers(1, 6, nside**2)
+    pos1, pos2 = np.repeat(c1, mult), np.repeat(c2, mult)
+    ngal = len(pos1)
+    weight = rng.uniform(.5, 1.5, ngal)
+    e1, e2 = rng.normal(0., .3, (2, ngal))
+    out = {}
+    for geometry, pos in (('flat2d', dict(pos1=pos1, pos2=pos2)),
+                          ('spherical', dict(pos1=30. + pos1/60., pos2=pos2/60. - 1.,
+                                             units_pos1='deg', units_pos2='deg'))):
+        shared = dict(weight=weight, geometry=geometry, **pos)
+        out[geometry] = (SpinTracerCatalog(spin=2, tracer_1=e1, tracer_2=e2, **shared),
+                         ScalarTracerCatalog(tracer=np.ones(ngal), **shared))
+    return out
 
 
 ## Methods
@@ -566,6 +588,58 @@ def test_doubletree_with_a_pinned_leaf_band_reproduces_basetree(shear_catalog):
     # the unpinned run has to disagree, or the pinned one proves nothing
     assert _deviation(ref, out[0]) > 1e-3, "the leaf band is not changing anything"
     assert _deviation(ref, out[1]) < RTOL_EXACT, _deviation(ref, out[1])
+
+# Make sure that for the Tree scheme doesnt use any band for which is below rmin based on the
+# chosen tree_resos and rmin_pixsize.
+BELOW_MIN_SEP = [(s, lowmem) for s in correlators(orders=(3, 4), exclude=('NNNCorrelation', 'GNNCorrelation'))
+                 for lowmem in ((True, False) if s.order == 4 else (None,))]
+
+@pytest.mark.parametrize("spec,lowmem", BELOW_MIN_SEP,
+                         ids=['%s-%s' % (s.cls.__name__, lowmem) for s, lowmem in BELOW_MIN_SEP])
+def test_tree_bands_below_min_sep_stay_empty(spec, lowmem, small_catalogs):
+    shear, scalar = small_catalogs
+    kwargs = {} if lowmem is None else dict(statistics='4pcf_multipole', lowmem=lowmem)
+    out = []
+    for tree_resos, rmin_pixsize in (([0., 1., 2., 4.], 2.), ([0., 4.], 2.5)):
+        inst = build_correlator(spec, min_sep=10., max_sep=MAX_SEP, nbinsr=NBINSR, **ANGULAR,
+                                method='Tree', tree_resos=tree_resos, rmin_pixsize=rmin_pixsize,
+                                nthreads=NTHREADS)
+        run_correlator(spec, inst, shear, scalar, **kwargs)
+        out.append(np.asarray(inst.npcf_multipoles))
+    assert _deviation(out[1], out[0]) < RTOL_EXACT, _deviation(out[1], out[0])
+
+# Make sure that a catalog with tracers at the same position have the same correlators in discrete and
+# in doubletree; this makes sure that the multiple-counting corrections are applied properly
+LOW, HIGH = dict(statistics='4pcf_multipole', lowmem=True), dict(statistics='4pcf_multipole', lowmem=False)
+CLUMPS = [('NNNCorrelation', 'DoubleTree', 'flat2d', {}), ('NNNCorrelation', 'DoubleTree', 'spherical', {}),
+          ('GGGCorrelation', 'Tree', 'flat2d', {}), ('GGGCorrelation', 'BaseTree', 'flat2d', {}),
+          ('GGGCorrelation', 'DoubleTree', 'flat2d', {}), ('GGGCorrelation', 'DoubleTree', 'spherical', {}),
+          ('GNNCorrelation', 'DoubleTree', 'flat2d', {}), ('NGGCorrelation', 'Tree', 'flat2d', {}),
+          ('NGGCorrelation', 'DoubleTree', 'flat2d', {}),
+          ('NNNNCorrelation_NoTomo', 'Tree', 'flat2d', LOW), ('NNNNCorrelation_NoTomo', 'Tree', 'flat2d', HIGH),
+          ('NNNNCorrelation_NoTomo', 'DoubleTree', 'flat2d', LOW),
+          ('NNNNCorrelation_NoTomo', 'Tree', 'spherical', LOW),
+          ('NNNNCorrelation_NoTomo', 'DoubleTree', 'spherical', LOW),
+          ('GGGGCorrelation_NoTomo', 'Tree', 'flat2d', LOW), ('GGGGCorrelation_NoTomo', 'Tree', 'flat2d', HIGH),
+          ('GNNNCorrelation_NoTomo', 'Tree', 'flat2d', LOW), ('GNNNCorrelation_NoTomo', 'Tree', 'flat2d', HIGH)]
+
+@pytest.mark.parametrize("name,method,geometry,kwargs", CLUMPS,
+                         ids=['-'.join(c[:3]) + ('-lowmem' if c[3].get('lowmem') else '-highmem' if c[3] else '')
+                              for c in CLUMPS])
+def test_trees_count_clumps_exactly(name, method, geometry, kwargs, clump_catalogs):
+    spec, = [s for s in CORRELATORS if s.cls.__name__ == name]
+    shear, scalar = clump_catalogs[geometry]
+    scale, extra = (1., {}) if geometry == 'flat2d' else (1./60., dict(sep_units='deg', process_spherical=True))
+    out = []
+    for tree_resos in ([0.], [0., 1., 2., 4.]):
+        inst = build_correlator(spec, min_sep=10.*scale, max_sep=60.*scale, nbinsr=4, nmaxs=3,
+                                nbinsphi=8, method=method, tree_resos=[scale*r for r in tree_resos],
+                                rmin_pixsize=2, shuffle_pix=0, nthreads=NTHREADS, **extra)
+        run_correlator(spec, inst, shear, scalar, **kwargs)
+        out.append([np.asarray(getattr(inst, a)) for a in ('npcf_multipoles', 'npcf_multipoles_norm')
+                    if getattr(inst, a, None) is not None])
+    for ref, tree in zip(*out):
+        assert _deviation(ref, tree) < RTOL_EXACT, _deviation(ref, tree)
 
 # TODO: GNNN FAILS SLIGNTLY WHEN ENAABLING MULTIPLE COUNTIG CORRS, TREE IS CORRECT
 # Make sure lowmem and highmem give the same result of GNNN
@@ -1094,14 +1168,6 @@ def test_gengridprops_honours_a_fixed_extent(grid_catalog):
     # Square cells are the default when no second cell size is given
     assert grid_catalog._gengridprops(dpix) == grid_catalog._gengridprops(dpix, dpix)
 
-# "w2field=False leaves the weight-squared plane out of the reduced catalog
-def test_reduce_can_drop_the_squared_weight_field(grid_catalog):
-    with_w2 = grid_catalog.reduce(dpix=8., w2field=True)
-    without = grid_catalog.reduce(dpix=8., w2field=False)
-    assert len(with_w2) == len(without)
-    # Same cells either way, so the positions have to agree
-    assert np.allclose(np.asarray(with_w2[1]), np.asarray(without[1]))
-
 def test_reduce_returns_an_instance_on_request(grid_catalog):
     inst = grid_catalog.reduce(dpix=8., ret_inst=True)
     assert isinstance(inst, SpinTracerCatalog)
@@ -1153,7 +1219,7 @@ def test_base_catalog_carries_no_tracer_field():
     base = Catalog(pos1=rng.uniform(0., BOXSIZE, ngal), pos2=rng.uniform(0., BOXSIZE, ngal),
                    weight=np.ones(ngal), geometry='flat2d')
     for geometry in ('flat2d', 'spherical', '3dbox'):
-        assert base._multihash_fields(geometry, False) is None
+        assert base._multihash_fields(geometry) is None
 
 def test_multihash_spherical_checks_its_inputs(grid_catalog, sky_catalog_for_hashing):
     bands = _sky_bands()
@@ -1166,10 +1232,8 @@ def test_multihash_spherical_checks_its_inputs(grid_catalog, sky_catalog_for_has
 # placed, so they have to agree on everything else.
 @pytest.mark.parametrize("shuffle", [0, 1, 2, 3])
 def test_multihash_spherical_pixel_centre_conventions(shuffle, sky_catalog_for_hashing):
-    reference = sky_catalog_for_hashing.multihash_bundle(shuffle=0, w2field=True,
-                                                         **_sky_bands())
-    mh = sky_catalog_for_hashing.multihash_bundle(shuffle=shuffle, w2field=True,
-                                                  **_sky_bands())
+    reference = sky_catalog_for_hashing.multihash_bundle(shuffle=0, **_sky_bands())
+    mh = sky_catalog_for_hashing.multihash_bundle(shuffle=shuffle, **_sky_bands())
     assert np.array_equal(np.asarray(mh['ngal_resos']), np.asarray(reference['ngal_resos']))
     assert np.allclose(np.asarray(mh['red_w']).sum(), np.asarray(reference['red_w']).sum())
     # Every reduced tracer stays on the unit sphere whichever centre it is given
@@ -1179,9 +1243,8 @@ def test_multihash_spherical_pixel_centre_conventions(shuffle, sky_catalog_for_h
 
 # nav_coarsen keeps the reduction nside and only widens the navigation cells
 def test_multihash_spherical_coarsens_its_navigation(sky_catalog_for_hashing, capsys):
-    plain = sky_catalog_for_hashing.multihash_bundle(w2field=True, **_sky_bands())
-    coarse = sky_catalog_for_hashing.multihash_bundle(w2field=True, nav_coarsen=2.,
-                                                      verbose=True, **_sky_bands())
+    plain = sky_catalog_for_hashing.multihash_bundle(**_sky_bands())
+    coarse = sky_catalog_for_hashing.multihash_bundle(nav_coarsen=2., verbose=True, **_sky_bands())
     assert 'band 0' in capsys.readouterr().out
     assert not plain['nav_coarsened'] and coarse['nav_coarsened']
     assert np.all(np.asarray(coarse['nside_nav']) <= np.asarray(plain['nside_nav']))

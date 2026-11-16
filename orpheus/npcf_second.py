@@ -525,7 +525,7 @@ class GGCorrelation(BinnedNPCF):
             # Here we need to cut the first reso if it corresponds to discrete catalog
             cutfirst = np.int32(self.tree_resos[0]==0.)
             mh = cat.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.dpix_hash,
-                                      shuffle=self.shuffle_pix, w2field=True, normed=True, nthreads=self.nthreads)
+                                      shuffle=self.shuffle_pix, normed=True, nthreads=self.nthreads)
             allfields = mh['allfields']
             extra = {'e1_resos': np.concatenate([allfields[i][0] for i in range(len(allfields))]).astype(np.float64),
                      'e2_resos': np.concatenate([allfields[i][1] for i in range(len(allfields))]).astype(np.float64)}
@@ -1122,7 +1122,7 @@ class NGCorrelation(BinnedNPCF):
         cutfirst = np.int32(self.tree_resos[0] == 0.)
         jointextent = list(cat_source._jointextent([cat_lens], extend=self.tree_resos[-1]))
         mh_source = cat_source.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.dpix_hash,
-                                                shuffle=self.shuffle_pix, w2field=True, normed=True,
+                                                shuffle=self.shuffle_pix, normed=True,
                                                 extent=jointextent, nthreads=self.nthreads)
         allfields = mh_source['allfields']
         extra_s = {'e1_resos': np.concatenate([allfields[i][0] for i in range(len(allfields))]).astype(np.float64),

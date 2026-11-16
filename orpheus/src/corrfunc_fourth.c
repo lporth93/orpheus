@@ -90,7 +90,7 @@ static inline __attribute__((always_inline)) void gggg_fill_gnwn(
     double complex *nextWns, double complex *nextW2ns, double complex *nextW3ns,
     double complex *nextG3ns_ggg, double complex *nextG3ns_gggc,
     int nband, int nbinszr, int zrshift, int ind_Gn, int ind_G2n, int ind_Wn,
-    double w2, double w2_sq, double complex wshape2, double complex wshape_sq,
+    double w2, double w2_sq, double w2_cb, double complex wshape2, double complex wshape_sq,
     double complex wshape_cube, double complex wshapewshapec, double complex wshapesqwshapec,
     double complex phirot, double complex phirotc, double complex fourphirotc){
     double complex nphirot = 1+I*0;
@@ -98,7 +98,7 @@ static inline __attribute__((always_inline)) void gggg_fill_gnwn(
     int nextnshift = 0;
 
     // Triple-counting corr
-    nextW3ns[zrshift] += w2_sq*w2;
+    nextW3ns[zrshift] += w2_cb;
     nextG3ns_ggg[zrshift] += wshape_cube*fourphirotc;
     nextG3ns_ggg[nbinszr + zrshift] += wshape_cube*fourphirotc*fourphirotc;
     nextG3ns_gggc[zrshift] += wshapesqwshapec;
@@ -348,12 +348,13 @@ static int nnnn_batch_cap(long ncache, int nbinsr, int nmax_Wn, double memory_bo
     return (int)mymax(cap, 1L);
 }
 
-// Leaves of a single base galaxy (radial bin, weight, phase e^{i phi}), their copy sorted
-// by radial bin and the running powers of the phases. One per thread, grown on demand.
+// Leaves of a single base galaxy (radial bin, weight, summed weight**2,3, phase e^{i phi}),
+// their copy sorted by radial bin and the running powers of the phases. One per thread, grown on demand.
 typedef struct {
     int nleaves, cap, nbinsr;
     int *rbin, *binstart, *cursor;
-    double *w, *phirot_re, *phirot_im, *w_sorted, *phirot_re_sorted, *phirot_im_sorted;
+    double *w, *wsq, *wcb, *phirot_re, *phirot_im;
+    double *w_sorted, *wsq_sorted, *wcb_sorted, *phirot_re_sorted, *phirot_im_sorted;
     double *nphirot_re, *nphirot_im;
 } NnnnLeaves;
 
@@ -363,9 +364,13 @@ static void nnnn_leaves_alloc(NnnnLeaves *lv, int nbinsr){
     lv->binstart = orpheus_malloc((nbinsr+1)*sizeof(int));
     lv->cursor = orpheus_malloc(nbinsr*sizeof(int));
     lv->w = orpheus_malloc(lv->cap*sizeof(double));
+    lv->wsq = orpheus_malloc(lv->cap*sizeof(double));
+    lv->wcb = orpheus_malloc(lv->cap*sizeof(double));
     lv->phirot_re = orpheus_malloc(lv->cap*sizeof(double));
     lv->phirot_im = orpheus_malloc(lv->cap*sizeof(double));
     lv->w_sorted = orpheus_malloc(lv->cap*sizeof(double));
+    lv->wsq_sorted = orpheus_malloc(lv->cap*sizeof(double));
+    lv->wcb_sorted = orpheus_malloc(lv->cap*sizeof(double));
     lv->phirot_re_sorted = orpheus_malloc(lv->cap*sizeof(double));
     lv->phirot_im_sorted = orpheus_malloc(lv->cap*sizeof(double));
     lv->nphirot_re = orpheus_malloc(NNNN_LEAFCHUNK*sizeof(double));
@@ -374,15 +379,21 @@ static void nnnn_leaves_alloc(NnnnLeaves *lv, int nbinsr){
 
 static void nnnn_leaves_free(NnnnLeaves *lv){
     free(lv->rbin); free(lv->binstart); free(lv->cursor); free(lv->w);
+    free(lv->wsq); free(lv->wcb); free(lv->wsq_sorted); free(lv->wcb_sorted);
     free(lv->phirot_re); free(lv->phirot_im); free(lv->w_sorted);
     free(lv->phirot_re_sorted); free(lv->phirot_im_sorted); free(lv->nphirot_re); free(lv->nphirot_im);
 }
 
-static inline void nnnn_leaves_push(NnnnLeaves *lv, int rbin, double w, double phirot_re, double phirot_im){
+static inline void nnnn_leaves_push(NnnnLeaves *lv, int rbin, double w, double wsq, double wcb,
+                                    double phirot_re, double phirot_im){
     if (lv->nleaves == lv->cap){
         lv->cap *= 2;
         lv->rbin = realloc(lv->rbin, lv->cap*sizeof(int));
         lv->w = realloc(lv->w, lv->cap*sizeof(double));
+        lv->wsq = realloc(lv->wsq, lv->cap*sizeof(double));
+        lv->wcb = realloc(lv->wcb, lv->cap*sizeof(double));
+        lv->wsq_sorted = realloc(lv->wsq_sorted, lv->cap*sizeof(double));
+        lv->wcb_sorted = realloc(lv->wcb_sorted, lv->cap*sizeof(double));
         lv->phirot_re = realloc(lv->phirot_re, lv->cap*sizeof(double));
         lv->phirot_im = realloc(lv->phirot_im, lv->cap*sizeof(double));
         lv->w_sorted = realloc(lv->w_sorted, lv->cap*sizeof(double));
@@ -390,6 +401,7 @@ static inline void nnnn_leaves_push(NnnnLeaves *lv, int rbin, double w, double p
         lv->phirot_im_sorted = realloc(lv->phirot_im_sorted, lv->cap*sizeof(double));
     }
     lv->rbin[lv->nleaves] = rbin; lv->w[lv->nleaves] = w;
+    lv->wsq[lv->nleaves] = wsq; lv->wcb[lv->nleaves] = wcb;
     lv->phirot_re[lv->nleaves] = phirot_re; lv->phirot_im[lv->nleaves] = phirot_im;
     lv->nleaves += 1;
 }
@@ -800,6 +812,8 @@ static void nnnn_fill_slot(NnnnLeaves *lv, NnnnBatch *batch, int ig, double w1){
     for (int j=0; j<lv->nleaves; j++){
         int k = lv->cursor[lv->rbin[j]]++;
         lv->w_sorted[k] = lv->w[j];
+        lv->wsq_sorted[k] = lv->wsq[j];
+        lv->wcb_sorted[k] = lv->wcb[j];
         lv->phirot_re_sorted[k] = lv->phirot_re[j];
         lv->phirot_im_sorted[k] = lv->phirot_im[j];
     }
@@ -809,7 +823,7 @@ static void nnnn_fill_slot(NnnnLeaves *lv, NnnnBatch *batch, int ig, double w1){
         long rshift = (long)elbinr*(nmax_Wn+1)*cap + ig;
         double W3n = 0.;
         for (int k=binstart[elbinr]; k<binstart[elbinr+1]; k++){
-            W3n += lv->w_sorted[k]*lv->w_sorted[k]*lv->w_sorted[k];
+            W3n += lv->wcb_sorted[k];
         }
         batch->W3ns[(long)elbinr*cap+ig] = W3n;
         for (int thisn=0; thisn<=nmax_Wn; thisn++){
@@ -818,7 +832,7 @@ static void nnnn_fill_slot(NnnnLeaves *lv, NnnnBatch *batch, int ig, double w1){
         }
         for (int k0=binstart[elbinr]; k0<binstart[elbinr+1]; k0+=NNNN_LEAFCHUNK){
             int nk = mymin(NNNN_LEAFCHUNK, binstart[elbinr+1]-k0);
-            const double *w2 = lv->w_sorted+k0;
+            const double *w2 = lv->w_sorted+k0, *w2_sq = lv->wsq_sorted+k0;
             const double *phirot_re = lv->phirot_re_sorted+k0, *phirot_im = lv->phirot_im_sorted+k0;
             double *nphirot_re = lv->nphirot_re, *nphirot_im = lv->nphirot_im;
             for (int k=0; k<nk; k++){ nphirot_re[k] = 1.; nphirot_im[k] = 0.; }
@@ -830,8 +844,8 @@ static void nnnn_fill_slot(NnnnLeaves *lv, NnnnBatch *batch, int ig, double w1){
                     double wnphirot_im = w2[k]*nphirot_im[k];
                     Wn_re += wnphirot_re;
                     Wn_im += wnphirot_im;
-                    W2n_re += w2[k]*wnphirot_re;
-                    W2n_im += w2[k]*wnphirot_im;
+                    W2n_re += w2_sq[k]*nphirot_re[k];
+                    W2n_im += w2_sq[k]*nphirot_im[k];
                     // Next power of the phase
                     double nphirot_re_next = nphirot_re[k]*phirot_re[k] - nphirot_im[k]*phirot_im[k];
                     nphirot_im[k] = nphirot_re[k]*phirot_im[k] + nphirot_im[k]*phirot_re[k];
@@ -1340,7 +1354,7 @@ void alloc_notomoGammans_discrete_gggg(const MultiresoCatalog *cat, const NavHas
                 
                 int ind_gal2;
                 int lower, upper;
-                double  p21, p22, w2, w2_sq, e21, e22, rel1, rel2, dist2, dist, dphi;
+                double  p21, p22, w2, w2_sq, w2_cb, e21, e22, rel1, rel2, dist2, dist, dphi;
                 double complex wshape1, wshape1c, wshape2, wshape_sq, wshape_cube, wshapewshapec, wshapesqwshapec;
                 double complex phirot, phirotc, twophirotc, fourphirotc;
 
@@ -1371,7 +1385,7 @@ void alloc_notomoGammans_discrete_gggg(const MultiresoCatalog *cat, const NavHas
                             rbin=0;
                             while (rbins[rbin+1] <= dist){rbin+=1;}
                         }
-                        w2_sq = w2*w2;
+                        w2_sq = w2*w2; w2_cb = w2_sq*w2;
                         wshape2 = (double complex) w2 * (e21+I*e22);
                         wshape_sq = wshape2*wshape2;
                         wshape_cube = wshape_sq*wshape2;
@@ -1392,7 +1406,7 @@ void alloc_notomoGammans_discrete_gggg(const MultiresoCatalog *cat, const NavHas
                         gggg_fill_gnwn(nextGns, nextG2ns_gg, nextG2ns_ggc,
                                         nextWns, nextW2ns, nextW3ns, nextG3ns_ggg, nextG3ns_gggc,
                                         2*nmax, nbinszr, zrshift, ind_Gn, ind_G2n, ind_Wn,
-                                        w2, w2_sq, wshape2, wshape_sq, wshape_cube,
+                                        w2, w2_sq, w2_cb, wshape2, wshape_sq, wshape_cube,
                                         wshapewshapec, wshapesqwshapec, phirot, phirotc, fourphirotc);
                     }
                 }
@@ -1608,7 +1622,8 @@ void alloc_notomoGammans_tree_gggg(const MultiresoCatalog *cat_base, const Multi
     double *e1 = cat_base->e1_resos, *e2 = cat_base->e2_resos;
     int nresos = tree->nresos; double *reso_redges = tree->reso_redges;
     int *ngal_resos = cat_leaf->ngal_resos;
-    double *weight_resos = cat_leaf->weight_resos;
+    double *weight_resos = cat_leaf->weight_resos, *wpow_resos = cat_leaf->wpow_resos;
+    double *wepow_resos = cat_leaf->wepow_resos;
     double *pos1_resos = cat_leaf->pos1_resos, *pos2_resos = cat_leaf->pos2_resos;
     double *e1_resos = cat_leaf->e1_resos, *e2_resos = cat_leaf->e2_resos;
     int *index_matcher_hash = nav->index_matcher, *pixs_galind_bounds = nav->pixs_galind_bounds, *pix_gals = nav->pix_gals;
@@ -1734,13 +1749,13 @@ void alloc_notomoGammans_tree_gggg(const MultiresoCatalog *cat_base, const Multi
                 
                 int ind_gal2;
                 int lower, upper;
-                double  p21, p22, w2, w2_sq, e21, e22, rel1, rel2, dist2, dist, dphi;
+                double  p21, p22, w2, w2_sq, w2_cb, e21, e22, rel1, rel2, dist2, dist, dphi;
                 double complex wshape1, wshape1c, wshape2, wshape_sq, wshape_cube, wshapewshapec, wshapesqwshapec;
                 double complex phirot, phirotc, twophirotc, fourphirotc;
                 // Allocate Gn, Wn and their multiple-couting corrections
                 for (int elreso=0; elreso<nresos; elreso++){
                     int rbin, zrshift, ind_Gn, ind_G2n, ind_Wn;
-                    double rmin_reso = reso_redges[elreso];
+                    double rmin_reso = mymax(reso_redges[elreso], rmin);
                     double rmin_reso2 = rmin_reso*rmin_reso;
                     double rmax_reso = reso_redges[elreso+1];
                     double rmax_reso2 = rmax_reso*rmax_reso;
@@ -1762,12 +1777,13 @@ void alloc_notomoGammans_tree_gggg(const MultiresoCatalog *cat_base, const Multi
                             if (dist2 < rmin_reso2 || dist2 >= rmax_reso2){continue;}
                             dist = sqrt(dist2);
                             rbin = (int) floor((log(dist)-log(rmin))/drbin);
-                            w2_sq = w2*w2;
+                            const double *wepow2 = wepow_resos + 7*(long)ind_gal2;
+                            w2_sq = wpow_resos[2*(long)ind_gal2]; w2_cb = wpow_resos[2*(long)ind_gal2+1];
                             wshape2 = (double complex) w2 * (e21+I*e22);
-                            wshape_sq = wshape2*wshape2;
-                            wshape_cube = wshape_sq*wshape2;
-                            wshapewshapec = wshape2*conj(wshape2);
-                            wshapesqwshapec = wshape_sq*conj(wshape2);
+                            wshape_sq = wepow2[0] + I*wepow2[1];
+                            wshape_cube = wepow2[3] + I*wepow2[4];
+                            wshapewshapec = wepow2[2];
+                            wshapesqwshapec = wepow2[5] + I*wepow2[6];
                             dphi = atan2(rel2,rel1);
                             phirot = cexp(I*dphi);
                             phirotc = conj(phirot);
@@ -1782,7 +1798,7 @@ void alloc_notomoGammans_tree_gggg(const MultiresoCatalog *cat_base, const Multi
                             gggg_fill_gnwn(nextGns, nextG2ns_gg, nextG2ns_ggc,
                                             nextWns, nextW2ns, nextW3ns, nextG3ns_ggg, nextG3ns_gggc,
                                             2*nmax_alloc, nbinszr, zrshift, ind_Gn, ind_G2n, ind_Wn,
-                                            w2, w2_sq, wshape2, wshape_sq, wshape_cube,
+                                            w2, w2_sq, w2_cb, wshape2, wshape_sq, wshape_cube,
                                             wshapewshapec, wshapesqwshapec, phirot, phirotc, fourphirotc);
                         }
                     }
@@ -2238,7 +2254,7 @@ void alloc_notomoMap4_disc_gggg(const MultiresoCatalog *cat, const NavHash *nav,
                 
                 int ind_gal2;
                 int lower, upper;
-                double  p21, p22, w2, w2_sq, e21, e22, rel1, rel2, dist, dphi;
+                double  p21, p22, w2, w2_sq, w2_cb, e21, e22, rel1, rel2, dist, dphi;
                 double complex wshape1, wshape1c, wshape2, wshape_sq, wshape_cube, wshapewshapec, wshapesqwshapec;
                 double complex phirot, phirotc, twophirotc, fourphirotc;
                 
@@ -2269,7 +2285,7 @@ void alloc_notomoMap4_disc_gggg(const MultiresoCatalog *cat, const NavHash *nav,
                         dist = sqrt(rel1*rel1 + rel2*rel2);
                         if (dist < rmin || dist >= rmax) continue;
                         rbin = (int) floor((log(dist)-log(rmin))/drbin);
-                        w2_sq = w2*w2;
+                        w2_sq = w2*w2; w2_cb = w2_sq*w2;
                         wshape2 = (double complex) w2 * (e21+I*e22);
                         wshape_sq = wshape2*wshape2;
                         wshape_cube = wshape_sq*wshape2;
@@ -2289,7 +2305,7 @@ void alloc_notomoMap4_disc_gggg(const MultiresoCatalog *cat, const NavHash *nav,
                         gggg_fill_gnwn(nextGns, nextG2ns_gg, nextG2ns_ggc,
                                         nextWns, nextW2ns, nextW3ns, nextG3ns_ggg, nextG3ns_gggc,
                                         2*nmax, nbinszr, zrshift, ind_Gn, ind_G2n, ind_Wn,
-                                        w2, w2_sq, wshape2, wshape_sq, wshape_cube,
+                                        w2, w2_sq, w2_cb, wshape2, wshape_sq, wshape_cube,
                                         wshapewshapec, wshapesqwshapec, phirot, phirotc, fourphirotc);
                     }
                 }
@@ -2529,7 +2545,8 @@ void alloc_notomoMap4_tree_gggg(const MultiresoCatalog *cat_base, const Multires
     double *e1 = cat_base->e1_resos, *e2 = cat_base->e2_resos;
     int nresos = tree->nresos; double *reso_redges = tree->reso_redges;
     int *ngal_resos = cat_leaf->ngal_resos;
-    double *weight_resos = cat_leaf->weight_resos;
+    double *weight_resos = cat_leaf->weight_resos, *wpow_resos = cat_leaf->wpow_resos;
+    double *wepow_resos = cat_leaf->wepow_resos;
     double *pos1_resos = cat_leaf->pos1_resos, *pos2_resos = cat_leaf->pos2_resos;
     double *e1_resos = cat_leaf->e1_resos, *e2_resos = cat_leaf->e2_resos;
     int nmax = bin->nmax, nbinsr = bin->nbinsr;
@@ -2652,7 +2669,7 @@ void alloc_notomoMap4_tree_gggg(const MultiresoCatalog *cat_base, const Multires
                 
                 int ind_gal2;
                 int lower, upper;
-                double  p21, p22, w2, w2_sq, e21, e22, rel1, rel2, dist2, dist, dphi;
+                double  p21, p22, w2, w2_sq, w2_cb, e21, e22, rel1, rel2, dist2, dist, dphi;
                 double complex wshape1, wshape1c, wshape2, wshape_sq, wshape_cube, wshapewshapec, wshapesqwshapec;
                 double complex phirot, phirotc, twophirotc, fourphirotc;
                 
@@ -2667,7 +2684,7 @@ void alloc_notomoMap4_tree_gggg(const MultiresoCatalog *cat_base, const Multires
                 for (int i=0; i<nbinszr; i++){nextW3ns[i]=0;}
                 for (int elreso=reso_min_batch; elreso<=reso_max_batch; elreso++){
                     int rbin, zrshift, ind_Gn, ind_G2n, ind_Wn;
-                    double rmin_reso = reso_redges[elreso];
+                    double rmin_reso = mymax(reso_redges[elreso], rmin);
                     double rmin_reso2 = rmin_reso*rmin_reso;
                     double rmax_reso = reso_redges[elreso+1];
                     double rmax_reso2 = rmax_reso*rmax_reso;
@@ -2689,12 +2706,13 @@ void alloc_notomoMap4_tree_gggg(const MultiresoCatalog *cat_base, const Multires
                             if (dist2 < rmin_reso2 || dist2 >= rmax_reso2){continue;}
                             dist = sqrt(dist2);
                             rbin = (int) floor((log(dist)-log(rmin))/drbin);
-                            w2_sq = w2*w2;
+                            const double *wepow2 = wepow_resos + 7*(long)ind_gal2;
+                            w2_sq = wpow_resos[2*(long)ind_gal2]; w2_cb = wpow_resos[2*(long)ind_gal2+1];
                             wshape2 = (double complex) w2 * (e21+I*e22);
-                            wshape_sq = wshape2*wshape2;
-                            wshape_cube = wshape_sq*wshape2;
-                            wshapewshapec = wshape2*conj(wshape2);
-                            wshapesqwshapec = wshape_sq*conj(wshape2);
+                            wshape_sq = wepow2[0] + I*wepow2[1];
+                            wshape_cube = wepow2[3] + I*wepow2[4];
+                            wshapewshapec = wepow2[2];
+                            wshapesqwshapec = wepow2[5] + I*wepow2[6];
                             dphi = atan2(rel2,rel1);
                             phirot = cexp(I*dphi);
                             phirotc = conj(phirot);
@@ -2709,7 +2727,7 @@ void alloc_notomoMap4_tree_gggg(const MultiresoCatalog *cat_base, const Multires
                             gggg_fill_gnwn(nextGns, nextG2ns_gg, nextG2ns_ggc,
                                             nextWns, nextW2ns, nextW3ns, nextG3ns_ggg, nextG3ns_gggc,
                                             2*nmax_alloc, nbinszr, zrshift, ind_Gn, ind_G2n, ind_Wn,
-                                            w2, w2_sq, wshape2, wshape_sq, wshape_cube,
+                                            w2, w2_sq, w2_cb, wshape2, wshape_sq, wshape_cube,
                                             wshapewshapec, wshapesqwshapec, phirot, phirotc, fourphirotc);
                         }
                     }
@@ -3207,6 +3225,7 @@ void alloc_notomoGammans_tree_gnnn(const MultiresoCatalog *cat_source, const Nav
     double *pos1_source = cat_source->pos1_resos, *pos2_source = cat_source->pos2_resos;
     double *e1_source = cat_source->e1_resos, *e2_source = cat_source->e2_resos;
     double *weight_lens_resos = cat_lens->weight_resos, *pos1_lens_resos = cat_lens->pos1_resos, *pos2_lens_resos = cat_lens->pos2_resos;
+    double *wpow_lens_resos = cat_lens->wpow_resos;
     int *ngal_lens_resos = cat_lens->ngal_resos;
     int *pixs_galind_bounds_source = nav_source->pixs_galind_bounds, *pix_gals_source = nav_source->pix_gals;
     int *index_matcher_lens = nav_lens->index_matcher, *pixs_galind_bounds_lens = nav_lens->pixs_galind_bounds, *pix_gals_lens = nav_lens->pix_gals;
@@ -3314,7 +3333,7 @@ void alloc_notomoGammans_tree_gnnn(const MultiresoCatalog *cat_source, const Nav
                 
                 int ind_gal2;
                 int lower, upper;
-                double  p21, p22, w2, w2_sq, rel1, rel2, dist, dphi;
+                double  p21, p22, w2, w2_sq, w2_cb, rel1, rel2, dist, dphi;
                 double complex phirot, phirotc, twophirot;
             
                 // Check how many ns we need for Gn
@@ -3326,7 +3345,7 @@ void alloc_notomoGammans_tree_gnnn(const MultiresoCatalog *cat_source, const Nav
                 for (int i=0; i<nnvals_W3n*nbinszr; i++){nextW3ns[i]=0;}
                 for (int elreso=0; elreso<nresos; elreso++){
                     int rbin, zrshift, ind_Wn;
-                    double rmin_reso = reso_redges[elreso];
+                    double rmin_reso = mymax(reso_redges[elreso], rmin);
                     double rmax_reso = reso_redges[elreso+1];
                     FLATCELL_FOREACH(
                         index_matcher_lens, rshift_index_matcher[elreso], pixs_galind_bounds_lens, rshift_pixs_galind_bounds[elreso],
@@ -3343,15 +3362,15 @@ void alloc_notomoGammans_tree_gnnn(const MultiresoCatalog *cat_source, const Nav
                             dist = sqrt(rel1*rel1 + rel2*rel2);
                             if (dist < rmin_reso || dist >= rmax_reso) continue;
                             rbin = (int) floor((log(dist)-log(rmin))/drbin);
-                            w2_sq = w2*w2;
+                            w2_sq = wpow_lens_resos[2*(long)ind_gal2]; w2_cb = wpow_lens_resos[2*(long)ind_gal2+1];
                             dphi = atan2(rel2,rel1);
                             phirot = cexp(I*dphi);
                             phirotc = conj(phirot);
                             twophirot = phirot*phirot;
                             zrshift = 0*nbinsr + rbin;
                             ind_Wn = nzero_Wn*nbinszr + zrshift;
-                            nextW3ns[zrshift] += w2_sq*w2;
-                            nextW3ns[nbinszr+zrshift] += w2_sq*w2*conj(twophirot);                          
+                            nextW3ns[zrshift] += w2_cb;
+                            nextW3ns[nbinszr+zrshift] += w2_cb*conj(twophirot);
                             tmpwcounts[elthread*nbinszr+zrshift] += w1*w2*dist; 
                             tmpwnorms[elthread*nbinszr+zrshift] += w1*w2; 
                             nnnn_fill_wn(nextWns, nextW2ns, 2*nmax_alloc+1, nbinszr, ind_Wn, w2, w2_sq, phirot, phirotc);
@@ -3588,6 +3607,7 @@ void alloc_notomoMapNap3_tree_gnnn(const MultiresoCatalog *cat_source, const Nav
     double *pos1_source = cat_source->pos1_resos, *pos2_source = cat_source->pos2_resos;
     double *e1_source = cat_source->e1_resos, *e2_source = cat_source->e2_resos;
     double *weight_lens_resos = cat_lens->weight_resos, *pos1_lens_resos = cat_lens->pos1_resos, *pos2_lens_resos = cat_lens->pos2_resos;
+    double *wpow_lens_resos = cat_lens->wpow_resos;
     int *ngal_lens_resos = cat_lens->ngal_resos;
     int *pixs_galind_bounds_source = nav_source->pixs_galind_bounds, *pix_gals_source = nav_source->pix_gals;
     int *index_matcher_lens = nav_lens->index_matcher, *pixs_galind_bounds_lens = nav_lens->pixs_galind_bounds, *pix_gals_lens = nav_lens->pix_gals;
@@ -3703,7 +3723,7 @@ void alloc_notomoMapNap3_tree_gnnn(const MultiresoCatalog *cat_source, const Nav
                 
                 int ind_gal2;
                 int lower, upper;
-                double  p21, p22, w2, w2_sq, rel1, rel2, dist, dphi;
+                double  p21, p22, w2, w2_sq, w2_cb, rel1, rel2, dist, dphi;
                 double complex phirot, phirotc, twophirot;
             
                 // Check how many ns we need for Gn
@@ -3715,7 +3735,7 @@ void alloc_notomoMapNap3_tree_gnnn(const MultiresoCatalog *cat_source, const Nav
                 for (int i=0; i<nnvals_W3n*nbinszr; i++){nextW3ns[i]=0;}
                 for (int elreso=reso_min_batch; elreso<=reso_max_batch; elreso++){
                     int rbin, zrshift, ind_Wn;
-                    double rmin_reso = reso_redges[elreso];
+                    double rmin_reso = mymax(reso_redges[elreso], rmin);
                     double rmax_reso = reso_redges[elreso+1];
                     FLATCELL_FOREACH(
                         index_matcher_lens, rshift_index_matcher[elreso], pixs_galind_bounds_lens, rshift_pixs_galind_bounds[elreso],
@@ -3732,15 +3752,15 @@ void alloc_notomoMapNap3_tree_gnnn(const MultiresoCatalog *cat_source, const Nav
                             dist = sqrt(rel1*rel1 + rel2*rel2);
                             if (dist < rmin_reso || dist >= rmax_reso) continue;
                             rbin = (int) floor((log(dist)-log(rmin))/drbin);
-                            w2_sq = w2*w2;
+                            w2_sq = wpow_lens_resos[2*(long)ind_gal2]; w2_cb = wpow_lens_resos[2*(long)ind_gal2+1];
                             dphi = atan2(rel2,rel1);
                             phirot = cexp(I*dphi);
                             phirotc = conj(phirot);
                             twophirot = phirot*phirot;
                             zrshift = 0*nbinsr + rbin;
                             ind_Wn = nzero_Wn*nbinszr + zrshift;
-                            nextW3ns[zrshift] += w2_sq*w2;
-                            nextW3ns[nbinszr+zrshift] += w2_sq*w2*twophirot;                          
+                            nextW3ns[zrshift] += w2_cb;
+                            nextW3ns[nbinszr+zrshift] += w2_cb*twophirot;
                             totcounts[zrshift] += w1*w2*dist; 
                             totnorms[zrshift] += w1*w2; 
                             nnnn_fill_wn(nextWns, nextW2ns, 2*nmax_alloc+1, nbinszr, ind_Wn, w2, w2_sq, phirot, phirotc);
@@ -3994,7 +4014,7 @@ void alloc_notomoNap4_tree_nnnn(const MultiresoCatalog *cat_base, const Multires
     double *phibins = fourth->phibins1, *dbinsphi = fourth->dbinsphi1; int nbinsphi = fourth->nbinsphi1;
     int nresos = tree->nresos; double *reso_redges = tree->reso_redges;
     int *ngal_resos = cat_leaf->ngal_resos;
-    double *weight_resos = cat_leaf->weight_resos;
+    double *weight_resos = cat_leaf->weight_resos, *wpow_resos = cat_leaf->wpow_resos;
     double *pos1_resos = cat_leaf->pos1_resos, *pos2_resos = cat_leaf->pos2_resos;
     int *index_matcher_hash = nav->index_matcher, *pixs_galind_bounds = nav->pixs_galind_bounds, *pix_gals = nav->pix_gals;
     int nregions = nav->nregions;
@@ -4098,7 +4118,7 @@ void alloc_notomoNap4_tree_nnnn(const MultiresoCatalog *cat_base, const Multires
                 
                 int ind_gal2;
                 int lower, upper;
-                double  p21, p22, w2, w2_sq, rel1, rel2, dist, dphi;
+                double  p21, p22, w2, w2_sq, w2_cb, rel1, rel2, dist, dphi;
                 double complex phirot, phirotc;
                 
                 // Check how many ns we need for Gn
@@ -4109,7 +4129,7 @@ void alloc_notomoNap4_tree_nnnn(const MultiresoCatalog *cat_base, const Multires
                 for (int i=0; i<nbinszr; i++){nextW3ns[i]=0;}
                 for (int elreso=reso_min_batch; elreso<=reso_max_batch; elreso++){
                     int rbin, zrshift, ind_Wn;
-                    double rmin_reso = reso_redges[elreso];
+                    double rmin_reso = mymax(reso_redges[elreso], rmin);
                     double rmax_reso = reso_redges[elreso+1];
                     FLATCELL_FOREACH(
                         index_matcher_hash, rshift_index_matcher_hash[elreso], pixs_galind_bounds, rshift_pixs_galind_bounds[elreso],
@@ -4128,13 +4148,13 @@ void alloc_notomoNap4_tree_nnnn(const MultiresoCatalog *cat_base, const Multires
                             dist = sqrt(rel1*rel1 + rel2*rel2);
                             if (dist < rmin_reso || dist >= rmax_reso) continue;
                             rbin = (int) floor((log(dist)-log(rmin))/drbin);
-                            w2_sq = w2*w2;
+                            w2_sq = wpow_resos[2*(long)ind_gal2]; w2_cb = wpow_resos[2*(long)ind_gal2+1];
                             dphi = atan2(rel2,rel1);
                             phirot = cexp(I*dphi);
                             phirotc = conj(phirot);
                             zrshift = 0*nbinsr + rbin;
                             ind_Wn = nzero_Wn*nbinszr + zrshift;
-                            nextW3ns[zrshift] += w2_sq*w2;
+                            nextW3ns[zrshift] += w2_cb;
                             totcounts[zrshift] += w1*w2*dist; 
                             totnorms[zrshift] += w1*w2; 
                             nnnn_fill_wn(nextWns, nextW2ns, 2*nmax_alloc, nbinszr, ind_Wn, w2, w2_sq, phirot, phirotc);
@@ -4272,7 +4292,7 @@ void alloc_notomoNap4_tree_nnnn_highmem(const MultiresoCatalog *cat_base, const 
     double *phibins = fourth->phibins1, *dbinsphi = fourth->dbinsphi1; int nbinsphi = fourth->nbinsphi1;
     int nresos = tree->nresos; double *reso_redges = tree->reso_redges;
     int *ngal_resos = cat_leaf->ngal_resos;
-    double *weight_resos = cat_leaf->weight_resos;
+    double *weight_resos = cat_leaf->weight_resos, *wpow_resos = cat_leaf->wpow_resos;
     double *pos1_resos = cat_leaf->pos1_resos, *pos2_resos = cat_leaf->pos2_resos;
     int *index_matcher_hash = nav->index_matcher, *pixs_galind_bounds = nav->pixs_galind_bounds, *pix_gals = nav->pix_gals;
     int nregions = nav->nregions;
@@ -4372,11 +4392,11 @@ void alloc_notomoNap4_tree_nnnn_highmem(const MultiresoCatalog *cat_base, const 
         double complex *nextW3ns = W3ncache[chunk] + (long)loc*nbinsr;
 
         int ind_gal2, lower, upper;
-        double p21, p22, w2, w2_sq, rel1, rel2, dist, dphi;
+        double p21, p22, w2, w2_sq, w2_cb, rel1, rel2, dist, dphi;
         double complex phirot, phirotc;
         for (int elreso=0; elreso<nresos; elreso++){
             int rbin, zrshift, ind_Wn;
-            double rmin_reso = reso_redges[elreso];
+            double rmin_reso = mymax(reso_redges[elreso], rmin);
             double rmax_reso = reso_redges[elreso+1];
             FLATCELL_FOREACH(
                 index_matcher_hash, rshift_index_matcher_hash[elreso], pixs_galind_bounds, rshift_pixs_galind_bounds[elreso],
@@ -4391,13 +4411,13 @@ void alloc_notomoNap4_tree_nnnn_highmem(const MultiresoCatalog *cat_base, const 
                     dist = sqrt(rel1*rel1 + rel2*rel2);
                     if (dist < rmin_reso || dist >= rmax_reso) continue;
                     rbin = (int) floor((log(dist)-log(rmin))/drbin);
-                    w2_sq = w2*w2;
+                    w2_sq = wpow_resos[2*(long)ind_gal2]; w2_cb = wpow_resos[2*(long)ind_gal2+1];
                     dphi = atan2(rel2,rel1);
                     phirot = cexp(I*dphi);
                     phirotc = conj(phirot);
                     zrshift = 0*nbinsr + rbin;
                     ind_Wn = nzero_Wn*nbinszr + zrshift;
-                    nextW3ns[zrshift] += w2_sq*w2;
+                    nextW3ns[zrshift] += w2_cb;
                     tmp_totcounts[thisthread*nbinsr+zrshift] += w1*w2*dist;
                     tmp_totnorms[thisthread*nbinsr+zrshift]  += w1*w2;
                     nnnn_fill_wn(nextWns, nextW2ns, 2*nmax_alloc, nbinszr, ind_Wn, w2, w2_sq, phirot, phirotc);
@@ -4541,7 +4561,7 @@ void alloc_nnnn_tree(const MultiresoCatalog *cat_base, const MultiresoCatalog *c
     int *nindices = fourth->nindices, len_nindices = fourth->len_nindices;
     int nresos = tree->nresos; double *reso_redges = tree->reso_redges;
     int *ngal_resos = cat_leaf->ngal_resos;
-    double *weight_resos = cat_leaf->weight_resos;
+    double *weight_resos = cat_leaf->weight_resos, *wpow_resos = cat_leaf->wpow_resos;
     double *pos1_resos = cat_leaf->pos1_resos, *pos2_resos = cat_leaf->pos2_resos;
     int *index_matcher_hash = nav->index_matcher, *pixs_galind_bounds = nav->pixs_galind_bounds, *pix_gals = nav->pix_gals;
     int nregions = nav->nregions;
@@ -4634,7 +4654,7 @@ void alloc_nnnn_tree(const MultiresoCatalog *cat_base, const MultiresoCatalog *c
             double w1 = weight[ind_gal];
             int lower, upper;
             for (int elreso=0; elreso<nresos; elreso++){
-                double rmin_reso = reso_redges[elreso];
+                double rmin_reso = mymax(reso_redges[elreso], rmin);
                 double rmax_reso = reso_redges[elreso+1];
                 FLATCELL_FOREACH(
                     index_matcher_hash, rshift_index_matcher_hash[elreso], pixs_galind_bounds, rshift_pixs_galind_bounds[elreso],
@@ -4649,7 +4669,8 @@ void alloc_nnnn_tree(const MultiresoCatalog *cat_base, const MultiresoCatalog *c
                         double w2 = weight_resos[ind_gal2];
                         tmp_totcounts[thisthread*nbinsr+rbin] += w1*w2*dist;
                         tmp_totnorms[thisthread*nbinsr+rbin]  += w1*w2;
-                        nnnn_leaves_push(lv, rbin, w2, rel1/dist, rel2/dist);
+                        nnnn_leaves_push(lv, rbin, w2, wpow_resos[2*(long)ind_gal2], wpow_resos[2*(long)ind_gal2+1],
+                                         rel1/dist, rel2/dist);
                     }
                 }
             }
@@ -4711,7 +4732,7 @@ void alloc_nnnn_tree_spherical(const MultiresoCatalog *cat_base, const Multireso
     int nresos = tree->nresos; double *reso_redges = tree->reso_redges;
     int *ncells_resos = nav->ncells_resos;
     long *nside_nav = nav->nside_nav;
-    double *weight_resos = cat_leaf->weight_resos;
+    double *weight_resos = cat_leaf->weight_resos, *wpow_resos = cat_leaf->wpow_resos;
     double *vx_resos = cat_leaf->vx_resos, *vy_resos = cat_leaf->vy_resos, *vz_resos = cat_leaf->vz_resos;
     int *band_offset_leafgals = nav->rshift_red;
     long *cell_pixids = nav->cell_pix;
@@ -4790,7 +4811,7 @@ void alloc_nnnn_tree_spherical(const MultiresoCatalog *cat_base, const Multireso
             double w1 = weight[ind_gal];
             double bvec[3] = {bx, by, bz};
             for (int elreso=0; elreso<nresos; elreso++){
-                double rmin_reso = reso_redges[elreso];
+                double rmin_reso = mymax(reso_redges[elreso], rmin);
                 double rmax_reso = reso_redges[elreso+1];
                 long ns_nav_r = nside_nav[elreso];
                 // Run query_disc to get the ranges and optionally resize
@@ -4832,7 +4853,8 @@ void alloc_nnnn_tree_spherical(const MultiresoCatalog *cat_base, const Multireso
                             double complex phirot = bearing_phirot(bearing_AB_cart(bx, by, bz, vx2, vy2, vz2));
                             tmp_totcounts[thisthread*nbinsr+rbin] += w1*w2*dist;
                             tmp_totnorms[thisthread*nbinsr+rbin]  += w1*w2;
-                            nnnn_leaves_push(lv, rbin, w2, creal(phirot), cimag(phirot));
+                            nnnn_leaves_push(lv, rbin, w2, wpow_resos[2*ind_leafgal], wpow_resos[2*ind_leafgal+1],
+                                             creal(phirot), cimag(phirot));
                         }
                         cell_idx++;
                     }
@@ -4893,6 +4915,7 @@ static void alloc_nnnn_doubletree_flat(const MultiresoCatalog *cat, const NavHas
     double *dpix1_resos = tree->dpix1_resos, *dpix2_resos = tree->dpix2_resos, *reso_redges = tree->reso_redges;
     int resoshift_leafs = tree->resoshift_leafs, minresoind_leaf = tree->minresoind_leaf, maxresoind_leaf = tree->maxresoind_leaf;
     double *isinner_resos = cat->isinner_resos, *weight_resos = cat->weight_resos;
+    double *wpow_resos = cat->wpow_resos;
     double *pos1_resos = cat->pos1_resos, *pos2_resos = cat->pos2_resos;
     int *ngal_resos = cat->ngal_resos;
     int nmax = bin->nmax, nbinsr = bin->nbinsr;
@@ -5060,7 +5083,8 @@ static void alloc_nnnn_doubletree_flat(const MultiresoCatalog *cat, const NavHas
                     double w2 = weight_resos[ind_gal2];
                     tmp_totcounts[thisthread*nbinsr+rbin] += w2*dist;
                     tmp_totnorms[thisthread*nbinsr+rbin]  += w2;
-                    nnnn_leaves_push(lv, rbin-rbinmin, w2, rel1/dist, rel2/dist);
+                    nnnn_leaves_push(lv, rbin-rbinmin, w2, wpow_resos[2*(long)ind_gal2], wpow_resos[2*(long)ind_gal2+1],
+                                     rel1/dist, rel2/dist);
                 }
             }
             nnnn_fill_slot(lv, bd.batch+elreso, (int)ig, weight_resos[ind_gal]);
@@ -5120,7 +5144,7 @@ static void alloc_nnnn_doubletree_spherical(const MultiresoCatalog *cat, const N
     int nresos = tree->nresos, nresos_grid = tree->nresos_grid;
     double *reso_redges = tree->reso_redges;
     int resoshift_leafs = tree->resoshift_leafs, minresoind_leaf = tree->minresoind_leaf, maxresoind_leaf = tree->maxresoind_leaf;
-    double *isinner = cat->isinner_resos, *weight = cat->weight_resos;
+    double *isinner = cat->isinner_resos, *weight = cat->weight_resos, *wpow = cat->wpow_resos;
     double *vx = cat->vx_resos, *vy = cat->vy_resos, *vz = cat->vz_resos;
     int *ncells_resos = nav->ncells_resos;
     long *nside_nav = nav->nside_nav, *cell_pix = nav->cell_pix;
@@ -5301,7 +5325,7 @@ static void alloc_nnnn_doubletree_spherical(const MultiresoCatalog *cat, const N
                         double complex phirot = bearing_phirot(bearing_AB_cart(bx, by, bz, vx2, vy2, vz2));
                         tmp_totcounts[thisthread*nbinsr+rbin] += w2*dist;
                         tmp_totnorms[thisthread*nbinsr+rbin]  += w2;
-                        nnnn_leaves_push(lv, rbin-rbinmin, w2, creal(phirot), cimag(phirot));
+                        nnnn_leaves_push(lv, rbin-rbinmin, w2, wpow[2*g2], wpow[2*g2+1], creal(phirot), cimag(phirot));
                     }
                     ci++;
                 }

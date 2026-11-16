@@ -255,7 +255,7 @@ class Catalog:
             p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, p_i32,
             p_f64, p_f64, ct.c_int32, ct.c_int32,
             p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, p_i32,
-            p_f64, p_f64, p_f64, p_i64, p_i64, ct.c_int32]
+            p_f64, p_f64, p_f64, p_f64, p_i64, p_i64, ct.c_int32]
 
         self.clib.sphericalhash_reduce.restype = ct.c_long
         self.clib.sphericalhash_reduce.argtypes = [
@@ -264,7 +264,7 @@ class Catalog:
             p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, p_f64,
             p_f64, p_f64, ct.c_int32, ct.c_int32,
             p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, p_f64, p_i32,
-            p_f64, p_f64, p_f64, p_i64, p_i64, ct.c_int32]
+            p_f64, p_f64, p_f64, p_f64, p_i64, p_i64, ct.c_int32]
 
 
     ### PATCH DECOMPOSITION RELATED METHODS ###
@@ -533,7 +533,7 @@ class Catalog:
                          extent=[None,None,None,None], forcedivide=1, nthreads=1,
                          reso_redges=None, nsides=None, nside_hash=None, nav_coarsen=None,
                          dpix_z=None, extent_z=[None,None],
-                         w2field=False, verbose=False):
+                         wpowers=0, verbose=False):
         r"""Constructs a hierarchy of reduced catalogs and their associated spatial hashes.
 
         This method is geometry-aware and each geometry returns a single dict, which can be
@@ -592,34 +592,35 @@ class Catalog:
         extent_z: list, optional, default ``[None, None]``
             Sets custom boundaries for line-of-sight ``[zmin, zmax]``. ``None`` entries
             default to the catalog extent.
-        w2field: bool, optional, default ``False``
-            Also aggregate the squared tracer weights for non-scalar catalogs.
+        wpowers: int, optional, default ``0``
+            Also store powers of w and weighted fields to a power. Required for multiple-
+            counting corrections.
 
         Returns
         -------
         bundle: dict
             Collection of arrays the NPCF estimators can consume independent of the metric.
         """
-        fields = self._multihash_fields(self.geometry, w2field)
+        fields = self._multihash_fields(self.geometry)
         if self.geometry == 'flat2d':
             return self.multihash_flat(dpixs=dpixs, fields=fields, dpix_hash=dpix_hash,
                                        normed=normed, shuffle=shuffle, extent=extent,
-                                       forcedivide=forcedivide, nthreads=nthreads)
+                                       forcedivide=forcedivide, wpowers=wpowers,
+                                       nthreads=nthreads)
         elif self.geometry == 'spherical':
             return self.multihash_spherical(reso_redges=reso_redges, nsides=nsides,
                                             nside_hash=nside_hash, shuffle=shuffle,
-                                            fields=fields, w2field=w2field,
+                                            fields=fields, wpowers=wpowers,
                                             nav_coarsen=nav_coarsen, verbose=verbose,
                                             nthreads=nthreads)
         elif self.geometry == '3dbox':
             return self.multihash_slabs(dpix=dpix_hash, dpix_z=dpix_z, fields=fields,
                                         extent=extent, extent_z=extent_z)
         else:
-            # Unreachable as __init__ admits only the three geometries above
             raise ValueError("Unknown geometry %r" % self.geometry)  # pragma: no cover
 
     def multihash_flat(self, dpixs, fields, dpix_hash=None, normed=True, shuffle=0,
-                  extent=[None,None,None,None], forcedivide=1, nthreads=1):
+                  extent=[None,None,None,None], forcedivide=1, wpowers=0, nthreads=1):
         r"""Builds spatialhash for a base catalog with geometry ``flat2d`` and its reductions.
 
         Returns
@@ -658,6 +659,10 @@ class Catalog:
         pos2s = [self.pos2]
         weights = [self.weight]
         zbins = [self.zbins]
+        # allfields ~ [fields, powers]
+        nfields = 0 if fields is None else len(fields)
+        if wpowers:
+            fields = list(fields or []) + self._wpow_fields(wpowers)
         allfields = [fields]
         if not normed:
             allfields[0] *= self.weight
@@ -695,6 +700,14 @@ class Catalog:
             pixs_galind_bounds.append(nextcat.pixs_galind_bounds)
             pix_gals.append(nextcat.pix_gals)            
 
+        # Split allfields again in the reduced fields and the powers; for the latter
+        # we need to undo the optional normalisation
+        if wpowers:
+            sums = np.concatenate([np.asarray(field[nfields:])*(weight if normed else 1.)
+                                   for field, weight in zip(allfields, weights)], axis=1)
+            allfields = [field[:nfields] for field in allfields]
+
+
         # Allocate result in standard output structure
         multihash_dict = dict(
             geometry='flat2d',
@@ -713,6 +726,10 @@ class Catalog:
             index_matcher_resos=np.concatenate(index_matchers).astype(np.int32),
             pixs_galind_bounds_resos=np.concatenate(pixs_galind_bounds).astype(np.int32),
             pix_gals_resos=np.concatenate(pix_gals).astype(np.int32))
+        if wpowers:
+            multihash_dict['wpow_resos'] = np.ascontiguousarray(sums[:wpowers-1].T)
+            if len(sums) > wpowers-1:
+                multihash_dict['wepow_resos'] = np.ascontiguousarray(sums[wpowers-1:].T)
         
         return multihash_dict
 
@@ -812,7 +829,7 @@ class Catalog:
         return bundle
 
     def multihash_spherical(self, reso_redges, nsides, nside_hash, shuffle=0,
-                            fields=None, w2field=False, nav_coarsen=None, verbose=False,
+                            fields=None, wpowers=0, nav_coarsen=None, verbose=False,
                             nthreads=1):
         r"""Builds spatialhash for a base catalog with geometry ``spherical`` and its reductions.
 
@@ -854,7 +871,8 @@ class Catalog:
 
         # Optional spin-2 field to aggregate with parallel transport
         do_shear = fields is not None
-        do_wsq = bool(w2field)
+        npow = int(wpowers)
+        nwepow = 7 if npow == 3 else 3
         e1_full = np.ascontiguousarray(fields[0], dtype=np.float64) if do_shear else np.empty(0)
         e2_full = np.ascontiguousarray(fields[1], dtype=np.float64) if do_shear else np.empty(0)
 
@@ -862,7 +880,7 @@ class Catalog:
         red_vx, red_vy, red_vz = [], [], []
         red_ra, red_sindec, red_cosdec = [], [], []
         red_w, red_isinner, red_zbin = [], [], []
-        red_e1, red_e2, red_weightsq = [], [], []
+        red_e1, red_e2, red_wpow, red_wepow = [], [], [], []
         ngal_resos = np.zeros(nresos, dtype=np.int64)
         ncells_resos = np.zeros(nresos, dtype=np.int64)
         nside_nav = np.zeros(nresos, dtype=np.int64)
@@ -893,7 +911,8 @@ class Catalog:
             rz = np.empty(n_red, dtype=np.int32)
             re1 = np.empty(n_red) if do_shear else np.empty(0)
             re2 = np.empty(n_red) if do_shear else np.empty(0)
-            rwsq = np.empty(n_red) if do_wsq else np.empty(0)
+            rwpow = np.empty(n_red*(npow-1)) if npow else np.empty(0)
+            rwepow = np.empty(n_red*nwepow) if npow and do_shear else np.empty(0)
             cell_pix = np.empty(nocc, dtype=np.int64)
             cell_redbounds = np.empty(nocc+1, dtype=np.int64)
 
@@ -901,8 +920,8 @@ class Catalog:
             if ns_red == 0:
                 self.clib.sphericalhash_gather(
                     order, key_sorted, ngal, gvx, gvy, gvz, ra, sindec, cosdec,
-                    w, isinner, zbins, e1_full, e2_full, do_shear, do_wsq,
-                    rvx, rvy, rvz, rra, rsdec, rcdec, rw, ris, rz, re1, re2, rwsq,
+                    w, isinner, zbins, e1_full, e2_full, do_shear, npow,
+                    rvx, rvy, rvz, rra, rsdec, rcdec, rw, ris, rz, re1, re2, rwpow, rwepow,
                     cell_pix, cell_redbounds, nthreads)
                 ncells = nocc
             else:
@@ -921,8 +940,8 @@ class Catalog:
                 ncells = int(self.clib.sphericalhash_reduce(
                     order, key_sorted, ngal, nocc, ns_red, nz_key, shuffle, navshift,
                     gvx, gvy, gvz, ra, sindec, cosdec, w, isinner,
-                    e1_full, e2_full, do_shear, do_wsq,
-                    rvx, rvy, rvz, rra, rsdec, rcdec, rw, ris, rz, re1, re2, rwsq,
+                    e1_full, e2_full, do_shear, npow,
+                    rvx, rvy, rvz, rra, rsdec, rcdec, rw, ris, rz, re1, re2, rwpow, rwepow,
                     cell_pix, cell_redbounds, nthreads))
                 cell_pix = cell_pix[:ncells]
                 cell_redbounds = cell_redbounds[:ncells+1]
@@ -936,8 +955,7 @@ class Catalog:
             red_w.append(rw); red_isinner.append(ris); red_zbin.append(rz)
             if do_shear:
                 red_e1.append(re1); red_e2.append(re2)
-            if do_wsq:
-                red_weightsq.append(rwsq)
+            red_wpow.append(rwpow); red_wepow.append(rwepow)
             cell_pix_list.append(cell_pix)
             cell_redbounds_list.append(cell_redbounds)
 
@@ -987,8 +1005,10 @@ class Catalog:
         if do_shear:
             bundle['red_e1'] = _cat(red_e1, np.float64)
             bundle['red_e2'] = _cat(red_e2, np.float64)
-        if do_wsq:
-            bundle['red_weightsq'] = _cat(red_weightsq, np.float64)
+        if wpowers:
+            bundle['wpow_resos'] = _cat(red_wpow, np.float64).reshape(-1, npow-1)
+            if do_shear:
+                bundle['wepow_resos'] = _cat(red_wepow, np.float64).reshape(-1, nwepow)
 
         return bundle
 
@@ -1328,14 +1348,13 @@ class Catalog:
         return pixinds, pixweights
         
 
-    def _multihash_fields(self, geometry, w2field):
-        r"""Tracer fields this catalog contributes to its multihash reduction.
-
-        The base catalog carries no tracer field (e.g. random catalogs), so it
-        returns ``None``. Tracer subclasses override this to return their own
-        field arrays in the layout the given ``geometry`` expects.
-        """
+    def _multihash_fields(self, geometry):
+        r"""Tracer fields this catalog contributes to its multihash reduction."""
         return None
+
+    def _wpow_fields(self, wpowers):
+        r"""Power of the weights and optionally further fields."""
+        return [self.weight**(k-1) for k in range(2, wpowers+1)]
 
     def _gengridprops(self, dpix, dpix2=None, forcedivide=1, extent=[None,None,None,None]):
         r"""Gives some basic properties of grids created from the discrete tracers.
@@ -1481,11 +1500,11 @@ class ScalarTracerCatalog(Catalog):
                                        weight=w_red, zbins=zbins_red, isinner=isinner_red)
         return res
     
-    def _multihash_fields(self, geometry, w2field):
+    def _multihash_fields(self, geometry):
         r"""The scalar tracer field, reduced only along the flat path."""
         if geometry != 'flat2d':
             return None
-        return [self.tracer, self.weight] if w2field else [self.tracer]
+        return [self.tracer]
     
     
     def frompatchind(self, index):
@@ -1538,8 +1557,7 @@ class SpinTracerCatalog(Catalog):
         assert(np.all(np.isfinite(self.tracer_1)) and np.all(np.isfinite(self.tracer_2)))
         
     def reduce(self, dpix, dpix2=None, relative_to_hash=None, normed=True, shuffle=0,
-               extent=[None,None,None,None], forcedivide=1, w2field=True,
-               ret_inst=False):
+               extent=[None,None,None,None], forcedivide=1, ret_inst=False):
         r"""Paints the catalog onto a grid with equal-area cells
         
         Parameters
@@ -1564,23 +1582,15 @@ class SpinTracerCatalog(Catalog):
         forcedivide: int, optional
             Forces the number of cells in each dimensions to be divisible by some number. 
             Defaults to ``1``.
-        w2field: bool, optional
-            Adds an additional field equivalent to the squared weight of the tracers to the reduced 
-            catalog. Defaults to ``True``.
         ret_inst: bool, optional
             Decides on whether to return the output as a list of arrays containing the reduced catalog or
             on returning a new ``Catalog`` instance. Defaults to ``False``.
         """
-        
-        if not w2field:
-            fields=(self.tracer_1, self.tracer_2,) 
-        else:
-            fields=(self.tracer_1, self.tracer_2, self.weight**2, )
         res = super()._reduce(
-            dpix=dpix, 
-            dpix2=None, 
-            relative_to_hash=None, 
-            fields=fields, 
+            dpix=dpix,
+            dpix2=None,
+            relative_to_hash=None,
+            fields=[self.tracer_1, self.tracer_2],
             normed=normed,
             shuffle=shuffle,
             extent=extent,
@@ -1593,11 +1603,19 @@ class SpinTracerCatalog(Catalog):
                                      weight=w_red, zbins=zbins_red, isinner=isinner_red)
         return res
     
-    def _multihash_fields(self, geometry, w2field):
-        r"""The two spin components; the flat path also packs ``weight**2``."""
-        if geometry == 'flat2d' and w2field:
-            return (self.tracer_1, self.tracer_2, self.weight**2)
+    def _multihash_fields(self, geometry):
+        r"""The two spin components."""
         return (self.tracer_1, self.tracer_2)
+
+    def _wpow_fields(self, wpowers):
+        r"""Powers of the weights and the different spin-combinations of weighted fields."""
+        w, e = self.weight, self.tracer_1 + 1j*self.tracer_2
+        e_sq = e*e
+        fields = [w*e_sq.real, w*e_sq.imag, w*np.abs(e)**2]
+        if wpowers == 3:
+            e_cube, e_sqc = e_sq*e, e_sq*np.conj(e)
+            fields += [w**2*e_cube.real, w**2*e_cube.imag, w**2*e_sqc.real, w**2*e_sqc.imag]
+        return super()._wpow_fields(wpowers) + fields
     
     
     def frompatchind(self, index, rotsignflip=False):

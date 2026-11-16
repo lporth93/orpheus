@@ -126,27 +126,20 @@ class NNNCorrelation(BinnedNPCF):
             nsides, nside_hash = self.tree_resos_to_nsides()
             mh = cat.multihash_bundle(reso_redges=self.tree_redges*sep2deg, nsides=nsides,
                                       nside_hash=nside_hash, shuffle=self.shuffle_pix,
-                                      w2field=self.base_weightsq, nthreads=self.nthreads,
+                                      wpowers=2, nthreads=self.nthreads,
                                       verbose=self._verbose_python)
             assert not mh['nav_coarsened'], (
                 "nav_coarsen is incompatible with the NNN doubletree: it reuses "
                 "nside_nav for the cross-reso reduction hierarchy, which requires "
                 "nside_nav == the reduction nside.")
-            extra = {'weightsq_resos': mh['red_weightsq']} if self.base_weightsq else None
         else:
             cutfirst = np.int32(self.tree_resos[0]==0.)
             mh = cat.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.dpix_hash,
-                                      shuffle=self.shuffle_pix, w2field=self.base_weightsq,
-                                      normed=True, nthreads=self.nthreads)
-            extra = None
-            if self.base_weightsq:
-                # Multihash averages pixels, such that weightsq_resos = sum(w^2)/sum(w), so times
-                # the cell weight it is sum(w^2)
-                weightsq_resos = np.concatenate([mh['allfields'][i][1] for i in range(len(mh['allfields']))])
-                extra = {'weightsq_resos': weightsq_resos.astype(np.float64)*mh['weight_resos']}
+                                      shuffle=self.shuffle_pix, normed=True, wpowers=2,
+                                      nthreads=self.nthreads)
 
         ## Build the four input structs + output arrays ##
-        cat_s, keep_cat = build_catalog_struct(mh, nbinsz, extra=extra)
+        cat_s, keep_cat = build_catalog_struct(mh, nbinsz)
         cat_s.nresos = int(self.tree_nresos)
         nav_s, keep_nav = build_navhash_struct(mh, cat_obj=cat)
         tree_s, keep_tree = build_tree_params_struct(self, mh)
@@ -157,7 +150,8 @@ class NNNCorrelation(BinnedNPCF):
         tree_s.maxresoind_leaf = min(int(self.maxresoind_leaf), maxleaf)
         scale = convertunits(self.sep_units, 'rad') if native_spherical else None
         bin_s = build_binning_struct(self, scale=scale, nmax=int(self.nmax),
-                                     dccorr=int(self.multicountcorr))
+                                     dccorr=int(self.multicountcorr),
+                                     base_weightsq=int(self.base_weightsq))
         out_s, bin_centers, triplets_n, _, triplets_norm_n, _, _ = build_npcf_output(
             'NNN', self.nbinsr, nmax=self.nmax, nbinsz=nbinsz)
 
@@ -501,24 +495,21 @@ class GGGCorrelation(BinnedNPCF):
                     nsides, nside_hash = self.tree_resos_to_nsides()
                     mh = cat.multihash_bundle(reso_redges=self.tree_redges*sep2deg, nsides=nsides,
                                               nside_hash=nside_hash, shuffle=self.shuffle_pix,
-                                              w2field=True, nthreads=self.nthreads,
+                                              wpowers=2, nthreads=self.nthreads,
                                               verbose=self._verbose_python)
                     assert not mh['nav_coarsened'], (
                         "nav_coarsen is incompatible with the GGG doubletree. Only single-tree navigation "
                         "(NN, GG, NNNN) may coarsen the navigation.")
-                    extra = {'e1_resos': mh['red_e1'], 'e2_resos': mh['red_e2'],
-                             'weightsq_resos': mh['red_weightsq']}
+                    extra = {'e1_resos': mh['red_e1'], 'e2_resos': mh['red_e2']}
                 else:
                     cutfirst = np.int32(self.tree_resos[0]==0.)
                     mh = cat.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.dpix_hash,
-                                              shuffle=self.shuffle_pix, w2field=True, normed=True, nthreads=self.nthreads)
+                                              shuffle=self.shuffle_pix, normed=True, wpowers=2,
+                                              nthreads=self.nthreads)
                     allfields = mh['allfields']
-                    weight_resos = mh['weight_resos']
                     e1_resos = np.concatenate([allfields[i][0] for i in range(len(allfields))]).astype(np.float64)
                     e2_resos = np.concatenate([allfields[i][1] for i in range(len(allfields))]).astype(np.float64)
-                    _weightsq_resos = np.concatenate([allfields[i][2] for i in range(len(allfields))]).astype(np.float64)
-                    weightsq_resos = _weightsq_resos*weight_resos # reduce renorms all fields --> 'unrenorm'
-                    extra = {'e1_resos': e1_resos, 'e2_resos': e2_resos, 'weightsq_resos': weightsq_resos}
+                    extra = {'e1_resos': e1_resos, 'e2_resos': e2_resos}
 
                 cat_s, keep_cat = build_catalog_struct(mh, nbinsz, extra=extra)
                 cat_s.nresos = int(self.tree_nresos)
@@ -569,14 +560,12 @@ class GGGCorrelation(BinnedNPCF):
                 elif self.method in ["Tree", "BaseTree"]:
                     cutfirst = np.int32(self.tree_resos[0]==0.)
                     mh = cat.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.dpix_hash,
-                                              shuffle=self.shuffle_pix, w2field=True, normed=True, nthreads=self.nthreads)
-                    weight_resos = mh['weight_resos']
+                                              shuffle=self.shuffle_pix, normed=True, wpowers=2,
+                                              nthreads=self.nthreads)
                     allfields = mh['allfields']
                     e1_resos = np.concatenate([allfields[i][0] for i in range(len(allfields))]).astype(np.float64)
                     e2_resos = np.concatenate([allfields[i][1] for i in range(len(allfields))]).astype(np.float64)
-                    _weightsq_resos = np.concatenate([allfields[i][2] for i in range(len(allfields))]).astype(np.float64)
-                    weightsq_resos = _weightsq_resos*weight_resos # reduce renorms all fields --> 'unrenorm'
-                    extra = {'e1_resos': e1_resos, 'e2_resos': e2_resos, 'weightsq_resos': weightsq_resos}
+                    extra = {'e1_resos': e1_resos, 'e2_resos': e2_resos}
                     catf_s, keep_catf = build_catalog_struct(mh, self.nbinsz, extra=extra)
                     catf_s.nresos = int(self.tree_nresos)
                     nav_s, keep_nav = build_navhash_struct(mh, cat_obj=cat)
@@ -1133,7 +1122,8 @@ class GNNCorrelation(BinnedNPCF):
                 cats_s.nresos = int(self.tree_nresos)
                 navs_s, keep_ns = build_navhash_struct(mhs, cat_obj=cat_source)
                 mhl = cat_lens.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.dpix_hash,
-                                                shuffle=self.shuffle_pix, normed=True, extent=jointextent, nthreads=self.nthreads)
+                                                shuffle=self.shuffle_pix, normed=True, extent=jointextent,
+                                                wpowers=2, nthreads=self.nthreads)
                 catl_s, keep_cl = build_catalog_struct(mhl, self.nbinsz_lens)
                 catl_s.nresos = int(self.tree_nresos)
                 navl_s, keep_nl = build_navhash_struct(mhl, cat_obj=cat_lens)
@@ -1746,7 +1736,8 @@ class NGGCorrelation(BinnedNPCF):
             if self.method=="Tree" or self.method == "DoubleTree":
                 cutfirst = np.int32(self.tree_resos[0]==0.)
                 mhs = cat_source.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.dpix_hash,
-                                                  shuffle=self.shuffle_pix, normed=True, extent=jointextent, nthreads=self.nthreads)
+                                                  shuffle=self.shuffle_pix, normed=True, extent=jointextent,
+                                                  wpowers=2, nthreads=self.nthreads)
                 sallfields = mhs['allfields']
                 e1_resos_source = np.concatenate([sallfields[i][0] for i in range(len(sallfields))]).astype(np.float64)
                 e2_resos_source = np.concatenate([sallfields[i][1] for i in range(len(sallfields))]).astype(np.float64)
