@@ -35,6 +35,10 @@ typedef struct {
     double *e1_resos;
     double *e2_resos;
     double *weightsq_resos;
+    // Multiple-counting corrections: per object the sums over its galaxies of w^k, k=2..wpowers,
+    // and of (we)^2, |we|^2 [, (we)^3, (we)^2 (we)*] split into real and imaginary parts
+    double *wpow_resos;
+    double *wepow_resos;
 } MultiresoCatalog;
 
 // Quantities neccessary to navigate through a multihash nested spatial hashing structur

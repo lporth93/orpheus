@@ -58,6 +58,9 @@ class MultiresoCatalog(ctypes.Structure):
         ("e1_resos", _p_f64),
         ("e2_resos", _p_f64),
         ("weightsq_resos", _p_f64),
+        # Multiple-counting corrections: Weights and nontrivial spin-combinations of weighted shape fields
+        ("wpow_resos", _p_f64),
+        ("wepow_resos", _p_f64),
     ]
 
 
@@ -301,6 +304,15 @@ def build_catalog_struct(mh, nbinsz, extra=None):
                 arr = np.ascontiguousarray(extra[name], dtype=np.float64)
                 keepers.append(arr)
                 setattr(s, name, _ptr_f64(arr))
+
+    # Weight and shape powers of the multiple-counting corrections (NULL if not requested)
+    s.wpow_resos = _null(_p_f64)
+    s.wepow_resos = _null(_p_f64)
+    for name in ('wpow_resos', 'wepow_resos'):
+        if name in mh:
+            arr = np.ascontiguousarray(mh[name], dtype=np.float64)
+            keepers.append(arr)
+            setattr(s, name, _ptr_f64(arr))
 
     return s, keepers
 

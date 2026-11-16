@@ -212,6 +212,7 @@ int orpheus_struct_layout(int which, size_t *out, int len_out){
             OFF(MultiresoCatalog, sindec_resos);  OFF(MultiresoCatalog, cosdec_resos);
             OFF(MultiresoCatalog, e1_resos);      OFF(MultiresoCatalog, e2_resos);
             OFF(MultiresoCatalog, weightsq_resos);
+            OFF(MultiresoCatalog, wpow_resos);    OFF(MultiresoCatalog, wepow_resos);
             break;
         case 1:
             PUT(sizeof(NavHash));
@@ -287,7 +288,7 @@ const char *orpheus_struct_fields(int which){
     switch (which){
         case 0: return "metric,nresos,ngal_resos,nbinsz,isinner_resos,weight_resos,zbin_resos,"
                        "pos1_resos,pos2_resos,pos3_resos,vx_resos,vy_resos,vz_resos,ra_resos,"
-                       "sindec_resos,cosdec_resos,e1_resos,e2_resos,weightsq_resos";
+                       "sindec_resos,cosdec_resos,e1_resos,e2_resos,weightsq_resos,wpow_resos,wepow_resos";
         case 1: return "metric,index_matcher,pixs_galind_bounds,pix_gals,pix1_start,pix1_d,"
                        "pix1_n,pix2_start,pix2_d,pix2_n,nregions,index_matcher_hash,"
                        "filledregions,nfilledregions,slab_offsets,rshift_bounds,nslabs,z0,"

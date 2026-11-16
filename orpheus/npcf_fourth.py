@@ -226,7 +226,7 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
                       for r in range(self.tree_nresos)]
             nside_hash = _nside_for(max(self.min_sep, 0.5*self.tree_redges[1])*_deg2rad)
             sph = cat.multihash_bundle(reso_redges=self.tree_redges, nsides=nsides,
-                                       nside_hash=nside_hash, nthreads=self.nthreads,
+                                       nside_hash=nside_hash, wpowers=3, nthreads=self.nthreads,
                                        verbose=self._verbose_python)
             assert sph['geometry'] == 'spherical'
             catr_s, keep_cr = build_catalog_struct(sph, self.nbinsz)
@@ -275,7 +275,8 @@ class NNNNCorrelation_NoTomo(BinnedNPCF):
             # Prepare reduced catalogs
             cutfirst = np.int32(self.tree_resos[0]==0.)
             mh = cat.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.dpix_hash,
-                                      shuffle=self.shuffle_pix, normed=False, nthreads=self.nthreads)
+                                      shuffle=self.shuffle_pix, normed=False, wpowers=3,
+                                      nthreads=self.nthreads)
             _zb = np.zeros(cat.ngal, dtype=np.int32)   # notomo: zbins unused by C
             catc_s, keep_cc = build_flat_catalog_struct(cat.pos1, cat.pos2, cat.weight, _zb,
                                                         self.nbinsz, cat.isinner)
@@ -684,7 +685,8 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
             _shape, _inds, _n2s, _n3s = gen_n2n3indices_Upsfourth(self.nmaxs[0])
             cutfirst = np.int32(self.tree_resos[0]==0.)
             mh = cat.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.dpix_hash,
-                                      shuffle=self.shuffle_pix, w2field=True, normed=True, nthreads=self.nthreads)
+                                      shuffle=self.shuffle_pix, w2field=True, normed=True, wpowers=3,
+                                      nthreads=self.nthreads)
             allfields = mh['allfields']
             e1_resos = np.concatenate([allfields[i][0] for i in range(len(allfields))]).astype(np.float64)
             e2_resos = np.concatenate([allfields[i][1] for i in range(len(allfields))]).astype(np.float64)
@@ -1383,7 +1385,8 @@ class GNNNCorrelation_NoTomo(BinnedNPCF):
             # Prepare reduced catalogs 
             cutfirst = np.int32(self.tree_resos[0]==0.)
             mhl = cat_lens.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.dpix_hash,
-                                            shuffle=self.shuffle_pix, normed=True, nthreads=self.nthreads)
+                                            shuffle=self.shuffle_pix, normed=True, wpowers=3,
+                                            nthreads=self.nthreads)
             cats_s, keep_cs = build_flat_catalog_struct(
                 cat_source.pos1, cat_source.pos2, cat_source.weight, _zbz_source,
                 self.nbinsz_source, cat_source.isinner,
