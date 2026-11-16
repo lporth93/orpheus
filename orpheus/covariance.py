@@ -15,13 +15,11 @@ from .utils import _load_clib, check_clib_error
 __all__ = ["GGCovarianceNoTomo", "GGCovariance"]
 
 
-# Target share of L2 cache used by quadruplets
-_L2_TARGET_FRAC = .7
-
 ####################
 # HELPER FUNCTIONS #
 ####################
 
+## Integration related ##
 def _trapz_weights(x):
     """Trapezoidal weights for 1D non-uniform integral."""
     x = np.asarray(x, dtype=float)
@@ -36,18 +34,15 @@ def _theta_dtheta(edges):
     edges = np.asarray(edges, dtype=float)
     return .5 * np.diff(edges**2)
 
-def _bin_average_blocks(blocks, weights):
-    """Average blocks (..., n*ns, n*ns) over the ns sub-bins of each of the n bins, weights (n, ns)."""
-    n, ns = weights.shape
-    b = blocks.reshape(blocks.shape[:-2] + (n, ns, n, ns))
-    M = weights.sum(1)
-    return np.einsum('...aibj,ai,bj->...ab', b, weights, weights) / np.outer(M, M)
-
 def _periodic_weights(x, period=2. * np.pi):
     """Uniform weights for periodic function sampled on a full-period grid."""
     x = np.asarray(x, dtype=float)
     return np.full_like(x, period / len(x))
 
+## Caching related ##
+
+# Target share of L2 cache used by quadruplets
+_L2_TARGET_FRAC = .7
 
 def _l2_cache_bytes():
     """Per-core L2 size in bytes, or None if it cannot be determined."""
@@ -93,7 +88,6 @@ def _v2_block_cache_cap(n_v1, n_xi, frac=_L2_TARGET_FRAC):
 
     return v2_block_cap
 
-
 def _auto_reduce_tiles(nr_block_base, v2_block_base, n_v2, n_v1=None, n_xi=2):
     """Choose tile sizes ``(nr_block, v2_block)`` for the banded quadruplet integral."""
     # Determine largest scaling factor that keeps v2_block <= n_v2.
@@ -108,6 +102,62 @@ def _auto_reduce_tiles(nr_block_base, v2_block_base, n_v2, n_v1=None, n_xi=2):
     if cap is not None:
         v2_block = max(v2_block_base, min(v2_block, cap))
     return nr_block, v2_block
+
+## Extrapolation related ##
+def _extrapolation_type(extrapolation_type, available):
+    """Lower-case ``extrapolation_type``, or 'baseline' with a warning if the lower varphi levels are
+    not ``available``."""
+    kind = 'baseline' if extrapolation_type is None else str(extrapolation_type).lower()
+    if kind not in ('baseline', 'richardson_pooled', 'richardson_component', 'shanks'):
+        raise ValueError("extrapolation_type must be 'Baseline', 'Richardson_pooled', 'Richardson_component' "
+                         f"or 'Shanks', got '{extrapolation_type}'")
+    if kind != 'baseline' and not available:
+        warnings.warn(f"extrapolation_type='{extrapolation_type}' needs extrapolation=True, returning the "
+                      "result without extrapolation.")
+        return 'baseline'
+    return kind
+
+def _extrapolate_blocks(full, d1, d2, kind, nblock):
+    """Extrapolate ``full`` in the varphi resolution on each of its (nblock, nblock) blocks.
+
+    With F, H and Q on the varphi grids of n, n/2 and n/4 nodes, d1 = F-H and d2 = H-Q, and an
+    error c*h^p gives d2 = 2^p*d1.
+
+    * 'richardson_pooled': F + d1/(2^p - 1) with one order per block, 2^p = sum(d1*d2)/sum(d1^2)
+    * 'richardson_component': the same with one order per element, 2^p = d2/d1
+    * 'shanks': F - d1^2/(d1 - d2), which equals 'richardson_component' wherever that has an order
+
+    Returns extrapolated array and orders, per block or per element, nan where there is none.
+    """
+    out = full.copy()
+    if kind == 'richardson_pooled':
+        orders = np.full((full.shape[0]//nblock, full.shape[1]//nblock), np.nan)
+        for i in range(orders.shape[0]):
+            for j in range(orders.shape[1]):
+                sl = (slice(i*nblock, (i + 1)*nblock), slice(j*nblock, (j + 1)*nblock))
+                norm = np.sum(d1[sl]**2)
+                slope = np.sum(d1[sl]*d2[sl])/norm if norm > 0. else 0.
+                # slope=2^p, so order>0 implies slope>1
+                if slope > 1.:
+                    out[sl] += d1[sl]/(slope - 1.)
+                    orders[i, j] = np.log2(slope)
+        return out, orders
+    with np.errstate(divide='ignore', invalid='ignore'):
+        ratio = d2/d1
+    # If order<0, keep value on full grid
+    has_order = np.isfinite(ratio) & (ratio > 1.)
+    orders = np.where(has_order, np.log2(np.where(has_order, ratio, 2.)), np.nan)
+    use = has_order if kind == 'richardson_component' else np.isfinite(ratio) & (ratio != 1.)
+    out[use] += d1[use]/(ratio[use] - 1.)
+    return out, orders
+
+## Misc ##
+def _bin_average_blocks(blocks, weights):
+    """Average blocks (..., n*ns, n*ns) over the ns sub-bins of each of the n bins, weights (n, ns)."""
+    n, ns = weights.shape
+    b = blocks.reshape(blocks.shape[:-2] + (n, ns, n, ns))
+    M = weights.sum(1)
+    return np.einsum('...aibj,ai,bj->...ab', b, weights, weights) / np.outer(M, M)
 
 def _infer_ntomo(n_tp):
     """Recover ntomo from number of unique bin pairs n_tp = ntomo*(ntomo+1)/2."""
@@ -199,6 +249,11 @@ class GGCovarianceNoTomo:
     phi1_subgrid_frac, phi2_subgrid_frac: numpy.ndarray, optional
         Offsets of radial subgrid nodes from the bin centers, in units of the bin width. Default
         to ``None``, i.e. the bin centers.
+    extrapolation: bool, optional
+        Also evaluate the r-terms on every second and fourth node of the varphi grids, from which
+        the covariances can be extrapolated in the varphi resolution, see ``extrapolation_type``
+        of :meth:`get_cov_xipm`. Needs numbers of varphi nodes that are multiples of four.
+        Defaults to ``False``.
     v2_block, nr_block: int, optional
         Chunk size on the varphi2 axis and tile size on the (theta1, theta2) axes of the
         quadruplet integral, which bound its memory but not its result. Default to ``16`` and
@@ -232,7 +287,7 @@ class GGCovarianceNoTomo:
         rmin_pixsize=40, tree_resos=(0., 0.5, 1., 2., 4.),
         tree_method='DoubleTree', shuffle_pix=1, memory_bound=512., verbosity=1,
         phi_grid=None, phi_grid_min=0.05, varphi1_grid=None, varphi2_grid=None,
-        phi1_subgrid_frac=None, phi2_subgrid_frac=None,
+        phi1_subgrid_frac=None, phi2_subgrid_frac=None, extrapolation=False,
         v2_block=16, nr_block=None, nthreads=1, _steps=None):
 
         ## Link compiled libraries
@@ -398,6 +453,9 @@ class GGCovarianceNoTomo:
         self.varphi2_grid = (np.linspace(0., 2.*np.pi, 64, endpoint=False) if varphi2_grid is None else np.asarray(varphi2_grid))
         self.phi1_subgrid_frac = None if phi1_subgrid_frac is None else np.asarray(phi1_subgrid_frac, dtype=float)
         self.phi2_subgrid_frac = None if phi2_subgrid_frac is None else np.asarray(phi2_subgrid_frac, dtype=float)
+        self.extrapolation = bool(extrapolation)
+        if self.extrapolation and (len(self.varphi1_grid) % 4 or len(self.varphi2_grid) % 4):
+            raise ValueError("extrapolation needs numbers of varphi nodes that are multiples of four")
 
         ## Output storage
         self.D = None
@@ -409,6 +467,8 @@ class GGCovarianceNoTomo:
         self.rm0 = None
         self.rm1 = None
         self.rpm = None
+        self.rterms_lower = None
+        self.extrapolation_orders = None
         self.cov_pp = None
         self.cov_mm = None
         self.cov_pm = None
@@ -536,7 +596,7 @@ class GGCovarianceNoTomo:
     def cov_of_statistic(self, 
         filter_type, radii=None, Nmax=None, theta_min=None, theta_max=None,
         cosebi_dps=100, cosebi_nsample=4096,
-        return_weights=False,):
+        return_weights=False, extrapolation_type='Baseline'):
         r"""Compute the covariance of a statistic linear in xi_pm, S+02 Eqs. 41 and 42.
 
         .. math::
@@ -561,6 +621,10 @@ class GGCovarianceNoTomo:
             Number of quadrature points for T_-.
         return_weights: bool, optional
             Also return the statistic weights.
+        extrapolation_type: {'Baseline', 'Richardson_pooled', 'Richardson_component', 'Shanks'}, optional
+            Extrapolation of the covariance of the statistic in the varphi resolution, as in
+            :meth:`get_cov_xipm` but applied to the statistic, with one order per returned matrix for
+            'Map2' and 'cosebis' and per block of two components for 'puremode'.
 
         Returns
         -------
@@ -572,10 +636,22 @@ class GGCovarianceNoTomo:
         from .npcf_second import GGCorrelation
 
         ## 1) Get xipm covariance
+        kind = _extrapolation_type(extrapolation_type, getattr(self, 'extrapolation', False))
         if self.cov_xipm is None:
             self.get_cov_xipm()
         C = self.cov_xipm
         n = self.n_r
+
+        # Extrapolate the projected covariance from its changes between the varphi levels
+        def extrapolated(project, nblock):
+            out = project(C)
+            if kind != 'baseline':
+                d1, d2 = (project(d) for d in self._sva_differences())
+                self.extrapolation_orders = {}
+                for key in out:
+                    out[key], self.extrapolation_orders[key] = _extrapolate_blocks(
+                        out[key], d1[key], d2[key], kind, nblock)
+            return out
 
         ## 2) Init helper GGCorrelation. We set nzcombis to nbinsr to get the filters in the right shape
         tmin = (float(self.theta_edges[0]) if theta_min is None else float(theta_min))
@@ -625,11 +701,10 @@ class GGCovarianceNoTomo:
             # Remove the measure correction from the kernels.
             pp, mp, pm, mm = map(prepare_kernel,(xip_p, xim_p, xip_m, xim_m))
             K = np.block([[pp[k], pm[k]] for k in range(3)] + [[mp[k], mm[k]] for k in range(3)])
-            cov_full = K @ C @ K.T
             labels = [f'{component}[{i}]'
                       for component in ('xip_E', 'xip_B', 'xip_amb', 'xim_E', 'xim_B', 'xim_amb')
                       for i in range(n)]
-            out = {'cov': cov_full, 'labels': labels,}
+            out = {**extrapolated(lambda M: {'cov': K @ M @ K.T}, n), 'labels': labels,}
             if return_weights:
                 return out, (K, labels)
             return out
@@ -639,9 +714,9 @@ class GGCovarianceNoTomo:
         ## 4) Propagate cov in E-/B-Mode statistics
         W_E = np.hstack((w_p, w_m))
         W_B = np.hstack((w_p, -w_m))
-        out = {'cov_EE': W_E @ C @ W_E.T, 
-               'cov_BB': W_B @ C @ W_B.T,
-               'cov_EB': W_E @ C @ W_B.T,}
+        out = extrapolated(lambda M: {'cov_EE': W_E @ M @ W_E.T,
+                                      'cov_BB': W_B @ M @ W_B.T,
+                                      'cov_EB': W_E @ M @ W_B.T,}, W_E.shape[0])
 
         return (out, (W_E, W_B)) if return_weights else out
 
@@ -787,6 +862,9 @@ class GGCovarianceNoTomo:
             if self.qpm is None: self.getqpm()
             specs += [(name, name in self.QTERMS_SYM) for name, *_ in self.QTERMS]
         comps = {name: _interp(getattr(self, name), sym) for name, sym in specs}
+        # The lower varphi levels of the r-terms alike
+        lower = [{name: _interp(r, name in self.RTERMS_SYM) for name, r in zip(self.RTERMS, level)}
+                 for level in (self.rterms_lower or [])]
         # We have a fine instance --> D and qij on the full grid
         if fine is not None:
             comps.update(fine_terms)
@@ -818,10 +896,13 @@ class GGCovarianceNoTomo:
             # If there is sth to compute, first set up tiles for good caching, compute the r-terms, and update the comps
             if mask_max.any():
                 self._set_slab_tiles(fine, new_tc, widths, slab_nr_block)
-                band = dict(zip(self.RTERMS, fine.get_all_rterms(pair_mask=masks, verbose=verbose)))
-                for name in self.RTERMS:
-                    m = masks[self.RTERM_BLOCKS[name]]
-                    comps[name][m] = band[name][m]
+                bands = fine._rterm_levels(pair_mask=masks, verbose=verbose)
+                if len(bands) != 1 + len(lower):
+                    raise ValueError("slab_instance must share `extrapolation` with this instance.")
+                for level, band in zip([comps] + lower, bands):
+                    for name, r in zip(self.RTERMS, band):
+                        m = masks[self.RTERM_BLOCKS[name]]
+                        level[name][m] = r[m]
 
         ## 7) Init the finely gridded cov instance and return this
         return GGCovarianceNoTomo._from_components(
@@ -830,7 +911,8 @@ class GGCovarianceNoTomo:
             spline_xip=self.xip, spline_xim=self.xim,
             sigma_eps=self.sigma_eps, nbar=self.nbar, area=self.area,
             weights_mean=self.weights_mean, weights_std=self.weights_std,
-            nthreads=self.nthreads, **comps)
+            nthreads=self.nthreads,
+            rterms_lower=[tuple(level[name] for name in self.RTERMS) for level in lower] or None, **comps)
 
     def _fine_instance_from_catalog(self, new_theta_centers, new_theta_edges, verbose=False):
         """Build a fine-grid instance from the catalog of this instance.
@@ -877,7 +959,7 @@ class GGCovarianceNoTomo:
             phi_grid=self.phi_grid, varphi1_grid=self.varphi1_grid,
             varphi2_grid=self.varphi2_grid,
             phi1_subgrid_frac=self.phi1_subgrid_frac,
-            phi2_subgrid_frac=self.phi2_subgrid_frac,
+            phi2_subgrid_frac=self.phi2_subgrid_frac, extrapolation=self.extrapolation,
             v2_block=self.v2_block, nr_block=self.nr_block,
             nthreads=self.nthreads,
             catalog=self.catalog, path_save=self.path_save, store_multiplets=self.store_multiplets,
@@ -955,7 +1037,7 @@ class GGCovarianceNoTomo:
                          spline_xip, spline_xim, sigma_eps,
                          nbar, area, weights_mean, weights_std,
                          D=None, qpp=None, qmm=None, qpm=None,
-                         rp0=None, rp1=None, rm0=None, rm1=None, rpm=None,
+                         rp0=None, rp1=None, rm0=None, rm1=None, rpm=None, rterms_lower=None,
                          nthreads=None, template=None, pairs=None, **tomo):
         """Create an instance from precomputed covariance components, bypassing ``__init__``.
 
@@ -1028,6 +1110,9 @@ class GGCovarianceNoTomo:
         obj.D = _a(D)
         obj.qpp = _a(qpp); obj.qmm = _a(qmm); obj.qpm = _a(qpm)
         obj.rp0 = _a(rp0); obj.rp1 = _a(rp1); obj.rm0 = _a(rm0); obj.rm1 = _a(rm1); obj.rpm = _a(rpm)
+        obj.rterms_lower = rterms_lower
+        obj.extrapolation = rterms_lower is not None or tomo.get('rterms_tomo_lower') is not None
+        obj.extrapolation_orders = None
         obj.cov_pp = None; obj.cov_mm = None; obj.cov_pm = None
         obj.cov_xipm = None
 
@@ -1046,8 +1131,32 @@ class GGCovarianceNoTomo:
     # Covariance of xi_pm #
     #######################
 
-    def get_cov_xipm(self, verbose=False, nthreads=None):
-        """Assemble the full (2n_r, 2n_r) covariance of (xi_+, xi_-)."""
+    def get_cov_xipm(self, verbose=False, nthreads=None, extrapolation_type='Baseline'):
+        """Assemble the full (2n_r, 2n_r) covariance of (xi_+, xi_-).
+
+        Parameters
+        ----------
+        verbose: bool, optional
+            Print the progress. Defaults to ``False``.
+        nthreads: int, optional
+            Number of OpenMP threads. Defaults to ``nthreads`` of the instance.
+        extrapolation_type: {'Baseline', 'Richardson_pooled', 'Richardson_component', 'Shanks'}, optional
+            Extrapolation in the varphi resolution from the grids of n, n/2 and n/4 nodes, which
+            needs ``extrapolation`` of the instance. Without it a warning is raised and the
+            baseline returned.
+
+            * 'Baseline': the covariance on the full varphi grids.
+            * 'Richardson_pooled': Richardson extrapolation with one convergence order p for each
+              of the blocks ++, +-, -+ and --.
+            * 'Richardson_component': Richardson extrapolation with one order per element.
+              Elements that do not converge monotonically keep their baseline.
+            * 'Shanks': Shanks transformation of each element, which equals 'Richardson_component'
+              for the monotonically converging ones.
+
+            The orders of the last call are kept in ``extrapolation_orders``. Only the baseline
+            is stored in ``cov_xipm``.
+        """
+        kind = _extrapolation_type(extrapolation_type, self.extrapolation)
         # All five r-terms in one pass of the quadruplet integral
         self._ensure_all_rterms(verbose=verbose, nthreads=nthreads)
         if self.cov_pp is None: self.get_cov_pp(verbose=verbose, nthreads=nthreads)
@@ -1059,7 +1168,20 @@ class GGCovarianceNoTomo:
         self.cov_xipm[:n, n:] = self.cov_pm
         self.cov_xipm[n:, :n] = self.cov_pm.T
         self.cov_xipm[n:, n:] = self.cov_mm
-        return self.cov_xipm
+        if kind == 'baseline':
+            return self.cov_xipm
+        out, self.extrapolation_orders = _extrapolate_blocks(self.cov_xipm, *self._sva_differences(), kind, n)
+        return out
+
+    def _sva_differences(self):
+        """Changes F - H and H - Q of the (2n_r, 2n_r) xi_pm covariance between the varphi grids of n,
+        n/2 and n/4 nodes."""
+        levels = [[getattr(self, name) for name in self.RTERMS]] + list(self.rterms_lower)
+        diffs = []
+        for fine, coarse in zip(levels[:-1], levels[1:]):
+            d = {name: f - c for name, f, c in zip(self.RTERMS, fine, coarse)}
+            diffs.append(np.block([[d['rp0'] + d['rp1'], d['rpm']], [d['rpm'].T, d['rm0'] + d['rm1']]]))
+        return diffs
 
     def get_cov_pp(self, verbose=False, nthreads=None):
         """Assemble the full Cov_pp matrix."""
@@ -1141,17 +1263,22 @@ class GGCovarianceNoTomo:
         rp0, rp1, rm0, rm1, rpm: numpy.ndarray
             The five r-terms, each of shape (n_r, n_r).
         """
+        return tuple(self._rterm_levels(verbose=verbose, nthreads=nthreads, pair_mask=pair_mask)[0])
+
+    def _rterm_levels(self, verbose=False, nthreads=None, pair_mask=None):
+        """The five r-terms of :meth:`get_all_rterms` on every varphi level, the full grids first."""
         if self.method_quadruplets == 'continuous':
             raise NotImplementedError(
                 "get_all_rterms() is not supported for "
                 "method_quadruplets='continuous'; call "
                 "getrp0()...getrpm() individually.")
         self._step("r-terms on %d bins%s" % (self.n_r, "" if pair_mask is None else ", in the band"))
-        results = self._quadruplet_density_terms_c(
+        levels = self._quadruplet_density_terms_c(
             verbose=verbose, pair_mask=pair_mask, nthreads=nthreads)
         if pair_mask is None:
-            self.rp0, self.rp1, self.rm0, self.rm1, self.rpm = results
-        return tuple(results)
+            self.rp0, self.rp1, self.rm0, self.rm1, self.rpm = levels[0]
+            self.rterms_lower = levels[1:] or None
+        return levels
 
     def getrp0(self, verbose=False, nthreads=None):
         """r_+0 contribution to Cov_pp cosmic variance."""
@@ -1185,6 +1312,7 @@ class GGCovarianceNoTomo:
         if self.method_quadruplets == 'continuous':
             for i, name in enumerate(self.RTERMS):
                 setattr(self, name, self._rterms_continuous_c()[i])
+            self.rterms_lower = self._rterms_cont_cache[4] or None
         else:
             self.get_all_rterms(verbose=verbose, nthreads=nthreads)
 
@@ -1251,10 +1379,22 @@ class GGCovarianceNoTomo:
                             xi_b_idx=['pm'.index(self.RTERM_XI[name][1]) for name in self.RTERMS],
                             w_ids=[0, 1, 2, 3, 4], out_idx=[0, 1, 2, 3, 4],
                             wick_fac=[1.] * 5, n_out=5)
-        return self._run_postq_engine(
+        return self._varphi_levels(lambda: self._run_postq_engine(
             callback_map, xi_tables, [name in self.RTERMS_SYM for name in self.RTERMS],
             [self.RTERM_BLOCKS[name] for name in self.RTERMS],
-            verbose=verbose, pair_mask=pair_mask, nthreads=nthreads)
+            verbose=verbose, pair_mask=pair_mask, nthreads=nthreads))
+
+    def _varphi_levels(self, compute):
+        """List of ``compute()`` on the varphi grids and, with ``extrapolation``, on every second and
+        every fourth node of them."""
+        levels = [compute()]
+        if self.extrapolation:
+            grids = self.varphi1_grid, self.varphi2_grid
+            for step in (2, 4):
+                self.varphi1_grid, self.varphi2_grid = grids[0][::step], grids[1][::step]
+                levels.append(compute())
+            self.varphi1_grid, self.varphi2_grid = grids
+        return levels
 
     def _run_postq_engine(self, cbm, xi_tables, symmetric_mask, out_blocks,
                           verbose=False, pair_mask=None, nthreads=None):
@@ -1471,27 +1611,29 @@ class GGCovarianceNoTomo:
             self._xi_tables_from_splines(
                 [self.xip, self.xim],
                 lo=self._xi_query_lo(), hi=self._xi_query_hi())
-        v = np.ascontiguousarray(self.varphi1_grid, dtype=np.float64)
-        v_half = np.ascontiguousarray(v[v <= np.pi], dtype=np.float64)
         nodes, weights = self._rterm_nodes(dlnt_target)
-        results = np.zeros(5*nodes.size*nodes.size, dtype=np.float64)
         idx0 = np.zeros(1, dtype=np.int32)
-        # Do function call
-        self._clib.continuous_rterms_tomo(
-            nodes.size, np.ascontiguousarray(nodes.ravel(), dtype=np.float64),
-            np.ascontiguousarray(self.phi_grid, dtype=np.float64),
-            np.ascontiguousarray(_trapz_weights(self.phi_grid), dtype=np.float64),
-            len(self.phi_grid),
-            v, np.ascontiguousarray(_periodic_weights(v), dtype=np.float64), len(v),
-            v_half, np.ascontiguousarray(_trapz_weights(v_half), dtype=np.float64),
-            len(v_half),
-            float(self.area),
-            xi_x, xi_n, xi_logx0, xi_inv_dlogx, xi_y_tables, 2,
-            1, idx0, idx0, idx0+1, idx0+1, idx0,
-            5, results, int(self.nthreads), 0)
-        # Integrate over the subbins and update cache
-        out = _bin_average_blocks(results.reshape(5, nodes.size, nodes.size), weights)
-        self._rterms_cont_cache = (self.phi_grid, self.varphi1_grid, self.n_r, out)
+        def compute():
+            v = np.ascontiguousarray(self.varphi1_grid, dtype=np.float64)
+            v_half = np.ascontiguousarray(v[v <= np.pi], dtype=np.float64)
+            results = np.zeros(5*nodes.size*nodes.size, dtype=np.float64)
+            # Do function call
+            self._clib.continuous_rterms_tomo(
+                nodes.size, np.ascontiguousarray(nodes.ravel(), dtype=np.float64),
+                np.ascontiguousarray(self.phi_grid, dtype=np.float64),
+                np.ascontiguousarray(_trapz_weights(self.phi_grid), dtype=np.float64),
+                len(self.phi_grid),
+                v, np.ascontiguousarray(_periodic_weights(v), dtype=np.float64), len(v),
+                v_half, np.ascontiguousarray(_trapz_weights(v_half), dtype=np.float64),
+                len(v_half),
+                float(self.area),
+                xi_x, xi_n, xi_logx0, xi_inv_dlogx, xi_y_tables, 2,
+                1, idx0, idx0, idx0+1, idx0+1, idx0,
+                5, results, int(self.nthreads), 0)
+            # Integrate over the subbins
+            return _bin_average_blocks(results.reshape(5, nodes.size, nodes.size), weights)
+        out, *lower = self._varphi_levels(compute)
+        self._rterms_cont_cache = (self.phi_grid, self.varphi1_grid, self.n_r, out, lower)
         return out
 
     def _rterm_nodes(self, dlnt_target):
@@ -1908,6 +2050,7 @@ class GGCovariance(GGCovarianceNoTomo):
 
         ## Tomo output storage ##
         self.rterms_tomo = {}
+        self.rterms_tomo_lower = None
         self.D_tomo = None
         self.qpp_tomo = None
         self.qmm_tomo = None
@@ -1951,7 +2094,7 @@ class GGCovariance(GGCovarianceNoTomo):
     ###################################
 
     def cov_of_statistic(self, filter_type, split_components=False,
-                              xipm_nbinstarget=None, **kwargs):
+                              xipm_nbinstarget=None, extrapolation_type='Baseline', **kwargs):
         """Covariance of a statistic that is linear in xi_pm, for all tomographic bin pairs.
 
         The weights of :meth:`GGCovarianceNoTomo.cov_of_statistic` are computed once and applied to
@@ -1968,6 +2111,11 @@ class GGCovariance(GGCovarianceNoTomo):
         xipm_nbinstarget: int, optional
             Number of log-uniform xi_pm bins of the statistic, interpolated with
             :meth:`subbin`. Defaults to ``None``, i.e. the binning of this instance.
+        extrapolation_type: {'Baseline', 'Richardson_pooled', 'Richardson_component', 'Shanks'}, optional
+            Extrapolation of the covariance of the statistic in the varphi resolution, see
+            :meth:`GGCovarianceNoTomo.cov_of_statistic`, with one order per combination of two bin
+            pairs for 'Richardson_pooled'. With ``split_components`` the extrapolation enters
+            ``'sva'`` but not the single r-terms.
         **kwargs
             Further parameters of :meth:`GGCovarianceNoTomo.cov_of_statistic`.
 
@@ -1984,8 +2132,10 @@ class GGCovariance(GGCovarianceNoTomo):
             new_tc = np.sqrt(new_te[:-1] * new_te[1:])
             resampled = self.subbin(new_tc, new_te)
             return resampled.cov_of_statistic(
-                filter_type, split_components=split_components, **kwargs)
+                filter_type, split_components=split_components,
+                extrapolation_type=extrapolation_type, **kwargs)
 
+        kind = _extrapolation_type(extrapolation_type, self.extrapolation)
         if self.cov_xipm_tomo is None:
             self.get_cov_xipm()
 
@@ -2001,12 +2151,12 @@ class GGCovariance(GGCovarianceNoTomo):
         _, weights = helper.cov_of_statistic(
             filter_type, return_weights=True, **kwargs)
 
-        def _extract_block(i1, i2):
+        def _extract_block(i1, i2, cov_pp, cov_mm, cov_pm):
             block = np.zeros((2*n, 2*n))
-            block[:n, :n] = self.cov_pp_tomo[i1*n:(i1+1)*n, i2*n:(i2+1)*n]
-            block[:n, n:] = self.cov_pm_tomo[i1*n:(i1+1)*n, i2*n:(i2+1)*n]
-            block[n:, :n] = self.cov_pm_tomo.T[i1*n:(i1+1)*n, i2*n:(i2+1)*n]
-            block[n:, n:] = self.cov_mm_tomo[i1*n:(i1+1)*n, i2*n:(i2+1)*n]
+            block[:n, :n] = cov_pp[i1*n:(i1+1)*n, i2*n:(i2+1)*n]
+            block[:n, n:] = cov_pm[i1*n:(i1+1)*n, i2*n:(i2+1)*n]
+            block[n:, :n] = cov_pm.T[i1*n:(i1+1)*n, i2*n:(i2+1)*n]
+            block[n:, n:] = cov_mm[i1*n:(i1+1)*n, i2*n:(i2+1)*n]
             return block
 
         if len(weights) == 2 and isinstance(weights[1], list):
@@ -2014,29 +2164,46 @@ class GGCovariance(GGCovarianceNoTomo):
             K, lbl = weights
             ns = K.shape[0]
             is_puremode = True
-            out_cov = np.zeros((ns * ntp, ns * ntp))
-            for i1 in range(ntp):
-                for i2 in range(ntp):
-                    block = _extract_block(i1, i2)
-                    out_cov[i1*ns:(i1+1)*ns, i2*ns:(i2+1)*ns] = K @ block @ K.T
-            total = {'cov': out_cov, 'labels': lbl}
+            def project(cov_pp, cov_mm, cov_pm):
+                out_cov = np.zeros((ns * ntp, ns * ntp))
+                for i1 in range(ntp):
+                    for i2 in range(ntp):
+                        block = _extract_block(i1, i2, cov_pp, cov_mm, cov_pm)
+                        out_cov[i1*ns:(i1+1)*ns, i2*ns:(i2+1)*ns] = K @ block @ K.T
+                return {'cov': out_cov}
             Wpp, Wmm = K[:, :n], K[:, n:]
         else:
             # Map2 / cosebis: weights = (W_E, W_B)
             W_E, W_B = weights
             ns = W_E.shape[0]
             is_puremode = False
-            total = {k: np.zeros((ns * ntp, ns * ntp))
-                     for k in ('cov_EE', 'cov_BB', 'cov_EB')}
-            for i1 in range(ntp):
-                for i2 in range(ntp):
-                    block = _extract_block(i1, i2)
-                    sl1 = slice(i1 * ns, (i1 + 1) * ns)
-                    sl2 = slice(i2 * ns, (i2 + 1) * ns)
-                    total['cov_EE'][sl1, sl2] = W_E @ block @ W_E.T
-                    total['cov_BB'][sl1, sl2] = W_B @ block @ W_B.T
-                    total['cov_EB'][sl1, sl2] = W_E @ block @ W_B.T
+            def project(cov_pp, cov_mm, cov_pm):
+                out = {k: np.zeros((ns * ntp, ns * ntp))
+                       for k in ('cov_EE', 'cov_BB', 'cov_EB')}
+                for i1 in range(ntp):
+                    for i2 in range(ntp):
+                        block = _extract_block(i1, i2, cov_pp, cov_mm, cov_pm)
+                        sl1 = slice(i1 * ns, (i1 + 1) * ns)
+                        sl2 = slice(i2 * ns, (i2 + 1) * ns)
+                        out['cov_EE'][sl1, sl2] = W_E @ block @ W_E.T
+                        out['cov_BB'][sl1, sl2] = W_B @ block @ W_B.T
+                        out['cov_EB'][sl1, sl2] = W_E @ block @ W_B.T
+                return out
             Wpp, Wmm = W_E[:, :n], W_E[:, n:]
+        total = project(self.cov_pp_tomo, self.cov_mm_tomo, self.cov_pm_tomo)
+
+        # Extrapolate the projected covariance from its changes between the varphi levels
+        correction = None
+        if kind != 'baseline':
+            d1, d2 = (project(*d) for d in self._sva_differences())
+            correction, self.extrapolation_orders = {}, {}
+            for key in total:
+                extrapolated, self.extrapolation_orders[key] = _extrapolate_blocks(
+                    total[key], d1[key], d2[key], kind, n if is_puremode else ns)
+                correction[key] = extrapolated - total[key]
+                total[key] = extrapolated
+        if is_puremode:
+            total['labels'] = lbl
 
         if not split_components:
             return total
@@ -2129,6 +2296,8 @@ class GGCovariance(GGCovarianceNoTomo):
         comps['mix'] = _sum_dicts(comps['qpp'], comps['qmm'], comps['qpm'])
         comps['sva'] = _sum_dicts(comps['rp0'], comps['rp1'], comps['rm0'],
                                   comps['rm1'], comps['rpm'])
+        if correction is not None:
+            comps['sva'] = _sum_dicts(comps['sva'], correction)
 
         return total, comps
 
@@ -2207,6 +2376,9 @@ class GGCovariance(GGCovarianceNoTomo):
             rname, combo = key
             sym = rname in self.RTERMS_SYM
             rterms_fine[key] = _interp(block, sym=sym)
+        # The lower varphi levels alike
+        lower_fine = [{key: _interp(block, sym=key[0] in self.RTERMS_SYM) for key, block in level.items()}
+                      for level in (self.rterms_tomo_lower or [])]
 
         ## Band of the r-terms on the fine grid ##
         if recompute_slab:
@@ -2228,16 +2400,19 @@ class GGCovariance(GGCovarianceNoTomo):
             # If there is sth to compute, first set up tiles for good caching and then get the required r-terms
             if mask_max.any():
                 self._set_slab_tiles(fine, new_tc, widths, slab_nr_block)
-                slab_rterms = fine.get_all_rterms(
+                slab_levels = fine._rterm_levels(
                     verbose=verbose, pair_mask=masks)
+                if len(slab_levels) != 1 + len(lower_fine):
+                    raise ValueError("slab_instance must share `extrapolation` with this instance.")
                 # Overwrite the slab band in interpolated r-terms
-                for key, block in slab_rterms.items():
-                    rname, combo = key
-                    m = masks[self.RTERM_BLOCKS[rname]]
-                    if key in rterms_fine:
-                        rterms_fine[key] = np.where(m, block, rterms_fine[key])
-                    else:
-                        rterms_fine[key] = block
+                for level, slab_rterms in zip([rterms_fine] + lower_fine, slab_levels):
+                    for key, block in slab_rterms.items():
+                        rname, combo = key
+                        m = masks[self.RTERM_BLOCKS[rname]]
+                        if key in level:
+                            level[key] = np.where(m, block, level[key])
+                        else:
+                            level[key] = block
 
         ## Build output GGCovariance instance ##
         # `template=self` keeps the parent's q / triplet grids, integration
@@ -2252,7 +2427,7 @@ class GGCovariance(GGCovarianceNoTomo):
             _xip=self._xip, _xim=self._xim, ntomo=self.ntomo,
             n_tomopairs=self.n_tomopairs, tomopairs_list=self.tomopairs_list, nbar_ref=self.nbar_ref,
             D_tomo=D_fine, qpp_tomo=qpp_fine, qmm_tomo=qmm_fine,
-            qpm_tomo=qpm_fine, rterms_tomo=rterms_fine)
+            qpm_tomo=qpm_fine, rterms_tomo=rterms_fine, rterms_tomo_lower=lower_fine or None)
 
     def _fine_instance_from_catalog(self, new_tc, new_te, verbose=False):
         """Build a fine-grid instance for :meth:`subbin` from the catalog of this instance.
@@ -2280,8 +2455,14 @@ class GGCovariance(GGCovarianceNoTomo):
     # Covariance of xi_pm #
     #######################
 
-    def get_cov_xipm(self, verbose=False):
-        """Assemble the full (2*n_tp*n_r, 2*n_tp*n_r) tomo covariance."""
+    def get_cov_xipm(self, verbose=False, extrapolation_type='Baseline'):
+        """Assemble the full (2*n_tp*n_r, 2*n_tp*n_r) tomo covariance.
+
+        ``extrapolation_type`` is as in :meth:`GGCovarianceNoTomo.get_cov_xipm`, with one order per
+        block and combination of two bin pairs for 'Richardson_pooled'. Only the baseline is stored
+        in ``cov_xipm_tomo``.
+        """
+        kind = _extrapolation_type(extrapolation_type, self.extrapolation)
         if self.cov_pp_tomo is None: self.get_cov_pp(verbose=verbose)
         if self.cov_mm_tomo is None: self.get_cov_mm(verbose=verbose)
         if self.cov_pm_tomo is None: self.get_cov_pm(verbose=verbose)
@@ -2292,7 +2473,30 @@ class GGCovariance(GGCovarianceNoTomo):
         out[m:, :m] = self.cov_pm_tomo.T
         out[m:, m:] = self.cov_mm_tomo
         self.cov_xipm_tomo = out
+        if kind == 'baseline':
+            return out
+        d1, d2 = (np.block([[pp, pm], [pm.T, mm]]) for pp, mm, pm in self._sva_differences())
+        out, self.extrapolation_orders = _extrapolate_blocks(out, d1, d2, kind, self.n_r)
         return out
+
+    def _sva_differences(self):
+        """Changes F - H and H - Q of the sample variance between the varphi grids of n, n/2 and n/4
+        nodes, each as the blocks (pp, mm, pm) of shape (n_tp*n_r, n_tp*n_r)."""
+        n = self.n_r
+        levels = [self.rterms_tomo] + list(self.rterms_tomo_lower)
+        diffs = []
+        for fine, coarse in zip(levels[:-1], levels[1:]):
+            d = {key: fine[key] - coarse[key] for key in fine}
+            blocks = []
+            for _, _, _, rnames, _ in self.COVBLOCKS:
+                sva = np.zeros((self.n_tomopairs * n, self.n_tomopairs * n))
+                for idx1, tp1 in enumerate(self.tomopairs_list):
+                    for idx2, tp2 in enumerate(self.tomopairs_list):
+                        for rname in rnames:
+                            sva[idx1*n:(idx1+1)*n, idx2*n:(idx2+1)*n] += self._rterm_block(rname, (tp1, tp2), d)
+                blocks.append(sva)
+            diffs.append(blocks)
+        return diffs
 
     def get_cov_terms(self, verbose=False):
         """Shape-noise, mixed and sample-variance terms of the tomographic covariance blocks.
@@ -2416,19 +2620,24 @@ class GGCovariance(GGCovarianceNoTomo):
         Returns ``{(rterm, ((a,b),(c,d))): (n_r, n_r)}``. Blocks restricted by ``pair_mask`` are
         returned but not stored.
         """
+        return self._rterm_levels(verbose=verbose, pair_mask=pair_mask, nthreads=nthreads)[0]
+
+    def _rterm_levels(self, verbose=False, pair_mask=None, nthreads=None):
+        """The r-term blocks of :meth:`get_all_rterms` on every varphi level, the full grids first."""
         if nthreads is None:
             nthreads = self.nthreads
         self._step("r-terms on %d bins%s" % (self.n_r, "" if pair_mask is None else ", in the band"))
         if self.method_quadruplets == 'continuous':
             if pair_mask is not None:
                 raise ValueError("The continuum r-terms are computed on the whole grid, without a pair_mask.")
-            rterms = self._rterms_continuous_tomo_c(verbose=verbose)
+            levels = self._rterms_continuous_tomo_c(verbose=verbose)
         else:
-            rterms = self._quadruplet_density_terms_tomo_c(
+            levels = self._quadruplet_density_terms_tomo_c(
                 verbose=verbose, pair_mask=pair_mask, nthreads=nthreads)
         if pair_mask is None:
-            self.rterms_tomo = rterms
-        return rterms
+            self.rterms_tomo = levels[0]
+            self.rterms_tomo_lower = levels[1:] or None
+        return levels
 
     ## Getters of GGCovarianceNoTomo for a single bin pair ##
 
@@ -2489,7 +2698,7 @@ class GGCovariance(GGCovarianceNoTomo):
 
     def _quadruplet_density_terms_tomo_c(self, verbose=False, pair_mask=None,
                                          nthreads=None):
-        """Tomographic r-terms via the C kernel with ``nthreads`` OpenMP threads."""
+        """Tomographic r-terms on every varphi level via the C kernel with ``nthreads`` OpenMP threads."""
         if self.quadruplets is None:
             raise RuntimeError("`quadruplets` not initialised.")
 
@@ -2501,12 +2710,12 @@ class GGCovariance(GGCovarianceNoTomo):
         symmetric_mask = [key[0] in self.RTERMS_SYM and key[1][0] == key[1][1]
                           for key in out_keys]
 
-        accum = self._run_postq_engine(
+        levels = self._varphi_levels(lambda: self._run_postq_engine(
             cbm, xi_tables, symmetric_mask, [self.RTERM_BLOCKS[key[0]] for key in out_keys],
-            verbose=verbose, pair_mask=pair_mask, nthreads=nthreads)
+            verbose=verbose, pair_mask=pair_mask, nthreads=nthreads))
 
-        return {key: (.5 * (block + block.T) if symmetric_mask[oi] else block)
-                for oi, (key, block) in enumerate(zip(out_keys, accum))}
+        return [{key: (.5 * (block + block.T) if symmetric_mask[oi] else block)
+                 for oi, (key, block) in enumerate(zip(out_keys, accum))} for accum in levels]
 
     def _build_tomo_callback_map(self):
         """Flat callback arrays of all tomographic r-terms for the C kernel.
@@ -2678,7 +2887,7 @@ class GGCovariance(GGCovarianceNoTomo):
 
     def _rterms_continuous_tomo_c(self, verbose=False, dlnt_target=.05):
         """r-terms of all tomographic combos in the continuum limit, averaged over log sub-bins no
-        wider than dlnt_target, as ``{(rterm, ((a,b),(c,d))): (n_r, n_r)}``."""
+        wider than dlnt_target, as ``{(rterm, ((a,b),(c,d))): (n_r, n_r)}`` for every varphi level."""
         def _ptr(a): return np.ascontiguousarray(a, dtype=np.float64)
         def _iptr(a): return np.ascontiguousarray(a, dtype=np.int32)
         lib = self._clib
@@ -2689,14 +2898,8 @@ class GGCovariance(GGCovarianceNoTomo):
 
         ## R terms via C ##
         if verbose: print("  continuous r-terms (C/OpenMP) ...")
-        v = self.varphi1_grid
-        v_half = v[v <= np.pi]
         phi_grid = np.ascontiguousarray(self.phi_grid, dtype=np.float64)
         phi_w = np.ascontiguousarray(_trapz_weights(self.phi_grid), dtype=np.float64)
-        v_grid = np.ascontiguousarray(v, dtype=np.float64)
-        v_w_arr = np.ascontiguousarray(_periodic_weights(v), dtype=np.float64)
-        v_half_c = np.ascontiguousarray(v_half, dtype=np.float64)
-        v_half_w = np.ascontiguousarray(_trapz_weights(v_half), dtype=np.float64)
         theta_nodes, theta_weights = self._rterm_nodes(dlnt_target)
         n_f = theta_nodes.size
         theta_c = np.ascontiguousarray(theta_nodes.ravel(), dtype=np.float64)
@@ -2726,38 +2929,49 @@ class GGCovariance(GGCovarianceNoTomo):
 
         n_work = len(work_xi_a_p)
         n_r_out = len(r_out_keys)
-        r_results = np.zeros(n_r_out * n_f * n_f, dtype=np.float64)
 
-        lib.continuous_rterms_tomo(
-            n_f, _ptr(theta_c),
-            _ptr(phi_grid), _ptr(phi_w), len(self.phi_grid),
-            _ptr(v_grid), _ptr(v_w_arr), len(v),
-            _ptr(v_half_c), _ptr(v_half_w), len(v_half),
-            float(self.area),
-            _ptr(xi_x), xi_n, xi_logx0, xi_inv_dlogx,
-            _ptr(xi_y_tables), n_xi,
-            n_work,
-            _iptr(np.array(work_xi_a_p, dtype=np.int32)),
-            _iptr(np.array(work_xi_b_p, dtype=np.int32)),
-            _iptr(np.array(work_xi_a_m, dtype=np.int32)),
-            _iptr(np.array(work_xi_b_m, dtype=np.int32)),
-            _iptr(np.array(work_out_idx, dtype=np.int32)),
-            n_r_out,
-            r_results,
-            self.nthreads, int(verbose))
-        check_clib_error(lib)
+        def r_terms():
+            v = self.varphi1_grid
+            v_half = v[v <= np.pi]
+            v_grid = np.ascontiguousarray(v, dtype=np.float64)
+            v_w_arr = np.ascontiguousarray(_periodic_weights(v), dtype=np.float64)
+            v_half_c = np.ascontiguousarray(v_half, dtype=np.float64)
+            v_half_w = np.ascontiguousarray(_trapz_weights(v_half), dtype=np.float64)
+            r_results = np.zeros(n_r_out * n_f * n_f, dtype=np.float64)
 
-        r_results = .5 * _bin_average_blocks(r_results.reshape(n_r_out, n_f, n_f), theta_weights)
-        rterms = {}
-        for oi, (rname, combo) in enumerate(r_out_keys):
-            if rname in self.RTERMS_SYM and combo[0] > combo[1]:
-                continue
-            block = r_results[oi]
-            if rname in self.RTERMS_SYM and combo[0] == combo[1]:
-                block = .5 * (block + block.T)
-            rterms[(rname, combo)] = block
+            lib.continuous_rterms_tomo(
+                n_f, _ptr(theta_c),
+                _ptr(phi_grid), _ptr(phi_w), len(self.phi_grid),
+                _ptr(v_grid), _ptr(v_w_arr), len(v),
+                _ptr(v_half_c), _ptr(v_half_w), len(v_half),
+                float(self.area),
+                _ptr(xi_x), xi_n, xi_logx0, xi_inv_dlogx,
+                _ptr(xi_y_tables), n_xi,
+                n_work,
+                _iptr(np.array(work_xi_a_p, dtype=np.int32)),
+                _iptr(np.array(work_xi_b_p, dtype=np.int32)),
+                _iptr(np.array(work_xi_a_m, dtype=np.int32)),
+                _iptr(np.array(work_xi_b_m, dtype=np.int32)),
+                _iptr(np.array(work_out_idx, dtype=np.int32)),
+                n_r_out,
+                r_results,
+                self.nthreads, int(verbose))
+            check_clib_error(lib)
 
-        return rterms
+            return .5 * _bin_average_blocks(r_results.reshape(n_r_out, n_f, n_f), theta_weights)
+        levels = []
+        for r_results in self._varphi_levels(r_terms):
+            rterms = {}
+            for oi, (rname, combo) in enumerate(r_out_keys):
+                if rname in self.RTERMS_SYM and combo[0] > combo[1]:
+                    continue
+                block = r_results[oi]
+                if rname in self.RTERMS_SYM and combo[0] == combo[1]:
+                    block = .5 * (block + block.T)
+                rterms[(rname, combo)] = block
+            levels.append(rterms)
+
+        return levels
 
     ###################
     # General helpers #
@@ -2785,15 +2999,18 @@ class GGCovariance(GGCovarianceNoTomo):
             [self._xi(pm, i, j) for pm, i, j in xi_keys],
             lo=self._xi_query_lo() if lo is None else lo, hi=self._xi_query_hi())
 
-    def _rterm_block(self, rname, combo):
-        """Look up r-term block, filling the lower triangle by transpose."""
+    def _rterm_block(self, rname, combo, rterms=None):
+        """Look up r-term block in ``rterms``, by default ``rterms_tomo``, filling the lower triangle
+        by transpose."""
+        if rterms is None:
+            rterms = self.rterms_tomo
         key = (rname, combo)
-        if key in self.rterms_tomo:
-            return self.rterms_tomo[key]
+        if key in rterms:
+            return rterms[key]
         rev_combo = (combo[1], combo[0])
         rev_key = (rname, rev_combo)
-        if rev_key in self.rterms_tomo:
-            return self.rterms_tomo[rev_key].T
+        if rev_key in rterms:
+            return rterms[rev_key].T
         raise KeyError(f"r-term block {key} not found")
 
     def _tomo_combos(self):

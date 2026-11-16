@@ -97,7 +97,7 @@ parallelised C kernels.
   catalog, idealised Poisson counts or the continuum limit, with the integrals in
   `orpheus/src/cov_postq.c`. Both classes are exported from the package root, and
   `GGCovariance.get_cov_terms` returns the shape-noise, mixed and sample-variance terms
-  of each covariance block. Coming from the `covariance` branch, twenty-one things changed on
+  of each covariance block. Coming from the `covariance` branch, twenty-two things changed on
   the way in:
   * The measured pair counts were twice the ordered pair counts. `GGCorrelation.norm`
     already holds both orders of every pair, and the module doubled it again, which halved
@@ -232,6 +232,17 @@ parallelised C kernels.
     continuum limit, is gone, as it shifted the COSEBI covariance by 3-16% rather than only
     removing the stripes. `cov_of_statistic` returns the weights of the statistic with
     `return_weights=True`, formerly the private `_return_weights`.
+  * The varphi integrals of the sample-variance terms converge as the inverse square of the
+    number of nodes, as xi_pm is steep where galaxies of the two pairs nearly coincide.
+    `extrapolation`, off by default, also evaluates them on every second and fourth node of
+    the varphi grids, for 31% more runtime and a number of nodes that is a multiple of four.
+    `get_cov_xipm` and `cov_of_statistic` then take `extrapolation_type`: `'Baseline'`, the
+    default, returns the full grids, `'Richardson_pooled'` a Richardson extrapolation with one
+    fitted convergence order per block and bin pair, `'Richardson_component'` one with an order
+    per element and `'Shanks'` the Shanks transformation of each element. Each acts on the
+    requested statistic, and the fitted orders are kept in `extrapolation_orders`. Comparing
+    the types tells whether the baseline has converged; an extrapolated covariance is only as
+    good as that agreement.
   * With a catalog, the fine instance that `subbin` of `GGCovarianceNoTomo` builds measures only
     the fine pairs. Its mixed terms are the continuum ones scaled by the ratio of the measured
     to the idealised triplets of the coarse instance, which `continuous_q_single` interpolates,
