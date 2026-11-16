@@ -685,7 +685,7 @@ class GGGGCorrelation_NoTomo(BinnedNPCF):
             _shape, _inds, _n2s, _n3s = gen_n2n3indices_Upsfourth(self.nmaxs[0])
             cutfirst = np.int32(self.tree_resos[0]==0.)
             mh = cat.multihash_bundle(dpixs=self.tree_resos[cutfirst:], dpix_hash=self.dpix_hash,
-                                      shuffle=self.shuffle_pix, w2field=True, normed=True, wpowers=3,
+                                      shuffle=self.shuffle_pix, normed=True, wpowers=3,
                                       nthreads=self.nthreads)
             allfields = mh['allfields']
             e1_resos = np.concatenate([allfields[i][0] for i in range(len(allfields))]).astype(np.float64)

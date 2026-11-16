@@ -535,11 +535,11 @@ void sphericalhash_gather(
     const double *vx, const double *vy, const double *vz,
     const double *ra, const double *sindec, const double *cosdec,
     const double *w, const double *isinner, const int *zbins,
-    const double *e1, const double *e2, int do_shear, int do_wsq, int npow,
+    const double *e1, const double *e2, int do_shear, int npow,
     double *red_vx, double *red_vy, double *red_vz,
     double *red_ra, double *red_sindec, double *red_cosdec,
     double *red_w, double *red_isinner, int *red_zbin,
-    double *red_e1, double *red_e2, double *red_wsq, double *red_wpow, double *red_wepow,
+    double *red_e1, double *red_e2, double *red_wpow, double *red_wepow,
     long *cell_pix, long *cell_redbounds, int nthreads){
 
     int nwepow = (npow==3) ? 7 : 3;
@@ -550,7 +550,6 @@ void sphericalhash_gather(
         red_ra[i] = ra[g]; red_sindec[i] = sindec[g]; red_cosdec[i] = cosdec[g];
         red_w[i] = w[g]; red_isinner[i] = isinner[g]; red_zbin[i] = zbins[g];
         if (do_shear){ red_e1[i] = e1[g]; red_e2[i] = e2[g]; }
-        if (do_wsq){ red_wsq[i] = w[g]*w[g]; }
         if (npow >= 2){ red_wpow[i*(npow-1)] = w[g]*w[g]; }
         if (npow == 3){ red_wpow[i*(npow-1)+1] = w[g]*w[g]*w[g]; }
         if (do_shear && npow){
@@ -590,11 +589,11 @@ long sphericalhash_reduce(
     const double *vx, const double *vy, const double *vz,
     const double *ra, const double *sindec, const double *cosdec,
     const double *w, const double *isinner,
-    const double *e1, const double *e2, int do_shear, int do_wsq, int npow,
+    const double *e1, const double *e2, int do_shear, int npow,
     double *red_vx, double *red_vy, double *red_vz,
     double *red_ra, double *red_sindec, double *red_cosdec,
     double *red_w, double *red_isinner, int *red_zbin,
-    double *red_e1, double *red_e2, double *red_wsq, double *red_wpow, double *red_wepow,
+    double *red_e1, double *red_e2, double *red_wpow, double *red_wepow,
     long *cell_pix, long *cell_redbounds, int nthreads){
 
     long *occbounds = orpheus_malloc((size_t)(nocc+1)*sizeof(long));
@@ -668,7 +667,6 @@ long sphericalhash_reduce(
         red_w[ic] = sumw;
         red_isinner[ic] = (sumis>0.) ? 1. : 0.;
         red_zbin[ic] = (int) (key_sorted[occbounds[ic]]%nz);
-        if (do_wsq){ red_wsq[ic] = sumwsq; }
         if (npow >= 2){ red_wpow[ic*(npow-1)] = sumwsq; }
         if (npow == 3){ red_wpow[ic*(npow-1)+1] = sumwcb; }
 

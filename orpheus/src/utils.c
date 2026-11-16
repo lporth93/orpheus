@@ -211,7 +211,6 @@ int orpheus_struct_layout(int which, size_t *out, int len_out){
             OFF(MultiresoCatalog, vz_resos);      OFF(MultiresoCatalog, ra_resos);
             OFF(MultiresoCatalog, sindec_resos);  OFF(MultiresoCatalog, cosdec_resos);
             OFF(MultiresoCatalog, e1_resos);      OFF(MultiresoCatalog, e2_resos);
-            OFF(MultiresoCatalog, weightsq_resos);
             OFF(MultiresoCatalog, wpow_resos);    OFF(MultiresoCatalog, wepow_resos);
             break;
         case 1:
@@ -244,7 +243,7 @@ int orpheus_struct_layout(int which, size_t *out, int len_out){
             OFF(BinningParams, nbinsr); OFF(BinningParams, do_dc);
             OFF(BinningParams, nmax);   OFF(BinningParams, nmin);
             OFF(BinningParams, dccorr); OFF(BinningParams, Pi);
-            OFF(BinningParams, rbins);
+            OFF(BinningParams, rbins);  OFF(BinningParams, base_weightsq);
             break;
         case 4:
             PUT(sizeof(NPCFOutput));
@@ -288,7 +287,7 @@ const char *orpheus_struct_fields(int which){
     switch (which){
         case 0: return "metric,nresos,ngal_resos,nbinsz,isinner_resos,weight_resos,zbin_resos,"
                        "pos1_resos,pos2_resos,pos3_resos,vx_resos,vy_resos,vz_resos,ra_resos,"
-                       "sindec_resos,cosdec_resos,e1_resos,e2_resos,weightsq_resos,wpow_resos,wepow_resos";
+                       "sindec_resos,cosdec_resos,e1_resos,e2_resos,wpow_resos,wepow_resos";
         case 1: return "metric,index_matcher,pixs_galind_bounds,pix_gals,pix1_start,pix1_d,"
                        "pix1_n,pix2_start,pix2_d,pix2_n,nregions,index_matcher_hash,"
                        "filledregions,nfilledregions,slab_offsets,rshift_bounds,nslabs,z0,"
@@ -296,7 +295,7 @@ const char *orpheus_struct_fields(int which){
                        "rshift_cellpix,rshift_cellbounds";
         case 2: return "nresos,nresos_grid,dpix1_resos,dpix2_resos,reso_redges,resoshift_leafs,"
                        "minresoind_leaf,maxresoind_leaf,batch_membudget_mb";
-        case 3: return "rmin,rmax,nbinsr,do_dc,nmax,nmin,dccorr,Pi,rbins";
+        case 3: return "rmin,rmax,nbinsr,do_dc,nmax,nmin,dccorr,Pi,rbins,base_weightsq";
         case 4: return "bin_centers,npcf,norm,norm_mp,npair,npair_cell,ncomp,nmax";
         case 5: return "nbinsphi1,nbinsphi2,phibins1,phibins2,dbinsphi1,dbinsphi2,nindices,"
                        "len_nindices,nthetacombis,nthetbatches,thetacombis_batches,"

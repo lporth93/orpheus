@@ -89,19 +89,24 @@ parallelised C kernels.
   in `process()`. `Catalog` rejects non-finite positions, weights and tracers, a Dec beyond
   ±90 deg and tracers of the wrong length, and accepts positions in `'arcsec'`.
   `gen_cat_patchindices` checks `method` before converting the catalog.
-* **`Catalog.multihash_bundle` takes `wpowers`.** With `wpowers=2` or `3` the bundle holds per
-  object the sums over its galaxies of `w**2` (and `w**3`) as `wpow_resos` and, for shear
-  catalogs, of `(we)**2`, `|we|**2` (and `(we)**3`, `(we)**2 (we)*`) as `wepow_resos`, which
-  `build_catalog_struct` passes on to C.
+* **`Catalog.multihash_bundle` takes `wpowers` instead of `w2field`.** With `wpowers=2` or `3`
+  the bundle holds per object the sums over its galaxies of `w**2` (and `w**3`) as
+  `wpow_resos` and, for shear catalogs, of `(we)**2`, `|we|**2` (and `(we)**3`,
+  `(we)**2 (we)*`) as `wepow_resos`, which `build_catalog_struct` passes on to C. `w2field`,
+  the bundle key `red_weightsq` and `MultiresoCatalog.weightsq_resos` are gone, and
+  `NNNCorrelation(base_weightsq=True)` reads the summed squared weights from `wpow_resos`
+  through `BinningParams.base_weightsq`. For a shear catalog `w2field` had reduced `weight**2`
+  as a field and so held the sum of `w**3` on the reduced levels; no kernel read it.
+  `SpinTracerCatalog.reduce` lost its `w2field` for the same reason and returns only the two
+  shear components as fields.
 
 #### Added
 
 * **`NNNCorrelation(base_weightsq=True)` counts `w_i**2 w_j w_k`**, with the squared weight on
   the base galaxy, as the mixed term of the 2PCF covariance needs. The base galaxies and cells
-  take the sum of the squared weights, which the multihash of a scalar catalog now aggregates
-  with `w2field=True` in both geometries; the curved-sky multihash no longer ties it to a shear
-  field. Without tree levels the counts agree with brute force to 1e-15 on the sphere, on a
-  flat catalog and on a flat patch.
+  take the sum of the squared weights, `wpow_resos` of the multihash, in both geometries.
+  Without tree levels the counts agree with brute force to 1e-15 on the sphere, on a flat
+  catalog and on a flat patch.
 * **`Catalog.max_separation` bounds the largest separation in a catalog** from above, in deg on
   the sphere and in the units of the positions for a flat catalog, to within 2%, on the sphere
   for footprints wider than about 1.5 deg.

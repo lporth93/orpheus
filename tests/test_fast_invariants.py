@@ -1168,14 +1168,6 @@ def test_gengridprops_honours_a_fixed_extent(grid_catalog):
     # Square cells are the default when no second cell size is given
     assert grid_catalog._gengridprops(dpix) == grid_catalog._gengridprops(dpix, dpix)
 
-# "w2field=False leaves the weight-squared plane out of the reduced catalog
-def test_reduce_can_drop_the_squared_weight_field(grid_catalog):
-    with_w2 = grid_catalog.reduce(dpix=8., w2field=True)
-    without = grid_catalog.reduce(dpix=8., w2field=False)
-    assert len(with_w2) == len(without)
-    # Same cells either way, so the positions have to agree
-    assert np.allclose(np.asarray(with_w2[1]), np.asarray(without[1]))
-
 def test_reduce_returns_an_instance_on_request(grid_catalog):
     inst = grid_catalog.reduce(dpix=8., ret_inst=True)
     assert isinstance(inst, SpinTracerCatalog)
@@ -1227,7 +1219,7 @@ def test_base_catalog_carries_no_tracer_field():
     base = Catalog(pos1=rng.uniform(0., BOXSIZE, ngal), pos2=rng.uniform(0., BOXSIZE, ngal),
                    weight=np.ones(ngal), geometry='flat2d')
     for geometry in ('flat2d', 'spherical', '3dbox'):
-        assert base._multihash_fields(geometry, False) is None
+        assert base._multihash_fields(geometry) is None
 
 def test_multihash_spherical_checks_its_inputs(grid_catalog, sky_catalog_for_hashing):
     bands = _sky_bands()
@@ -1240,10 +1232,8 @@ def test_multihash_spherical_checks_its_inputs(grid_catalog, sky_catalog_for_has
 # placed, so they have to agree on everything else.
 @pytest.mark.parametrize("shuffle", [0, 1, 2, 3])
 def test_multihash_spherical_pixel_centre_conventions(shuffle, sky_catalog_for_hashing):
-    reference = sky_catalog_for_hashing.multihash_bundle(shuffle=0, w2field=True,
-                                                         **_sky_bands())
-    mh = sky_catalog_for_hashing.multihash_bundle(shuffle=shuffle, w2field=True,
-                                                  **_sky_bands())
+    reference = sky_catalog_for_hashing.multihash_bundle(shuffle=0, **_sky_bands())
+    mh = sky_catalog_for_hashing.multihash_bundle(shuffle=shuffle, **_sky_bands())
     assert np.array_equal(np.asarray(mh['ngal_resos']), np.asarray(reference['ngal_resos']))
     assert np.allclose(np.asarray(mh['red_w']).sum(), np.asarray(reference['red_w']).sum())
     # Every reduced tracer stays on the unit sphere whichever centre it is given
@@ -1253,9 +1243,8 @@ def test_multihash_spherical_pixel_centre_conventions(shuffle, sky_catalog_for_h
 
 # nav_coarsen keeps the reduction nside and only widens the navigation cells
 def test_multihash_spherical_coarsens_its_navigation(sky_catalog_for_hashing, capsys):
-    plain = sky_catalog_for_hashing.multihash_bundle(w2field=True, **_sky_bands())
-    coarse = sky_catalog_for_hashing.multihash_bundle(w2field=True, nav_coarsen=2.,
-                                                      verbose=True, **_sky_bands())
+    plain = sky_catalog_for_hashing.multihash_bundle(**_sky_bands())
+    coarse = sky_catalog_for_hashing.multihash_bundle(nav_coarsen=2., verbose=True, **_sky_bands())
     assert 'band 0' in capsys.readouterr().out
     assert not plain['nav_coarsened'] and coarse['nav_coarsened']
     assert np.all(np.asarray(coarse['nside_nav']) <= np.asarray(plain['nside_nav']))

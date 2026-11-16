@@ -57,7 +57,6 @@ class MultiresoCatalog(ctypes.Structure):
         # Spin-2 tracer quantities (Used for SpinTracerCatalogs)
         ("e1_resos", _p_f64),
         ("e2_resos", _p_f64),
-        ("weightsq_resos", _p_f64),
         # Multiple-counting corrections: Weights and nontrivial spin-combinations of weighted shape fields
         ("wpow_resos", _p_f64),
         ("wepow_resos", _p_f64),
@@ -129,6 +128,7 @@ class BinningParams(ctypes.Structure):
         ("dccorr", ctypes.c_int32),
         ("Pi", ctypes.c_double),
         ("rbins", _p_f64),
+        ("base_weightsq", ctypes.c_int32),
     ]
 
 class FourthParams(ctypes.Structure):
@@ -297,9 +297,8 @@ def build_catalog_struct(mh, nbinsz, extra=None):
     # Shear-only arrays (NULL for NN).
     s.e1_resos = _null(_p_f64)
     s.e2_resos = _null(_p_f64)
-    s.weightsq_resos = _null(_p_f64)
     if extra is not None:
-        for name in ('e1_resos', 'e2_resos', 'weightsq_resos'):
+        for name in ('e1_resos', 'e2_resos'):
             if name in extra:
                 arr = np.ascontiguousarray(extra[name], dtype=np.float64)
                 keepers.append(arr)
@@ -317,7 +316,7 @@ def build_catalog_struct(mh, nbinsz, extra=None):
     return s, keepers
 
 def build_flat_catalog_struct(pos1, pos2, weight, zbin, nbinsz, isinner,
-                              e1=None, e2=None, weightsq=None):
+                              e1=None, e2=None):
     """Single-resolution flat MultiresoCatalog from raw catalog arrays.
 
    This is a special case of MultiresoCatalog that is needed for the 
@@ -345,7 +344,7 @@ def build_flat_catalog_struct(pos1, pos2, weight, zbin, nbinsz, isinner,
     s.zbin_resos = _ptr_i32(zb)
     s.pos1_resos = _ptr_f64(p1)
     s.pos2_resos = _ptr_f64(p2)
-    for name, arr in (('e1_resos', e1), ('e2_resos', e2), ('weightsq_resos', weightsq)):
+    for name, arr in (('e1_resos', e1), ('e2_resos', e2)):
         if arr is not None:
             a = np.ascontiguousarray(arr, dtype=np.float64)
             keepers.append(a)
@@ -619,7 +618,7 @@ def build_tree_params_struct(corr, mh):
 
 
 def build_binning_struct(corr, scale=None, do_dc=None, nmax=0, nmin=0, dccorr=0,
-                         Pi=0., rbins=None):
+                         Pi=0., rbins=None, base_weightsq=0):
     """Populate a BinningParams from a correlator instance.
 
     Parameters
@@ -640,6 +639,8 @@ def build_binning_struct(corr, scale=None, do_dc=None, nmax=0, nmin=0, dccorr=0,
     rbins : ndarray or None
         Explicit log-r bin edges (GGG discrete). ``None`` leaves the field NULL
         (the C side recomputes them from rmin/rmax/nbinsr).
+    base_weightsq : int
+        Weight the base galaxy with its squared weight (NNN); ignored otherwise.
 
     Returns
     -------
@@ -662,6 +663,7 @@ def build_binning_struct(corr, scale=None, do_dc=None, nmax=0, nmin=0, dccorr=0,
         rb = np.ascontiguousarray(rbins, dtype=np.float64)
         s._rbins_keep = rb
         s.rbins = _ptr_f64(rb)
+    s.base_weightsq = int(base_weightsq)
     return s
 
 

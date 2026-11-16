@@ -53,11 +53,11 @@ void sphericalhash_gather(const long *order, const long *key_sorted, long ngal,
     const double *vx, const double *vy, const double *vz,
     const double *ra, const double *sindec, const double *cosdec,
     const double *w, const double *isinner, const int *zbins,
-    const double *e1, const double *e2, int do_shear, int do_wsq, int npow,
+    const double *e1, const double *e2, int do_shear, int npow,
     double *red_vx, double *red_vy, double *red_vz,
     double *red_ra, double *red_sindec, double *red_cosdec,
     double *red_w, double *red_isinner, int *red_zbin,
-    double *red_e1, double *red_e2, double *red_wsq, double *red_wpow, double *red_wepow,
+    double *red_e1, double *red_e2, double *red_wpow, double *red_wepow,
     long *cell_pix, long *cell_redbounds, int nthreads);
 
 // Allocate a reduced band of spherical hash 
@@ -66,11 +66,11 @@ long sphericalhash_reduce(const long *order, const long *key_sorted, long ngal, 
     const double *vx, const double *vy, const double *vz,
     const double *ra, const double *sindec, const double *cosdec,
     const double *w, const double *isinner,
-    const double *e1, const double *e2, int do_shear, int do_wsq, int npow,
+    const double *e1, const double *e2, int do_shear, int npow,
     double *red_vx, double *red_vy, double *red_vz,
     double *red_ra, double *red_sindec, double *red_cosdec,
     double *red_w, double *red_isinner, int *red_zbin,
-    double *red_e1, double *red_e2, double *red_wsq, double *red_wpow, double *red_wepow,
+    double *red_e1, double *red_e2, double *red_wpow, double *red_wepow,
     long *cell_pix, long *cell_redbounds, int nthreads);
 
 // FOREACH-style macro walking the occupied flat-grid pixels within a search
