@@ -683,75 +683,170 @@ void quadruplet_sva_integrate(
 // Continuous-limit estimators //
 /////////////////////////////////
 
+// Phi integral of one mixed term on the fine grid, fine[i1, i2] = sum_k R w xi(r_jk) dphi_k,
+// with R the measured over the idealised triplet counts, interpolated from (nr_ratio, nr_ratio,
+// nphi_ratio) nodes, log-uniform in theta and uniform in phi, or R = 1 for nr_ratio = 0. The
+// progress counter ndone runs up to progtot rows, so that several calls fill one bar.
+static void continuous_q_fine(
+    const double *fine_centers, int n_fine, const double *phi_centers, const double *dphi,
+    int n_phi, const double *xi_x, int xi_n, double xi_logx0, double xi_inv_dlogx,
+    const double *xi_y, int w_type, const double *ratio, int nr_ratio, int nphi_ratio,
+    double ratio_logr0, double ratio_inv_dlogr, double ratio_phi0, double ratio_inv_dphi,
+    double *fine, int *ndone, int progtot, int nthreads, int verbose){
+
+    // Trig of the phi nodes
+    double *cosphi = (double *)orpheus_malloc((size_t)n_phi*sizeof(double));
+    double *sinphi = (double *)orpheus_malloc((size_t)n_phi*sizeof(double));
+    double *cos4phi = (double *)orpheus_malloc((size_t)n_phi*sizeof(double));
+    if (!(cosphi && sinphi && cos4phi)){
+        free(cosphi); free(sinphi); free(cos4phi);
+        return;
+    }
+    for (int iphi=0; iphi<n_phi; iphi++){
+        cosphi[iphi] = cos(phi_centers[iphi]);
+        sinphi[iphi] = sin(phi_centers[iphi]);
+        cos4phi[iphi] = cos(4.*phi_centers[iphi]);
+    }
+
+    // Lower interpolation node and weight of every fine theta and phi, clamped to the ratio grid
+    int *itheta_lo = NULL, *iphi_lo = NULL;
+    double *wtheta = NULL, *wphi = NULL;
+    if (nr_ratio > 0){
+        itheta_lo = (int *)orpheus_malloc((size_t)n_fine*sizeof(int));
+        wtheta = (double *)orpheus_malloc((size_t)n_fine*sizeof(double));
+        iphi_lo = (int *)orpheus_malloc((size_t)n_phi*sizeof(int));
+        wphi = (double *)orpheus_malloc((size_t)n_phi*sizeof(double));
+        if (!(itheta_lo && wtheta && iphi_lo && wphi)){
+            free(cosphi); free(sinphi); free(cos4phi);
+            free(itheta_lo); free(wtheta); free(iphi_lo); free(wphi);
+            return;
+        }
+        for (int i=0; i<n_fine; i++){
+            double x = (log(fine_centers[i])-ratio_logr0)*ratio_inv_dlogr;
+            x = x < 0. ? 0. : (x > nr_ratio-1 ? nr_ratio-1 : x);
+            itheta_lo[i] = (int)x < nr_ratio-2 ? (int)x : nr_ratio-2;
+            wtheta[i] = x-itheta_lo[i];
+        }
+        for (int iphi=0; iphi<n_phi; iphi++){
+            double x = (phi_centers[iphi]-ratio_phi0)*ratio_inv_dphi;
+            x = x < 0. ? 0. : (x > nphi_ratio-1 ? nphi_ratio-1 : x);
+            iphi_lo[iphi] = (int)x < nphi_ratio-2 ? (int)x : nphi_ratio-2;
+            wphi[iphi] = x-iphi_lo[iphi];
+        }
+    }
+
+    // One task per fine theta1 row
+    #pragma omp parallel for schedule(dynamic) num_threads(nthreads)
+    for (int i1=0; i1<n_fine; i1++){
+        double theta1 = fine_centers[i1];
+        for (int i2=0; i2<n_fine; i2++){
+            double theta2 = fine_centers[i2];
+            // Ratio rows at the four (theta1, theta2) corners and the weights between them
+            const double *r00 = NULL, *r01 = NULL, *r10 = NULL, *r11 = NULL;
+            double wt1 = 0., wt2 = 0.;
+            if (nr_ratio > 0){
+                r00 = ratio + ((size_t)itheta_lo[i1]*nr_ratio + itheta_lo[i2])*nphi_ratio;
+                r01 = r00 + nphi_ratio;
+                r10 = r00 + (size_t)nr_ratio*nphi_ratio;
+                r11 = r10 + nphi_ratio;
+                wt1 = wtheta[i1]; wt2 = wtheta[i2];
+            }
+            // xi at r_jk = |theta1 - theta2 e(phi)|, weighted per w_type as in continuous_q_single
+            double acc = 0.;
+            for (int iphi=0; iphi<n_phi; iphi++){
+                double rjk_x = theta1 - theta2*cosphi[iphi];
+                double rjk_y = -theta2*sinphi[iphi];
+                double xi = interp1d_eval(xi_x, xi_y, xi_n,
+                    xi_logx0, xi_inv_dlogx, hypot(rjk_x, rjk_y));
+                double w;
+                if (w_type == 0){
+                    w = 1.;
+                } else if (w_type == 1){
+                    w = cos4phi[iphi];
+                } else {
+                    w = cos(4.*(phi_centers[iphi]-atan2(rjk_y, rjk_x)));
+                }
+                // Times R, linear in phi and bilinear in (theta1, theta2)
+                if (nr_ratio > 0){
+                    int ip = iphi_lo[iphi];
+                    double wp = wphi[iphi];
+                    double v00 = r00[ip] + wp*(r00[ip+1]-r00[ip]);
+                    double v01 = r01[ip] + wp*(r01[ip+1]-r01[ip]);
+                    double v10 = r10[ip] + wp*(r10[ip+1]-r10[ip]);
+                    double v11 = r11[ip] + wp*(r11[ip+1]-r11[ip]);
+                    w *= (1.-wt1)*((1.-wt2)*v00 + wt2*v01) + wt1*((1.-wt2)*v10 + wt2*v11);
+                }
+                acc += w*xi*dphi[iphi];
+            }
+            fine[(size_t)i1*n_fine + i2] = acc;
+        }
+        #pragma omp atomic
+        *ndone += 1;
+        print_progress(*ndone, progtot, verbose);
+    }
+
+    free(cosphi); free(sinphi); free(cos4phi);
+    free(itheta_lo); free(wtheta); free(iphi_lo); free(wphi);
+}
+
+// Average of the fine grid over the alpha x alpha sub-bins of each (n_r, n_r) bin, times prefactor
+static void continuous_q_binavg(
+    const double *fine, const double *fine_weights, int n_fine, int n_r, int alpha,
+    double prefactor, double *out, int nthreads){
+
+    #pragma omp parallel for schedule(static) num_threads(nthreads)
+    for (int ib1=0; ib1<n_r; ib1++){
+        for (int ib2=0; ib2<n_r; ib2++){
+            // Weighted mean over the fine sub-bins (is1, is2) of the coarse bin (ib1, ib2)
+            double num = 0., den = 0.;
+            for (int is1=0; is1<alpha; is1++){
+                int i1 = ib1*alpha + is1;
+                double w1 = fine_weights[i1];
+                for (int is2=0; is2<alpha; is2++){
+                    int i2 = ib2*alpha + is2;
+                    double ww = w1*fine_weights[i2];
+                    num += fine[(size_t)i1*n_fine + i2]*ww;
+                    den += ww;
+                }
+            }
+            out[(size_t)ib1*n_r + ib2] += prefactor*num/den;
+        }
+    }
+}
+
 // Continuous q-term (triplet) of one xi on a fine (alpha*n_r) grid, bin-averaged to (n_r, n_r).
 // w_type: 0 = qpp (w = 1), 1 = qmm (cos(4*PHI)), 2 = qpm (cos(4*(PHI-phi_jk)))
 // * fine_centers, fine_weights: (n_fine), n_fine = alpha*n_r. phi_centers, dphi: (n_phi)
 // * xi_y: (xi_n) on the log-uniform xi_x
-// * Np: (n_r), not used
+// * ratio: (nr_ratio, nr_ratio, nphi_ratio) measured over idealised triplet counts on log-uniform
+//   theta from ratio_logr0 and uniform phi in [0, pi) from ratio_phi0, unused for nr_ratio = 0
 // * out: (n_r, n_r), added to
 void continuous_q_single(
     int n_r, int alpha, const double *fine_centers, const double *fine_weights,
     const double *phi_centers, const double *dphi, int n_fine, int n_phi,
     const double *xi_x, int xi_n, double xi_logx0, double xi_inv_dlogx, const double *xi_y,
     int w_type, double sigma_eps2, double area, double nbar,
-    const double *Np, double *out){
+    const double *ratio, int nr_ratio, int nphi_ratio, double ratio_logr0, double ratio_inv_dlogr,
+    double ratio_phi0, double ratio_inv_dphi, double *out, int nthreads, int verbose){
 
-    double prefactor = 2.*sigma_eps2/(M_PI*area*nbar);
-
-    // Do fine-grid integral
-    double *fine = (double *)orpheus_calloc((long)n_fine*n_fine, sizeof(double));
+    double *fine = (double *)orpheus_malloc((size_t)n_fine*n_fine*sizeof(double));
     if (!fine) return;
-
-    for (int i1 = 0; i1 < n_fine; i1++) {
-        double T1 = fine_centers[i1];
-        for (int i2 = 0; i2 < n_fine; i2++) {
-            double T2 = fine_centers[i2];
-            double sum = 0.;
-            for (int k = 0; k < n_phi; k++) {
-                double PHI = phi_centers[k];
-                double jk_x = T1 - T2*cos(PHI);
-                double jk_y = -T2*sin(PHI);
-                double r_jk = hypot(jk_x, jk_y);
-                double xi_val = interp1d_eval(xi_x, xi_y, xi_n,
-                    xi_logx0, xi_inv_dlogx, r_jk);
-                double w;
-                switch (w_type) {
-                case 0: w = 1.; break;
-                case 1: w = cos(4.*PHI); break;
-                case 2: w = cos(4.*(PHI-atan2(jk_y, jk_x))); break;
-                default: w = 0.; break;
-                }
-                sum += w*xi_val*dphi[k];
-            }
-            fine[(long)i1*n_fine + i2] = sum;
-        }
-    }
-
-    // Apply bin averaging
-    for (int ic = 0; ic < n_r; ic++) {
-        for (int jc = 0; jc < n_r; jc++) {
-            double num = 0., den = 0.;
-            for (int ia = 0; ia < alpha; ia++) {
-                int i1 = ic*alpha + ia;
-                double w1 = fine_weights[i1];
-                for (int ja = 0; ja < alpha; ja++) {
-                    int i2 = jc*alpha + ja;
-                    double w2 = fine_weights[i2];
-                    double ww = w1*w2;
-                    num += fine[(long)i1*n_fine + i2]*ww;
-                    den += ww;
-                }
-            }
-            out[(long)ic*n_r + jc] += prefactor*num/den;
-        }
-    }
-
+    reset_progress();
+    int ndone = 0;
+    continuous_q_fine(fine_centers, n_fine, phi_centers, dphi, n_phi,
+        xi_x, xi_n, xi_logx0, xi_inv_dlogx, xi_y, w_type, ratio, nr_ratio, nphi_ratio,
+        ratio_logr0, ratio_inv_dlogr, ratio_phi0, ratio_inv_dphi, fine, &ndone, n_fine,
+        nthreads, verbose);
+    if (verbose > 0){ printf("\n"); fflush(stdout); }
+    continuous_q_binavg(fine, fine_weights, n_fine, n_r, alpha,
+        2.*sigma_eps2/(M_PI*area*nbar), out, nthreads);
     free(fine);
 }
 
 
-// Build q-terms for all tomo combos, in continuous approximation
-// * Grids and Np as in continuous_q_single. xi_y_tables: (n_xi_unique, xi_n)
+// Build q-terms for all tomo combos, in continuous approximation. The calls run one after the
+// other, each parallelised over the fine grid.
+// * Grids as in continuous_q_single. xi_y_tables: (n_xi_unique, xi_n)
 // * Calls, each (n_calls): xi table call_xi_idx, w_type call_w_type, output call_out_idx and
 //   factor call_factor
 // * results: (n_out, n_r, n_r), added to
@@ -760,40 +855,36 @@ void continuous_q_tomo(
     const double *phi_centers, const double *dphi, int n_fine, int n_phi,
     const double *xi_x, int xi_n, double xi_logx0, double xi_inv_dlogx,
     const double *xi_y_tables, int n_xi_unique,
-    double sigma_eps2, double area, double nbar, const double *Np,
+    double sigma_eps2, double area, double nbar,
     int n_calls, const int *call_xi_idx, const int *call_w_type,
     const int *call_out_idx, const double *call_factor,
     int n_out, double *results, int nthreads, int verbose){
 
     long block_size = (long)n_r*n_r;
+    double *fine = (double *)orpheus_malloc((size_t)n_fine*n_fine*sizeof(double));
+    double *block = (double *)orpheus_malloc((size_t)block_size*sizeof(double));
+    if (!(fine && block)){
+        free(fine); free(block);
+        return;
+    }
     reset_progress();
     int ndone = 0;
-
-    #pragma omp parallel for schedule(dynamic) num_threads(nthreads)
-    for (int k = 0; k < n_calls; k++) {
-        const double *xi_y = xi_y_tables + (long)call_xi_idx[k]*xi_n;
-        double *block = (double *)orpheus_calloc(block_size, sizeof(double));
-        if (!block) continue;
-
-        continuous_q_single(n_r, alpha, fine_centers, fine_weights,
-            phi_centers, dphi, n_fine, n_phi,
-            xi_x, xi_n, xi_logx0, xi_inv_dlogx, xi_y, call_w_type[k],
-            sigma_eps2, area, nbar, Np, block);
-
-        // Accumulate into the output (needs critical section)
-        double fac = call_factor[k];
-        double *dst = results + (long)call_out_idx[k]*block_size;
-        #pragma omp critical
-        {
-            for (long j = 0; j < block_size; j++)
-                dst[j] += fac*block[j];
-        }
-        free(block);
-        #pragma omp atomic
-        ndone += 1;
-        print_progress(ndone, n_calls, verbose);
+    // Each call fills the fine grid, bin-averages it and adds it with its factor to its output
+    for (int icall=0; icall<n_calls; icall++){
+        continuous_q_fine(fine_centers, n_fine, phi_centers, dphi, n_phi,
+            xi_x, xi_n, xi_logx0, xi_inv_dlogx, xi_y_tables + (long)call_xi_idx[icall]*xi_n,
+            call_w_type[icall], NULL, 0, 0, 0., 0., 0., 0., fine, &ndone, n_calls*n_fine,
+            nthreads, verbose);
+        memset(block, 0, (size_t)block_size*sizeof(double));
+        continuous_q_binavg(fine, fine_weights, n_fine, n_r, alpha,
+            2.*sigma_eps2/(M_PI*area*nbar), block, nthreads);
+        double fac = call_factor[icall];
+        double *dst = results + (long)call_out_idx[icall]*block_size;
+        for (long j=0; j<block_size; j++)
+            dst[j] += fac*block[j];
     }
-    if (verbose > 0) { printf("\n"); fflush(stdout); }
+    if (verbose > 0){ printf("\n"); fflush(stdout); }
+    free(fine); free(block);
 }
 
 

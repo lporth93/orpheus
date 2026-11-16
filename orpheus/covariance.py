@@ -2,6 +2,7 @@ import ctypes
 import glob
 import os
 import subprocess
+import time
 import warnings
 
 import numpy as np
@@ -232,7 +233,7 @@ class GGCovarianceNoTomo:
         tree_method='DoubleTree', shuffle_pix=1, memory_bound=512., verbosity=1,
         phi_grid=None, phi_grid_min=0.05, varphi1_grid=None, varphi2_grid=None,
         phi1_subgrid_frac=None, phi2_subgrid_frac=None,
-        v2_block=16, nr_block=None, nthreads=1):
+        v2_block=16, nr_block=None, nthreads=1, _steps=None):
 
         ## Link compiled libraries
         self._link_clib()
@@ -296,8 +297,12 @@ class GGCovarianceNoTomo:
         self.shuffle_pix = shuffle_pix
         self.memory_bound = memory_bound
         self.verbosity = verbosity
+        # Counter and start time of the printed steps, shared with the fine instances
+        self._steps = [0, time.perf_counter()] if _steps is None else _steps
         self.orpheus_instances = {}
         self.pairs_wsq = None
+        # Measured over idealised triplets of a coarser grid, which the continuum mixed term then carries
+        self._triplet_ratio = None
         # Init catalogs already here as those set the distance bounds for the quadruplets
         if self.catalog is not None:
             self.set_orpheus_instances([])
@@ -443,12 +448,12 @@ class GGCovarianceNoTomo:
         self._clib.continuous_q_single.argtypes = [
             ci, ci, p_f64, p_f64, p_f64, p_f64, ci, ci,
             p_f64, ci, cd, cd, p_f64,
-            ci, cd, cd, cd, p_f64, p_f64]
+            ci, cd, cd, cd, p_f64, ci, ci, cd, cd, cd, cd, p_f64, ci, ci]
         self._clib.continuous_q_tomo.restype = None
         self._clib.continuous_q_tomo.argtypes = [
             ci, ci, p_f64, p_f64, p_f64, p_f64, ci, ci,
             p_f64, ci, cd, cd, p_f64, ci,
-            cd, cd, cd, p_f64, ci, p_i32, p_i32, p_i32,
+            cd, cd, cd, ci, p_i32, p_i32, p_i32,
             p_f64, ci, p_f64, ci, ci]
         self._clib.continuous_rterms_tomo.restype = None
         self._clib.continuous_rterms_tomo.argtypes = [
@@ -460,6 +465,15 @@ class GGCovarianceNoTomo:
             p_f64, ci, ci,  p_f64, p_f64, ci,
             p_f64, ci, cd, cd, p_f64,
             p_f64, ci, ci]
+
+    def _step(self, text):
+        """Print the next step of the computation and the time the previous one took."""
+        if self.verbosity > 0:
+            now = time.perf_counter()
+            self._steps[0] += 1
+            took = "" if self._steps[0] == 1 else " (previous step %.1f min)"%((now-self._steps[1])/60.)
+            print("Step %d: %s%s"%(self._steps[0], text, took), flush=True)
+            self._steps[1] = now
 
     def _init_multiplet(self, kind, value, method):
         """Define construction of count tensor of one multiplet."""
@@ -737,6 +751,12 @@ class GGCovarianceNoTomo:
         if fine is not None and (fine.n_r != len(new_tc) or not np.allclose(fine.theta_edges, new_te)):
             raise ValueError("slab_instance must live on the same 2PCF theta grid as "
                              "the subbin target (new_theta_centers / new_theta_edges).")
+        # The cheap D and mixed terms of the fine instance first, so that the steps run in order
+        if fine is not None:
+            fine._steps = self._steps
+            self._step("Shape noise and mixed terms on %d bins%s"
+                       %(n_new, " from the coarse triplets" if fine._triplet_ratio is not None else ""))
+            fine_terms = dict(D=fine.getD(), qpp=fine.getqpp(), qmm=fine.getqmm(), qpm=fine.getqpm())
 
         ## 4) Setup interpolation of cov components
         _interp_arr = self._build_block_interpolator(logtc, logtcnew, n_new, use_corr)
@@ -767,9 +787,9 @@ class GGCovarianceNoTomo:
             if self.qpm is None: self.getqpm()
             specs += [(name, name in self.QTERMS_SYM) for name, *_ in self.QTERMS]
         comps = {name: _interp(getattr(self, name), sym) for name, sym in specs}
-        # We have a fine instance --> compute the cheap D and qij on the full grid directly
+        # We have a fine instance --> D and qij on the full grid
         if fine is not None:
-            comps.update(D=fine.getD(), qpp=fine.getqpp(), qmm=fine.getqmm(), qpm=fine.getqpm())
+            comps.update(fine_terms)
         # No fine instance --> D lives on the diagonal and is resampled as a function of theta.
         # With fine pairs D*N_p is constant, otherwise D theta*dtheta is smooth and interpolated.
         else:
@@ -813,18 +833,34 @@ class GGCovarianceNoTomo:
             nthreads=self.nthreads, **comps)
 
     def _fine_instance_from_catalog(self, new_theta_centers, new_theta_edges, verbose=False):
-        """Build a fine-grid instance from the catalog of this instance. 
-        Setup such that fine pairs and triplets are measured and quadruplets are reused.
+        """Build a fine-grid instance from the catalog of this instance.
+        The fine pairs are measured, the mixed terms follow from the triplets of this instance and the
+        quadruplets are reused.
         """
         if getattr(self, 'catalog', None) is None:
             raise ValueError("_fine_instance_from_catalog requires a `catalog` on this instance.")
         if verbose:
-            print("  subbin: auto-building fine instance (n_fine=%d) -- "
-                  "measuring fine pairs/triplets, reusing q density"%len(new_theta_centers))
-        return GGCovarianceNoTomo(**self._grid_kwargs(
+            print("  subbin: auto-building fine instance (n_fine=%d) -- measuring fine pairs, "
+                  "mixed terms from the coarse triplets, reusing q density" % len(new_theta_centers))
+        # nbar cancels between the triplet ratio and the pair normalisation of the mixed terms
+        nbar = self.nbar if self.nbar is not None else len(self.catalog['ra'])/self.area
+        fine = GGCovarianceNoTomo(**self._grid_kwargs(
             new_theta_centers, new_theta_edges,
-            method_pairs='discrete', method_triplets='discrete',
-            method_quadruplets='discrete', quadruplets=self.quadruplets))
+            method_pairs='discrete', method_triplets='continuous',
+            method_quadruplets='discrete', quadruplets=self.quadruplets, nbar=nbar))
+        fine._triplet_ratio = self._triplet_ratio_table(nbar)
+        return fine
+
+    def _triplet_ratio_table(self, nbar):
+        """Measured over idealised triplet counts on the triplet grid, mirrored onto phi in [0, pi)."""
+        n = self.n_phi
+        if n % 2 or not np.allclose(self.phi_centers + self.phi_centers[::-1], 2.*np.pi):
+            raise ValueError("The triplet ratio needs an even number of uniform phi bins on [0, 2 pi)")
+        M = _theta_dtheta(self.triplet_theta_edges)
+        ideal = (2.*np.pi*self.area*nbar**3*self._w2*self._w1**2
+                 * M[:, None, None]*M[None, :, None]*self.dphi[None, None, :])
+        ratio = self.triplets/ideal
+        return .5*(ratio[:, :, :n//2] + ratio[:, :, ::-1][:, :, :n//2]), self.triplet_theta_centers, self.phi_centers[:n//2]
 
     def _grid_kwargs(self, new_theta_centers, new_theta_edges, **overrides):
         """Constructor arguments for this instance on a new theta grid, updated by ``overrides``."""
@@ -847,7 +883,7 @@ class GGCovarianceNoTomo:
             catalog=self.catalog, path_save=self.path_save, store_multiplets=self.store_multiplets,
             nmaxs=self.nmaxs, geometry=self.geometry, rmin_pixsize=self.rmin_pixsize,
             tree_resos=self.tree_resos, tree_method=self.tree_method, shuffle_pix=self.shuffle_pix,
-            memory_bound=self.memory_bound, verbosity=self.verbosity)
+            memory_bound=self.memory_bound, verbosity=self.verbosity, _steps=self._steps)
         kw.update(overrides)
         return kw
 
@@ -982,6 +1018,9 @@ class GGCovarianceNoTomo:
         obj.pairs = None if pairs is None else np.asarray(pairs, dtype=float)
         obj.triplets = None
         obj.quadruplets = None
+        obj._triplet_ratio = None
+        obj.verbosity = 0
+        obj._steps = [0, time.perf_counter()]
 
         def _a(x):
             return np.asarray(x, dtype=float) if x is not None else None
@@ -1107,6 +1146,7 @@ class GGCovarianceNoTomo:
                 "get_all_rterms() is not supported for "
                 "method_quadruplets='continuous'; call "
                 "getrp0()...getrpm() individually.")
+        self._step("r-terms on %d bins%s" % (self.n_r, "" if pair_mask is None else ", in the band"))
         results = self._quadruplet_density_terms_c(
             verbose=verbose, pair_mask=pair_mask, nthreads=nthreads)
         if pair_mask is None:
@@ -1392,6 +1432,13 @@ class GGCovarianceNoTomo:
         _xitables = self._xi_tables_from_splines(
             [xi_func], lo=min(self._xi_query_lo(), .9*r_min), hi=2.*self.theta_edges[-1])
         xi_x, xi_y_tables, xi_logx0, xi_inv_dlogx, xi_n = _xitables
+        # Measured over idealised triplets, if any
+        if self._triplet_ratio is None:
+            ratio_args = (np.zeros(1), 0, 0, 0., 0., 0., 0.)
+        else:
+            table, rc, pc = self._triplet_ratio
+            ratio_args = (np.ascontiguousarray(table, dtype=np.float64), len(rc), len(pc), np.log(rc[0]),
+                          1./np.log(rc[1]/rc[0]), pc[0], 1./(pc[1] - pc[0]))
         # Do the call
         out = np.zeros(self.n_r * self.n_r, dtype=np.float64)
         self._clib.continuous_q_single(
@@ -1402,9 +1449,13 @@ class GGCovarianceNoTomo:
             np.ascontiguousarray(_trapz_weights(phis), dtype=np.float64),
             n_fine, nphi_target, xi_x, xi_n, xi_logx0, xi_inv_dlogx, np.ascontiguousarray(xi_y_tables[0]),
             int(w_type), float(self.sigma_eps**2), float(self.area), float(self.nbar),
-            np.ones(self.n_r, dtype=np.float64), out)
+            *ratio_args, out, int(self.nthreads), 0)
         # Reshape and rescale the output: Shared galaxy carries <w^2>, the other two <w> each
         out = self._w2 / self._w1**2 * out.reshape(self.n_r, self.n_r)
+        # With measured triplets the measured pairs replace the idealised ones of the normalisation
+        if self._triplet_ratio is not None:
+            ideal = 2.*np.pi*self.area*self.nbar**2*self._w1**2*_theta_dtheta(self.theta_edges)
+            out *= np.outer(ideal/self.pairs, ideal/self.pairs)
         return out
 
     def _rterms_continuous_c(self, dlnt_target=.05):
@@ -1486,6 +1537,10 @@ class GGCovarianceNoTomo:
         h = self._catalog_sha1.copy()
         h.update(repr((contribution, tuple(map(float, binning)), setup)).encode())
         fpath = os.path.join(self.path_save, "%s_%s.npz" % (contribution, h.hexdigest()[:16]))
+        bins = {'pairs': "%d" % self.n_r, 'triplets': "%d x %d" % (self.triplet_n_r, self.n_phi),
+                'quadruplets': "%d x %d" % (self.q_n_r, self.q_n_phi)}[contribution]
+        self._step("%s the %s on %s bins" % ("Loading" if os.path.exists(fpath) else "Measuring",
+                                             contribution, bins))
         if os.path.exists(fpath):
             counts = self._load_multiplet(contribution, fpath)
         else:
@@ -2135,6 +2190,8 @@ class GGCovariance(GGCovarianceNoTomo):
                 if combo in self.qpm_tomo:
                     qpm_fine[combo] = _interp(self.qpm_tomo[combo], sym=False)
         else:
+            fine._steps = self._steps
+            self._step("Shape noise and mixed terms on %d bins" % n_new)
             fine.getD()
             fine.getqpp()
             fine.getqmm()
@@ -2361,6 +2418,7 @@ class GGCovariance(GGCovarianceNoTomo):
         """
         if nthreads is None:
             nthreads = self.nthreads
+        self._step("r-terms on %d bins%s" % (self.n_r, "" if pair_mask is None else ", in the band"))
         if self.method_quadruplets == 'continuous':
             if pair_mask is not None:
                 raise ValueError("The continuum r-terms are computed on the whole grid, without a pair_mask.")
@@ -2559,7 +2617,6 @@ class GGCovariance(GGCovarianceNoTomo):
         r_min = min(fine_centers[1] - fine_centers[0], 2. * fine_centers[0] * np.sin(.5 * phi_q[1]))
         qxi_x, qxi_y_tables, qxi_logx0, qxi_inv_dlogx, qxi_n = self._build_xi_tables(
             xi_keys, lo=min(self._xi_query_lo(), .9 * r_min))
-        Np_ideal = np.ones(n, dtype=np.float64)
 
         # The kernel output depends on (w_type, xi_idx) only, so each distinct pair is integrated
         # once and the factors of the combos are applied afterwards
@@ -2594,7 +2651,6 @@ class GGCovariance(GGCovarianceNoTomo):
                 _ptr(qxi_x), qxi_n, qxi_logx0, qxi_inv_dlogx,
                 _ptr(qxi_y_tables), n_xi,
                 1., self.area, 1.,
-                _ptr(Np_ideal),
                 n_q_calls,
                 _iptr(np.array([c[1] for c in calls], dtype=np.int32)),
                 _iptr(np.array([c[0] for c in calls], dtype=np.int32)),

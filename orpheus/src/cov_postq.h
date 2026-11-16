@@ -61,7 +61,10 @@ void continuous_q_single(int n_r, int alpha,
                          const double *xi_y,
                          int w_type,
                          double sigma_eps2, double area, double nbar,
-                         const double *Np, double *out);
+                         const double *ratio, int nr_ratio, int nphi_ratio,
+                         double ratio_logr0, double ratio_inv_dlogr,
+                         double ratio_phi0, double ratio_inv_dphi,
+                         double *out, int nthreads, int verbose);
 
 // Continuous q-terms of all tomo combos, one continuous_q_single per call
 void continuous_q_tomo(int n_r, int alpha,
@@ -72,7 +75,6 @@ void continuous_q_tomo(int n_r, int alpha,
                        double xi_logx0, double xi_inv_dlogx,
                        const double *xi_y_tables, int n_xi_unique,
                        double sigma_eps2, double area, double nbar,
-                       const double *Np,
                        int n_calls,
                        const int *call_xi_idx, const int *call_w_type,
                        const int *call_out_idx, const double *call_factor,

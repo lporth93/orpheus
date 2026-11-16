@@ -97,8 +97,8 @@ parallelised C kernels.
   catalog, idealised Poisson counts or the continuum limit, with the integrals in
   `orpheus/src/cov_postq.c`. Both classes are exported from the package root, and
   `GGCovariance.get_cov_terms` returns the shape-noise, mixed and sample-variance terms
-  of each covariance block. Coming from the `covariance` branch, nineteen things changed on the
-  way in:
+  of each covariance block. Coming from the `covariance` branch, twenty-one things changed on
+  the way in:
   * The measured pair counts were twice the ordered pair counts. `GGCorrelation.norm`
     already holds both orders of every pair, and the module doubled it again, which halved
     the shape noise and quartered the mixed and cosmic-variance terms of every covariance
@@ -232,6 +232,15 @@ parallelised C kernels.
     continuum limit, is gone, as it shifted the COSEBI covariance by 3-16% rather than only
     removing the stripes. `cov_of_statistic` returns the weights of the statistic with
     `return_weights=True`, formerly the private `_return_weights`.
+  * With a catalog, the fine instance that `subbin` of `GGCovarianceNoTomo` builds measures only
+    the fine pairs. Its mixed terms are the continuum ones scaled by the ratio of the measured
+    to the idealised triplets of the coarse instance, which `continuous_q_single` interpolates,
+    and normalised by the measured fine pairs. Above 10 arcmin this matches directly measured
+    fine triplets 10-40 times better than the idealised mixed term; below, those are dominated
+    by Poisson noise. `GGCovariance` still measures the fine triplets.
+  * `continuous_q_single` and `continuous_q_tomo` run in parallel over theta_1 with precomputed
+    trigonometry, bitwise as before and 23-30 times faster on 16 threads. With `verbosity >= 1`
+    the classes print numbered steps with the time each one took.
   * The methods of `GGCovariance` carried a `_tomo` suffix, while the names it inherited without
     one computed the covariance of the first bin pair alone. They now share the names of
     `GGCovarianceNoTomo`: `get_cov_xipm`, `get_cov_terms`, `get_cov_pp`, `get_cov_mm`,
