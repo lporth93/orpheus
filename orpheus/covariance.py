@@ -239,6 +239,10 @@ class GGCovarianceNoTomo:
     rmin_pixsize, tree_resos, tree_method, shuffle_pix, memory_bound, verbosity: optional
         Settings of the orpheus correlators, where ``tree_method`` applies to the quadruplets.
         Default to ``40``, ``[0, 0.5, 1, 2, 4]``, ``'DoubleTree'``, ``1``, ``512`` and ``1``.
+    t_rmin_pixsize, t_tree_resos, q_rmin_pixsize, q_tree_resos: optional
+        ``rmin_pixsize`` and ``tree_resos`` of the triplet and the quadruplet measurement, which may be
+        coarser than those of the pairs. Default to ``rmin_pixsize`` and ``tree_resos``, except
+        ``q_tree_resos``, which defaults to ``[0, 0.5, 1, 2, 4, 8, 16]``.
     phi_grid, varphi1_grid, varphi2_grid: numpy.ndarray, optional
         Integration grids of the quadruplet term. Default to 128 log-spaced radii from
         ``phi_grid_min`` to the last edge of ``q_theta_edges`` for a density tensor, otherwise to
@@ -284,7 +288,8 @@ class GGCovarianceNoTomo:
         sigma_eps=0.27, nbar=None, area=None, weights_mean=1., weights_std=0., spl_suppression_ww=None,
         pairs=None, triplets=None, quadruplets=None,
         catalog=None, path_save=None, store_multiplets=False, nmaxs=30, geometry='spherical',
-        rmin_pixsize=40, tree_resos=(0., 0.5, 1., 2., 4.),
+        rmin_pixsize=40, tree_resos=(0., 0.5, 1., 2., 4.), t_rmin_pixsize=None, t_tree_resos=None,
+        q_rmin_pixsize=None, q_tree_resos=(0., 0.5, 1., 2., 4., 8., 16.),
         tree_method='DoubleTree', shuffle_pix=1, memory_bound=512., verbosity=1,
         phi_grid=None, phi_grid_min=0.05, varphi1_grid=None, varphi2_grid=None,
         phi1_subgrid_frac=None, phi2_subgrid_frac=None, extrapolation=False,
@@ -348,6 +353,10 @@ class GGCovarianceNoTomo:
         self.geometry = geometry
         self.rmin_pixsize = rmin_pixsize
         self.tree_resos = np.asarray(tree_resos, dtype=float)
+        self.t_rmin_pixsize = rmin_pixsize if t_rmin_pixsize is None else t_rmin_pixsize
+        self.t_tree_resos = self.tree_resos if t_tree_resos is None else np.asarray(t_tree_resos, dtype=float)
+        self.q_rmin_pixsize = rmin_pixsize if q_rmin_pixsize is None else q_rmin_pixsize
+        self.q_tree_resos = self.tree_resos if q_tree_resos is None else np.asarray(q_tree_resos, dtype=float)
         self.tree_method = tree_method
         self.shuffle_pix = shuffle_pix
         self.memory_bound = memory_bound
@@ -964,7 +973,9 @@ class GGCovarianceNoTomo:
             nthreads=self.nthreads,
             catalog=self.catalog, path_save=self.path_save, store_multiplets=self.store_multiplets,
             nmaxs=self.nmaxs, geometry=self.geometry, rmin_pixsize=self.rmin_pixsize,
-            tree_resos=self.tree_resos, tree_method=self.tree_method, shuffle_pix=self.shuffle_pix,
+            tree_resos=self.tree_resos, t_rmin_pixsize=self.t_rmin_pixsize, t_tree_resos=self.t_tree_resos,
+            q_rmin_pixsize=self.q_rmin_pixsize, q_tree_resos=self.q_tree_resos,
+            tree_method=self.tree_method, shuffle_pix=self.shuffle_pix,
             memory_bound=self.memory_bound, verbosity=self.verbosity, _steps=self._steps)
         kw.update(overrides)
         return kw
@@ -1674,8 +1685,11 @@ class GGCovarianceNoTomo:
 
         ## Cache file, hashing the catalog, the binning and the correlator setup ##
         # area enters the cached quadruplet density
-        setup = (self.geometry, list(np.ravel(self.nmaxs)), self.rmin_pixsize,
-                 list(np.ravel(self.tree_resos)), self.tree_method, int(self.shuffle_pix), self.area)
+        rmin, resos = {'pairs': (self.rmin_pixsize, self.tree_resos),
+                       'triplets': (self.t_rmin_pixsize, self.t_tree_resos),
+                       'quadruplets': (self.q_rmin_pixsize, self.q_tree_resos)}[contribution]
+        setup = (self.geometry, list(np.ravel(self.nmaxs)), rmin,
+                 list(np.ravel(resos)), self.tree_method, int(self.shuffle_pix), self.area)
         h = self._catalog_sha1.copy()
         h.update(repr((contribution, tuple(map(float, binning)), setup)).encode())
         fpath = os.path.join(self.path_save, "%s_%s.npz" % (contribution, h.hexdigest()[:16]))
@@ -1695,8 +1709,9 @@ class GGCovarianceNoTomo:
             if contribution == 'pairs':
                 # The pairs of squared weights first, so that the bin centers are those of N_p.
                 # npair holds the ordered pairs, both (i,j) and (j,i).
-                corr.process(self.orpheus_instances['catalog_wsq'])
-                self.pairs_wsq = extra['pairs_wsq'] = np.array(corr.npair[0], dtype=float)
+                if not self._unit_weights:
+                    corr.process(self.orpheus_instances['catalog_wsq'])
+                    self.pairs_wsq = extra['pairs_wsq'] = np.array(corr.npair[0], dtype=float)
                 corr.process(cat)
             if contribution == 'triplets':
                 corr.process(cat)
@@ -1714,6 +1729,9 @@ class GGCovarianceNoTomo:
 
             if contribution == 'pairs':
                 counts = np.array(corr.npair[0], dtype=float)
+                # With unit weights the pairs of squared weights are the pairs
+                if self._unit_weights:
+                    self.pairs_wsq = extra['pairs_wsq'] = counts.copy()
             if contribution == 'triplets':
                 corr.multipoles2npcf()
                 counts = np.array(corr.npcf_norm[0], dtype=float)
@@ -1758,6 +1776,7 @@ class GGCovarianceNoTomo:
         dec = np.asarray(self.catalog['dec'], dtype=float)
         w = self.catalog.get('weight')
         w = np.ones_like(ra) if w is None else np.asarray(w, dtype=float)
+        self._unit_weights = bool(np.all(w == 1.))
         # A flat catalog carries the unit of the separations, arcmin
         pos = (dict(geometry='spherical', units_pos1='deg', units_pos2='deg', pos1=ra, pos2=dec)
                if sphere else dict(geometry='flat2d', pos1=60.*ra, pos2=60.*dec))
@@ -1768,7 +1787,7 @@ class GGCovarianceNoTomo:
             self.orpheus_instances['catalog'] = ScalarTracerCatalog(
                 weight=w, tracer=np.ones_like(ra), **pos)
         # The pairs of squared weights enter the shape noise
-        if 'pairs' in contributions and 'catalog_wsq' not in self.orpheus_instances:
+        if 'pairs' in contributions and 'catalog_wsq' not in self.orpheus_instances and not self._unit_weights:
             self.orpheus_instances['catalog_wsq'] = ScalarTracerCatalog(
                 weight=w**2, tracer=np.ones_like(ra), **pos)
 
@@ -1782,14 +1801,14 @@ class GGCovarianceNoTomo:
         if 'triplets' in contributions:
             self.orpheus_instances['NNN'] = NNNCorrelation(
                 nbinsr=self.triplet_n_r, nmaxs=self.nmaxs, nbinsphi=self.n_phi, base_weightsq=True,
-                **xi_kw)
+                **dict(xi_kw, rmin_pixsize=self.t_rmin_pixsize, tree_resos=self.t_tree_resos))
         if 'quadruplets' in contributions:
             fac = 60. if sphere else 1.
             self.orpheus_instances['NNNN'] = NNNNCorrelation_NoTomo(
                 min_sep=float(self.q_theta_edges[0])/fac, max_sep=float(self.q_theta_edges[-1])/fac,
                 nbinsr=self.q_n_r, nbinsphi=self.q_n_phi, nmaxs=self.nmaxs, method=self.tree_method,
-                tree_resos=self.tree_resos/fac,
-                sep_units='deg' if sphere else 'arcmin', **kw)
+                tree_resos=self.q_tree_resos/fac,
+                sep_units='deg' if sphere else 'arcmin', **dict(kw, rmin_pixsize=self.q_rmin_pixsize))
 
     def _load_multiplet(self, kind, fpath):
         """Loads a multiplet from a file written by ``store_multiplets`` and update relevant attributes."""

@@ -97,7 +97,7 @@ parallelised C kernels.
   catalog, idealised Poisson counts or the continuum limit, with the integrals in
   `orpheus/src/cov_postq.c`. Both classes are exported from the package root, and
   `GGCovariance.get_cov_terms` returns the shape-noise, mixed and sample-variance terms
-  of each covariance block. Coming from the `covariance` branch, twenty-two things changed on
+  of each covariance block. Coming from the `covariance` branch, twenty-three things changed on
   the way in:
   * The measured pair counts were twice the ordered pair counts. `GGCorrelation.norm`
     already holds both orders of every pair, and the module doubled it again, which halved
@@ -243,6 +243,12 @@ parallelised C kernels.
     requested statistic, and the fitted orders are kept in `extrapolation_orders`. Comparing
     the types tells whether the baseline has converged; an extrapolated covariance is only as
     good as that agreement.
+  * `t_rmin_pixsize`, `t_tree_resos`, `q_rmin_pixsize` and `q_tree_resos` set the tree of the
+    triplet and the quadruplet measurement apart from the one of the pairs, to which they
+    default except `q_tree_resos`, which defaults to `(0., 0.5, 1., 2., 4., 8., 16.)`. The
+    cache hashes the tree of the multiplet it holds, so the pairs and triplets keep their file
+    names and the quadruplets of the default setup are measured anew. For unit weights the
+    pairs of squared weights are the pairs and no longer counted in a second pass.
   * With a catalog, the fine instance that `subbin` of `GGCovarianceNoTomo` builds measures only
     the fine pairs. Its mixed terms are the continuum ones scaled by the ratio of the measured
     to the idealised triplets of the coarse instance, which `continuous_q_single` interpolates,
