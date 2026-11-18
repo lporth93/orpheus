@@ -184,6 +184,14 @@ class GGCovarianceNoTomo:
         the xi_pm range, and to be set for a measured density. Default to the xi_pm bins.
     q_phi_centers, q_phi_edges: numpy.ndarray, optional
         Angular bins of the quadruplet density. Default to ``phi_centers`` and ``phi_edges``.
+    q_richardson: bool, optional
+        Richardson-extrapolate the sample-variance r-terms of a quadruplet density tensor in its
+        radial bin width: they become 2 R(q) - R(q_2), with q_2 the density on bins twice as wide,
+        built exactly from the same counts by merging pairs of radial bins
+        (:meth:`_coarsened_quadruplets`). The r-terms converge only slowly with the radial
+        resolution of q (about linearly in the bin width), mostly in the B-modes, and this
+        removes the leading error. Both densities are integrated in the same pass, and it needs
+        an even number of radial q bins. Defaults to ``False``.
     triplet_oversample: int, optional
         Number of equal sub-bins per radial bin of the triplet counts, which are summed back
         before dividing by the pair counts. Defaults to ``1``.
@@ -226,9 +234,8 @@ class GGCovarianceNoTomo:
         Offsets of radial subgrid nodes from the bin centers, in units of the bin width. Default
         to ``None``, i.e. the bin centers.
     v2_block, nr_block: int, optional
-        Chunk size on the varphi2 axis and tile size on the (theta1, theta2) axes of the
-        quadruplet integral, which bound its memory but not its result. Default to ``16`` and
-        ``None``, i.e. a single tile.
+        Tile sizes of the slab bookkeeping of :meth:`subbin`. The quadruplet integral no longer
+        tiles, so they change neither its memory nor its result. Default to ``16`` and ``None``.
     nthreads: int, optional
         Number of OpenMP threads. Defaults to ``1``.
 
@@ -238,9 +245,8 @@ class GGCovarianceNoTomo:
       for the pairs, (n_r*triplet_oversample, n_r*triplet_oversample, n_phi) for the triplets and
       (n_qr, n_qr, n_qr, n_qphi, n_qphi) for the quadruplet density.
 
-    * Peak memory of the quadruplet integral is about
-      q_tensor + nthreads*(m^2*n_v1*v2_block + 2*n_out*n_r^2 + q_slice)*8B with m = nr_block*len(phi1_subgrid_frac).
-      where nr_block is the quadratic and v2_block the linear knob.
+    * Peak memory of the quadruplet integral is about q_tensor + q_slice + 2*n_out*n_r^2*8B,
+      independent of the number of threads and of the integration grids.
 
     """
 
@@ -249,7 +255,7 @@ class GGCovarianceNoTomo:
         theta_centers, theta_edges,
         phi_centers=None, phi_edges=None,
         q_theta_centers=None, q_theta_edges=None, q_phi_centers=None, q_phi_edges=None,
-        triplet_oversample=1,
+        q_richardson=False, triplet_oversample=1,
         method_pairs='analytic', method_triplets='analytic', method_quadruplets='analytic',
         spline_xip=None, spline_xim=None,
         sigma_eps=0.27, nbar=None, area=None, weights_mean=1., weights_std=0., spl_suppression_ww=None,
@@ -313,6 +319,8 @@ class GGCovarianceNoTomo:
                               else np.asarray(q_phi_edges, dtype=float))
         self.q_dphi = np.diff(self.q_phi_edges)
         self.q_n_phi = len(self.q_phi_centers)
+        self.q_richardson = bool(q_richardson)
+        self._q_coarse = None
 
         ## Triplet oversampling ##
         self.triplet_oversample = int(triplet_oversample)
@@ -446,8 +454,8 @@ class GGCovarianceNoTomo:
         self._clib.quadruplet_sva_integrate.restype = None
         self._clib.quadruplet_sva_integrate.argtypes = [
             p_f64, p_f64, ci, ci, p_f64, p_f64, ci, p_f64, p_f64, ci,
-            p_f64, p_f64, ci, p_f64, p_f64, ci, ci, ci, p_i32, ci,
-            ci, p_f64, p_f64, p_f64, ci, ci, cd, p_f64, p_f64, p_f64,
+            p_f64, p_f64, ci, p_f64, p_f64, ci,
+            ci, p_f64, p_f64, p_f64, ci, ci, p_f64, p_f64, ci, cd, p_f64, p_f64, p_f64,
             p_f64, ci, cd, cd, p_f64, ci, ci, p_i32, p_i32,
             p_i32, p_i32, p_f64, ci, p_i32, p_i32, p_f64, ci, ci]
 
@@ -996,12 +1004,50 @@ class GGCovarianceNoTomo:
                 float(np.log(xi_x[0])),
                 float(1. / (np.log(xi_x[1]) - np.log(xi_x[0]))), xi_n)
 
+    def _coarsened_quadruplets(self):
+        """Quadruplet density on radial bins twice as wide, from the same counts.
+
+        The counts of the 2x2x2 blocks of radial bins add up, and the volume of the density is the
+        product of the annuli (theta_max^2 - theta_min^2)/2 of the three legs, so the coarse
+        density is the volume-weighted mean of the fine one. Its bin centers are the
+        annulus-weighted means of the fine ones. The angular bins are kept.
+
+        Returns
+        -------
+        q2, q2_theta_centers: numpy.ndarray
+            Shapes (n_qr/2, n_qr/2, n_qr/2, n_qphi, n_qphi) and (n_qr/2,).
+        """
+        q = self.quadruplets
+        if self._q_coarse is not None and self._q_coarse[0] is q:
+            return self._q_coarse[1:]
+        n = self.q_n_r
+        if n % 2:
+            raise ValueError("q_richardson needs an even number of radial q bins, got %d" % n)
+        tdt = _theta_dtheta(self.q_theta_edges)
+        tdt2 = tdt.reshape(-1, 2).sum(1)
+        q = np.asarray(q, dtype=float)
+        nphi = q.shape[3:]
+        q2 = np.zeros((n // 2,) * 3 + nphi)
+        # one fine t1 slice at a time keeps the memory at the size of q2
+        for i in range(n):
+            counts = q[i] * (tdt[:, None] * tdt[None, :])[..., None, None]
+            q2[i // 2] += tdt[i] * counts.reshape(n // 2, 2, n // 2, 2, *nphi).sum((1, 3))
+        q2 /= (tdt2[:, None, None] * tdt2[None, :, None] * tdt2[None, None, :])[..., None, None]
+        rc2 = (self.q_theta_centers * tdt).reshape(-1, 2).sum(1) / tdt2
+        self._q_coarse = (self.quadruplets, q2, rc2)
+        return q2, rc2
+
     def _run_postq_engine(self, cbm, xi_tables, symmetric_mask,
                           verbose=False, pair_mask=None, nthreads=None):
         """Run the fused C quadruplet kernel over the phi grid with ``nthreads`` threads.
 
-        Returns one (n_r, n_r) block per output, including the prefactor 2 pi A / (N_p N_p).
+        Returns one (n_r, n_r) block per output, including the prefactor 2 pi A / (N_p N_p). With
+        ``q_richardson`` and a density tensor these are 2 R(q) - R(q_2), see
+        :meth:`_coarsened_quadruplets`, from the same pass of the kernel.
         """
+        if self.quadruplets is None:
+            raise RuntimeError("`quadruplets` not initialised.")
+        q, q_rc = self.quadruplets, self.q_theta_centers
         if nthreads is None:
             nthreads = self.nthreads
         xi_x, xi_y_tables, xi_logx0, xi_inv_dlogx, xi_n = xi_tables
@@ -1035,31 +1081,23 @@ class GGCovarianceNoTomo:
         v1_w = _periodic_weights(self.varphi1_grid)
         v2_w = _periodic_weights(self.varphi2_grid)
 
-        ## Tile plan over the (theta1, theta2) axes, banded when masked ##
-        nrb = self.nr_block or n
-        rows = range(0, n, nrb)
-        if pair_mask is None:
-            tiles = [(i1, i2) for i1 in rows for i2 in rows]
-        else:
-            tiles = [(i1, i2) for i1 in rows if pair_mask[i1:i1 + nrb].any()
-                     for i2 in rows
-                     if pair_mask[i1:i1 + nrb, i2:i2 + nrb].any()]
         mask_c = _i(np.ones((n, n)) if pair_mask is None else pair_mask)
 
         ## Quadruplet density: 0 = tensor, 1 = constant, 2 = separable s(t) ##
         dummy = np.zeros(2)
-        if self.quadruplets is None:
-            raise RuntimeError("`quadruplets` not initialised.")
-        if not callable(self.quadruplets):
+        q2_array, q2_rc = dummy, dummy
+        if not callable(q):
             q_mode, q_const = 0, 0.
-            q_array = _f(self.quadruplets)
-            q_rc, q_pc = _f(self.q_theta_centers), _f(self.q_phi_centers)
+            q_array = _f(q)
+            q_rc, q_pc = _f(q_rc), _f(self.q_phi_centers)
             q_nr, q_nphi = len(q_rc), len(q_pc)
             # The kernel interpolates the angles periodically on a uniform grid over 2 pi
             dphi_q = 2.*np.pi/q_nphi
             if q_nphi < 2 or not np.allclose(np.diff(q_pc), dphi_q, rtol=1e-8, atol=0.):
                 raise ValueError("q_phi_centers must be uniform with spacing 2 pi/len(q_phi_centers)")
             sup_t1 = sup_t2 = sup_t3 = dummy
+            if self.q_richardson:
+                q2_array, q2_rc = map(_f, self._coarsened_quadruplets())
         else:
             if self.method_quadruplets not in ('analytic', 'frompairs'):
                 raise NotImplementedError(
@@ -1091,8 +1129,8 @@ class GGCovarianceNoTomo:
             _f(phi2_flat), _f(phi2_weights.ravel()), ns2,
             _f(self.varphi1_grid), _f(v1_w), len(self.varphi1_grid),
             _f(self.varphi2_grid), _f(v2_w), len(self.varphi2_grid),
-            nrb, self.v2_block, _i(np.reshape(tiles, (-1, 2))), len(tiles),
             q_mode, q_array, q_rc, q_pc, q_nr, q_nphi,
+            q2_array, q2_rc, len(q2_rc) if q2_array is not dummy else 0,
             q_const, sup_t1, sup_t2, sup_t3,
             _f(xi_x), xi_n, xi_logx0, xi_inv_dlogx,
             _f(xi_y_tables), len(xi_y_tables),
@@ -1100,7 +1138,7 @@ class GGCovarianceNoTomo:
             _i(cbm['w_ids']), _i(cbm['out_idx']), _f(cbm['wick_fac']),
             n_out, _i(symmetric_mask), mask_c,
             results, nthreads, int(verbose))
-        # Raises if the per-thread scratch of the kernel failed to allocate
+        # Raises if the scratch of the kernel failed to allocate
         check_clib_error(self._clib)
 
         if pair_mask is not None:
@@ -1408,8 +1446,10 @@ class GGCovarianceNoTomo:
                               ('q_dtheta', obj.dtheta), ('q_n_r', obj.n_r),
                               ('q_phi_centers', obj.phi_centers),
                               ('q_phi_edges', obj.phi_edges),
-                              ('q_dphi', obj.dphi), ('q_n_phi', obj.n_phi)):
+                              ('q_dphi', obj.dphi), ('q_n_phi', obj.n_phi),
+                              ('q_richardson', False)):
             setattr(obj, name, getattr(template, name, default))
+        obj._q_coarse = None
 
         # Triplet grid: no oversampling for precomputed instances
         obj.triplet_oversample = 1
@@ -1485,7 +1525,7 @@ class GGCovarianceNoTomo:
             phi_centers=self.phi_centers, phi_edges=self.phi_edges,
             q_theta_centers=self.q_theta_centers, q_theta_edges=self.q_theta_edges,
             q_phi_centers=self.q_phi_centers, q_phi_edges=self.q_phi_edges,
-            triplet_oversample=self.triplet_oversample,
+            q_richardson=self.q_richardson, triplet_oversample=self.triplet_oversample,
             spline_xip=self.xip, spline_xim=self.xim,
             sigma_eps=self.sigma_eps, nbar=self.nbar, area=self.area,
             weights_mean=self.weights_mean, weights_std=self.weights_std,

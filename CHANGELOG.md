@@ -92,6 +92,31 @@ parallelised C kernels.
 
 #### Added
 
+* **The quadruplet integral projects its angular sums onto the nodes of q.** Every weight of
+  the r-terms is a sum of at most two products of a factor of each side, and the density is
+  multilinear in its nodes, so `quadruplet_sva_integrate` no longer evaluates q on the
+  (varphi1, varphi2) grid: it projects side a onto the angular nodes of varphi1 and side b
+  onto the q cells its circle crosses, and contracts both with the q slice. This is the same
+  quadrature in another order (results agree to 1e-15) at a cost that barely depends on the
+  number of varphi nodes: for 6 tomographic bins, 500 theta bins, 1024^3 nodes and a
+  76^3 x 64^2 density about 650 times less work (0.3 h on 100 threads). The threads now share
+  the (theta1, theta2) elements instead of the phi nodes, so there is a single accumulator
+  (22 GB peak instead of ~550 GB for that case) and the result does not depend on their
+  number, and `q_richardson` integrates both densities in the same pass. `nr_block` and
+  `v2_block` no longer affect the integral.
+* **`q_richardson`: Richardson extrapolation of the sample variance in the radial q bins.**
+  The sample-variance r-terms of a measured quadruplet density converge only about linearly
+  in its radial bin width, mostly in the B-modes (for a 926 deg^2 footprint the COSEBI B-mode
+  sample variance at n = 7-12 drops by 0.17-0.34 of the B variance from 0.2 to 0.1 in
+  ln theta and by another ~0.1 from 0.1 to 0.05, which the 4PCF multipoles no longer fit in
+  memory). With `q_richardson=True` they become 2 R(q) - R(q_2), where q_2 is the density on
+  radial bins twice as wide, built exactly from the same counts
+  (`GGCovarianceNoTomo._coarsened_quadruplets`), so one measurement suffices and both
+  densities are integrated in the same pass. The fine instances of `subbin`/`subbin_tomo` inherit it.
+  Against 1400 exact-position simulations of that footprint (q at 0.1 from 1.8 arcmin, with
+  `rmin_pixsize=120`) the B-mode sample variance is then within ~2 sigma at the n checked up
+  to 18 (+2.9 sigma at n = 20), where it was 5-10 sigma high before.
+  Needs an even number of radial q bins.
 * **The covariance module, `GGCovariance` and `GGCovarianceNoTomo`.** Gaussian covariance of
   the shear 2PCF from pair, triplet and quadruplet counts (S+02, L25), either measured on a
   catalog, idealised Poisson counts or the continuum limit, with the integrals in

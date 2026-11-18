@@ -237,6 +237,83 @@ def test_quadruplet_lookup_is_periodic_in_both_angles():
     assert np.allclose(out, expected, rtol=RTOL_EXACT, atol=0.)
 
 
+###################################################
+# RICHARDSON EXTRAPOLATION IN THE RADIAL Q BINS   #
+###################################################
+
+# With q_richardson the r-terms become 2 R(q) - R(q_2), with q_2 the density on radial bins
+# twice as wide built from the same counts: counts add up over 2x2x2 blocks of radial bins and
+# the volume of every leg is its annulus.
+RQ_EDGES = np.geomspace(1., 64., 5)
+
+def _rich_q(nr=4, nphi=8):
+    rng = np.random.default_rng(5)
+    pc = _phibins(nphi)[0]
+    q = (1. + .1*rng.standard_normal((nr, nr, nr, nphi, nphi))
+         + .2*np.cos(pc)[None, None, None, :, None]*np.sin(pc)[None, None, None, None, :])
+    return 1e-8*q
+
+def _rich_cov(q, edges, centers, q_richardson, tomo=True):
+    qphic, qphie = _phibins(q.shape[-1])
+    kw = dict(theta_centers=_centers(THETA_EDGES), theta_edges=THETA_EDGES,
+              q_theta_centers=centers, q_theta_edges=edges, q_phi_centers=qphic, q_phi_edges=qphie,
+              q_richardson=q_richardson, method_pairs='analytic', method_triplets='analytic',
+              method_quadruplets='discrete', quadruplets=q, sigma_eps=SIGMA_EPS,
+              nbar=10./60.**2, area=100.*60.**2, phi_grid=np.geomspace(.1, 100., 16),
+              varphi1_grid=np.linspace(0., 2.*np.pi, 16, endpoint=False),
+              varphi2_grid=np.linspace(0., 2.*np.pi, 16, endpoint=False), nthreads=NTHREADS)
+    if tomo:
+        return GGCovariance(spline_xip=[(0, 0, _xi)], spline_xim=[(0, 0, _xi)], **kw)
+    return GGCovarianceNoTomo(spline_xip=_xi, spline_xim=_xi, **kw)
+
+def test_coarsened_quadruplets_merge_the_counts():
+    q = _rich_q()
+    rc = _centers(RQ_EDGES)*np.array([1.01, .99, 1.02, .98])   # like count-weighted centers
+    cov = _rich_cov(q, RQ_EDGES, rc, True)
+    q2, rc2 = cov._coarsened_quadruplets()
+    vol = .5*np.diff(RQ_EDGES**2)
+    counts = q*np.einsum('i,j,k->ijk', vol, vol, vol)[..., None, None]
+    expected = np.zeros_like(q2)
+    for i in range(4):
+        for j in range(4):
+            for k in range(4):
+                expected[i//2, j//2, k//2] += counts[i, j, k]
+    vol2 = .5*np.diff(RQ_EDGES[::2]**2)
+    expected /= np.einsum('i,j,k->ijk', vol2, vol2, vol2)[..., None, None]
+    assert np.allclose(q2, expected, rtol=RTOL_EXACT, atol=0.)
+    assert np.allclose(rc2, (rc*vol).reshape(2, 2).sum(1)/vol2, rtol=RTOL_EXACT, atol=0.)
+
+@pytest.mark.parametrize("tomo", [True, False])
+def test_richardson_rterms_combine_both_q_resolutions(tomo):
+    q = _rich_q()
+    rc = _centers(RQ_EDGES)
+    rich = _rich_cov(q, RQ_EDGES, rc, True, tomo)
+    q2, rc2 = rich._coarsened_quadruplets()
+    fine = _rich_cov(q, RQ_EDGES, rc, False, tomo)
+    coarse = _rich_cov(q2, RQ_EDGES[::2], rc2, False, tomo)
+    if tomo:
+        r, rf, rco = (c.get_all_rterms_tomo() for c in (rich, fine, coarse))
+        blocks = [(r[k], rf[k], rco[k]) for k in r]
+    else:
+        blocks = list(zip(rich.get_all_rterms(), fine.get_all_rterms(), coarse.get_all_rterms()))
+    for a, b, c in blocks:
+        assert np.allclose(a, 2.*b - c, rtol=RTOL_EXACT, atol=1e-12*np.abs(b).max())
+    # and the extrapolation does change the r-terms of this q
+    assert max(np.abs(a - b).max()/np.abs(b).max() for a, b, _ in blocks) > 1e-3
+
+def test_richardson_needs_an_even_number_of_q_bins():
+    edges = np.geomspace(1., 64., 4)
+    cov = _rich_cov(_rich_q(nr=3), edges, _centers(edges), True)
+    with pytest.raises(ValueError, match="even number"):
+        cov.get_all_rterms_tomo()
+
+def test_richardson_is_passed_on_to_the_fine_instances():
+    cov = _rich_cov(_rich_q(), RQ_EDGES, _centers(RQ_EDGES), True)
+    assert cov._grid_kwargs(cov.theta_centers, cov.theta_edges)['q_richardson']
+    sub = cov.subbin_tomo(_centers(THETA_EDGES), THETA_EDGES)
+    assert sub.q_richardson
+
+
 #####################################
 # MIXED TERM BELOW THE SMALLEST BIN #
 #####################################
