@@ -237,6 +237,7 @@ def test_quadruplet_lookup_is_periodic_in_both_angles():
     assert np.allclose(out, expected, rtol=RTOL_EXACT, atol=0.)
 
 
+<<<<<<< HEAD
 ###################################################
 # RICHARDSON EXTRAPOLATION IN THE RADIAL Q BINS   #
 ###################################################
@@ -314,6 +315,8 @@ def test_richardson_is_passed_on_to_the_fine_instances():
     assert sub.q_richardson
 
 
+=======
+>>>>>>> 6e3f0e8975a2b158953f09526c17ed84f187a16d
 #####################################
 # MIXED TERM BELOW THE SMALLEST BIN #
 #####################################
