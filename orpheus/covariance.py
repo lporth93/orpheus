@@ -199,7 +199,8 @@ class GGCovarianceNoTomo:
         Source of each multiplet: ``'discrete'`` (measured from ``catalog`` or passed),
         ``'analytic'`` (idealised Poisson counts) or ``'continuous'`` (continuum limit of the
         integrals over ``spline_xip`` and ``spline_xim``). ``method_quadruplets`` also takes
-        ``'frompairs'``, the constant density times ``spl_suppression_ww`` of each separation.
+        ``'frompairs'``, the constant density times ``spl_suppression_ww`` on the spanning tree
+        of the two pairs (see :meth:`quadruplets_analytic`).
         Defaults to ``'analytic'``.
     spline_xip, spline_xim: callable
         xi_+(theta) and xi_-(theta) of the input cosmology.
@@ -690,9 +691,14 @@ class GGCovarianceNoTomo:
     def quadruplets_analytic(self):
         """Idealised quadruplet density.
 
-        Returns the callable q = nbar^4 <w>^4, times s(t1) s(t2) s(t3) if ``spl_suppression_ww`` is
-        set, as ``method_quadruplets='frompairs'`` requires. Warns if the knots of the spline do not
-        cover ``q_theta_centers``.
+        Returns the callable q = nbar^4 <w>^4, times the suppression of the footprint if
+        ``spl_suppression_ww`` is set, as ``method_quadruplets='frompairs'`` requires. Warns if the
+        knots of the spline do not cover ``q_theta_centers``.
+
+        The suppression is s(t1) s(t2) s(|x4 - x3|) on the spanning tree x2 - x1 - x3 - x4 of the
+        two pairs (x1, x2) and (x3, x4), with t1 = |x3 - x1|, t2 = |x2 - x1|, t3 = |x4 - x1| and
+        a13 the angle between t1 and t3. The star s(t1) s(t2) s(t3) would count the separation of
+        the pairs twice: for pairs far apart t3 ~ t1, giving s(t1)^2 instead of s(t1).
         """
         if self.nbar is None:
             raise ValueError("`nbar` is required for analytic quadruplets")
@@ -727,7 +733,8 @@ class GGCovarianceNoTomo:
         else:
             sup = self.spl_suppression_ww
             def q_func(t1, t2, t3, a12, a13):
-                return const * (sup(t1) * sup(t2) * sup(t3))
+                t34 = np.sqrt(np.maximum(t1**2 + t3**2 - 2.*t1*t3*np.cos(a13), 0.))
+                return const * (sup(t1) * sup(t2) * sup(t34))
         return q_func
 
     ###########################################
@@ -1112,15 +1119,11 @@ class GGCovarianceNoTomo:
                 q_mode = 1
                 sup_t1 = sup_t2 = sup_t3 = dummy
             else:
-                # s(t1) s(t2) s(t3) with t1 = phi, t2 the theta1 node and t3 = |psi_b|, tabulated
-                # here so that the kernel needs no callbacks
+                # s(phi) s(theta1) s(theta2) on the spanning tree of the quadruplet, see
+                # quadruplets_analytic, tabulated here so that the kernel needs no callbacks
                 q_mode = 2
                 sup = self.spl_suppression_ww
-                sup_t1, sup_t2 = _f(sup(phi_grid)), _f(sup(phi1_flat))
-                bx = (phi_grid[:, None, None] + phi2_flat[None, :, None]
-                      * np.cos(self.varphi2_grid)[None, None, :])
-                by = phi2_flat[None, :, None] * np.sin(self.varphi2_grid)[None, None, :]
-                sup_t3 = _f(sup(np.hypot(bx, by)))
+                sup_t1, sup_t2, sup_t3 = _f(sup(phi_grid)), _f(sup(phi1_flat)), _f(sup(phi2_flat))
 
         results = np.zeros((n_out, n, n))
         self._clib.quadruplet_sva_integrate(

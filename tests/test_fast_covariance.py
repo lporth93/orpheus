@@ -207,6 +207,43 @@ def test_idealised_multiplets_live_at_the_reference_density(method_quadruplets):
     assert np.isclose(cov._q_const, nbar_ref**4, rtol=RTOL_EXACT, atol=0.)
 
 
+# 'frompairs' suppresses the quadruplets by s(phi) s(theta1) s(theta2) on the spanning tree
+# x2 - x1 - x3 - x4 of the pairs (x1, x2) and (x3, x4). The star s(|x3 - x1|) s(|x2 - x1|)
+# s(|x4 - x1|) would count the separation phi of the pairs twice. With the pairs suppressed by
+# s(theta), r_+0 is the quadrature of s(phi) xi_+(|psi_a|) xi_+(|psi_b|) at constant density,
+# here with a constant xi_+ so that the reference has no interpolation error.
+def test_frompairs_suppresses_the_spanning_tree_of_the_quadruplet():
+    knots = np.geomspace(1e-3, 1e3, 64)
+    xi = lambda t: np.full_like(np.asarray(t, dtype=float), 1e-4)
+    xi.x = knots
+    sup = lambda t: np.exp(-np.asarray(t, dtype=float)/30.)
+    nbar, area = 10./60.**2, 100.*60.**2
+    tc = _centers(THETA_EDGES)
+    phi, v = np.geomspace(.1, 100., 32), np.linspace(0., 2.*np.pi, 32, endpoint=False)
+    cov = GGCovarianceNoTomo(
+        theta_centers=tc, theta_edges=THETA_EDGES, method_pairs='analytic',
+        method_triplets='analytic', method_quadruplets='frompairs', spl_suppression_ww=sup,
+        spline_xip=xi, spline_xim=xi, sigma_eps=SIGMA_EPS, nbar=nbar, area=area,
+        phi_grid=phi, varphi1_grid=v, varphi2_grid=v, nthreads=NTHREADS)
+    rp0 = cov.get_all_rterms()[0]
+
+    # The quadrature of the kernel: trapezoidal in phi, uniform in the angles, bin centers
+    side = lambda sign: (2.*np.pi/len(v))*xi(
+        np.abs(phi[:, None, None] + sign*tc[None, :, None]*np.exp(1j*v))).sum(-1)
+    tdt = .5*np.diff(THETA_EDGES**2)
+    w_phi = np.convolve(np.diff(phi), [.5, .5])
+    w = phi*w_phi*nbar**4*sup(phi)
+    expected = (2.*np.pi*area*np.einsum('k,ki,kj->ij', w, side(-1.), side(1.))
+                *np.outer(tdt*sup(tc), tdt*sup(tc))/np.outer(cov.pairs, cov.pairs))
+    assert np.allclose(rp0, expected, rtol=RTOL_EXACT, atol=0.)
+
+    # Python density on the same tree: t1 = |x3 - x1|, t2 = |x2 - x1|, t3 = |x4 - x1|
+    t1, t2, t3, a13 = 50., 3., 52., .1
+    t34 = np.sqrt(t1**2 + t3**2 - 2.*t1*t3*np.cos(a13))
+    assert np.isclose(cov.quadruplets(t1, t2, t3, 0., a13), nbar**4*sup(t1)*sup(t2)*sup(t34),
+                      rtol=RTOL_EXACT, atol=0.)
+
+
 ##########################################
 # PERIODIC ANGLES OF THE QUADRUPLET GRID #
 ##########################################
@@ -237,7 +274,6 @@ def test_quadruplet_lookup_is_periodic_in_both_angles():
     assert np.allclose(out, expected, rtol=RTOL_EXACT, atol=0.)
 
 
-<<<<<<< HEAD
 ###################################################
 # RICHARDSON EXTRAPOLATION IN THE RADIAL Q BINS   #
 ###################################################
@@ -315,8 +351,6 @@ def test_richardson_is_passed_on_to_the_fine_instances():
     assert sub.q_richardson
 
 
-=======
->>>>>>> 6e3f0e8975a2b158953f09526c17ed84f187a16d
 #####################################
 # MIXED TERM BELOW THE SMALLEST BIN #
 #####################################

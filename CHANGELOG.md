@@ -183,6 +183,13 @@ parallelised C kernels.
 
 #### Fixed
 
+* **`method_quadruplets='frompairs'` counted the separation of the two pairs twice.** The
+  quadruplet density was nbar^4 s(t1) s(t2) s(t3) on the three legs of the star from x1, of
+  which t1 = |x3 - x1| and t3 = |x4 - x1| are both ~ the separation phi of the pairs once it
+  exceeds their sizes. The sample variance was thus weighted by s(phi)^2 instead of s(phi),
+  e.g. 0.13 instead of 0.36 at 1000 arcmin for a ~900 deg^2 footprint, and came out too low.
+  It is now s(phi) s(theta1) s(theta2) on the spanning tree x2 - x1 - x3 - x4, so the kernel
+  takes s(theta2) per radial node instead of an (n_phi, n_theta2, n_varphi2) table.
 * **The fourth-order tree counts dropped the pairs of galaxies that share a cell.** When two
   or three legs fall into one radial bin, the multiple-counting corrections subtract the
   self-pairs and self-triplets with the squared and cubed weights (and shapes) of the leaves.
