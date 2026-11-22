@@ -238,7 +238,7 @@ static void nnn_accum_samereso(NnnContext *c, int rbinmin, int nbinsr_reso,
     }
     for (int thisn=0; thisn<nmax+1; thisn++){
         int ind_norm = thisn*nbinszr_reso;
-        int thisnshift = c->elthread*c->gamma_compshift + thisn*c->gamma_nshift;
+        long thisnshift = (long)c->elthread*c->gamma_compshift + thisn*c->gamma_nshift;
         for (int zrcombis1=0; zrcombis1<nallowedcounts; zrcombis1++){
             int elb1 = allowedrinds[zrcombis1];
             int zbin2 = allowedzinds[zrcombis1];
@@ -246,15 +246,15 @@ static void nnn_accum_samereso(NnnContext *c, int rbinmin, int nbinsr_reso,
             int zrshift = zbin2*nbinsr_reso + elb1;
             if (c->dccorr==1){
                 int zcombi = z_gal1*nbinsz*nbinsz + zbin2*nbinsz + zbin2;
-                int gammashift1 = thisnshift + zcombi*c->gamma_zshift + elb1_full*nbinsr;
+                long gammashift1 = thisnshift + zcombi*c->gamma_zshift + elb1_full*nbinsr;
                 c->tmpTriplets_n[gammashift1 + elb1_full] -= w_gal1*nextW2ns[zrshift];
             }
             double complex w0 = w_gal1 * nextWns[ind_norm + zrshift];
             int _zcombi = z_gal1*nbinsz*nbinsz+zbin2*nbinsz;
-            int _gammashift1 = thisnshift + elb1_full*nbinsr;
+            long _gammashift1 = thisnshift + elb1_full*nbinsr;
             for (int zrcombis2=0; zrcombis2<nallowedcounts; zrcombis2++){
                 int zcombi = _zcombi+allowedzinds[zrcombis2];
-                int gammashift1 = _gammashift1 + zcombi*c->gamma_zshift;
+                long gammashift1 = _gammashift1 + zcombi*c->gamma_zshift;
                 int elb2_full = allowedrinds[zrcombis2] + rbinmin;
                 int zrshift2 = allowedzinds[zrcombis2]*nbinsr_reso + allowedrinds[zrcombis2];
                 c->tmpTriplets_n[gammashift1 + elb2_full] += w0*conj(nextWns[ind_norm + zrshift2]);
@@ -276,7 +276,7 @@ static void nnn_accum_crossreso(NnnContext *c){
     double complex *Nncache=c->Nncache, *wNncache=c->wNncache;
     double complex *tmpTriplets_n=c->tmpTriplets_n;
     for (int thisn=0; thisn<nmax+1; thisn++){
-        int thisnshift = elthread*gamma_compshift + thisn*gamma_nshift;
+        long thisnshift = (long)elthread*gamma_compshift + thisn*gamma_nshift;
         for (int zbin1=0; zbin1<nbinsz; zbin1++){
             int zbinshift_z1 = zbinshifts[zbin1], thetashift_z1 = thetashifts_z[zbin1];
             const int *cumresoshift_z1 = cumresoshift_z + zbin1*(nresos+1);
@@ -294,7 +294,7 @@ static void nnn_accum_crossreso(NnnContext *c){
                             int cumshift2 = cumresoshift_z1[thisreso2];
                             for (int elgal=0; elgal<ngal_in_pix[zbin1*nresos+thisreso2]; elgal++){
                                 for (int elb1=rbinmin1; elb1<rbinmax1; elb1++){
-                                    int gammashift1 = thisnshift + zcombi*gamma_zshift + elb1*nbinsr;
+                                    long gammashift1 = thisnshift + zcombi*gamma_zshift + elb1*nbinsr;
                                     int ind_Nncacheshift = zbin2*zbin2shift + zbinshift_z1 + elb1*thetashift_z1 +
                                         cumshift2 + elgal;
                                     double complex w0 = wNncache[thisn*nshift + ind_Nncacheshift];
@@ -319,7 +319,7 @@ static void nnn_accum_crossreso(NnnContext *c){
                             int cumshift1 = cumresoshift_z1[thisreso1];
                             for (int elgal=0; elgal<ngal_in_pix[zbin1*nresos+thisreso1]; elgal++){
                                 for (int elb1=rbinmin1; elb1<rbinmax1; elb1++){
-                                    int gammashift1 = thisnshift + zcombi*gamma_zshift + elb1*nbinsr;
+                                    long gammashift1 = thisnshift + zcombi*gamma_zshift + elb1*nbinsr;
                                     int ind_Nncacheshift = zbin2*zbin2shift + zbinshift_z1 + elb1*thetashift_z1 +
                                         cumshift1 + elgal;
                                     double complex w0 = Nncache[thisn*nshift + ind_Nncacheshift];
@@ -358,7 +358,7 @@ static void nnn_reduce(int nbinsz, int nbinsr, int nmax, int nthreads,
                 for (int elb1=0; elb1<nbinsr; elb1++){
                     for (int elb2=0; elb2<nbinsr; elb2++){
                         int iGamma = thisn*gamma_nshift + zcombi*gamma_zshift + elb1*nbinsr + elb2;
-                        int itmpGamma = iGamma + thisthread*gamma_compshift;
+                        long itmpGamma = iGamma + (long)thisthread*gamma_compshift;
                         double complex v = tmpTriplets_n[itmpGamma];
                         if (Triplets_n) Triplets_n[iGamma] += v;
                         if (Triplets_norm) Triplets_norm[iGamma] += v;
@@ -581,7 +581,7 @@ static void ggg_accum_samereso(GggContext *c, int rbinmin, int nbinsr_reso,
         int ind_nm3 = (nzero+thisn-3)*nbinszr_reso;
         int ind_nm1 = (nzero+thisn-1)*nbinszr_reso;
         int ind_norm = thisn*nbinszr_reso;
-        int thisnshift = elthread*gamma_compshift + thisn*gamma_nshift;
+        long thisnshift = (long)elthread*gamma_compshift + thisn*gamma_nshift;
         for (int zrcombis1=0; zrcombis1<nallowedcounts; zrcombis1++){
             int elb1 = allowedrinds[zrcombis1];
             int zbin2 = allowedzinds[zrcombis1];
@@ -589,8 +589,8 @@ static void ggg_accum_samereso(GggContext *c, int rbinmin, int nbinsr_reso,
             int zrshift = zbin2*nbinsr_reso + elb1;
             if (dccorr==1){
                 int zcombi = z_gal1*nbinsz*nbinsz + zbin2*nbinsz + zbin2;
-                int gammashift1 = thisnshift + zcombi*gamma_zshift + elb1_full*nbinsr;
-                int gammashift = gammashift1 + elb1_full;
+                long gammashift1 = thisnshift + zcombi*gamma_zshift + elb1_full*nbinsr;
+                long gammashift = gammashift1 + elb1_full;
                 tmpGamma0s[gammashift] += wshape_gal1*nextG2ns[0*nbinszr_reso + zrshift];
                 tmpGamma1s[gammashift] += conj_wshape_gal1*nextG2ns[1*nbinszr_reso + zrshift];
                 tmpGamma2s[gammashift] += wshape_gal1*nextG2ns[2*nbinszr_reso + zrshift];
@@ -603,13 +603,13 @@ static void ggg_accum_samereso(GggContext *c, int rbinmin, int nbinsr_reso,
             double complex h3 = -wshape_gal1 * nextGns[ind_nm3 + zrshift];
             double complex w0 = w_gal1 * nextWns[ind_norm + zrshift];
             int _zcombi = z_gal1*nbinsz*nbinsz+zbin2*nbinsz;
-            int _gammashift1 = thisnshift + elb1_full*nbinsr;
+            long _gammashift1 = thisnshift + elb1_full*nbinsr;
             for (int zrcombis2=0; zrcombis2<nallowedcounts; zrcombis2++){
                 int zcombi = _zcombi+allowedzinds[zrcombis2];
-                int gammashift1 = _gammashift1 + zcombi*gamma_zshift;
+                long gammashift1 = _gammashift1 + zcombi*gamma_zshift;
                 int elb2_full = allowedrinds[zrcombis2] + rbinmin;
                 int zrshift2 = allowedzinds[zrcombis2]*nbinsr_reso + allowedrinds[zrcombis2];
-                int gammashift = gammashift1 + elb2_full;
+                long gammashift = gammashift1 + elb2_full;
                 double complex Gmnm3 = nextGns[ind_mnm3 + zrshift2];
                 tmpGamma0s[gammashift] += h0*Gmnm3;
                 tmpGamma1s[gammashift] += h1*nextGns[ind_mnm1 + zrshift2];
@@ -733,12 +733,12 @@ static void ggg_accum_samereso_batch(GggContext *c, const XnBatch *batch,
         int ind_nm3 = (nzero+thisn-3)*nbinszr_reso;
         int ind_nm1 = (nzero+thisn-1)*nbinszr_reso;
         int ind_norm = thisn*nbinszr_reso;
-        int thisnshift = elthread*gamma_compshift + thisn*gamma_nshift;
+        long thisnshift = (long)elthread*gamma_compshift + thisn*gamma_nshift;
         for (int zbin1=0; zbin1<nbinsz; zbin1++){
             for (int zbin2=0; zbin2<nbinsz; zbin2++){
                 for (int zbin3=0; zbin3<nbinsz; zbin3++){
                     int zcombi = zbin1*nbinsz*nbinsz + zbin2*nbinsz + zbin3;
-                    int blockshift = thisnshift + zcombi*gamma_zshift;
+                    long blockshift = thisnshift + zcombi*gamma_zshift;
                     for (int el=0; el<nbucket[zbin1]; el++){
                         // Find location of this galaxy in batched arrays
                         int ig = bucket[zbin1*batch->cap + el];
@@ -759,7 +759,7 @@ static void ggg_accum_samereso_batch(GggContext *c, const XnBatch *batch,
                             for (int k=0; k<na2; k++){
                                 int elb1_full = ar2[k] + rbinmin;
                                 int zrshift = zbin2*nbinsr_reso + ar2[k];
-                                int gs = blockshift + elb1_full*nbinsr + elb1_full;
+                                long gs = blockshift + elb1_full*nbinsr + elb1_full;
                                 tmpGamma0s[gs] += wshape_base*G2ns[0*nbinszr_reso + zrshift];
                                 tmpGamma1s[gs] += wshape_base_c*G2ns[1*nbinszr_reso + zrshift];
                                 tmpGamma2s[gs] += wshape_base*G2ns[2*nbinszr_reso + zrshift];
@@ -776,9 +776,9 @@ static void ggg_accum_samereso_batch(GggContext *c, const XnBatch *batch,
                             double complex h2 = -wshape_base * conj(Gns[ind_mnm1 + zrshift]);
                             double complex h3 = -wshape_base * Gns[ind_nm3 + zrshift];
                             double complex w0 = w_base * Wns[ind_norm + zrshift];
-                            int gs1 = blockshift + elb1_full*nbinsr;
+                            long gs1 = blockshift + elb1_full*nbinsr;
                             for (int k2=0; k2<na3; k2++){
-                                int gs = gs1 + ar3[k2] + rbinmin;
+                                long gs = gs1 + ar3[k2] + rbinmin;
                                 int zrshift2 = zbin3*nbinsr_reso + ar3[k2];
                                 double complex Gmnm3 = Gns[ind_mnm3 + zrshift2];
                                 tmpGamma0s[gs] += h0*Gmnm3;
@@ -812,7 +812,7 @@ static void ggg_accum_crossreso(GggContext *c){
     double complex *tmpGamma2s=c->tmpGamma2s, *tmpGamma3s=c->tmpGamma3s;
     double complex *tmpGammans_norm=c->tmpGammans_norm;
     for (int thisn=0; thisn<nmax+1; thisn++){
-        int thisnshift = elthread*gamma_compshift + thisn*gamma_nshift;
+        long thisnshift = (long)elthread*gamma_compshift + thisn*gamma_nshift;
         for (int zbin1=0; zbin1<nbinsz; zbin1++){
             int zbinshift_z1 = zbinshifts[zbin1], thetashift_z1 = thetashifts_z[zbin1];
             const int *cumresoshift_z1 = cumresoshift_z + zbin1*(nresos+1);
@@ -830,7 +830,7 @@ static void ggg_accum_crossreso(GggContext *c){
                             int cumshift2 = cumresoshift_z1[thisreso2];
                             for (int elgal=0; elgal<ngal_in_pix[zbin1*nresos+thisreso2]; elgal++){
                                 for (int elb1=rbinmin1; elb1<rbinmax1; elb1++){
-                                    int gammashift1 = thisnshift + zcombi*gamma_zshift + elb1*nbinsr;
+                                    long gammashift1 = thisnshift + zcombi*gamma_zshift + elb1*nbinsr;
                                     int ind_Nncacheshift = zbin2*zbin2shift + zbinshift_z1 + elb1*thetashift_z1 +
                                         cumshift2 + elgal;
                                     int ind_Gncacheshift = (nmax+3)*nshift + ind_Nncacheshift;
@@ -847,7 +847,7 @@ static void ggg_accum_crossreso(GggContext *c){
                                     int _inm1 = (thisn-1)*nshift + ind_Gncacheshift;
                                     int _in = thisn*nshift + ind_Nncacheshift;
                                     for (int elb2=rbinmin2; elb2<rbinmax2; elb2++){
-                                        int gammashift = gammashift1 + elb2;
+                                        long gammashift = gammashift1 + elb2;
                                         double complex Gmnm3 = Gncache[_imnm3];
                                         tmpGamma0s[gammashift] += h0*Gmnm3;
                                         tmpGamma1s[gammashift] += h1*Gncache[_imnm1];
@@ -871,7 +871,7 @@ static void ggg_accum_crossreso(GggContext *c){
                             int cumshift1 = cumresoshift_z1[thisreso1];
                             for (int elgal=0; elgal<ngal_in_pix[zbin1*nresos+thisreso1]; elgal++){
                                 for (int elb1=rbinmin1; elb1<rbinmax1; elb1++){
-                                    int gammashift1 = thisnshift + zcombi*gamma_zshift + elb1*nbinsr;
+                                    long gammashift1 = thisnshift + zcombi*gamma_zshift + elb1*nbinsr;
                                     int ind_Nncacheshift = zbin2*zbin2shift + zbinshift_z1 + elb1*thetashift_z1 +
                                         cumshift1 + elgal;
                                     int ind_Gncacheshift = (nmax+3)*nshift + ind_Nncacheshift;
@@ -888,7 +888,7 @@ static void ggg_accum_crossreso(GggContext *c){
                                     int _inm1 = (thisn-1)*nshift + ind_Gncacheshift;
                                     int _in = thisn*nshift + ind_Nncacheshift;
                                     for (int elb2=rbinmin2; elb2<rbinmax2; elb2++){
-                                        int gammashift = gammashift1 + elb2;
+                                        long gammashift = gammashift1 + elb2;
                                         double complex wGmnm3 = wGncache[_imnm3];
                                         tmpGamma0s[gammashift] += h0*wGmnm3;
                                         tmpGamma1s[gammashift] += h1*cwGncache[_imnm1];
@@ -928,7 +928,7 @@ static void ggg_reduce(int nbinsz, int nbinsr, int nmax, int nthreads,
                 for (int elb1=0; elb1<nbinsr; elb1++){
                     for (int elb2=0; elb2<nbinsr; elb2++){
                         int iGamma = thisn*_gamma_nshift + zcombi*_gamma_zshift + elb1*nbinsr + elb2;
-                        int itmpGamma = iGamma + thisthread*_gamma_compshift;
+                        long itmpGamma = iGamma + (long)thisthread*_gamma_compshift;
                         out->npcf[0*_gamma_compshift+iGamma] += tmpGamma0s[itmpGamma];
                         out->npcf[1*_gamma_compshift+iGamma] += tmpGamma1s[itmpGamma];
                         out->npcf[2*_gamma_compshift+iGamma] += tmpGamma2s[itmpGamma];
@@ -1042,7 +1042,7 @@ static void gnn_accum_samereso(GnnContext *c, int rbinmin, int nbinsr_reso,
         }
     }
     for (int thisn=0; thisn<nmax+1; thisn++){
-        int thisnshift = c->elthread*c->upsilon_threadshift + thisn*c->upsilon_nshift;
+        long thisnshift = (long)c->elthread*c->upsilon_threadshift + thisn*c->upsilon_nshift;
         for (int zrcombis1=0; zrcombis1<nallowedcounts; zrcombis1++){
             int elb1 = allowedrinds[zrcombis1];
             int zbin2 = allowedzinds[zrcombis1];
@@ -1050,13 +1050,13 @@ static void gnn_accum_samereso(GnnContext *c, int rbinmin, int nbinsr_reso,
             int zrshift = zbin2*nbinsr_reso + elb1;
             if (c->dccorr==1){
                 int zcombi = z_gal1*nbinsz_lens*nbinsz_lens + zbin2*nbinsz_lens + zbin2;
-                int gammashift = thisnshift + zcombi*c->upsilon_zshift + elb1_full*nbinsr+elb1_full;
+                long gammashift = thisnshift + zcombi*c->upsilon_zshift + elb1_full*nbinsr+elb1_full;
                 c->tmpUpsilon[gammashift] += thisG2ns[zrshift];
                 c->tmpNorm[gammashift] -= thisW2ns[zrshift];
             }
             int _zcombi = z_gal1*nbinsz_lens*nbinsz_lens + zbin2*nbinsz_lens;
             int _wind = (thisn+1)*nbinszr_reso+zrshift;
-            int _gammashift = thisnshift + elb1_full*nbinsr;
+            long _gammashift = thisnshift + elb1_full*nbinsr;
             double complex nextUps = -wshape_gal1*thisWns[_wind-nbinszr_reso];
             double complex nextN = w_gal1*thisWns[_wind];
             for (int zrcombis2=0; zrcombis2<nallowedcounts; zrcombis2++){
@@ -1064,7 +1064,7 @@ static void gnn_accum_samereso(GnnContext *c, int rbinmin, int nbinsr_reso,
                 int zbin3 = allowedzinds[zrcombis2];
                 int elb2_full = elb2 + rbinmin;
                 int zcombi = _zcombi + zbin3;
-                int gammashift = _gammashift + zcombi*c->upsilon_zshift + elb2_full;
+                long gammashift = _gammashift + zcombi*c->upsilon_zshift + elb2_full;
                 _wind = (thisn+1)*nbinszr_reso + zbin3*nbinsr_reso + elb2;
                 c->tmpUpsilon[gammashift] += nextUps*conj(thisWns[_wind+nbinszr_reso]);
                 c->tmpNorm[gammashift] += nextN*conj(thisWns[_wind]);
@@ -1084,7 +1084,7 @@ static void gnn_accum_crossreso(GnnContext *c){
     int nbinsz_source=c->nbinsz_source, nbinsz_lens=c->nbinsz_lens, nbinsr=c->nbinsr;
     int nmax=c->nmax, nresos=c->nresos, nshift=c->nshift;
     for (int thisn=0; thisn<nmax+1; thisn++){
-        int thisnshift = c->elthread*c->upsilon_threadshift + thisn*c->upsilon_nshift;
+        long thisnshift = (long)c->elthread*c->upsilon_threadshift + thisn*c->upsilon_nshift;
         for (int zbin1=0; zbin1<nbinsz_source; zbin1++){
             for (int zbin2=0; zbin2<nbinsz_lens; zbin2++){
                 for (int zbin3=0; zbin3<nbinsz_lens; zbin3++){
@@ -1104,7 +1104,7 @@ static void gnn_accum_crossreso(GnnContext *c){
                                         + c->cumresoshift_z[zbin1*(nresos+1) + thisreso2] + elgal;
                                     double complex nextUps = -c->wGncache[(thisn+0)*nshift+ind_Wncacheshift];
                                     double complex nextN = c->wWncache[thisn*nshift+ind_Wncacheshift];
-                                    int _upsshift = thisnshift + zcombi*c->upsilon_zshift + elb1*nbinsr;
+                                    long _upsshift = thisnshift + zcombi*c->upsilon_zshift + elb1*nbinsr;
                                     ind_Wncacheshift = zbin3*c->zbin2shift + c->zbinshifts[zbin1]
                                         + rbinmin2*c->thetashifts_z[zbin1]
                                         + c->cumresoshift_z[zbin1*(nresos+1) + thisreso2] + elgal;
@@ -1131,7 +1131,7 @@ static void gnn_accum_crossreso(GnnContext *c){
                                         + c->cumresoshift_z[zbin1*(nresos+1) + thisreso1] + elgal;
                                     double complex nextUps = -c->Gncache[(thisn+0)*nshift+ind_Wncacheshift];
                                     double complex nextN = c->Wncache[thisn*nshift+ind_Wncacheshift];
-                                    int _upsshift = thisnshift + zcombi*c->upsilon_zshift + elb1*nbinsr;
+                                    long _upsshift = thisnshift + zcombi*c->upsilon_zshift + elb1*nbinsr;
                                     ind_Wncacheshift = zbin3*c->zbin2shift + c->zbinshifts[zbin1]
                                         + rbinmin2*c->thetashifts_z[zbin1]
                                         + c->cumresoshift_z[zbin1*(nresos+1) + thisreso1] + elgal;
@@ -1162,7 +1162,7 @@ static void gnn_reduce(int nbinsz_source, int nbinsz_lens, int nbinsr, int nmax,
     #pragma omp parallel for num_threads(nthreads)
     for (int thisn=0; thisn<nmax+1; thisn++){
         for (int thisthread=0; thisthread<nthreads; thisthread++){
-            int thisthreadshift = thisthread*upsilon_threadshift;
+            long thisthreadshift = (long)thisthread*upsilon_threadshift;
             for (int zcombi=0; zcombi<nzcombis; zcombi++){
                 for (int elb1=0; elb1<nbinsr; elb1++){
                     for (int elb2=0; elb2<nbinsr; elb2++){
@@ -1179,7 +1179,7 @@ static void gnn_reduce(int nbinsz_source, int nbinsz_lens, int nbinsr, int nmax,
     // Bail out rather than dereference a failed allocation
     if (orpheus_get_error()){free(totcounts); free(totnorms); return;}
     for (int thisthread=0; thisthread<nthreads; thisthread++){
-        int thisthreadshift = thisthread*nbinsz_source*nbinsz_lens*nbinsr;
+        long thisthreadshift = thisthread*nbinsz_source*nbinsz_lens*nbinsr;
         for (int elbinz=0; elbinz<nbinsz_source*nbinsz_lens; elbinz++){
             for (int elbinr=0; elbinr<nbinsr; elbinr++){
                 int tmpind = elbinz*nbinsr + elbinr;
@@ -1479,8 +1479,8 @@ static void ngg_accum_samereso(NggContext *c, int rbinmin, int nbinsr_reso,
         }
     }
     for (int thisn=-nmax; thisn<=nmax; thisn++){
-        int thisnshift_ups = c->elthread*c->upsilon_threadshift + (nmax+thisn)*c->upsilon_nshift;
-        int thisnshift_norm = c->elthread*c->norm_threadshift + (nmax+thisn)*c->upsilon_nshift;
+        long thisnshift_ups = (long)c->elthread*c->upsilon_threadshift + (nmax+thisn)*c->upsilon_nshift;
+        long thisnshift_norm = (long)c->elthread*c->norm_threadshift + (nmax+thisn)*c->upsilon_nshift;
         for (int zrcombis1=0; zrcombis1<nallowedcounts; zrcombis1++){
             int elb1 = allowedrinds[zrcombis1];
             int zbin2 = allowedzinds[zrcombis1];
@@ -1488,8 +1488,8 @@ static void ngg_accum_samereso(NggContext *c, int rbinmin, int nbinsr_reso,
             int zrshift = zbin2*nbinsr_reso + elb1;
             if (c->dccorr==1){
                 int zcombi = z_gal1*nbinsz_source*nbinsz_source + zbin2*nbinsz_source + zbin2;
-                int gammashift_ups = thisnshift_ups + zcombi*c->upsilon_zshift + elb1_full*nbinsr+elb1_full;
-                int gammashift_norm = thisnshift_norm + zcombi*c->upsilon_zshift + elb1_full*nbinsr+elb1_full;
+                long gammashift_ups = thisnshift_ups + zcombi*c->upsilon_zshift + elb1_full*nbinsr+elb1_full;
+                long gammashift_norm = thisnshift_norm + zcombi*c->upsilon_zshift + elb1_full*nbinsr+elb1_full;
                 c->tmpUpsilon[gammashift_ups] -= thisG2ns[zrshift];
                 c->tmpUpsilon[c->upsilon_compshift+gammashift_ups] -= thisG2ns[nbinszr_reso+zrshift];
                 c->tmpNorm[gammashift_norm] -= thisW2ns[zrshift];
@@ -1508,8 +1508,8 @@ static void ngg_accum_samereso(NggContext *c, int rbinmin, int nbinsr_reso,
                 int zrshift2 = zbin3*nbinsr_reso + elb2;
                 int zcombi = _zcombi + zbin3;
                 int z3r2shift = zcombi*c->upsilon_zshift + elb1_full*nbinsr + elb2_full;
-                int gammashift_ups = thisnshift_ups + z3r2shift;
-                int gammashift_norm = thisnshift_norm + z3r2shift;
+                long gammashift_ups = thisnshift_ups + z3r2shift;
+                long gammashift_norm = thisnshift_norm + z3r2shift;
                 int _wind2 = (nmax-thisn)*nbinszr_reso + zrshift2;
                 int _upsind2p = (nmax+thisn)*nbinszr_reso + zrshift2;
                 int _upsind2m = (nmax-thisn)*nbinszr_reso + zrshift2;
@@ -1534,8 +1534,8 @@ static void ngg_accum_crossreso(NggContext *c){
     int nbinsz_lens=c->nbinsz_lens, nbinsz_source=c->nbinsz_source, nbinsr=c->nbinsr;
     int nmax=c->nmax, nresos=c->nresos, nshift_cache=c->nshift;
     for (int thisn=-nmax; thisn<=nmax; thisn++){
-        int thisnshift_ups = c->elthread*c->upsilon_threadshift + (nmax+thisn)*c->upsilon_nshift;
-        int thisnshift_norm = c->elthread*c->norm_threadshift + (nmax+thisn)*c->upsilon_nshift;
+        long thisnshift_ups = (long)c->elthread*c->upsilon_threadshift + (nmax+thisn)*c->upsilon_nshift;
+        long thisnshift_norm = (long)c->elthread*c->norm_threadshift + (nmax+thisn)*c->upsilon_nshift;
         for (int zbin1=0; zbin1<nbinsz_lens; zbin1++){
             for (int zbin2=0; zbin2<nbinsz_source; zbin2++){
                 for (int zbin3=0; zbin3<nbinsz_source; zbin3++){
@@ -1555,8 +1555,8 @@ static void ngg_accum_crossreso(NggContext *c){
                                     double complex nextUpsp = c->wGncache[(nmax+thisn)*nshift_cache+ind_Wncacheshift];
                                     double complex nextUpsm = c->wGncache[(nmax+thisn)*nshift_cache+ind_Wncacheshift];
                                     double complex nextN = c->wWncache[(nmax+thisn)*nshift_cache+ind_Wncacheshift];
-                                    int _upsshift = thisnshift_ups + zcombi*c->upsilon_zshift + elb1*nbinsr;
-                                    int _normshift = thisnshift_norm+ zcombi*c->upsilon_zshift + elb1*nbinsr;
+                                    long _upsshift = thisnshift_ups + zcombi*c->upsilon_zshift + elb1*nbinsr;
+                                    long _normshift = thisnshift_norm+ zcombi*c->upsilon_zshift + elb1*nbinsr;
                                     ind_Wncacheshift = zbin3*c->zbin2shift+c->zbinshifts[zbin1]+rbinmin2*c->thetashifts_z[zbin1]+
                                         c->cumresoshift_z[zbin1*(nresos+1) + thisreso2] + elgal;
                                     for (int elb2=rbinmin2; elb2<rbinmax2; elb2++){
@@ -1586,8 +1586,8 @@ static void ngg_accum_crossreso(NggContext *c){
                                     double complex nextUpsp = c->Gncache[(nmax+thisn)*nshift_cache+ind_Wncacheshift];
                                     double complex nextUpsm = c->Gncache[(nmax+thisn)*nshift_cache+ind_Wncacheshift];
                                     double complex nextN = c->Wncache[(nmax+thisn)*nshift_cache+ind_Wncacheshift];
-                                    int _upsshift = thisnshift_ups + zcombi*c->upsilon_zshift + elb1*nbinsr;
-                                    int _normshift = thisnshift_norm+ zcombi*c->upsilon_zshift + elb1*nbinsr;
+                                    long _upsshift = thisnshift_ups + zcombi*c->upsilon_zshift + elb1*nbinsr;
+                                    long _normshift = thisnshift_norm+ zcombi*c->upsilon_zshift + elb1*nbinsr;
                                     ind_Wncacheshift = zbin3*c->zbin2shift+c->zbinshifts[zbin1]+rbinmin2*c->thetashifts_z[zbin1]+
                                         c->cumresoshift_z[zbin1*(nresos+1) + thisreso1] + elgal;
                                     for (int elb2=rbinmin2; elb2<rbinmax2; elb2++){
@@ -1621,14 +1621,14 @@ static void ngg_reduce(int nbinsz_lens, int nbinsz_source, int nbinsr, int nmax,
     #pragma omp parallel for num_threads(nthreads)
     for (int thisn=0; thisn<2*nmax+1; thisn++){
         for (int thisthread=0; thisthread<nthreads; thisthread++){
-            int thisthreadshift = thisthread*upsilonthreadshift;
+            long thisthreadshift = (long)thisthread*upsilonthreadshift;
             for (int zcombi=0; zcombi<nzcombis; zcombi++){
                 for (int elb1=0; elb1<nbinsr; elb1++){
                     for (int elb2=0; elb2<nbinsr; elb2++){
                         int iUps = thisn*upsilon_nshift + zcombi*upsilon_zshift + elb1*nbinsr + elb2;
                         out->npcf[iUps] += tmpUpsilon[thisthreadshift+iUps];
                         out->npcf[upsiloncompshift+iUps] += tmpUpsilon[thisthreadshift+upsiloncompshift+iUps];
-                        out->norm_mp[iUps] += tmpNorm[thisthread*normthreadshift+iUps];
+                        out->norm_mp[iUps] += tmpNorm[(long)thisthread*normthreadshift+iUps];
                     }
                 }
             }
@@ -1639,7 +1639,7 @@ static void ngg_reduce(int nbinsz_lens, int nbinsz_source, int nbinsr, int nmax,
     // Bail out rather than dereference a failed allocation
     if (orpheus_get_error()){free(totcounts); free(totnorms); return;}
     for (int thisthread=0; thisthread<nthreads; thisthread++){
-        int thisthreadshift = thisthread*nbinsz_source*nbinsz_lens*nbinsr;
+        long thisthreadshift = thisthread*nbinsz_source*nbinsz_lens*nbinsr;
         for (int elbinz=0; elbinz<nbinsz_source*nbinsz_lens; elbinz++){
             for (int elbinr=0; elbinr<nbinsr; elbinr++){
                 int tmpind = elbinz*nbinsr + elbinr;
@@ -1735,7 +1735,7 @@ static void ngg_accum_upsilon(
                 int elb2 = allowedr[a2], z3 = allowedz[a2];
                 int zr2 = z3*nbinsr + elb2;
                 int zc3 = zc_base + z2*nbinsz_polar + z3;
-                int gs = nshift + zc3*ups_zshift + elb1*nbinsr + elb2;
+                long gs = nshift + zc3*ups_zshift + elb1*nbinsr + elb2;
                 thUps[gs]               += u*Gn[blk2 + zr2];
                 thUps[gs+ups_compshift] += u*conj(Gn[blk1 + zr2]);
             }
@@ -1774,7 +1774,7 @@ static void ngg_accum_norm(
                 int elb2 = allowedr[a2], z3 = allowedz[a2];
                 int zr2 = z3*nbinsr + elb2;
                 int zc3 = zc_base + z2*nbinsz_polar + z3;
-                int gs = nshift + zc3*norm_zshift + elb1*nbinsr + elb2;
+                long gs = nshift + zc3*norm_zshift + elb1*nbinsr + elb2;
                 thNorm[gs] += nN*Wn[blk2 + zr2];
             }
         }
@@ -1822,9 +1822,9 @@ static void alloc_nnn_doubletree_flat(const MultiresoCatalog *cat, const NavHash
     // Temporary arrays that are allocated in parallel region and later reduced
     int nregionsdone = 0;
     reset_progress();
-    double *tmpwcounts = orpheus_calloc(nthreads*nbinsz*nbinsr, sizeof(double));
-    double *tmpwnorms = orpheus_calloc(nthreads*nbinsz*nbinsr, sizeof(double));
-    double complex *tmpTriplets_n = orpheus_calloc(nthreads*_gamma_compshift, sizeof(double complex));
+    double *tmpwcounts = orpheus_calloc((size_t)nthreads*nbinsz*nbinsr, sizeof(double));
+    double *tmpwnorms = orpheus_calloc((size_t)nthreads*nbinsz*nbinsr, sizeof(double));
+    double complex *tmpTriplets_n = orpheus_calloc((size_t)nthreads*_gamma_compshift, sizeof(double complex));
     // Bail out rather than dereference a failed allocation
     if (orpheus_get_error()){free(tmpwcounts); free(tmpwnorms); free(tmpTriplets_n); return;}
 
@@ -2052,9 +2052,9 @@ static void alloc_nnn_doubletree_spherical(const MultiresoCatalog *cat, const Na
     int _gamma_nshift = _gamma_zshift*nbinsz*nbinsz*nbinsz;
     int _gamma_compshift = (nmax+1)*_gamma_nshift;
 
-    double *tmpwcounts = orpheus_calloc(nthreads*nbinsz*nbinsr, sizeof(double));
-    double *tmpwnorms = orpheus_calloc(nthreads*nbinsz*nbinsr, sizeof(double));
-    double complex *tmpTriplets_n = orpheus_calloc(nthreads*_gamma_compshift, sizeof(double complex));
+    double *tmpwcounts = orpheus_calloc((size_t)nthreads*nbinsz*nbinsr, sizeof(double));
+    double *tmpwnorms = orpheus_calloc((size_t)nthreads*nbinsz*nbinsr, sizeof(double));
+    double complex *tmpTriplets_n = orpheus_calloc((size_t)nthreads*_gamma_compshift, sizeof(double complex));
 
     // Per-reso nested levels; regions = cells of the coarsest band (smallest nside).
     int *level = orpheus_calloc(nresos, sizeof(int));
@@ -2338,10 +2338,10 @@ void alloc_Gammans_discrete_ggg(const MultiresoCatalog *cat, const NavHash *nav,
     reset_progress();
 
     // Temporary arrays that are allocated in parallel and later reduced
-    double *tmpwcounts = orpheus_calloc(nthreads*nbinsz*nbinsr, sizeof(double));
-    double *tmpwnorms = orpheus_calloc(nthreads*nbinsz*nbinsr, sizeof(double));
-    double complex *tmpGammans = orpheus_calloc(nthreads*4*_gamma_compshift, sizeof(double complex));
-    double complex *tmpGammans_norm = orpheus_calloc(nthreads*_gamma_compshift, sizeof(double complex));
+    double *tmpwcounts = orpheus_calloc((size_t)nthreads*nbinsz*nbinsr, sizeof(double));
+    double *tmpwnorms = orpheus_calloc((size_t)nthreads*nbinsz*nbinsr, sizeof(double));
+    double complex *tmpGammans = orpheus_calloc((size_t)nthreads*4*_gamma_compshift, sizeof(double complex));
+    double complex *tmpGammans_norm = orpheus_calloc((size_t)nthreads*_gamma_compshift, sizeof(double complex));
     // Bail out rather than dereference a failed allocation
     if (orpheus_get_error()){
         free(totcounts); free(totnorms); free(tmpwcounts); free(tmpwnorms);
@@ -2457,8 +2457,9 @@ void alloc_Gammans_discrete_ggg(const MultiresoCatalog *cat, const NavHash *nav,
                 // Gns have shape (nnvals, nbinsz, nbinsr)
                 //int nonzero_tmpGammas = 0;
                 double complex h0, h1, h2, h3, w0;
-                int thisnshift, r12shift;
-                int gammashift1, gammashiftt1, gammashift, gammashiftt;
+                int r12shift;
+                long thisnshift;
+                long gammashift1, gammashiftt1, gammashift, gammashiftt;
                 int ind_mnm3, ind_mnm1, ind_nm3, ind_nm1, ind_norm;
                 int elb2, zbin3, zcombi;
                 wshape = w1 * (e11+I*e12);
@@ -2478,7 +2479,7 @@ void alloc_Gammans_discrete_ggg(const MultiresoCatalog *cat, const NavHash *nav,
                         ind_nm1 = (nmax-nmin+5+thisn)*nbinszr;
                         ind_norm = thisn*nbinszr;
                     }
-                    thisnshift = elthread*gamma_compshift + thisn*gamma_nshift;
+                    thisnshift = (long)elthread*gamma_compshift + thisn*gamma_nshift;
                     for (int zbin2=0; zbin2<nbinsz; zbin2++){
                         for (int elb1=0; elb1<nbinsr; elb1++){
                             zrshift = zbin2*nbinsr + elb1;
@@ -2541,13 +2542,14 @@ void alloc_Gammans_discrete_ggg(const MultiresoCatalog *cat, const NavHash *nav,
     // Accumulate the Gamman
     #pragma omp parallel for num_threads(nthreads)
     for (int thisn=0; thisn<nmax-nmin+1; thisn++){
-        int itmpGamma, iGamma;
+        int iGamma;
+        long itmpGamma;
         for (int thisthread=0; thisthread<nthreads; thisthread++){
             for (int zcombi=0; zcombi<nbinsz*nbinsz*nbinsz; zcombi++){
                 for (int elb1=0; elb1<nbinsr; elb1++){
                     for (int elb2=0; elb2<nbinsr; elb2++){
                         iGamma = thisn*_gamma_nshift + zcombi*_gamma_zshift + elb1*nbinsr + elb2;
-                        itmpGamma = iGamma + thisthread*_gamma_compshift;
+                        itmpGamma = iGamma + (long)thisthread*_gamma_compshift;
                         for (int elcomp=0; elcomp<4; elcomp++){
                             Gammans[elcomp*_gamma_compshift+iGamma] += tmpGammans[4*itmpGamma+elcomp];
                         }
@@ -2635,10 +2637,10 @@ void alloc_Gammans_tree_ggg(const MultiresoCatalog *cat, const MultiresoCatalog 
     reset_progress();
 
     // Temporary arrays that are allocated in parallel and later reduced
-    double *tmpwcounts = orpheus_calloc(nthreads*nbinsz*nbinsr, sizeof(double));
-    double *tmpwnorms = orpheus_calloc(nthreads*nbinsz*nbinsr, sizeof(double));
-    double complex *tmpGammans = orpheus_calloc(nthreads*4*_gamma_compshift, sizeof(double complex));
-    double complex *tmpGammans_norm = orpheus_calloc(nthreads*_gamma_compshift, sizeof(double complex));
+    double *tmpwcounts = orpheus_calloc((size_t)nthreads*nbinsz*nbinsr, sizeof(double));
+    double *tmpwnorms = orpheus_calloc((size_t)nthreads*nbinsz*nbinsr, sizeof(double));
+    double complex *tmpGammans = orpheus_calloc((size_t)nthreads*4*_gamma_compshift, sizeof(double complex));
+    double complex *tmpGammans_norm = orpheus_calloc((size_t)nthreads*_gamma_compshift, sizeof(double complex));
     // Bail out rather than dereference a failed allocation
     if (orpheus_get_error()){
         free(totcounts); free(totnorms); free(tmpwcounts); free(tmpwnorms);
@@ -2767,8 +2769,9 @@ void alloc_Gammans_tree_ggg(const MultiresoCatalog *cat, const MultiresoCatalog 
                 // Gns have shape (nnvals, nbinsz, nbinsr)
                 //int nonzero_tmpGammas = 0;
                 double complex h0, h1, h2, h3, w0;
-                int thisnshift, r12shift;
-                int gammashift1, gammashiftt1, gammashift, gammashiftt;
+                int r12shift;
+                long thisnshift;
+                long gammashift1, gammashiftt1, gammashift, gammashiftt;
                 int ind_mnm3, ind_mnm1, ind_nm3, ind_nm1, ind_norm;
                 int elb2, zbin3, zcombi;
                 wshape = w1 * (e11+I*e12);
@@ -2788,7 +2791,7 @@ void alloc_Gammans_tree_ggg(const MultiresoCatalog *cat, const MultiresoCatalog 
                         ind_nm1 = (nmax-nmin+5+thisn)*nbinszr;
                         ind_norm = thisn*nbinszr;
                     }
-                    thisnshift = elthread*gamma_compshift + thisn*gamma_nshift;
+                    thisnshift = (long)elthread*gamma_compshift + thisn*gamma_nshift;
                     for (int zbin2=0; zbin2<nbinsz; zbin2++){
                         for (int elb1=0; elb1<nbinsr; elb1++){
                             zrshift = zbin2*nbinsr + elb1;
@@ -2854,13 +2857,14 @@ void alloc_Gammans_tree_ggg(const MultiresoCatalog *cat, const MultiresoCatalog 
     // Accumulate the Gamman
     #pragma omp parallel for num_threads(nthreads)
     for (int thisn=0; thisn<nmax-nmin+1; thisn++){
-        int itmpGamma, iGamma;
+        int iGamma;
+        long itmpGamma;
         for (int thisthread=0; thisthread<nthreads; thisthread++){
             for (int zcombi=0; zcombi<nbinsz*nbinsz*nbinsz; zcombi++){
                 for (int elb1=0; elb1<nbinsr; elb1++){
                     for (int elb2=0; elb2<nbinsr; elb2++){
                         iGamma = thisn*_gamma_nshift + zcombi*_gamma_zshift + elb1*nbinsr + elb2;
-                        itmpGamma = iGamma + thisthread*_gamma_compshift;
+                        itmpGamma = iGamma + (long)thisthread*_gamma_compshift;
                         for (int elcomp=0; elcomp<4; elcomp++){
                             Gammans[elcomp*_gamma_compshift+iGamma] += tmpGammans[4*itmpGamma+elcomp];
                         }
@@ -2936,13 +2940,13 @@ void alloc_Gammans_basetree_ggg(const MultiresoCatalog *cat, const NavHash *nav,
     int _gamma_compshift = (nmax+1)*_gamma_nshift;
     
     // Temporary arrays that are allocated in parallel and later reduced
-    double *tmpwcounts = orpheus_calloc(nthreads*nbinsz*nbinsr, sizeof(double));
-    double *tmpwnorms = orpheus_calloc(nthreads*nbinsz*nbinsr, sizeof(double));
-    double complex *tmpGamma0s = orpheus_calloc(nthreads*_gamma_compshift, sizeof(double complex));
-    double complex *tmpGamma1s = orpheus_calloc(nthreads*_gamma_compshift, sizeof(double complex));
-    double complex *tmpGamma2s = orpheus_calloc(nthreads*_gamma_compshift, sizeof(double complex));
-    double complex *tmpGamma3s = orpheus_calloc(nthreads*_gamma_compshift, sizeof(double complex));
-    double complex *tmpGammans_norm = orpheus_calloc(nthreads*_gamma_compshift, sizeof(double complex));
+    double *tmpwcounts = orpheus_calloc((size_t)nthreads*nbinsz*nbinsr, sizeof(double));
+    double *tmpwnorms = orpheus_calloc((size_t)nthreads*nbinsz*nbinsr, sizeof(double));
+    double complex *tmpGamma0s = orpheus_calloc((size_t)nthreads*_gamma_compshift, sizeof(double complex));
+    double complex *tmpGamma1s = orpheus_calloc((size_t)nthreads*_gamma_compshift, sizeof(double complex));
+    double complex *tmpGamma2s = orpheus_calloc((size_t)nthreads*_gamma_compshift, sizeof(double complex));
+    double complex *tmpGamma3s = orpheus_calloc((size_t)nthreads*_gamma_compshift, sizeof(double complex));
+    double complex *tmpGammans_norm = orpheus_calloc((size_t)nthreads*_gamma_compshift, sizeof(double complex));
     // Bail out rather than dereference a failed allocation
     if (orpheus_get_error()){
         free(tmpwcounts); free(tmpwnorms); free(tmpGamma0s); free(tmpGamma1s); free(tmpGamma2s);
@@ -3222,13 +3226,13 @@ static void alloc_ggg_doubletree_flat(const MultiresoCatalog *cat, const NavHash
     // Temporary arrays that are allocated in parallel region and later reduced
     int nregionsdone = 0;
     reset_progress();
-    double *tmpwcounts = orpheus_calloc(nthreads*nbinsz*nbinsr, sizeof(double));
-    double *tmpwnorms = orpheus_calloc(nthreads*nbinsz*nbinsr, sizeof(double));
-    double complex *tmpGamma0s = orpheus_calloc(nthreads*_gamma_compshift, sizeof(double complex));
-    double complex *tmpGamma1s = orpheus_calloc(nthreads*_gamma_compshift, sizeof(double complex));
-    double complex *tmpGamma2s = orpheus_calloc(nthreads*_gamma_compshift, sizeof(double complex));
-    double complex *tmpGamma3s = orpheus_calloc(nthreads*_gamma_compshift, sizeof(double complex));
-    double complex *tmpGammans_norm = orpheus_calloc(nthreads*_gamma_compshift, sizeof(double complex));
+    double *tmpwcounts = orpheus_calloc((size_t)nthreads*nbinsz*nbinsr, sizeof(double));
+    double *tmpwnorms = orpheus_calloc((size_t)nthreads*nbinsz*nbinsr, sizeof(double));
+    double complex *tmpGamma0s = orpheus_calloc((size_t)nthreads*_gamma_compshift, sizeof(double complex));
+    double complex *tmpGamma1s = orpheus_calloc((size_t)nthreads*_gamma_compshift, sizeof(double complex));
+    double complex *tmpGamma2s = orpheus_calloc((size_t)nthreads*_gamma_compshift, sizeof(double complex));
+    double complex *tmpGamma3s = orpheus_calloc((size_t)nthreads*_gamma_compshift, sizeof(double complex));
+    double complex *tmpGammans_norm = orpheus_calloc((size_t)nthreads*_gamma_compshift, sizeof(double complex));
     // Bail out rather than dereference a failed allocation
     if (orpheus_get_error()){
         free(tmpwcounts); free(tmpwnorms); free(tmpGamma0s); free(tmpGamma1s); free(tmpGamma2s);
@@ -3521,13 +3525,13 @@ static void alloc_ggg_doubletree_spherical(const MultiresoCatalog *cat, const Na
     int _gamma_nshift = _gamma_zshift*nbinsz*nbinsz*nbinsz;
     int _gamma_compshift = (nmax+1)*_gamma_nshift;
 
-    double *tmpwcounts = orpheus_calloc(nthreads*nbinsz*nbinsr, sizeof(double));
-    double *tmpwnorms = orpheus_calloc(nthreads*nbinsz*nbinsr, sizeof(double));
-    double complex *tmpGamma0s = orpheus_calloc(nthreads*_gamma_compshift, sizeof(double complex));
-    double complex *tmpGamma1s = orpheus_calloc(nthreads*_gamma_compshift, sizeof(double complex));
-    double complex *tmpGamma2s = orpheus_calloc(nthreads*_gamma_compshift, sizeof(double complex));
-    double complex *tmpGamma3s = orpheus_calloc(nthreads*_gamma_compshift, sizeof(double complex));
-    double complex *tmpGammans_norm = orpheus_calloc(nthreads*_gamma_compshift, sizeof(double complex));
+    double *tmpwcounts = orpheus_calloc((size_t)nthreads*nbinsz*nbinsr, sizeof(double));
+    double *tmpwnorms = orpheus_calloc((size_t)nthreads*nbinsz*nbinsr, sizeof(double));
+    double complex *tmpGamma0s = orpheus_calloc((size_t)nthreads*_gamma_compshift, sizeof(double complex));
+    double complex *tmpGamma1s = orpheus_calloc((size_t)nthreads*_gamma_compshift, sizeof(double complex));
+    double complex *tmpGamma2s = orpheus_calloc((size_t)nthreads*_gamma_compshift, sizeof(double complex));
+    double complex *tmpGamma3s = orpheus_calloc((size_t)nthreads*_gamma_compshift, sizeof(double complex));
+    double complex *tmpGammans_norm = orpheus_calloc((size_t)nthreads*_gamma_compshift, sizeof(double complex));
 
     // Per-reso nested levels
     int *level = orpheus_calloc(nresos, sizeof(int));
@@ -3875,7 +3879,7 @@ void alloc_Gammans_slab_GGG(const MultiresoCatalog *cat_polar, const NavHash *na
     #pragma omp parallel num_threads(nthreads)
     {
         int elthread = omp_get_thread_num();
-        double complex *thComp = tmpComp + (size_t)elthread*ups_threadshift;
+        double complex *thComp = tmpComp + (size_t)(long)elthread*ups_threadshift;
         double complex *G0 = thComp, *G1 = thComp+comp_size, *G2 = thComp+2*comp_size, *G3 = thComp+3*comp_size;
         double *thwc = tmpwcounts + (size_t)elthread*counts_threadshift;
         double *thwn = tmpwnorms  + (size_t)elthread*counts_threadshift;
@@ -3934,7 +3938,7 @@ void alloc_Gammans_slab_GGG(const MultiresoCatalog *cat_polar, const NavHash *na
                         int elb2 = allowedr[a2], zbin3 = allowedz[a2];
                         int zr2 = zbin3*nbinsr + elb2;
                         int zc = zbin_c*nbinsz_polar*nbinsz_polar + zbin2*nbinsz_polar + zbin3;
-                        int gs  = nshift + zc*comp_zshift + elb1*nbinsr + elb2;
+                        long gs  = nshift + zc*comp_zshift + elb1*nbinsr + elb2;
                         int gst = nshift + zc*comp_zshift + elb2*nbinsr + elb1;
                         G0[gs] += h0 * Gn[blk_mnm3 + zr2];
                         G1[gs] += h1 * Gn[blk_mnm1 + zr2];
@@ -3952,7 +3956,7 @@ void alloc_Gammans_slab_GGG(const MultiresoCatalog *cat_polar, const NavHash *na
     #pragma omp parallel num_threads(nthreads)
     {
         int elthread = omp_get_thread_num();
-        double complex *thRRR = tmpRRR + (size_t)elthread*comp_size;
+        double complex *thRRR = tmpRRR + (size_t)(long)elthread*comp_size;
 
         #pragma omp for schedule(dynamic, 256)
         for (int ig=0; ig<ngal_R; ig++){
@@ -4066,12 +4070,12 @@ void alloc_Gammans_discrete_GNN(const MultiresoCatalog *cat_source, const NavHas
     int _upsilonnshift = _upsilonzshift*_nzcombis;
     int _upsilonthreadshift = (nmax+1)*_upsilonnshift;
 
-    double *tmpwcounts = orpheus_calloc(nthreads*nbinsz_source*nbinsz_lens*nbinsr, sizeof(double));
-    double *tmpwnorms  = orpheus_calloc(nthreads*nbinsz_source*nbinsz_lens*nbinsr, sizeof(double));
+    double *tmpwcounts = orpheus_calloc((size_t)nthreads*nbinsz_source*nbinsz_lens*nbinsr, sizeof(double));
+    double *tmpwnorms  = orpheus_calloc((size_t)nthreads*nbinsz_source*nbinsz_lens*nbinsr, sizeof(double));
     // Temporary arrays that are allocated in parallel and later reduced
     // Shape of tmpUpsilon ~ (nthreads, nnvals, nz_source, nz_lens, nz_lens, nbinsr, nbinsr)
-    double complex *tmpUpsilon = orpheus_calloc(nthreads*_upsilonthreadshift, sizeof(double complex));
-    double complex *tmpNorm = orpheus_calloc(nthreads*_upsilonthreadshift, sizeof(double complex));
+    double complex *tmpUpsilon = orpheus_calloc((size_t)nthreads*_upsilonthreadshift, sizeof(double complex));
+    double complex *tmpNorm = orpheus_calloc((size_t)nthreads*_upsilonthreadshift, sizeof(double complex));
     // Bail out rather than dereference a failed allocation
     if (orpheus_get_error()){
         free(tmpwcounts); free(tmpwnorms); free(tmpUpsilon); free(tmpNorm);
@@ -4233,12 +4237,12 @@ void alloc_Gammans_doubletree_GNN(const MultiresoCatalog *cat_source, const NavH
     int _upsilonnshift = _upsilonzshift*_nzcombis;
     int _upsilonthreadshift = (nmax+1)*_upsilonnshift;
     
-    double *tmpwcounts = orpheus_calloc(nthreads*nbinsz_source*nbinsz_lens*nbinsr, sizeof(double));
-    double *tmpwnorms  = orpheus_calloc(nthreads*nbinsz_source*nbinsz_lens*nbinsr, sizeof(double));
+    double *tmpwcounts = orpheus_calloc((size_t)nthreads*nbinsz_source*nbinsz_lens*nbinsr, sizeof(double));
+    double *tmpwnorms  = orpheus_calloc((size_t)nthreads*nbinsz_source*nbinsz_lens*nbinsr, sizeof(double));
     // Temporary arrays that are allocated in parallel and later reduced
     // Shape of tmpUpsilon ~ (nthreads, nnvals, nz_source, nz_lens, nz_lens, nbinsr, nbinsr)
-    double complex *tmpUpsilon = orpheus_calloc(nthreads*_upsilonthreadshift, sizeof(double complex));
-    double complex *tmpNorm = orpheus_calloc(nthreads*_upsilonthreadshift, sizeof(double complex));
+    double complex *tmpUpsilon = orpheus_calloc((size_t)nthreads*_upsilonthreadshift, sizeof(double complex));
+    double complex *tmpNorm = orpheus_calloc((size_t)nthreads*_upsilonthreadshift, sizeof(double complex));
     // Bail out rather than dereference a failed allocation
     if (orpheus_get_error()){
         free(tmpwcounts); free(tmpwnorms); free(tmpUpsilon); free(tmpNorm);
@@ -4537,7 +4541,7 @@ void alloc_Gammans_slab_GNN(const MultiresoCatalog *cat_polar, const MultiresoCa
     #pragma omp parallel num_threads(nthreads)
     {
         int elthread = omp_get_thread_num();
-        double complex *thComp = tmpComp + (size_t)elthread*ups_threadshift;
+        double complex *thComp = tmpComp + (size_t)(long)elthread*ups_threadshift;
         double complex *SDD = thComp, *SDR = thComp+comp_size, *SRD = thComp+2*comp_size, *SRR = thComp+3*comp_size;
         double *thwcounts = tmpwcounts + (size_t)elthread*counts_threadshift;
         double *thwnorms  = tmpwnorms  + (size_t)elthread*counts_threadshift;
@@ -4609,7 +4613,7 @@ void alloc_Gammans_slab_GNN(const MultiresoCatalog *cat_polar, const MultiresoCa
                         int elb2 = allowedr[a2], zbin3 = allowedz[a2];
                         int zr2 = zbin3*nbinsr + elb2;
                         int zc = zbin_c*nbinsz_pos*nbinsz_pos + zbin2*nbinsz_pos + zbin3;
-                        int gs = nshift + zc*comp_zshift + elb1*nbinsr + elb2;
+                        long gs = nshift + zc*comp_zshift + elb1*nbinsr + elb2;
                         double complex cD2 = conj(Wn_D[(thisn+2)*nbinszr_leaf + zr2]);
                         double complex cR2 = conj(Wn_R[(thisn+2)*nbinszr_leaf + zr2]);
                         SDD[gs] += -wshape * D1 * cD2;
@@ -4629,7 +4633,7 @@ void alloc_Gammans_slab_GNN(const MultiresoCatalog *cat_polar, const MultiresoCa
     #pragma omp parallel num_threads(nthreads)
     {
         int elthread = omp_get_thread_num();
-        double complex *thRRR = tmpRRR + (size_t)elthread*comp_size;
+        double complex *thRRR = tmpRRR + (size_t)(long)elthread*comp_size;
 
         #pragma omp for schedule(dynamic, 256)
         for (int ig=0; ig<ngal_R; ig++){
@@ -4676,7 +4680,7 @@ void alloc_Gammans_slab_GNN(const MultiresoCatalog *cat_polar, const MultiresoCa
                         int elb2 = allowedr[a2], zbin3 = allowedz[a2];
                         int zr2 = zbin3*nbinsr + elb2;
                         int zc = zbin_c*nbinsz_pos*nbinsz_pos + zbin2*nbinsz_pos + zbin3;
-                        int gs = nshift + zc*comp_zshift + elb1*nbinsr + elb2;
+                        long gs = nshift + zc*comp_zshift + elb1*nbinsr + elb2;
                         thRRR[gs] += c_w * Rn1 * conj(Wn[(thisn+1)*nbinszr_leaf + zr2]);
                     }
                 }
@@ -4756,12 +4760,12 @@ void alloc_Gammans_discrete_NGG(const MultiresoCatalog *cat_source, const NavHas
     int _normnshift = _normzshift*_nzcombis;
     int _normthreadshift = (2*nmax+1)*_normnshift;
 
-    double *tmpwcounts = orpheus_calloc(nthreads*nbinsz_lens*nbinsz_source*nbinsr, sizeof(double));
-    double *tmpwnorms  = orpheus_calloc(nthreads*nbinsz_lens*nbinsz_source*nbinsr, sizeof(double));
+    double *tmpwcounts = orpheus_calloc((size_t)nthreads*nbinsz_lens*nbinsz_source*nbinsr, sizeof(double));
+    double *tmpwnorms  = orpheus_calloc((size_t)nthreads*nbinsz_lens*nbinsz_source*nbinsr, sizeof(double));
     // Temporary arrays that are allocated in parallel and later reduced
     // Shape of tmpUpsilon ~ (nthreads, nnvals, nz_source, nz_lens, nz_lens, nbinsr, nbinsr)
-    double complex *tmpUpsilon = orpheus_calloc(nthreads*_upsilonthreadshift, sizeof(double complex));
-    double complex *tmpNorm = orpheus_calloc(nthreads*_normthreadshift, sizeof(double complex));
+    double complex *tmpUpsilon = orpheus_calloc((size_t)nthreads*_upsilonthreadshift, sizeof(double complex));
+    double complex *tmpNorm = orpheus_calloc((size_t)nthreads*_normthreadshift, sizeof(double complex));
     // Bail out rather than dereference a failed allocation
     if (orpheus_get_error()){
         free(tmpwcounts); free(tmpwnorms); free(tmpUpsilon); free(tmpNorm);
@@ -4925,12 +4929,12 @@ void alloc_Gammans_tree_NGG(const MultiresoCatalog *cat_source, const NavHash *n
     int _normnshift = _normzshift*_nzcombis;
     int _normthreadshift = (2*nmax+1)*_normnshift;
 
-    double *tmpwcounts = orpheus_calloc(nthreads*nbinsz_lens*nbinsz_source*nbinsr, sizeof(double));
-    double *tmpwnorms  = orpheus_calloc(nthreads*nbinsz_lens*nbinsz_source*nbinsr, sizeof(double));
+    double *tmpwcounts = orpheus_calloc((size_t)nthreads*nbinsz_lens*nbinsz_source*nbinsr, sizeof(double));
+    double *tmpwnorms  = orpheus_calloc((size_t)nthreads*nbinsz_lens*nbinsz_source*nbinsr, sizeof(double));
     // Temporary arrays that are allocated in parallel and later reduced
     // Shape of tmpUpsilon ~ (nthreads, nnvals, nz_source, nz_lens, nz_lens, nbinsr, nbinsr)
-    double complex *tmpUpsilon = orpheus_calloc(nthreads*_upsilonthreadshift, sizeof(double complex));
-    double complex *tmpNorm = orpheus_calloc(nthreads*_normthreadshift, sizeof(double complex));
+    double complex *tmpUpsilon = orpheus_calloc((size_t)nthreads*_upsilonthreadshift, sizeof(double complex));
+    double complex *tmpNorm = orpheus_calloc((size_t)nthreads*_normthreadshift, sizeof(double complex));
     // Bail out rather than dereference a failed allocation
     if (orpheus_get_error()){
         free(tmpwcounts); free(tmpwnorms); free(tmpUpsilon); free(tmpNorm);
@@ -5117,12 +5121,12 @@ void alloc_Gammans_doubletree_NGG(const MultiresoCatalog *cat_source, const NavH
     int nregionsdone = 0;
     reset_progress();
     
-    double *tmpwcounts = orpheus_calloc(nthreads*nbinsz_lens*nbinsz_source*nbinsr, sizeof(double));
-    double *tmpwnorms  = orpheus_calloc(nthreads*nbinsz_lens*nbinsz_source*nbinsr, sizeof(double));
+    double *tmpwcounts = orpheus_calloc((size_t)nthreads*nbinsz_lens*nbinsz_source*nbinsr, sizeof(double));
+    double *tmpwnorms  = orpheus_calloc((size_t)nthreads*nbinsz_lens*nbinsz_source*nbinsr, sizeof(double));
     // Temporary arrays that are allocated in parallel and later reduced
     // Shape of tmpUpsilon ~ (nthreads, 2, nnvals, nz_source, nz_lens, nz_lens, nbinsr, nbinsr)
-    double complex *tmpUpsilon = orpheus_calloc(nthreads*_upsilonthreadshift, sizeof(double complex));
-    double complex *tmpNorm = orpheus_calloc(nthreads*_normthreadshift, sizeof(double complex));
+    double complex *tmpUpsilon = orpheus_calloc((size_t)nthreads*_upsilonthreadshift, sizeof(double complex));
+    double complex *tmpNorm = orpheus_calloc((size_t)nthreads*_normthreadshift, sizeof(double complex));
     // Bail out rather than dereference a failed allocation
     if (orpheus_get_error()){
         free(tmpwcounts); free(tmpwnorms); free(tmpUpsilon); free(tmpNorm);
@@ -5435,9 +5439,9 @@ void alloc_Gammans_slab_NGG(const MultiresoCatalog *cat_lensD, const MultiresoCa
     #pragma omp parallel num_threads(nthreads)
     {
         int elthread = omp_get_thread_num();
-        double complex *thDSS = tmpComp + (size_t)elthread*ups_threadshift;
+        double complex *thDSS = tmpComp + (size_t)(long)elthread*ups_threadshift;
         double complex *thRSS = thDSS + 2*ups_compshift;
-        double complex *thNorm = tmpNorm + (size_t)elthread*norm_threadshift;
+        double complex *thNorm = tmpNorm + (size_t)(long)elthread*norm_threadshift;
         double *thwc = tmpwcounts + (size_t)elthread*counts_threadshift;
         double *thwn = tmpwnorms  + (size_t)elthread*counts_threadshift;
 

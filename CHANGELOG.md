@@ -188,6 +188,11 @@ parallelised C kernels.
   segfaulted once `nbinsr**3*nbinsphi**2` exceeded `2**31`, e.g. for 52 radial and 127
   angular bins. The GGGG and GNNN conversions used the same offsets, the GGGG one scaled by
   its eight components. All three now index with 64-bit offsets.
+* **The third-order kernels overflowed the 32-bit offsets of their per-thread buffers.** The
+  multipoles of every thread sit at `thread*size` in one buffer, which overflowed once
+  `nthreads*(nmax+1)*nbinsr**2*nbinsz**3` exceeded `2**31`, e.g. beyond 47 threads for GGG
+  with 6 tomographic bins, `nmaxs=50` and 64 radial bins. These offsets and the buffer sizes
+  are now 64-bit in all third-order kernels; the results are unchanged, bitwise on one thread.
 * **The NNNN conversion to angular bins is separable.** `multipoles2npcf_nnnn` summed all
   (2 nmax+1)^2 multipoles for each pair of angular bins of every radial triple. It now sums
   over n2 first, for each phi13 bin, and then over n1, with the phases tabulated once for all
