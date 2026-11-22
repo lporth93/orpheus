@@ -29,23 +29,18 @@ class NNCorrelation(BinnedNPCF):
         The smallest distance of each vertex for which the NPCF is computed.
     max_sep: float
         The largest distance of each vertex for which the NPCF is computed.
-    shuffle_pix: int, optional
-        Choice of how to define centers of the cells in the spatial hash structure.
-        Defaults to ``1``, i.e. random positioning.
 
 
     Notes
     -----
     - Inherits all other parameters and attributes from :class:`BinnedNPCF`.
-      Additional child-specific parameters can be passed via ``kwargs``. 
+      Additional child-specific parameters can be passed via ``kwargs``.
       Either ``nbinsr`` or ``binsize`` has to be provided to fix the binning scheme.
-    - We default to ``shuffle_pix=1``, i.e. random cell centers. This makes
-      sure to reduce any geometric artifacts near the bin boundaries.
     """
 
-    def __init__(self, min_sep, max_sep, shuffle_pix=1, **kwargs):
+    def __init__(self, min_sep, max_sep, **kwargs):
         super().__init__(order=2, spins=np.array([0,0], dtype=np.int32), n_cfs=1,
-                         min_sep=min_sep, max_sep=max_sep, shuffle_pix=shuffle_pix,
+                         min_sep=min_sep, max_sep=max_sep,
                          methods_avail=["DoubleTree"], **kwargs)
         self.projection = None
         self.projections_avail = [None]

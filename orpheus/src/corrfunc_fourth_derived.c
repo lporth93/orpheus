@@ -1821,80 +1821,112 @@ void getMultipolesFromSymm_NNNN(double complex *Nn_in,
     }
 }
 
-// Upsilon_n has shape (1,nphi12,nphi13)
-void multipoles2npcf_nnnn(double complex *N_n, const BinningParams *bin, const FourthParams *fourth,
-                          double *theta_centers, double complex *npcf, int nthreads){
-    int n1max = bin->nmax, n2max = bin->nmax;
-    int nbinsstheta = bin->nbinsr;
-    double *phis12 = fourth->phibins1, *phis13 = fourth->phibins2;
-    int nbinsphi12 = fourth->nbinsphi1, nbinsphi13 = fourth->nbinsphi2;
-    
-    #pragma omp parallel for num_threads(nthreads)
-    for (int nthetacombi=0; nthetacombi<nbinsstheta*nbinsstheta*nbinsstheta; nthetacombi++){
-        int n12combis = (2*n1max+1)*(2*n2max+1);
-        int phi23combis = nbinsphi12*nbinsphi13;
-        int ntheta2 = nbinsstheta*nbinsstheta;
-        int ntheta3 = ntheta2*nbinsstheta;
-        int eltheta1=nthetacombi/ntheta2;
-        int eltheta2=(nthetacombi-eltheta1*ntheta2)/nbinsstheta;
-        int eltheta3=nthetacombi%nbinsstheta;
-        double complex *tmpnpcf = orpheus_calloc(phi23combis, sizeof(double complex));
-        double complex *tmpNn = orpheus_calloc(n12combis, sizeof(double complex));
-        for (int n12=0;n12<n12combis;n12++){
-            tmpNn[n12] = N_n[n12*ntheta3+nthetacombi];
+// 4PCF of one radial triple on the angular bins from its multipoles
+// We get this in O(nns*nbinsphi*(nns+nbinsphi)) by allocating a helper,
+// npcf_tmp, for each n1 by summing over n2 and phi13 and later reuse this
+// when performing the remaining sums over n1, phi12 and phi13
+static void multipoles2npcf_nnnn_alloc(const double complex *N_n, int nmax,
+                                 const double complex *exp12, const double complex *exp13,
+                                 int nbinsphi12, int nbinsphi13, double complex *npcf_tmp,
+                                 double complex *npcf){
+    int nns = 2*nmax+1;
+    double pref = 1./((double)nbinsphi12*nbinsphi13);
+    // 1: Compute helper npcf_tmp(n, phi13) = 1/(nphi12*nphi13) sum_n2 N_(n1,n2)*e^(i*n2*phi13)
+    for (int n1=0; n1<nns; n1++){
+        const double complex *N_n1 = N_n + (long)n1*nns;
+        for (int elphi13=0; elphi13<nbinsphi13; elphi13++){
+            const double complex *e13 = exp13 + (long)elphi13*nns;
+            double complex sum = 0;
+            for (int n2=0; n2<nns; n2++){
+                sum += N_n1[n2]*e13[n2];
+            }
+            npcf_tmp[(long)n1*nbinsphi13 + elphi13] = pref*sum;
         }
-        multipoles2npcf_nnnn_singletheta(
-            tmpNn, n1max,n2max, theta_centers[eltheta1], theta_centers[eltheta2], theta_centers[eltheta3],
-            phis12, phis13, nbinsphi12, nbinsphi13, tmpnpcf);
-        // Make long as nbinsr^3*nphi^2 can exceed 2^31 elements easily
-        double complex *npcf_r = npcf + (long)nthetacombi*phi23combis;
-        for (int elphi12=0; elphi12<nbinsphi12; elphi12++){
+    }
+    // 2: Reuse npcf_tmp to get npcf(phi12, phi13) = sum_n1 npcf_tmp(n,phi13)*e^(i*n1*phi12) 
+    for (int elphi12=0; elphi12<nbinsphi12; elphi12++){
+        const double complex *e12 = exp12 + (long)elphi12*nns;
+        double complex *row = npcf + (long)elphi12*nbinsphi13;
+        for (int n1=0; n1<nns; n1++){
+            double complex e = e12[n1];
+            const double complex *npcf_n1 = npcf_tmp + (long)n1*nbinsphi13;
             for (int elphi13=0; elphi13<nbinsphi13; elphi13++){
-                npcf_r[elphi12*nbinsphi13+elphi13] += tmpnpcf[elphi12*nbinsphi13+elphi13];
+                row[elphi13] += e*npcf_n1[elphi13];
             }
         }
-        free(tmpnpcf);
-        free(tmpNn);
     }
 }
 
-// Upsilon_n has shape (1,nphi12,nphi13)
+// Get all phases e^(i*n*phi) of the multipoles
+static void nnnn_phases(const double *phis, int nphi, int nmax, double complex *expn){
+    int nns = 2*nmax+1;
+    for (int elphi=0; elphi<nphi; elphi++){
+        double complex *e = expn + (long)elphi*nns;
+        double complex e1 = cexp(I*phis[elphi]);
+        e[nmax] = 1;
+        for (int n=1; n<=nmax; n++){
+            e[nmax+n] = e[nmax+n-1]*e1;
+            e[nmax-n] = conj(e[nmax+n]);
+        }
+    }
+}
+
+// 4PCF on the angular bins of all radial triples from the multipoles N_n, (2*nmax+1, 2*nmax+1,
+// nbinsr, nbinsr, nbinsr), added to npcf of shape (nbinsr, nbinsr, nbinsr, nphi12, nphi13)
+void multipoles2npcf_nnnn(double complex *N_n, const BinningParams *bin, const FourthParams *fourth,
+                          double *theta_centers, double complex *npcf, int nthreads){
+    int nmax = bin->nmax, nns = 2*nmax+1;
+    int nbinsr = bin->nbinsr;
+    int nbinsphi12 = fourth->nbinsphi1, nbinsphi13 = fourth->nbinsphi2;
+    long ntheta3 = (long)nbinsr*nbinsr*nbinsr;
+    long phi23combis = (long)nbinsphi12*nbinsphi13;
+    (void)theta_centers;
+
+    // Allocate all phase factors only once
+    double complex *exp12 = orpheus_malloc((size_t)nbinsphi12*nns*sizeof(double complex));
+    double complex *exp13 = orpheus_malloc((size_t)nbinsphi13*nns*sizeof(double complex));
+    if (!(exp12 && exp13)){
+        free(exp12); free(exp13);
+        return;
+    }
+    nnnn_phases(fourth->phibins1, nbinsphi12, nmax, exp12);
+    nnnn_phases(fourth->phibins2, nbinsphi13, nmax, exp13);
+
+    // Step through loop of theta combis in parallel to do the allocation
+    #pragma omp parallel num_threads(nthreads)
+    {
+        double complex *thisN_n = orpheus_malloc((size_t)nns*nns*sizeof(double complex));
+        double complex *npcf_tmp = orpheus_malloc((size_t)nns*nbinsphi13*sizeof(double complex));
+        int ok = thisN_n && npcf_tmp;
+        #pragma omp for
+        for (long nthetacombi=0; nthetacombi<ntheta3; nthetacombi++){
+            if (!ok) continue;
+            for (int n12=0; n12<nns*nns; n12++) thisN_n[n12] = N_n[n12*ntheta3+nthetacombi];
+            // 64-bit offset, as nbinsr^3*nphi^2 can exceed 2^31
+            multipoles2npcf_nnnn_alloc(thisN_n, nmax, exp12, exp13, nbinsphi12, nbinsphi13, npcf_tmp,
+                                 npcf + nthetacombi*phi23combis);
+        }
+        free(thisN_n); free(npcf_tmp);
+    }
+    free(exp12); free(exp13);
+}
+
+// 4PCF of one radial triple on the angular bins from its multipoles N_n, (2*n1max+1, 2*n1max+1),
+// added to npcf of shape (nphi12, nphi13).
 void multipoles2npcf_nnnn_singletheta(double complex *N_n, int n1max, int n2max,
                                       double theta1, double theta2, double theta3,
                                       double *phis12, double *phis13, int nbinsphi12, int nbinsphi13,
                                       double complex *npcf){
-    int nmax = n1max;
-    int nns = 2*nmax+1;
-    double complex expphi12, expphi13;
-    double complex *expphi12s = orpheus_calloc(nns, sizeof(double complex));
-    double complex *expphi13s = orpheus_calloc(nns, sizeof(double complex));
-    double nextang_pref = 1./((double)nbinsphi12*nbinsphi13);
-    for (int elphi12=0; elphi12<nbinsphi12; elphi12++){
-        for (int elphi13=0; elphi13<nbinsphi13; elphi13++){
-            // Convert multipoles to npcf
-            expphi12s[nmax] = 1;
-            expphi13s[nmax] = 1;
-            expphi12 = cexp(I*phis12[elphi12]);
-            expphi13 = cexp(I*phis13[elphi13]);
-            for (int nextn=1; nextn<=nmax; nextn++){ 
-                expphi12s[nmax+nextn] = expphi12s[nmax+nextn-1]*expphi12;
-                expphi12s[nmax-nextn] = conj(expphi12s[nmax+nextn]);
-                expphi13s[nmax+nextn] = expphi13s[nmax+nextn-1]*expphi13;
-                expphi13s[nmax-nextn] = conj(expphi13s[nmax+nextn]);
-            }
-            double complex nextang;
-            int ind_npcf = elphi12*nbinsphi13 + elphi13;
-            for (int nextn1=0; nextn1<nns; nextn1++){
-                for (int nextn2=0; nextn2<nns; nextn2++){ 
-                    int ind_ups = nextn1*nns + nextn2;
-                    nextang = nextang_pref * expphi12s[nextn1] * expphi13s[nextn2];
-                    npcf[ind_npcf] += N_n[ind_ups]*nextang;
-                }
-            }
-        }
-    } 
-    free(expphi12s);
-    free(expphi13s);
+    int nmax = n1max, nns = 2*nmax+1;
+    double complex *exp12 = orpheus_malloc((size_t)nbinsphi12*nns*sizeof(double complex));
+    double complex *exp13 = orpheus_malloc((size_t)nbinsphi13*nns*sizeof(double complex));
+    double complex *npcf_tmp = orpheus_malloc((size_t)nns*nbinsphi13*sizeof(double complex));
+    if (exp12 && exp13 && npcf_tmp){
+        nnnn_phases(phis12, nbinsphi12, nmax, exp12);
+        nnnn_phases(phis13, nbinsphi13, nmax, exp13);
+        multipoles2npcf_nnnn_alloc(N_n, nmax, exp12, exp13, nbinsphi12, nbinsphi13, npcf_tmp, npcf);
+    }
+    free(exp12); free(exp13); free(npcf_tmp);
 }
 
 // N4 filters for a fixed aperture radius
