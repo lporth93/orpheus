@@ -203,6 +203,14 @@ parallelised C kernels.
   `process_spherical=True` built its multihash with the cell centres at the centre of mass,
   whatever `shuffle_pix` asked for, unlike the flat NNNN and the other curved-sky
   correlators. It now passes `shuffle_pix` on; with `shuffle_pix=0` the counts are unchanged.
+* **Curved-sky trees rotated the shapes of galaxies at their cell centre arbitrarily on arm64.**
+  The reduction to cells transports each shape to the centre by the difference of the bearings
+  from the centre to the galaxy and back. For a galaxy at the centre up to rounding, e.g. the only
+  galaxy of a cell with `shuffle_pix=0`, both are `atan2` of rounding noise, which cancels exactly
+  on x86 but not where the compiler fuses multiply-adds, as Apple clang does on arm64. There a
+  random catalog of 20000 galaxies changed by 0.2% in GG and 5.6% in the GGG `DoubleTree`
+  multipoles. The angle now follows from Napier's analogy, which vanishes for a galaxy at the
+  centre; on x86 the results are unchanged to 1e-13 (`test_trees_count_clumps_exactly`).
 * **Building from source with a universal2 Python on macOS failed at the link**, e.g. with
   the python.org Python 3.12. Such a Python links the extension for arm64 and x86_64, while
   the C sources and libomp are built for the host only. `setup.py` now builds for the host

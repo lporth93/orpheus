@@ -675,11 +675,11 @@ long sphericalhash_reduce(
             double sume1 = 0., sume2 = 0., acc[7] = {0.};
             for (long i=occbounds[ic]; i<occbounds[ic+1]; i++){
                 long g = order[i];
-                double dphi = 2.*(sphere_bearing(cra, csindec, ccosdec,
-                                                 ra[g], sindec[g], cosdec[g])
-                                  + _PI_
-                                  - sphere_bearing(ra[g], sindec[g], cosdec[g],
-                                                   cra, csindec, ccosdec));
+                // Napier's analogy on the triangle of the pole, the center and the galaxy, which
+                // stays exact for a galaxy at the center, unlike the difference of its two bearings
+                double dlam = ra[g] - cra;
+                double dphi = 4.*atan2((csindec + sindec[g])*sin(.5*dlam),
+                                       (1. + ccosdec*cosdec[g] + csindec*sindec[g])*cos(.5*dlam));
                 double complex wshape = w[g]*(e1[g] + I*e2[g])*cexp(I*dphi);
                 sume1 += creal(wshape); sume2 += cimag(wshape);
                 if (npow){ wepow_add(acc, wshape, npow); }
