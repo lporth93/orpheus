@@ -1908,10 +1908,14 @@ class GGCovariance(GGCovarianceNoTomo):
                 (a, b), (c, d) = combo
                 out_keys.append((rname, combo))
                 # The prefactor 2/(pi A) counts both Wick contractions, so two distinct ones
-                # contribute 0.5 each and a degenerate one 1
-                wick = list(dict.fromkeys([(idx[xa, a, c], idx[xb, b, d]),
-                                           (idx[xa, a, d], idx[xb, b, c])]))
-                rows += [(ia, ib, wid, len(out_keys) - 1, 1./len(wick)) for ia, ib in wick]
+                # contribute 0.5 each and a degenerate one 1. The xi_+ and xi_- of rpm take either
+                # link of a contraction alike, which differ where the links join different bins
+                links = [((a, c), (b, d)), ((a, d), (b, c))]
+                if xa != xb:
+                    links += [(l2, l1) for l1, l2 in links]
+                calls = [(idx[(xa,) + l1], idx[(xb,) + l2]) for l1, l2 in links]
+                rows += [(ia, ib, wid, len(out_keys) - 1, calls.count((ia, ib))/len(calls))
+                         for ia, ib in dict.fromkeys(calls)]
         xi_a, xi_b, w_ids, out_idx, wick_fac = zip(*rows)
         return dict(xi_a_idx=np.array(xi_a, dtype=np.int32),
                     xi_b_idx=np.array(xi_b, dtype=np.int32), w_ids=np.array(w_ids, dtype=np.int32),

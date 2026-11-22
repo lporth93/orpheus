@@ -862,7 +862,8 @@ void continuous_rterms_tomo(
                     rp1[idx] += phi_weight*a_c4psi[i1]*b_c4psi[i2];
                     rm0[idx] += phi_weight*a_c4vpsi[i1]*b_c4vpsi[i2];
                     rm1[idx] += phi_weight*a_c4v[i1]*b_c4v[i2];
-                    rpm[idx] += phi_weight*a_1[i1]*b_c4vpsi[i2];
+                    // xi_+ and xi_- of rpm on either link alike
+                    rpm[idx] += .5*phi_weight*(a_1[i1]*b_c4vpsi[i2] + b_1[i1]*a_c4vpsi[i2]);
                 }
             }
         }

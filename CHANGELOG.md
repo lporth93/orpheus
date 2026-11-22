@@ -114,7 +114,7 @@ parallelised C kernels.
   catalog, idealised Poisson counts or the continuum limit, with the integrals in
   `orpheus/src/cov_postq.c`. Both classes are exported from the package root, and
   `GGCovariance.get_cov_terms` returns the shape-noise, mixed and sample-variance terms
-  of each covariance block. Coming from the `covariance` branch, twenty-six things changed on
+  of each covariance block. Coming from the `covariance` branch, twenty-seven things changed on
   the way in:
   * The measured pair counts were twice the ordered pair counts. `GGCorrelation.norm`
     already holds both orders of every pair, and the module doubled it again, which halved
@@ -125,6 +125,12 @@ parallelised C kernels.
     quadruplet density, and with it the cosmic-variance terms, by that factor.
   * The shape noise of a pair of distinct tomographic bins was twice too large: its pairs
     are now double counted like the ordered pairs within one bin.
+  * The tomographic xi_+ xi_- sample variance took xi_+ from one link of each Wick contraction
+    and xi_- from the other only. Where the links join different bins, e.g. xi^00 and xi^11 for
+    the cross pair (0, 1), both assignments enter alike; before, Cov_pm of the cross pairs
+    depended on which bin was labelled first, by up to 67% for two bins of different xi. In the
+    tutorial the mocks exceeded the noiseless COSEBI B-modes of the pair (0, 1) by 4-29%,
+    which now agree as well as those of the auto pairs; their E-modes moved by 0.4% at most.
   * Given `nbar_ref`, the idealised multiplets and the constant quadruplet density of
     `'frompairs'` are built at `nbar_ref` rather than at the first per-bin density, so they
     share the reference the tomographic terms are rescaled from.

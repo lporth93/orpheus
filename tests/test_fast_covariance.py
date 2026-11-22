@@ -17,7 +17,8 @@
 #   separable density against that density, a measured density relative to the suppression of the
 #   pairs of the catalog, independent of the threads and of the mask, the radial stencil, and the
 #   triplets and quadruplet density synthesised from their Fourier coefficients
-# * Split of the tomographic covariance into its terms
+# * Split of the tomographic covariance into its terms, and the cross bin pair independent of the
+#   labels of its bins
 # * Weights of the statistics that are linear in xi_pm
 
 import warnings
@@ -918,6 +919,38 @@ def test_sample_variance_of_the_cross_bins_follows_the_contractions(method_quadr
             assert np.allclose(sub(i, j), factor*single[block], rtol=RTOL_EXACT, atol=0.), block
         for i, j in [(0, 2), (2, 0), (0, 1), (1, 0), (1, 2), (2, 1)]:
             assert not np.any(sub(i, j)), block
+
+# Swapping the labels of two bins, i.e. xi^00 <-> xi^11, nbar and sigma_eps, leaves the covariance
+# of the cross pair (01, 01) unchanged. With different xi in the two bins this needs xi_+ and xi_-
+# of rpm on either link of the contraction xi^00 xi^11 alike. The two varphi grids are the same, on
+# which swapping the links of the other r-terms is exact.
+@pytest.mark.parametrize("method_quadruplets", ['continuous', 'analytic'])
+def test_cross_pair_covariance_does_not_depend_on_the_bin_labels(method_quadruplets):
+    edges = np.geomspace(2., 40., 4)
+    th = np.geomspace(.01, 1e4, 2000)
+    def xi(amp, scale):
+        return interp1d(th, amp*_xi(th)*np.exp(-th/scale), bounds_error=False, fill_value=0.)
+    xip = {(0, 0): xi(1., 10.), (0, 1): xi(.5, 30.), (1, 1): xi(2., 100.)}
+    xim = {(0, 0): xi(.3, 5.), (0, 1): xi(.2, 20.), (1, 1): xi(1., 60.)}
+    nbar, sigma = np.array([2., 5.])/60.**2, np.array([.3, .4])
+    varphi = np.linspace(0., 2.*np.pi, 16, endpoint=False)
+    kw = dict(theta_centers=_centers(edges), theta_edges=edges, area=100.*60.**2,
+              nbar_ref=7./60.**2, method_quadruplets=method_quadruplets,
+              phi_grid=np.geomspace(.5, 100., 8), varphi1_grid=varphi, varphi2_grid=varphi,
+              nthreads=NTHREADS)
+    n = len(edges)-1
+    cross = []
+    for label in ([0, 1], [1, 0]):
+        cov = GGCovariance(
+            spline_xip=[(*sorted((label[a], label[b])), s) for (a, b), s in xip.items()],
+            spline_xim=[(*sorted((label[a], label[b])), s) for (a, b), s in xim.items()],
+            nbar=nbar[label], sigma_eps=sigma[label], **kw)
+        i = cov.tomopairs_list.index((0, 1))
+        terms = cov.get_cov_terms()
+        cross.append({(block, term): terms[block][term][i*n:(i+1)*n, i*n:(i+1)*n]
+                      for block in ('pp', 'mm', 'pm') for term in ('D', 'mix', 'sva')})
+    for key, block in cross[0].items():
+        assert np.allclose(cross[1][key], block, rtol=RTOL_EXACT, atol=0.), key
 
 # In the continuum limit the tomographic class integrates its terms when they are first asked
 # for, and for a single bin they equal the ones of GGCovarianceNoTomo. The getters of a single
