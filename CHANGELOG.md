@@ -175,6 +175,14 @@ parallelised C kernels.
   of the bins 001, 010, 101 and 110 were up to 3.9 sigma off; `DoubleTree` was right. Both
   now give the multipoles and norms of `DoubleTree` for every z-combination
   (`test_ggg_kernels_agree_on_every_z_combination`).
+* **Multiscale `computeMap3` and `computeNMM` paired the radii with the wrong apertures.**
+  Their filters take the radii of the vertices at theta1 and theta2 first and that of the base
+  vertex last, so entry (R1, R2, R3) of `computeMap3(do_multiscale=True)` held
+  <M_z1(R3) M_z2(R1) M_z3(R2)> and that of `computeNMM` <N(R3) M(R1) M(R2)>. They now hold
+  <M_z1(R1) M_z2(R2) M_z3(R3)> and <N(R1) M(R2) M(R3)>, the apertures in the order of the
+  name as `computeNNM` already had them, and new (R1, R2, R3) equals old (R2, R3, R1). The
+  equal-scale statistics are unchanged
+  (`test_multiscale_radii_follow_the_apertures_of_the_name`).
 * **The real-space conversion of the fourth-order multipoles overflowed its 32-bit
   offsets.** `NNNNCorrelation_NoTomo.multipoles2npcf` wrote outside its output and
   segfaulted once `nbinsr**3*nbinsphi**2` exceeded `2**31`, e.g. for 52 radial and 127
