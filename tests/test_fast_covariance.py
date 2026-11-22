@@ -248,7 +248,11 @@ def test_sparse_bins_take_the_density_of_their_block(survey):
     vol = np.einsum('i,j,k->ijk', v, v, v)
     cell_norm = 2.*np.pi*area*(2.*np.pi/cov.q_n_modes)**2
     ideal = (NGAL/area)**4*cell_norm*vol
-    count_min = np.median(ideal)
+    # Halfway between two distinct counts near the median, as the bins of one count tie up to
+    # rounding, which would decide whether the test and orpheus find them sparse
+    srt = np.sort(ideal.ravel())
+    jumps = np.flatnonzero(srt[1:] > srt[:-1]*(1.+1e-9))
+    count_min = np.sqrt(srt[jumps[len(jumps)//2]]*srt[jumps[len(jumps)//2]+1])
     sparse = np.argwhere(ideal < count_min)
     assert 0 < len(sparse) < ideal.size
     kw = _survey_kwargs(ra, dec, area, cov.path_save, cov.geometry)
