@@ -78,6 +78,13 @@ parallelised C kernels.
 
 #### Changed — please read before upgrading
 
+* **`NNCorrelation` defaults to `shuffle_pix=0`**, the centre of mass of each cell, like all
+  other correlators; it used random cell centres. A clustering estimate divides the pairs by
+  those of the randoms, and with the same cell centres the binning of both shifts alike. Pass
+  `shuffle_pix=1` for counts on narrow bins that nothing normalises: on log bins of width 0.025
+  the centres of mass put the separations of the cells on the lattice of the pixels, and the
+  pair counts of the tutorial catalog scatter by 3.5% from one bin to the next, against 0.07%
+  with random centres. The covariance module measures its multiplets with `shuffle_pix=1`.
 * **`tree_redges` is no longer an argument** of `BinnedNPCF` or `DirectEstimator`. The radii
   at which the tree changes resolution are always `rmin_pixsize*tree_resos`. A hand-given
   ladder never survived construction anyway (see 0.5.2), so no result changes.
@@ -335,11 +342,51 @@ parallelised C kernels.
   `AssertionError`. Like `spins`, they are now broadcast from any integer or sequence.
 * **A leaf band given out of order was reported but kept.** `maxresoind_leaf <
   minresoind_leaf` now sets `maxresoind_leaf` to `minresoind_leaf`, as the message says.
+* **GGG `Discrete` and `Tree` stored Gamma_3 under the wrong z-combination.** Both kernels
+  accumulate Gamma_3 and the norm with the two radial bins swapped, but kept the z-combination
+  (z1, z2, z3) where it is (z1, z3, z2), so for z2 != z3 these landed under the other
+  combination. They also applied the multiple-counting correction only for z1 = z2 = z3
+  instead of z2 = z3, and `Tree` took its radial offset from the previous bin, wrong for the
+  auto-correlations of every bin but the first. On the lognormal mocks of KP-WL-8 the B-modes
+  of the bins 001, 010, 101 and 110 were up to 3.9 sigma off; `DoubleTree` was right. Both
+  now give the multipoles and norms of `DoubleTree` for every z-combination
+  (`test_ggg_kernels_agree_on_every_z_combination`).
+* **Multiscale `computeMap3` and `computeNMM` paired the radii with the wrong apertures.**
+  Their filters take the radii of the vertices at theta1 and theta2 first and that of the base
+  vertex last, so entry (R1, R2, R3) of `computeMap3(do_multiscale=True)` held
+  <M_z1(R3) M_z2(R1) M_z3(R2)> and that of `computeNMM` <N(R3) M(R1) M(R2)>. They now hold
+  <M_z1(R1) M_z2(R2) M_z3(R3)> and <N(R1) M(R2) M(R3)>, the apertures in the order of the
+  name as `computeNNM` already had them, and new (R1, R2, R3) equals old (R2, R3, R1). The
+  equal-scale statistics are unchanged
+  (`test_multiscale_radii_follow_the_apertures_of_the_name`).
 * **The real-space conversion of the fourth-order multipoles overflowed its 32-bit
   offsets.** `NNNNCorrelation_NoTomo.multipoles2npcf` wrote outside its output and
   segfaulted once `nbinsr**3*nbinsphi**2` exceeded `2**31`, e.g. for 52 radial and 127
   angular bins. The GGGG and GNNN conversions used the same offsets, the GGGG one scaled by
   its eight components. All three now index with 64-bit offsets.
+* **The third-order kernels overflowed the 32-bit offsets of their per-thread buffers.** The
+  multipoles of every thread sit at `thread*size` in one buffer, which overflowed once
+  `nthreads*(nmax+1)*nbinsr**2*nbinsz**3` exceeded `2**31`, e.g. beyond 47 threads for GGG
+  with 6 tomographic bins, `nmaxs=50` and 64 radial bins. These offsets and the buffer sizes
+  are now 64-bit in all third-order kernels; the results are unchanged, bitwise on one thread.
+* **The NNNN conversion to angular bins is separable.** `multipoles2npcf_nnnn` summed all
+  (2 nmax+1)^2 multipoles for each pair of angular bins of every radial triple. It now sums
+  over n2 first, for each phi13 bin, and then over n1, with the phases tabulated once for all
+  triples, which needs nphi13 (2 nmax+1+nphi12) instead of (2 nmax+1) nphi12 nphi13
+  operations per n1 and triple. For 127 angular bins and `nmaxs=20` it is 24x faster, about
+  20 s instead of 9 min at 32 threads for 49 radial bins, and agrees to 3.5e-15.
+* **The curved-sky NNNN ignored `shuffle_pix`.** `NNNNCorrelation_NoTomo` with
+  `process_spherical=True` built its multihash with the cell centres at the centre of mass,
+  whatever `shuffle_pix` asked for, unlike the flat NNNN and the other curved-sky
+  correlators. It now passes `shuffle_pix` on; with `shuffle_pix=0` the counts are unchanged.
+* **Curved-sky trees rotated the shapes of galaxies at their cell centre arbitrarily on arm64.**
+  The reduction to cells transports each shape to the centre by the difference of the bearings
+  from the centre to the galaxy and back. For a galaxy at the centre up to rounding, e.g. the only
+  galaxy of a cell with `shuffle_pix=0`, both are `atan2` of rounding noise, which cancels exactly
+  on x86 but not where the compiler fuses multiply-adds, as Apple clang does on arm64. There a
+  random catalog of 20000 galaxies changed by 0.2% in GG and 5.6% in the GGG `DoubleTree`
+  multipoles. The angle now follows from Napier's analogy, which vanishes for a galaxy at the
+  centre; on x86 the results are unchanged to 1e-13 (`test_trees_count_clumps_exactly`).
 * **Building from source with a universal2 Python on macOS failed at the link**, e.g. with
   the python.org Python 3.12. Such a Python links the extension for arm64 and x86_64, while
   the C sources and libomp are built for the host only. `setup.py` now builds for the host

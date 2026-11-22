@@ -826,10 +826,12 @@ class GGGCorrelation(BinnedNPCF):
                     tmprcombi += 1
 
         rawstats = np.zeros(4*self.nzcombis*nrcombis, dtype=np.complex128)
+        # The filter takes the radii of the vertices at theta1 and theta2 and then of the base vertex,
+        # so that R1, R2 and R3 are those of the apertures of z1, z2 and z3
         self.clib.threepcf2M3correlators_ggg(
             self.npcf.flatten(), self.bin_edges.astype(np.float64), self.bin_centers_mean.astype(np.float64),
             np.int32(self.nbinsr), self.phi.astype(np.float64), np.int32(len(self.phi)), np.int32(self.nzcombis),
-            R1s, R2s, R3s, np.int32(nrcombis), np.int32(do_multiscale), np.int32(self.nthreads),
+            R2s, R3s, R1s, np.int32(nrcombis), np.int32(do_multiscale), np.int32(self.nthreads),
             rawstats)
         
         if basis=="MM*":
@@ -1908,10 +1910,12 @@ class NGGCorrelation(BinnedNPCF):
                     tmprcombi += 1
 
         rawstats = np.zeros(2*nzcombis*nrcombis, dtype=np.complex128)
+        # The filter takes the radii of the sources at theta1 and theta2 and then of the lens at the
+        # base vertex, so that R1 is that of N and R2, R3 those of the two M
         self.clib.threepcf2NMMcorrelators_ngg(
             self.npcf.flatten(), self.bin_edges.astype(np.float64), self.bin_centers_mean.astype(np.float64),
             np.int32(self.nbinsr), self.phi.astype(np.float64), np.int32(len(self.phi)), np.int32(nzcombis),
-            R1s, R2s, R3s, np.int32(nrcombis), np.int32(self.nthreads),
+            R2s, R3s, R1s, np.int32(nrcombis), np.int32(self.nthreads),
             rawstats)
 
         if basis=="MM*":

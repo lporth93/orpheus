@@ -568,6 +568,35 @@ def test_landy_szalay_stays_finite_without_random_pairs(sparse_catalogs):
     assert np.any(np.asarray(nn.npair) == 0), "the setup left no empty bins to check"
     assert np.isfinite(np.asarray(nn.xi)).all()
 
+# Entry (R1, R2, R3) of a multiscale aperture statistic holds the radii of its apertures in the
+# order of its name: Map(R1) Map(R2) Map(R3), N(R1) N(R2) M(R3) and N(R1) M(R2) M(R3). Swapping
+# the two apertures at theta1 and theta2, which share the base galaxy, maps the entries onto each
+# other exactly, with Map and Mx of the swapped apertures exchanged.
+def test_multiscale_radii_follow_the_apertures_of_the_name(shear_catalog, scalar_catalog):
+    radii = np.array([2., 6.])
+    n = len(radii)
+    triples = list(product(range(n), repeat=3))
+    swap12 = [(b*n + a)*n + c for a, b, c in triples]
+    swap23 = [(a*n + c)*n + b for a, b, c in triples]
+    kwargs = dict(min_sep=MIN_SEP, max_sep=MAX_SEP, binsize=.1, nmaxs=8, tree_resos=[0.],
+                  method='DoubleTree', nthreads=NTHREADS)
+    ggg = GGGCorrelation(n_cfs=4, **kwargs)
+    ggg.process(shear_catalog, dotomo=False)
+    map3 = ggg.computeMap3(radii, do_multiscale=True)[:, 0]
+    # MapMapMap, MapMapMx, MapMxMap, MxMapMap, MapMxMx, MxMapMx, MxMxMap, MxMxMx
+    swapped = map3[[0, 2, 1, 3, 4, 6, 5, 7]][:, swap23]
+    assert _deviation(map3, swapped) < RTOL_EXACT, _deviation(map3, swapped)
+    gnn = GNNCorrelation(**kwargs)
+    gnn.process(shear_catalog, scalar_catalog, dotomo_source=False, dotomo_lens=False)
+    nnm = gnn.computeNNM(radii, do_multiscale=True)[0, 0]
+    assert _deviation(nnm, nnm[swap12]) < RTOL_EXACT, _deviation(nnm, nnm[swap12])
+    ngg = NGGCorrelation(**kwargs)
+    ngg.process(shear_catalog, scalar_catalog, dotomo_source=False, dotomo_lens=False)
+    nmm = ngg.computeNMM(radii, do_multiscale=True)[:, 0]
+    # NMapMap, NMxMx, NMxMap, NMapMx
+    swapped = nmm[[0, 1, 3, 2]][:, swap23]
+    assert _deviation(nmm, swapped) < RTOL_EXACT, _deviation(nmm, swapped)
+
 
 ################################
 # AGREEMENT BETWEEN CODE PATHS #
@@ -588,6 +617,27 @@ def test_doubletree_with_a_pinned_leaf_band_reproduces_basetree(shear_catalog):
     # the unpinned run has to disagree, or the pinned one proves nothing
     assert _deviation(ref, out[0]) > 1e-3, "the leaf band is not changing anything"
     assert _deviation(ref, out[1]) < RTOL_EXACT, _deviation(ref, out[1])
+
+# On the exact positions Discrete and Tree give the multipoles and norms of DoubleTree for every
+# z-combination: Gamma_3 and the norm, which they store radially transposed, under (z1, z3, z2),
+# and the multiple-counting correction wherever z2 == z3. Three bins cover every pattern of equal
+# and different bins.
+@pytest.mark.parametrize("method", ['Discrete', 'Tree'])
+def test_ggg_kernels_agree_on_every_z_combination(method):
+    rng = np.random.default_rng(11)
+    ngal = 600
+    cat = SpinTracerCatalog(spin=2, pos1=rng.uniform(0., 60., ngal), pos2=rng.uniform(0., 60., ngal),
+                            tracer_1=rng.normal(0., .3, ngal), tracer_2=rng.normal(0., .3, ngal),
+                            weight=rng.uniform(.5, 1.5, ngal), zbins=rng.integers(0, 3, ngal),
+                            geometry='flat2d')
+    out = []
+    for kind in ('DoubleTree', method):
+        inst = GGGCorrelation(n_cfs=4, method=kind, min_sep=1., max_sep=30., nbinsr=8, nmaxs=6,
+                              tree_resos=[0.], multicountcorr=True, nthreads=NTHREADS)
+        inst.process(cat, dotomo=True)
+        out.append([np.asarray(inst.npcf_multipoles), np.asarray(inst.npcf_multipoles_norm)])
+    for ref, other in zip(*out):
+        assert _deviation(ref, other) < RTOL_EXACT, _deviation(ref, other)
 
 # Make sure that for the Tree scheme doesnt use any band for which is below rmin based on the
 # chosen tree_resos and rmin_pixsize.
