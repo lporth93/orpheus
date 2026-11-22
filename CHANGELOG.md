@@ -166,6 +166,15 @@ parallelised C kernels.
   `AssertionError`. Like `spins`, they are now broadcast from any integer or sequence.
 * **A leaf band given out of order was reported but kept.** `maxresoind_leaf <
   minresoind_leaf` now sets `maxresoind_leaf` to `minresoind_leaf`, as the message says.
+* **GGG `Discrete` and `Tree` stored Gamma_3 under the wrong z-combination.** Both kernels
+  accumulate Gamma_3 and the norm with the two radial bins swapped, but kept the z-combination
+  (z1, z2, z3) where it is (z1, z3, z2), so for z2 != z3 these landed under the other
+  combination. They also applied the multiple-counting correction only for z1 = z2 = z3
+  instead of z2 = z3, and `Tree` took its radial offset from the previous bin, wrong for the
+  auto-correlations of every bin but the first. On the lognormal mocks of KP-WL-8 the B-modes
+  of the bins 001, 010, 101 and 110 were up to 3.9 sigma off; `DoubleTree` was right. Both
+  now give the multipoles and norms of `DoubleTree` for every z-combination
+  (`test_ggg_kernels_agree_on_every_z_combination`).
 * **The real-space conversion of the fourth-order multipoles overflowed its 32-bit
   offsets.** `NNNNCorrelation_NoTomo.multipoles2npcf` wrote outside its output and
   segfaulted once `nbinsr**3*nbinsphi**2` exceeded `2**31`, e.g. for 52 radial and 127

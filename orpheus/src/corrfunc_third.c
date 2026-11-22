@@ -2490,9 +2490,10 @@ void alloc_Gammans_discrete_ggg(const MultiresoCatalog *cat, const NavHash *nav,
                             for (zbin3=0; zbin3<nbinsz; zbin3++){
                                 zcombi = zbin1*nbinsz*nbinsz+zbin2*nbinsz+zbin3;
                                 gammashift1 = thisnshift + zcombi*gamma_zshift + elb1*nbinsr;
-                                gammashiftt1 = thisnshift + zcombi*gamma_zshift;
+                                // Gamma_3 and the norm are stored radially transposed, so vertices 2 and 3 swap bins
+                                gammashiftt1 = thisnshift + (zbin1*nbinsz*nbinsz+zbin3*nbinsz+zbin2)*gamma_zshift;
                                 // Double counting correction
-                                if (zbin1==zbin2 && zbin1==zbin3 && dccorr==1){
+                                if (zbin2==zbin3 && dccorr==1){
                                     zrshift = zbin2*nbinsr + elb1;
                                     r12shift = elb1*nbinsr+elb1;
                                     gammashift = 4*(gammashift1 + elb1);
@@ -2799,9 +2800,11 @@ void alloc_Gammans_tree_ggg(const MultiresoCatalog *cat, const MultiresoCatalog 
                             for (zbin3=0; zbin3<nbinsz; zbin3++){
                                 zcombi = zbin1*nbinsz*nbinsz+zbin2*nbinsz+zbin3;
                                 gammashift1 = thisnshift + zcombi*gamma_zshift + elb1*nbinsr;
-                                gammashiftt1 = thisnshift + zcombi*gamma_zshift;
+                                // Gamma_3 and the norm are stored radially transposed, so vertices 2 and 3 swap bins
+                                gammashiftt1 = thisnshift + (zbin1*nbinsz*nbinsz+zbin3*nbinsz+zbin2)*gamma_zshift;
                                 // Double counting correction
-                                if (zbin1==zbin2 && zbin1==zbin3 && dccorr==1){
+                                if (zbin2==zbin3 && dccorr==1){
+                                    zrshift = zbin2*nbinsr + elb1;
                                     r12shift = elb1*nbinsr+elb1;
                                     gammashift = 4*(gammashift1 + elb1);
                                     gammashiftt = gammashiftt1 + r12shift;

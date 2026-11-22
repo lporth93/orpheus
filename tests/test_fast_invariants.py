@@ -589,6 +589,27 @@ def test_doubletree_with_a_pinned_leaf_band_reproduces_basetree(shear_catalog):
     assert _deviation(ref, out[0]) > 1e-3, "the leaf band is not changing anything"
     assert _deviation(ref, out[1]) < RTOL_EXACT, _deviation(ref, out[1])
 
+# On the exact positions Discrete and Tree give the multipoles and norms of DoubleTree for every
+# z-combination: Gamma_3 and the norm, which they store radially transposed, under (z1, z3, z2),
+# and the multiple-counting correction wherever z2 == z3. Three bins cover every pattern of equal
+# and different bins.
+@pytest.mark.parametrize("method", ['Discrete', 'Tree'])
+def test_ggg_kernels_agree_on_every_z_combination(method):
+    rng = np.random.default_rng(11)
+    ngal = 600
+    cat = SpinTracerCatalog(spin=2, pos1=rng.uniform(0., 60., ngal), pos2=rng.uniform(0., 60., ngal),
+                            tracer_1=rng.normal(0., .3, ngal), tracer_2=rng.normal(0., .3, ngal),
+                            weight=rng.uniform(.5, 1.5, ngal), zbins=rng.integers(0, 3, ngal),
+                            geometry='flat2d')
+    out = []
+    for kind in ('DoubleTree', method):
+        inst = GGGCorrelation(n_cfs=4, method=kind, min_sep=1., max_sep=30., nbinsr=8, nmaxs=6,
+                              tree_resos=[0.], multicountcorr=True, nthreads=NTHREADS)
+        inst.process(cat, dotomo=True)
+        out.append([np.asarray(inst.npcf_multipoles), np.asarray(inst.npcf_multipoles_norm)])
+    for ref, other in zip(*out):
+        assert _deviation(ref, other) < RTOL_EXACT, _deviation(ref, other)
+
 # Make sure that for the Tree scheme doesnt use any band for which is below rmin based on the
 # chosen tree_resos and rmin_pixsize.
 BELOW_MIN_SEP = [(s, lowmem) for s in correlators(orders=(3, 4), exclude=('NNNCorrelation', 'GNNCorrelation'))
