@@ -114,7 +114,7 @@ parallelised C kernels.
   catalog, idealised Poisson counts or the continuum limit, with the integrals in
   `orpheus/src/cov_postq.c`. Both classes are exported from the package root, and
   `GGCovariance.get_cov_terms` returns the shape-noise, mixed and sample-variance terms
-  of each covariance block. Coming from the `covariance` branch, twenty-three things changed on
+  of each covariance block. Coming from the `covariance` branch, twenty-six things changed on
   the way in:
   * The measured pair counts were twice the ordered pair counts. `GGCorrelation.norm`
     already holds both orders of every pair, and the module doubled it again, which halved
@@ -139,10 +139,12 @@ parallelised C kernels.
     phi = 0, had the same floor, e.g. 9%, 46% and 6.5% off for theta_min = 0.5 arcmin and
     still 6% for q_-- at 2 arcmin. Its table now starts below its shortest nonzero third side,
     and the tomographic continuum tabulates xi for the mixed terms apart from the r-terms.
-  * The idealised pair and triplet counts and the radial weights of the r-terms and of the
-    sub-binning took the measure of an angular bin as `theta*dtheta` at its centre rather
-    than the annulus `(theta_max**2 - theta_min**2)/2`, which put the shape noise 0.55% high
-    for 24 log bins over 2-300 arcmin. The quadruplet volume still uses the bin centres.
+  * The idealised pair and triplet counts and the radial weights of the r-terms took the
+    measure of an angular bin as `theta*dtheta` at its centre rather than the annulus
+    `(theta_max**2 - theta_min**2)/2`, which put the shape noise 0.55% high for 24 log bins over
+    2-300 arcmin. The quadruplet density now divides by the exact annuli as well
+    (R. Reischke), which lowers it by cosh(dlnt/2)^-3, 0.4% for the default bins of 0.1 and 6%
+    for bins of 0.4 in ln theta.
   * In the continuum limit the sample-variance r-terms were evaluated at the bin centres
     while the mixed term and the shape noise are bin averages, which put the xi+xi- sample
     variance up to 30% off at large theta for 24 log bins over 2-300 arcmin.
@@ -176,27 +178,53 @@ parallelised C kernels.
     0.29 the mixed term was about 8% low and the shape noise of the wrapper about 15% low.
   * The file name of a cached multiplet hashes the catalog and the whole correlator setup.
     It used to leave out `area`, on which the cached quadruplet density depends, so a run
-    with a different `area` on the same catalog reloaded a stale density. Older caches are
-    measured again. With `store_multiplets=False` nothing is written, and a cache from an
-    earlier run is no longer deleted when it is loaded. Its `.npz` file can be passed as
-    `pairs`, `triplets` or `quadruplets`, which restores the measured bin centres and
-    `pairs_wsq` as a cache hit does; a tensor alone keeps the nominal centres.
+    with a different `area` on the same catalog reloaded a stale density. Caches of earlier
+    versions are measured again. With
+    `store_multiplets=False` nothing is written, and a cache from an earlier run is no longer
+    deleted when it is loaded. Its `.npz` file can be passed as `pairs`, `triplets` or
+    `quadruplets`, which restores the measured bin centres and `pairs_wsq` as a cache hit
+    does; a tensor alone keeps the nominal centres.
   * `triplet_oversample` split each log bin into linear sub-bins, while `NNNCorrelation`
     measures log-uniform ones, so the interior sub-bin edges were up to 0.5% off for 24 bins
     over 2-300 arcmin with 5 sub-bins. This only reached the idealised triplets and the
     fallback centres of empty bins, and the idealised mixed term converges to the same value
     for both subdivisions. The sub-bins are now log-uniform.
+  * The mixed term took w xi(r_jk) of each triplet bin at the bin centre, although in the bins
+    next to phi = 0 on the diagonal the third side r_jk runs from almost zero to twice its
+    value at the centre, where xi is steep. For the 512 bins over 2-300 arcmin and 128 angular
+    bins of the tutorial, the COSEBI variance of the idealised mixed term was 0.3-7.7% low for
+    n = 1-20 with a spurious B/E of -0.6 to -4.9%, and the B-mode variance of the measured mixed
+    term up to 15 times below the mocks at n = 20. `triplet_term_reduce` now integrates w xi
+    over 3 sub-nodes of each radial bin and 4096 angles (`TRIPLET_SUBNODES`), which puts the
+    idealised term within 0.04% of the continuum limit and the measured one within 4% (E) and
+    11% (B) of the mocks. The mixed terms of the
+    tutorial take about 40 s for it instead of 3 s, as the tomographic classes reduce the
+    triplets once per weight and xi rather than once per pair of bin pairs, 9 instead of 42
+    reductions for two bins.
   * The radial bins of a quadruplet density measured on the catalog defaulted to the xi_pm
-    bins. The quadruplet integral reads the density out to the largest separation between the
-    pairs and sets it to zero above its grid, so Cov_pp, whose cosmic variance comes from pairs
-    far apart, lost every quadruplet beyond the largest xi_pm bin. The default now spans the
-    smallest xi_pm edge, or the mean galaxy separation if smaller, to
-    `Catalog.max_separation` in log bins of width `q_binsize=0.4`, independent of the xi_pm
-    binning, with 64 angular bins. Below its grid the density is held at the first bin, which
-    misses the small-scale structure of a mask when the xi_pm bins start well above the
-    galaxy separation. The default `phi_grid` ends where the quadruplets end, at the last edge
-    of a density tensor's grid or otherwise at `Catalog.max_separation`, instead of 1e4
-    arcmin, which remains only without a catalog.
+    bins, and the quadruplet integral, which reads the density out to the largest separation
+    between the pairs and sets it to zero above its grid, lost every quadruplet beyond the
+    largest xi_pm bin in Cov_pp. The default grid now spans the first xi_pm edge to
+    `Catalog.max_separation` in an even number of log bins of width `q_binsize=0.1`, holds the
+    density at the first bin below it and warns if a grid starts above the first xi_pm edge or
+    ends before `phi_grid`, whose default now ends where the quadruplets end, and otherwise at
+    1e4 arcmin. Between its radial bins a measured density is interpolated with Catmull-Rom
+    splines in log theta, `q_interpolation='cubic'`, linear in the first and the last
+    interval, rather than linearly, between the knot values whose interpolant has the bin
+    means m, m_i - c (m_(i+1) - 2 m_i + m_(i-1)) with c = 1/24, or 1/8 for `'linear'`. A radial
+    bin with fewer than `q_count_min=1000` idealised quadruplets per angular resolution cell
+    takes the density of the smallest aligned block of 2^l bins per radial axis that holds as
+    many measured ones (`quadruplets_merge_sparse`). A density tensor that is passed is
+    interpolated between its values as they are, and the cached file keeps the measured
+    density. In the tutorial the mocks over the prediction of the noiseless COSEBI B-mode
+    variance of the auto bin pairs at n >= 12 rise from 0.61-0.72 to 0.84-0.94, with the
+    E-modes within 1%.
+  * `q_richardson=True` extrapolates a measured density to vanishing radial bin width, as
+    (4 q - q_2)/3 of the knot values of q and of the same counts on pairs of merged bins, after
+    the `quad_richardson` of R. Reischke in OneCovariance. Its order 2 is empirical and
+    overcorrects the B-modes of the tutorial at high n, so it defaults to `False`.
+  * Count tensors read from a file are shared by all instances that hold them, so further
+    instances on the cached multiplets of the tutorial start in 0.1 s instead of 40-52 s.
   * `method_quadruplets='frompairs'` multiplied the pair-count suppressions of the three legs
     from the base galaxy, s(phi) s(theta1) s(|x_l - x_i|). For two pairs far apart this counts
     the window at their separation twice and misses the deficit of the second pair. The
@@ -205,83 +233,85 @@ parallelised C kernels.
     cosmic variance at 2 arcmin moved from 6-16% to below 1.5% off, and the xi_- xi_- part
     of Cov_pp from 26-40% to below 0.5% off. Any separable density degrades once theta
     approaches the narrowest extent of the footprint, e.g. 20-50% off at 100 arcmin on a
-    2x50 deg strip.
-  * `subbin` evaluated D and the mixed terms of the fine grid only in the
-    diagonal band unless `recompute_full` was given, although the fine instance holds the
-    triplets of the whole fine grid either way and the three mixed terms take 0.7 s there
-    for 500 bins and 512 angles. With a fine instance both are now evaluated on the whole
-    fine grid, and only the r-terms keep the band. `recompute_full` and the `dry` run of
-    `subbin` are gone, as is the `pair_mask` of `getqpp`, `getqmm`, `getqpm` and of `getrp0`
-    ... `getrpm`. A banded `get_all_rterms` no longer stores its
-    partial r-terms on the instance, where a later `get_cov_xipm` took them for the whole
-    r-terms. The accessors `get_pairs` and `get_triplets` are gone as well; the counts are
-    the attributes `pairs` and `triplets`. `subbin` of `GGCovariance` takes `slab_nr_block` and
-    sizes the tiles of its banded pass as the one of `GGCovarianceNoTomo` does, rather than with
-    the `nr_block` of the fine
-    instance, which makes the pass 1.4x faster for 120 fine bins with `nr_block=25` and 3.7x
-    without one. The banded pass evaluates each r-term only on the band of its own block,
-    `pair_mask` of `get_all_rterms` taking one mask per block, and
-    skips the elements of a tile outside every band, which makes it another 1.3-1.5x faster
-    for 200 fine bins with the bands 1.35 (pp, mm) and 1.9 (pm). Independent of subbin, the
-    quadruplet kernel now sorts its callbacks by weight and xi_b and computes their sums
-    over varphi2 once per pair, of which there are 105 for the 2300 callbacks of 6
-    tomographic bins, which leaves the r-terms bitwise unchanged and makes the integral 4-8x
-    faster for 5-6 bins, still 3.8x with 1024 varphi nodes and 120 fine bins, and 1.5x for 2
-    bins. The 16-corner interpolation of a density tensor forms its corner weights once, 9%
-    faster, which changes the r-terms at the 1e-16 level.
+    2x50 deg strip. Without `spl_suppression_ww`, an instance with a `catalog` measures the
+    suppression on its pairs in the radial bins of the quadruplet density, by default those of a
+    measured density, instead of raising.
+  * `subbin`, which interpolated a covariance to finer xi_pm bins and recomputed a band around
+    the diagonal on them, is gone, with `xipm_nbinstarget` of `cov_of_statistic` and the band
+    `pair_mask` of `get_all_rterms`. The covariance on the 512 fine bins of the tutorial is
+    computed directly. The accessor `get_pairs` is gone as well; the counts are the attributes
+    `pairs` and `triplets`.
   * `cov_of_statistic` took the width of a log bin as `theta*(exp(binsize)-1)`, which holds
     only for `theta` at the lower edge. At the bin centre it is `exp(binsize/2)` too wide, so
     the Map2 and COSEBI weights came out that much too large and their covariances
     `exp(binsize)` too large, in both classes, e.g. 28% for 20 log bins over
     2-300 arcmin and still 1.2% for 512 bins over 0.5-250 arcmin. The weights now take the
     widths of the xi_pm bins. The pure-mode correlation functions were not affected.
-  * `subbin` interpolates the r-terms, and without a fine instance the mixed
-    terms, via the correlation coefficient. For a block whose coefficients were all positive
-    this ran in log and left the coefficient on the fine diagonal below one between the coarse
-    nodes, e.g. the diagonal of q_++ up to 30% of its peak off instead of 6.5% for 20 to 60 log
-    bins over 2-300 arcmin. The coefficient is now interpolated linearly with its diagonal set
-    to one, as it already was for the other blocks. The pm blocks, which were interpolated
-    directly, now take the same route relative to their own diagonal, which puts the diagonal of
-    q_+- within about 1% of its peak instead of 30-50%. A block with a non-positive diagonal,
-    as Cov(xi_+, xi_-) can have, is still interpolated directly.
   * The tomographic bin pairs are `n_tomopairs` and `tomopairs_list` instead of `n_bp` and
     `bp_list`. `smooth_rterms`, which ratio-smoothed the discrete r-terms against their
     continuum limit, is gone, as it shifted the COSEBI covariance by 3-16% rather than only
     removing the stripes. `cov_of_statistic` returns the weights of the statistic with
     `return_weights=True`, formerly the private `_return_weights`.
-  * The varphi integrals of the sample-variance terms converge as the inverse square of the
-    number of nodes, as xi_pm is steep where galaxies of the two pairs nearly coincide.
-    `extrapolation`, off by default, also evaluates them on every second and fourth node of
-    the varphi grids, for 31% more runtime and a number of nodes that is a multiple of four.
-    `get_cov_xipm` and `cov_of_statistic` then take `extrapolation_type`: `'Baseline'`, the
-    default, returns the full grids, `'Richardson_pooled'` a Richardson extrapolation with one
-    fitted convergence order per block and bin pair, `'Richardson_component'` one with an order
-    per element and `'Shanks'` the Shanks transformation of each element. Each acts on the
-    requested statistic, and the fitted orders are kept in `extrapolation_orders`. Comparing
-    the types tells whether the baseline has converged; an extrapolated covariance is only as
-    good as that agreement.
   * `t_rmin_pixsize`, `t_tree_resos`, `q_rmin_pixsize` and `q_tree_resos` set the tree of the
     triplet and the quadruplet measurement apart from the one of the pairs, to which they
     default except `q_tree_resos`, which defaults to `(0., 0.5, 1., 2., 4., 8., 16.)`. The
     cache hashes the tree of the multiplet it holds, so the pairs and triplets keep their file
     names and the quadruplets of the default setup are measured anew. For unit weights the
     pairs of squared weights are the pairs and no longer counted in a second pass.
-  * With a catalog, the fine instance that `subbin` of `GGCovarianceNoTomo` builds measures only
-    the fine pairs. Its mixed terms are the continuum ones scaled by the ratio of the measured
-    to the idealised triplets of the coarse instance, which `continuous_q_single` interpolates,
-    and normalised by the measured fine pairs. Above 10 arcmin this matches directly measured
-    fine triplets 10-40 times better than the idealised mixed term; below, those are dominated
-    by Poisson noise. `GGCovariance` still measures the fine triplets.
-  * `continuous_q_single` and `continuous_q_tomo` run in parallel over theta_1 with precomputed
-    trigonometry, bitwise as before and 23-30 times faster on 16 threads. With `verbosity >= 1`
-    the classes print numbered steps with the time each one took.
+  * The continuum mixed term (`continuous_q_tomo`) runs in parallel over theta_1 with
+    precomputed trigonometry, bitwise as before and 23-30 times faster on 16 threads. With
+    `verbosity >= 1` the classes print numbered steps with the time each one took.
   * The methods of `GGCovariance` carried a `_tomo` suffix, while the names it inherited without
     one computed the covariance of the first bin pair alone. They now share the names of
     `GGCovarianceNoTomo`: `get_cov_xipm`, `get_cov_terms`, `get_cov_pp`, `get_cov_mm`,
-    `get_cov_pm`, `getD`, `getqpp`, `getqmm`, `getqpm`, `get_all_rterms`, `subbin` and
-    `cov_of_statistic`. In the continuum limit they integrate the terms when these are first
-    needed, so `get_continuous_tomo_c` is gone. The getters of a single bin pair, `getrp0` ...
+    `get_cov_pm`, `getD`, `getqpp`, `getqmm`, `getqpm`, `get_all_rterms` and `cov_of_statistic`.
+    In the continuum limit they integrate the terms when these are first needed, so
+    `get_continuous_tomo_c` is gone. The getters of a single bin pair, `getrp0` ...
     `getrpm` and the `_continuous` and `_discrete` getters, raise on `GGCovariance`.
+  * The triplets and the quadruplet density are kept as the real Fourier coefficients 1,
+    cos(n phi), sin(n phi) of their angles up to `t_nmaxs` and `q_nmaxs`, which default to
+    `nmaxs`, instead of on angular bins, so `phi_centers`, `phi_edges`, `q_phi_centers` and
+    `q_phi_edges` are gone. The measured multipoles become these coefficients directly and
+    reproduce the binned 3PCF and 4PCF at the bin centres to 1e-15. A tensor that is passed
+    holds coefficients and sets `t_nmaxs` or `q_nmaxs` from its shape, and
+    `get_triplets(phis, bins)` and `get_quadruplets(phis, bins)` give them at the angles `phis`.
+    The density of the tutorial takes 3.9 GB at `q_nmaxs=20` instead of 37.7 GB on 128 angular
+    bins. The sample-variance integral summed xi_a q xi_b times the angular weight over the
+    whole (varphi1, varphi2) grid of every pair of radial nodes. As each weight is a sum of
+    products of a factor of either pair, `quadruplet_sva_integrate` now projects the varphi sums
+    of each pair onto the Fourier modes of the density and the radial knots it reaches and
+    contracts them with the density at phi (following R. Reischke), with the idealised
+    densities as the constant mode times their separable suppression. It no longer grows with
+    the product of the varphi grids, 21x faster for a density tensor with 1024 nodes each and
+    1 bin, 47x for 6 bins and 300-390x for the constant and separable densities. Its threads
+    share the density slice and split the columns of the outputs, so that the memory no longer
+    grows with the threads, 6 GB in all instead of 9 GB per thread for 6 bins on 512 bins, and the
+    r-terms are the same to the last bit for any number of threads; `v2_block` and `nr_block`,
+    which bounded the memory of the old kernel, are gone. The varphi grids converge as the
+    inverse square of their nodes and are now cheap to refine: 2048 nodes each put the sample
+    variance of the 6 bins of KiDS-Legacy within 4e-5 of its limit, in units of the variances.
+    No angular interpolation enters, whose linear form between angular bins damped multipole n
+    by sinc^2(pi n/n_phi), 8% at n = 20 on 128 bins. On the 512 bins of the tutorial the
+    integral takes about 450 s on 48 threads at the default `q_nmaxs=30`, where the B-mode
+    sample variance of the COSEBIs at n >= 12 is within 1-2% of its value at 40. The mixed term
+    integrates the triplets on 4096 angles and agrees with the 512 angular bins times 8
+    sub-nodes of before to 6e-6, and sparse radial bins are merged on the count per angular
+    resolution cell, (2 pi/(2 q_nmaxs+1))^2.
+  * The continuum r-terms evaluated the varphi integrals of either pair on their own, for each
+    xi table and with the trigonometric functions at every node. The second pair sits at the
+    separation of the first shifted by pi in varphi, so on a varphi grid that this shift maps
+    onto itself it takes the same integrals; the sine integrals vanish by symmetry, and the
+    separations are now shared by all xi tables. The continuum r-terms of 2 tomographic bins on
+    the grids of the tutorial take 0.5 s instead of 8 s at 32 threads and agree to 4e-14 on an
+    even varphi grid.
+  * The kernels look xi up in tables on log-uniform knots, but the tables took the knots of an
+    interpolator as they were, so for `interp1d` on `np.linspace(.1, 300., 3000)` a lookup at 50
+    arcmin landed in [1.0, 1.1] arcmin with weight 490, and the mixed and sample-variance terms
+    came out wrong without an error. Knots that are not log-uniform are now replaced by 4096
+    log-uniform ones within them. The continuum mixed term of `GGCovarianceNoTomo` no longer
+    fails for more bins than `nr_target`, `GGCovarianceNoTomo.get_all_rterms` also runs in the
+    continuum limit, and the r-terms are rescaled in place, which saves a copy of their output
+    of 2.9 GB for 6 tomographic bins on 512 bins.
 
   `tests/test_fast_covariance.py` checks the measured counts, with and without weights,
   against brute force and against the idealised counts.

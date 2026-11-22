@@ -3,38 +3,24 @@
 #ifndef COV_POSTQ_H
 #define COV_POSTQ_H
 
-//////////////////////////////////////
-// Quadruplet density interpolation //
-//////////////////////////////////////
-
-// Quadrilinear interpolation of a quadruplet-density slice at n points
-void interp4d(const double *q_slice, const double *r_centers, const double *phi_centers,
-              int nr, int nphi,
-              double r_min, double r_max, double logr0, double inv_dlogr,
-              double phi0, double inv_dphi,
-              const double *t2f, const double *t3f, const double *a12f, const double *a13f,
-              int n, double *out);
-
 ///////////////////////////////
 // Quadruplet (SVA) integral //
 ///////////////////////////////
 
-// Cosmic-variance (r-term) integral of all callbacks over the phi grid
+// Cosmic-variance (r-term) integral of all callbacks over the phi grid, Eq. 6 (h) of the SVA note
 void quadruplet_sva_integrate(const double *phi_grid, const double *phi_w,
                               int n_phi, int n_r,
-                              const double *phi1_nodes,
-                              const double *phi1_weights, int ns1,
-                              const double *phi2_nodes,
-                              const double *phi2_weights, int ns2,
+                              const double *theta1_nodes,
+                              const double *theta1_weights, int n_sub1,
+                              const double *theta2_nodes,
+                              const double *theta2_weights, int n_sub2,
                               const double *v1_grid, const double *v1_w, int nv1,
                               const double *v2_grid, const double *v2_w, int nv2,
-                              int nr_block, int v2_block,
-                              const int *tiles, int n_tiles,
-                              int q_mode, const double *q_array,
-                              const double *q_r_centers,
-                              const double *q_phi_centers, int q_nr, int q_nphi,
-                              double q_const, const double *sup_t1,
-                              const double *sup_t2, const double *sup_t3,
+                              const double *q_array,
+                              const double *q_r_centers, int q_nr, int n_modes,
+                              int q_cubic,
+                              double q_const, const double *sup_phi,
+                              const double *sup_theta1, const double *sup_theta2,
                               const double *xi_x, int xi_n,
                               double xi_logx0, double xi_inv_dlogx,
                               const double *xi_y_tables, int n_xi_unique,
@@ -43,49 +29,30 @@ void quadruplet_sva_integrate(const double *phi_grid, const double *phi_w,
                               const int *w_ids, const int *out_idx,
                               const double *wick_fac,
                               int n_out, const int *symmetric_mask,
-                              int n_mask, const int *pair_masks,
-                              const int *mask_idx,
                               double *results, int nthreads, int verbose);
 
 /////////////////////////////////
 // Continuous-limit estimators //
 /////////////////////////////////
 
-// Continuous q-term of one xi, bin-averaged from a fine (alpha*n_r) grid
-void continuous_q_single(int n_r, int alpha,
-                         const double *fine_centers, const double *fine_weights,
-                         const double *phi_centers, const double *dphi,
-                         int n_fine, int n_phi,
-                         const double *xi_x, int xi_n,
-                         double xi_logx0, double xi_inv_dlogx,
-                         const double *xi_y,
-                         int w_type,
-                         double sigma_eps2, double area, double nbar,
-                         const double *ratio, int nr_ratio, int nphi_ratio,
-                         double ratio_logr0, double ratio_inv_dlogr,
-                         double ratio_phi0, double ratio_inv_dphi,
-                         double *out, int nthreads, int verbose);
-
-// Continuous q-terms of all tomo combos, one continuous_q_single per call
+// Continuous q-terms of all calls, each bin-averaged from a fine (alpha*n_r) grid
 void continuous_q_tomo(int n_r, int alpha,
                        const double *fine_centers, const double *fine_weights,
                        const double *phi_centers, const double *dphi,
                        int n_fine, int n_phi,
                        const double *xi_x, int xi_n,
                        double xi_logx0, double xi_inv_dlogx,
-                       const double *xi_y_tables, int n_xi_unique,
+                       const double *xi_y_tables,
                        double sigma_eps2, double area, double nbar,
                        int n_calls,
                        const int *call_xi_idx, const int *call_w_type,
-                       const int *call_out_idx, const double *call_factor,
-                       int n_out, double *results,
+                       double *results,
                        int nthreads, int verbose);
 
 // Continuous r-terms of all tomo combos
 void continuous_rterms_tomo(int n_r, const double *theta_centers,
                             const double *phi_grid, const double *phi_w, int n_phi,
                             const double *v_grid, const double *v_w, int n_v,
-                            const double *v_half, const double *v_half_w, int n_vh,
                             double area,
                             const double *xi_x, int xi_n,
                             double xi_logx0, double xi_inv_dlogx,
@@ -94,20 +61,32 @@ void continuous_rterms_tomo(int n_r, const double *theta_centers,
                             const int *work_xi_a_p, const int *work_xi_b_p,
                             const int *work_xi_a_m, const int *work_xi_b_m,
                             const int *work_out_idx,
-                            int n_out, double *results,
+                            double *results,
                             int nthreads, int verbose);
 
 //////////////////////////////////
 // Phi-reduction of mixed terms //
 //////////////////////////////////
 
-// Sum of the triplet counts against weight*xi(r_jk) over phi, for one mixed term
-void triplet_term_reduce(const double *Nt, int nr, int nphi,
-                         const double *tc, const double *phic,
-                         int weight_type,
-                         const double *xi_x, int xi_n,
-                         double xi_logx0, double xi_inv_dlogx,
-                         const double *xi_y,
-                         double *out, int nthreads, int verbose);
+// Integral over phi of the triplets per unit angle against weight*xi(r_jk), for one mixed term
+void triplet_term_reduce(
+    const double *triplets, int nr, int n_modes, const double *theta_edges, int n_sub, int n_ang,
+    int weight_type, const double *xi_x, int xi_n, double xi_logx0, double xi_inv_dlogx,
+    const double *xi_y, double *out, int nthreads, int verbose);
+
+////////////////////////////////////////////////////////
+// Post-processing of the measured quadruplet density //
+////////////////////////////////////////////////////////
+
+// Density of the sparse radial bins from the smallest block of bins that holds count_min, in place
+void quadruplets_merge_sparse(double *q, int nr, int nm, const double *v, double cell_norm,
+                              double q_ideal, double count_min, int nthreads);
+
+// Knot values of the quadruplet density whose interpolant has its bin means, in place
+void quadruplets_to_knots(double *q, int nr, int nm, double coef, int nthreads);
+
+// Quadruplet density extrapolated to vanishing radial bin width from its bin means, in place
+void quadruplets_richardson(double *q, int nr, int nm, const double *weights,
+                            const double *centers, double coef, int cubic, int nthreads);
 
 #endif

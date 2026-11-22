@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <math.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #ifdef _OPENMP
@@ -13,669 +14,620 @@
 
 #define M_PI 3.14159265358979323846
 
+// ln(x) of a positive normal x to 1e-3, from its exponent and a cubic in its mantissa
+static inline double log_approx(double x){
+
+    uint64_t bits;
+    memcpy(&bits, &x, sizeof(bits));
+    int e = (int)((bits >> 52) & 0x7ff) - 1023;
+    bits = (bits & 0x000fffffffffffffULL) | 0x3ff0000000000000ULL;
+    double t;
+    memcpy(&t, &bits, sizeof(t));
+    t -= 1.;
+    return (e*0.6931471805599453 + 9.25032111e-4
+        + t*(0.979753413 + t*(-0.393535802 + t*0.106684733)));
+}
+
+// Lower node of xval on a log-uniform grid x and its linear weight w, or -1 outside of the grid
+static inline int interp1d_locate(
+    const double *x, int n, double logx0, double inv_dlogx, double xval, double *w){
+
+    if (xval<=x[0] || xval>=x[n-1]) return -1;
+    // Lower node from the log-uniform spacing, then the exact one by comparison
+    int i = (int)((log_approx(xval)-logx0)*inv_dlogx);
+    if (i<0) i = 0;
+    if (i>n-2) i = n-2;
+    while (i<n-2 && x[i+1]<=xval) i++;
+    while (i>0 && x[i]>xval) i--;
+    *w = (xval-x[i])/(x[i+1]-x[i]);
+    return i;
+}
+
 // Linear interpolation of y(x) on a log-uniform grid x, zero outside of it
 static inline double interp1d_eval(
     const double *x, const double *y, int n,
     double logx0, double inv_dlogx, double xval){
 
-    if (xval<=x[0] || xval>=x[n-1]) return 0.;
-    // Lower node from the log-uniform spacing, corrected by one step against round-off
-    int i = (int)((log(xval)-logx0)*inv_dlogx);
-    if (i<0) i = 0;
-    if (i>n-2) i = n-2;
-    if (i<n-2 && x[i+1]<=xval) i++;
-    else if (i>0 && x[i]>xval) i--;
-    double w = (xval-x[i])/(x[i+1]-x[i]);
+    double w;
+    int i = interp1d_locate(x, n, logx0, inv_dlogx, xval, &w);
+    if (i<0) return 0.;
     return y[i] + w*(y[i+1]-y[i]);
+}
+
+// cos, sin, cos(4 x) and sin(4 x) of the n angles x, as four consecutive rows of one allocation,
+// NULL if it fails
+static double *trig_tables(const double *x, int n){
+
+    double *tab = (double *)orpheus_malloc((size_t)4*n*sizeof(double));
+    if (!tab) return NULL;
+    for (int i=0; i<n; i++){
+        tab[i] = cos(x[i]);
+        tab[n+i] = sin(x[i]);
+        tab[2*n+i] = cos(4.*x[i]);
+        tab[3*n+i] = sin(4.*x[i]);
+    }
+    return tab;
+}
+
+// Real Fourier basis of the angle v with cos c1 and sin s1, m = 2 n + 1 entries, by recurrence, in
+// the blocked order 1, cos(v), ..., cos(n v), sin(v), ..., sin(n v)
+static inline void fourier_row(double c1, double s1, int m, double *row){
+    double c = 1., s = 0.;
+    row[0] = 1.;
+    for (int k=1; 2*k<m; k++){
+        double cn = c*c1 - s*s1;
+        s = s*c1 + c*s1;
+        c = cn;
+        row[k] = c;
+        row[m/2+k] = s;
+    }
+}
+
+// Position of the mode of index i of the basis 1, cos(v), sin(v), ... in its blocked order
+static inline int blocked_mode(int i, int m){
+    return i%2 ? (i+1)/2 : (i ? m/2+i/2 : 0);
 }
 
 //////////////////////////////////////
 // Quadruplet density interpolation //
 //////////////////////////////////////
 
-// Metadata of the 4-D interpolation grid: the two radial axes are log-uniform
-// and share `r_centers`, the two angular axes are uniform and periodic.
+// Metadata of the radial interpolation of a density tensor, whose radial axes are log-uniform and
+// share `r_centers`
 typedef struct {
-    const double *r_centers, *phi_centers;
-    int nr, nphi;
-    double r_min, r_max, logr0, inv_dlogr, phi0, inv_dphi;
-    long s_i2, s_i3;
+    const double *r_centers;
+    int nr, cubic;
+    double r_min, r_max, logr0, inv_dlogr;
 } Interp4dGrid;
 
-// Grid from its axes, with the strides of the t2 and t3 axes of a (nr, nr, nphi, nphi) slice
-static inline Interp4dGrid interp4d_grid(
-    const double *r_centers, const double *phi_centers, int nr, int nphi,
-    double r_min, double r_max, double logr0, double inv_dlogr,
-    double phi0, double inv_dphi){
+static inline Interp4dGrid interp4d_grid(const double *r_centers, int nr, int cubic){
 
-    Interp4dGrid g;
-    g.r_centers = r_centers;
-    g.phi_centers = phi_centers;
-    g.nr = nr;
-    g.nphi = nphi;
-    g.r_min = r_min;
-    g.r_max = r_max;
-    g.logr0 = logr0;
-    g.inv_dlogr = inv_dlogr;
-    g.phi0 = phi0;
-    g.inv_dphi = inv_dphi;
-    g.s_i2 = (long)nr*nphi*nphi;
-    g.s_i3 = (long)nphi*nphi;
-    return g;
+    return (Interp4dGrid){r_centers, nr, cubic, r_centers[0], r_centers[nr-1], log(r_centers[0]),
+        1./(log(r_centers[1])-log(r_centers[0]))};
 }
 
-// One axis of the quadrilinear stencil, resolved on its own so that loop-invariant
-// axes can be hoisted out of the q build of the SVA kernel
-typedef struct { int i, ip; double w, mw; } Interp4dAxis;
+// A radial axis of the stencil, n consecutive nodes from first, resolved on its own so that
+// loop-invariant axes can be hoisted out of the SVA kernel
+typedef struct { int first, n; double w[4]; } Interp4dRadial;
 
-// Log-uniform radial axis: zero above the grid, nearest neighbour below it
-static inline __attribute__((always_inline)) Interp4dAxis interp4d_axis_r(
+// Log-uniform radial axis: zero above the grid, nearest neighbour below it, and in between linear
+// in t or Catmull-Rom in log t, which is linear in the first and the last interval
+static inline __attribute__((always_inline)) Interp4dRadial interp4d_axis_r(
     const Interp4dGrid *g, double t){
 
-    Interp4dAxis ax;
-    if (t > g->r_max){ ax.i = 0; ax.ip = 0; ax.w = 0.; ax.mw = 0.; return ax; }
+    Interp4dRadial ax = {0, 0, {0., 0., 0., 0.}};
+    if (t > g->r_max) return ax;
+    if (t < g->r_min){
+        ax.n = 2; ax.w[0] = 1.;
+        return ax;
+    }
 
     const double *r_centers = g->r_centers;
     int nr = g->nr;
-    int i = (int)((log(t)-g->logr0)*g->inv_dlogr);
+    double log_t = log(t);
+    int i = (int)((log_t-g->logr0)*g->inv_dlogr);
     if (i < 0) i = 0;
     else if (i > nr-2) i = nr-2;
     if (i < nr-2 && r_centers[i+1] <= t) i++;
     else if (i > 0 && r_centers[i] > t) i--;
 
+    if (g->cubic && i > 0 && i < nr-2){
+        double log_lo = log(r_centers[i]);
+        double u = (log_t-log_lo)/(log(r_centers[i+1])-log_lo), u2 = u*u, u3 = u2*u;
+        ax.first = i-1; ax.n = 4;
+        ax.w[0] = .5*(-u3 + 2.*u2 - u);
+        ax.w[1] = .5*(3.*u3 - 5.*u2 + 2.);
+        ax.w[2] = .5*(-3.*u3 + 4.*u2 + u);
+        ax.w[3] = .5*(u3 - u2);
+        return ax;
+    }
     double w = (t-r_centers[i])/(r_centers[i+1]-r_centers[i]);
-    if (t < g->r_min){ i = 0; w = 0.; }
-    ax.i = i; ax.ip = i+1; ax.w = w; ax.mw = 1.-w;
+    ax.first = i; ax.n = 2; ax.w[0] = 1.-w; ax.w[1] = w;
     return ax;
-}
-
-// Uniform angular axis, wrapping periodically mod 2*pi.
-static inline __attribute__((always_inline)) Interp4dAxis interp4d_axis_phi(
-    const Interp4dGrid *g, double ang){
-
-    double twopi = 2.*M_PI;
-    ang = fmod(ang, twopi);
-    if (ang < 0.) ang += twopi;
-
-    const double *phi_centers = g->phi_centers;
-    int nphi = g->nphi;
-    int i = (int)((ang-g->phi0)*g->inv_dphi);
-    if (i < 0) i = 0;
-    else if (i > nphi-2) i = nphi-2;
-    if (i < nphi-2 && phi_centers[i+1] <= ang) i++;
-    else if (i > 0 && phi_centers[i] > ang) i--;
-
-    Interp4dAxis ax;
-    ax.w = (ang-phi_centers[i])/(phi_centers[i+1]-phi_centers[i]);
-    ax.mw = 1.-ax.w;
-    ax.i = i; ax.ip = (i+1)%nphi;
-    return ax;
-}
-
-// The 16-corner sum over the four resolved axes, as bilinear sums over the angular axes at the
-// four radial corners
-static inline __attribute__((always_inline)) double interp4d_gather(
-    const double *q_slice, const Interp4dGrid *g, const Interp4dAxis *a2,
-    const Interp4dAxis *a3, const Interp4dAxis *a12, const Interp4dAxis *a13){
-
-    int nphi = g->nphi;
-    double w2 = a2->w, mw2 = a2->mw, w3 = a3->w, mw3 = a3->mw;
-    double w12 = a12->w, mw12 = a12->mw, w13 = a13->w, mw13 = a13->mw;
-    int i13 = a13->i, i13p = a13->ip;
-
-    // Offsets of the lower and upper nodes on the t2, t3 and a12 axes
-    long b_i2 = (long)a2->i*g->s_i2;
-    long b_i2p = (long)a2->ip*g->s_i2;
-    long b_i3 = (long)a3->i*g->s_i3;
-    long b_i3p = (long)a3->ip*g->s_i3;
-    long b_i12 = (long)a12->i*nphi;
-    long b_i12p = (long)a12->ip*nphi;
-
-    // Products of the corner weights, shared by the four radial corners
-    double m2m3 = mw2*mw3, w2m3 = w2*mw3, m2w3 = mw2*w3, w2w3 = w2*w3;
-    double m12m13 = mw12*mw13, m12w13 = mw12*w13, w12m13 = w12*mw13, w12w13 = w12*w13;
-    const double *q00 = q_slice+b_i2+b_i3, *q10 = q_slice+b_i2p+b_i3;
-    const double *q01 = q_slice+b_i2+b_i3p, *q11 = q_slice+b_i2p+b_i3p;
-    double s00 = m12m13*q00[b_i12+i13] + m12w13*q00[b_i12+i13p] + w12m13*q00[b_i12p+i13] + w12w13*q00[b_i12p+i13p];
-    double s10 = m12m13*q10[b_i12+i13] + m12w13*q10[b_i12+i13p] + w12m13*q10[b_i12p+i13] + w12w13*q10[b_i12p+i13p];
-    double s01 = m12m13*q01[b_i12+i13] + m12w13*q01[b_i12+i13p] + w12m13*q01[b_i12p+i13] + w12w13*q01[b_i12p+i13p];
-    double s11 = m12m13*q11[b_i12+i13] + m12w13*q11[b_i12+i13p] + w12m13*q11[b_i12p+i13] + w12w13*q11[b_i12p+i13p];
-
-    return m2m3*s00 + w2m3*s10 + m2w3*s01 + w2w3*s11;
-}
-
-// Quadrilinear lookup q(t2, t3, a12, a13) on a (nr, nr, nphi, nphi) slice
-static inline __attribute__((always_inline)) double interp4d_point(
-    const double *q_slice, const Interp4dGrid *g,
-    double t2, double t3, double a12, double a13){
-
-    Interp4dAxis ax2 = interp4d_axis_r(g, t2);
-    Interp4dAxis ax3 = interp4d_axis_r(g, t3);
-    Interp4dAxis ax12 = interp4d_axis_phi(g, a12);
-    Interp4dAxis ax13 = interp4d_axis_phi(g, a13);
-    return interp4d_gather(q_slice, g, &ax2, &ax3, &ax12, &ax13);
-}
-
-// Quadrilinear interpolation of a (nr, nr, nphi, nphi) quadruplet-density slice at n points,
-// log-uniform in the two radial and periodic in the two angular axes
-// * q_slice: (nr, nr, nphi, nphi) over (theta2, theta3, phi12, phi13)
-// * t2f, t3f, a12f, a13f, out: (n), out is overwritten
-void interp4d(
-    const double *q_slice, const double *r_centers, const double *phi_centers,
-    int nr, int nphi, double r_min, double r_max, double logr0, double inv_dlogr,
-    double phi0, double inv_dphi,
-    const double *t2f, const double *t3f, const double *a12f, const double *a13f,
-    int n, double *out){
-
-    Interp4dGrid g = interp4d_grid(r_centers, phi_centers, nr, nphi,
-        r_min, r_max, logr0, inv_dlogr, phi0, inv_dphi);
-
-    for (int idx=0; idx<n; idx++)
-        out[idx] = interp4d_point(q_slice, &g, t2f[idx], t3f[idx],
-            a12f[idx], a13f[idx]);
 }
 
 ///////////////////////////////
 // Quadruplet (SVA) integral //
 ///////////////////////////////
 
-// Notation: pair a has length theta1 and angle varphi1, pair b length theta2 and angle varphi2, and
-// phi links the two pairs along the x axis. xi_a and xi_b are evaluated at the separations
-// psi_a = phi - theta1 e(varphi1) and psi_b = phi + theta2 e(varphi2), of polar angles varphi_a and
-// varphi_b, and q at the spokes (phi, theta1, |psi_b|) of angles (0, varphi1, varphi_b). In the
-// names, t1, t2 stand for theta1, theta2 (whose subgrid nodes are phi1_nodes, phi2_nodes) and
-// v1, v2, va, vb for varphi1, varphi2, varphi_a, varphi_b.
+// Notation and steps follow the note on the SVA integral, docs/source/notes/sva_collapse.pdf:
+// pair a has length theta1 and angle varphi1, pair b length theta2 and angle varphi2, and phi
+// links the two pairs along the x axis. xi_a and xi_b are evaluated at the separations psi_a = phi
+// - theta1 e(varphi1) and psi_b = phi + theta2 e(varphi2) of polar angles varphi_a and varphi_b
+// (Eq. 5), and the density at the spokes (phi, theta1, |psi_b|) of angles (0, varphi1, varphi_b).
+// In the names, t1, t2 stand for theta1, theta2 and v1, v2, va, vb for varphi1, varphi2, varphi_a,
+// varphi_b.
 
-// The varphi2 sums of one callback on the (varphi1, varphi2) grid of one (theta1, theta2) pair,
-// one per varphi1. They depend on wid and xi_b only, so callbacks that differ in xi_a share them.
-// wid is constant per instantiation, so the inner loop is branch free and vectorises.
-#define SVA_V2SUM_BODY(WEXPR) \
-    for (int iv1=0; iv1<nv1; iv1++){ \
-        const double *qrow = q_node + (long)iv1*nv2c; \
-        const double *w1row = wtab1 + (long)iv1*nv2c; \
-        const double *w2row = wtab2 + (long)iv1*nv2c; \
-        const double *w3row = wtab3 + (long)iv1*nv2c; \
-        double s = 0.; \
-        (void)w1row; (void)w2row; (void)w3row; \
-        _Pragma("omp simd reduction(+:s)") \
-        for (int iv2=0; iv2<nv2c; iv2++) \
-            s += qrow[iv2]*xib[iv2]*(WEXPR); \
-        v2sums[iv1] = s; \
-    }
+// The angular weights w_ids 0-4 of rp0, rp1, rm0, rm1 and rpm, 1, cos(4*(va-vb)),
+// cos(4*(v1+v2-va-vb)), cos(4*(v1-v2)) and 2*cos(4*(v2-vb)), as sums of sva_nterms (T_X) products
+// c_t f^a_t f^b_t of a pair-a and a pair-b factor (step f, Table 3). The factors 0-6 of a pair of
+// angle v and separation angle vpsi are 1, cos(4*vpsi), sin(4*vpsi), cos(4*(v-vpsi)),
+// sin(4*(v-vpsi)), cos(4*v) and sin(4*v).
+#define SVA_NFAC 7
+static const int sva_nterms[5] = {1, 2, 2, 2, 1};
+static const double sva_coef[5][2] = {{1., 0.}, {1., 1.}, {1., -1.}, {1., 1.}, {2., 0.}};
+static const int sva_factor_a[5][2] = {{0, 0}, {1, 2}, {3, 4}, {5, 6}, {0, 0}};
+static const int sva_factor_b[5][2] = {{0, 0}, {1, 2}, {3, 4}, {5, 6}, {3, 0}};
 
-static inline __attribute__((always_inline)) void sva_v2sums(
-    int wid, const double *q_node, const double *xib,
-    const double *wtab1, const double *wtab2, const double *wtab3,
-    int nv1, int nv2c, double *v2sums){
+// Separations psi = phi + sgn*theta*e(v) of one pair on its n varphi nodes, psi_a for sgn = -1 and
+// psi_b for sgn = 1 (Eq. 5): lengths, polar angles vpsi and the cos and sin of 4*vpsi
+static void sva_separations(
+    double phi, double theta, double sgn, const double *cos_v, const double *sin_v, int n,
+    double *abs_psi, double *vpsi, double *cos4vpsi, double *sin4vpsi){
 
-    switch (wid){
-    case 0: { SVA_V2SUM_BODY(1.) } break;
-    case 1: { SVA_V2SUM_BODY(w1row[iv2]) } break;
-    case 2: { SVA_V2SUM_BODY(w2row[iv2]) } break;
-    case 3: { SVA_V2SUM_BODY(w3row[iv2]) } break;
-    default: { SVA_V2SUM_BODY(1.) } break; // wid 4 is folded into xib
+    for (int i=0; i<n; i++){
+        double x = phi + sgn*theta*cos_v[i], y = sgn*theta*sin_v[i];
+        abs_psi[i] = hypot(x, y);
+        vpsi[i] = atan2(y, x);
+        cos4vpsi[i] = cos(4.*vpsi[i]);
+        sin4vpsi[i] = sin(4.*vpsi[i]);
     }
 }
 
-// Cosmic-variance (r-term) integral of all callbacks over the phi grid: outer products of the
-// side integrals over psi_a and psi_b, weighted by the quadruplet density (q_mode 0: tensor,
-// 1: constant, 2: separable). Output oi keeps the (theta1, theta2) elements of mask mask_idx[oi]
-// of pair_masks, and a callback is evaluated only where its output keeps the element. The
-// per-thread accumulators are summed in thread order, so the result is reproducible run to run.
-// * phi_grid, phi_w: (n_phi). phi1_nodes, phi1_weights: (n_r, ns1). phi2_nodes, phi2_weights:
-//   (n_r, ns2). v1_grid, v1_w: (nv1). v2_grid, v2_w: (nv2)
-// * tiles: (n_tiles, 2), the first theta1 and theta2 bin of each tile of nr_block bins
-// * q_mode 0: q_array (q_nr, q_nr, q_nr, q_nphi, q_nphi) over (theta1, theta2, theta3, phi12, phi13)
-//   on the log-uniform q_r_centers and the uniform q_phi_centers
-// * q_mode 1: q = q_const
-// * q_mode 2: q = q_const sup_t1 sup_t2 sup_t3, with sup_t1 (n_phi), sup_t2 (n_r, ns1) and
-//   sup_t3 (n_phi, n_r, ns2, nv2)
-// * xi_y_tables: (n_xi_unique, xi_n) on the log-uniform xi_x
-// * Callbacks, each (n_cb): xi tables xi_a_idx and xi_b_idx of the two pairs, angular weight w_ids
-//   (0-4 for rp0, rp1, rm0, rm1, rpm), output out_idx and factor wick_fac
-// * symmetric_mask, mask_idx: (n_out). pair_masks: (n_mask, n_r, n_r)
-// * results: (n_out, n_r, n_r), added to, so the caller zeroes it
+// The SVA_NFAC factors f_t (Table 3) of one pair on its n varphi nodes, rows (SVA_NFAC, n)
+static void sva_factor_rows(
+    const double *cos4v, const double *sin4v, const double *cos4vpsi, const double *sin4vpsi, int n,
+    double *rows){
+
+    for (int i=0; i<n; i++){
+        rows[i] = 1.;
+        rows[n+i] = cos4vpsi[i];
+        rows[2*n+i] = sin4vpsi[i];
+        rows[3*n+i] = cos4v[i]*cos4vpsi[i] + sin4v[i]*sin4vpsi[i];
+        rows[4*n+i] = sin4v[i]*cos4vpsi[i] - cos4v[i]*sin4vpsi[i];
+        rows[5*n+i] = cos4v[i];
+        rows[6*n+i] = sin4v[i];
+    }
+}
+
+// Cosmic-variance (r-term) integral of all callbacks, Eq. 6 (h) without its prefactor 2 pi A/(N_1
+// N_2): per (theta1, theta2) node the phi sum of xi_a q xi_b times the angular weight over the
+// (varphi1, varphi2) grid, added to results (n_out, n_r, n_r)
 void quadruplet_sva_integrate(
     const double *phi_grid, const double *phi_w, int n_phi, int n_r,
-    const double *phi1_nodes, const double *phi1_weights, int ns1,
-    const double *phi2_nodes, const double *phi2_weights, int ns2,
+    const double *theta1_nodes, const double *theta1_weights, int n_sub1,
+    const double *theta2_nodes, const double *theta2_weights, int n_sub2,
     const double *v1_grid, const double *v1_w, int nv1,
     const double *v2_grid, const double *v2_w, int nv2,
-    int nr_block, int v2_block, const int *tiles, int n_tiles,
-    int q_mode, const double *q_array,
-    const double *q_r_centers, const double *q_phi_centers, int q_nr, int q_nphi,
-    double q_const, const double *sup_t1, const double *sup_t2, const double *sup_t3,
+    const double *q_array, const double *q_r_centers, int q_nr, int n_modes, int q_cubic,
+    double q_const, const double *sup_phi, const double *sup_theta1, const double *sup_theta2,
     const double *xi_x, int xi_n, double xi_logx0, double xi_inv_dlogx,
     const double *xi_y_tables, int n_xi_unique,
     int n_cb, const int *xi_a_idx, const int *xi_b_idx,
     const int *w_ids, const int *out_idx, const double *wick_fac,
-    int n_out, const int *symmetric_mask,
-    int n_mask, const int *pair_masks, const int *mask_idx,
-    double *results, int nthreads, int verbose){
+    int n_out, const int *symmetric_mask, double *results, int nthreads, int verbose){
 
-    // Sizes of one output block, of the largest (theta1, theta2) tile and of the q slice at one phi
+    // Sizes of one output block, of the theta1 nodes and of a slice C_phi over (iota, kappa, beta,
+    // alpha), the cosine modes, and the most (kappa, beta) knots that a pair-b node can reach
     long block_size = (long)n_r*n_r;
-    long acc_len = (long)n_out*block_size;
-    int nrbmax = nr_block < n_r ? nr_block : n_r;
-    int nt1max = nrbmax*ns1, nt2max = nrbmax*ns2;
-    int nv2max = v2_block < nv2 ? v2_block : nv2;
-    int nt2tot = n_r*ns2;
-    long slice_len = (long)q_nr*q_nr*q_nphi*q_nphi;
+    long results_len = (long)n_out*block_size;
+    int n_t1 = n_r*n_sub1;
+    int nvmax = nv1 > nv2 ? nv1 : nv2;
+    long n_modes2 = (long)n_modes*n_modes;
+    int n_cos = n_modes/2 + 1;
+    long n_iota_kappa = (long)q_nr*q_nr;
+    long slice_len = n_iota_kappa*n_modes2;
+    long n_kb_max = (long)q_nr*n_modes;
 
-    // Interpolation grid of the q tensor, q_mode 0 only
-    Interp4dGrid grid = {0};
-    if (q_mode == 0)
-        grid = interp4d_grid(q_r_centers, q_phi_centers, q_nr, q_nphi,
-            q_r_centers[0], q_r_centers[q_nr-1], log(q_r_centers[0]),
-            1./(log(q_r_centers[1])-log(q_r_centers[0])),
-            q_phi_centers[0], 1./(q_phi_centers[1]-q_phi_centers[0]));
+    // Density q = q_const s(phi) s(theta1) s(theta2) C, q_const = s = 1 for a measured one and
+    // C = 1 for the idealised ones, with C = q_array (q_nr, q_nr, q_nr, n_modes, n_modes) the real
+    // Fourier coefficients 1, cos(n a), sin(n a) of a = phi12, phi13 on the radial knots
+    // q_r_centers (Eq. 4): its radial grid, linear or with q_cubic cubic, and the points N_st of
+    // its stencil
+    Interp4dGrid grid = interp4d_grid(q_r_centers, q_nr, q_cubic);
+    int n_stencil = grid.cubic ? 4 : 2;
+    if ((long)n_stencil*nv2 < q_nr) n_kb_max = (long)n_stencil*nv2*n_modes;
 
-    // Trig of the two varphi grids: shared, read-only, phi-independent.
-    double *cos_v1 = (double *)orpheus_malloc((size_t)nv1*sizeof(double));
-    double *sin_v1 = (double *)orpheus_malloc((size_t)nv1*sizeof(double));
-    double *cos4v1 = (double *)orpheus_malloc((size_t)nv1*sizeof(double));
-    double *sin4v1 = (double *)orpheus_malloc((size_t)nv1*sizeof(double));
-    double *cos_v2 = (double *)orpheus_malloc((size_t)nv2*sizeof(double));
-    double *sin_v2 = (double *)orpheus_malloc((size_t)nv2*sizeof(double));
-    double *cos4v2 = (double *)orpheus_malloc((size_t)nv2*sizeof(double));
-    double *sin4v2 = (double *)orpheus_malloc((size_t)nv2*sizeof(double));
-    double *thread_accums = (double *)orpheus_calloc((size_t)nthreads*acc_len, sizeof(double));
+    // Trig of the two varphi grids, rows cos, sin, cos(4 v), sin(4 v): shared, read-only,
+    // phi-independent.
+    double *trig_v1 = trig_tables(v1_grid, nv1), *trig_v2 = trig_tables(v2_grid, nv2);
 
-    // q-grid axes of the theta1 nodes and of the varphi1 grid, which do not depend on phi
-    Interp4dAxis *axis_t1 = (q_mode == 0 ? (Interp4dAxis *)orpheus_malloc(
-        (size_t)n_r*ns1*sizeof(Interp4dAxis)) : NULL);
-    Interp4dAxis *axis_v1 = (q_mode == 0 ? (Interp4dAxis *)orpheus_malloc(
-        (size_t)nv1*sizeof(Interp4dAxis)) : NULL);
+    // Radial stencils R_iota of the theta1 nodes and the basis Y_alpha of the varphi1 grid,
+    // (nv1, n_modes), which do not depend on phi
+    Interp4dRadial *axis_t1 = (Interp4dRadial *)orpheus_malloc(
+        (size_t)n_t1*sizeof(Interp4dRadial));
+    double *basis_v1 = (double *)orpheus_malloc((size_t)nv1*n_modes*sizeof(double));
 
-    // The per-thread scratch below is the largest allocation of the module: nothing is
-    // touched before the whole team has allocated, and check_clib_error() raises otherwise
-    int alloc_ok = (cos_v1 && sin_v1 && cos4v1 && sin4v1
-        && cos_v2 && sin_v2 && cos4v2 && sin4v2 && thread_accums
-        && (q_mode != 0 || (axis_t1 && axis_v1)));
-    if (alloc_ok && q_mode == 0){
-        for (int j=0; j<n_r*ns1; j++)
-            axis_t1[j] = interp4d_axis_r(&grid, phi1_nodes[j]);
-        for (int j=0; j<nv1; j++)
-            axis_v1[j] = interp4d_axis_phi(&grid, v1_grid[j]);
-    }
+    // The distinct pairs of xi table and factor of pair a and of pair b over all callbacks, F_a
+    // and F_b, in order of appearance: the pair of each (table, factor) key, the table and the
+    // factor of each pair, and the pairs of the at most two terms of each callback
+    int *fa_of_key = (int *)orpheus_malloc((size_t)n_xi_unique*SVA_NFAC*sizeof(int));
+    int *fb_of_key = (int *)orpheus_malloc((size_t)n_xi_unique*SVA_NFAC*sizeof(int));
+    int *fa_xi = (int *)orpheus_malloc((size_t)n_xi_unique*SVA_NFAC*sizeof(int));
+    int *fa_factor = (int *)orpheus_malloc((size_t)n_xi_unique*SVA_NFAC*sizeof(int));
+    int *fb_xi = (int *)orpheus_malloc((size_t)n_xi_unique*SVA_NFAC*sizeof(int));
+    int *fb_factor = (int *)orpheus_malloc((size_t)n_xi_unique*SVA_NFAC*sizeof(int));
+    int *term_fa = (int *)orpheus_malloc((size_t)2*n_cb*sizeof(int));
+    int *term_fb = (int *)orpheus_malloc((size_t)2*n_cb*sizeof(int));
+    int *xi_used_a = (int *)orpheus_calloc((size_t)n_xi_unique, sizeof(int));
+    int *xi_used_b = (int *)orpheus_calloc((size_t)n_xi_unique, sizeof(int));
+    int n_fa = 0, n_fb = 0;
+
+    // Radial stencils of the phi nodes, i.e. the slices of q_array at t1 = phi and their weights,
+    // and the theta1 knots iota with weight on any theta1 node, iota_lo to iota_hi
+    Interp4dRadial *axis_phi = (Interp4dRadial *)orpheus_calloc(
+        (size_t)n_phi, sizeof(Interp4dRadial));
+    int iota_lo = q_nr, iota_hi = -1;
+
+    // The per-slot and per-thread arrays below are the largest allocations of the module: nothing
+    // is touched before the whole team has allocated, and check_clib_error() raises otherwise
+    int alloc_ok = (trig_v1 && trig_v2 && axis_t1 && basis_v1
+        && fa_of_key && fb_of_key && fa_xi && fa_factor && fb_xi && fb_factor
+        && term_fa && term_fb && xi_used_a && xi_used_b && axis_phi);
     if (alloc_ok){
-        for (int j=0; j<nv1; j++){
-            cos_v1[j] = cos(v1_grid[j]);
-            sin_v1[j] = sin(v1_grid[j]);
-            cos4v1[j] = cos(4.*v1_grid[j]);
-            sin4v1[j] = sin(4.*v1_grid[j]);
+        for (int key=0; key<n_xi_unique*SVA_NFAC; key++){
+            fa_of_key[key] = -1;
+            fb_of_key[key] = -1;
         }
-        for (int j=0; j<nv2; j++){
-            cos_v2[j] = cos(v2_grid[j]);
-            sin_v2[j] = sin(v2_grid[j]);
-            cos4v2[j] = cos(4.*v2_grid[j]);
-            sin4v2[j] = sin(4.*v2_grid[j]);
+        for (int icb=0; icb<n_cb; icb++){
+            int wid = w_ids[icb];
+            for (int t=0; t<sva_nterms[wid]; t++){
+                int key_a = xi_a_idx[icb]*SVA_NFAC + sva_factor_a[wid][t];
+                int key_b = xi_b_idx[icb]*SVA_NFAC + sva_factor_b[wid][t];
+                if (fa_of_key[key_a] < 0){
+                    fa_xi[n_fa] = xi_a_idx[icb]; fa_factor[n_fa] = sva_factor_a[wid][t];
+                    fa_of_key[key_a] = n_fa++;
+                }
+                if (fb_of_key[key_b] < 0){
+                    fb_xi[n_fb] = xi_b_idx[icb]; fb_factor[n_fb] = sva_factor_b[wid][t];
+                    fb_of_key[key_b] = n_fb++;
+                }
+                term_fa[2*icb+t] = fa_of_key[key_a];
+                term_fb[2*icb+t] = fb_of_key[key_b];
+            }
+            xi_used_a[xi_a_idx[icb]] = 1;
+            xi_used_b[xi_b_idx[icb]] = 1;
         }
+        for (int it1=0; it1<n_t1; it1++) axis_t1[it1] = interp4d_axis_r(&grid, theta1_nodes[it1]);
+        for (int iv1=0; iv1<nv1; iv1++)
+            fourier_row(cos(v1_grid[iv1]), sin(v1_grid[iv1]), n_modes,
+                basis_v1 + (long)iv1*n_modes);
+        for (int it1=0; it1<n_t1; it1++){
+            for (int c=0; c<axis_t1[it1].n; c++){
+                if (axis_t1[it1].w[c] == 0.) continue;
+                int iota = axis_t1[it1].first+c;
+                if (iota < iota_lo) iota_lo = iota;
+                if (iota > iota_hi) iota_hi = iota;
+            }
+        }
+        for (int iphi=0; iphi<n_phi; iphi++)
+            axis_phi[iphi] = interp4d_axis_r(&grid, phi_grid[iphi]);
     }
+    int n_iota = iota_hi - iota_lo + 1;
+
+    // Phi nodes integrated at once, for about four (phi, column) items per thread, and the arrays
+    // of each: the slice C_phi, g_hat of all theta1 nodes over (theta1 node, F_a, alpha) and, for
+    // more than one, the outputs
+    int n_slots = (4*nthreads + n_r - 1)/n_r;
+    if (n_slots > nthreads) n_slots = nthreads;
+    if (n_slots > n_phi) n_slots = n_phi;
+    if (n_slots < 1) n_slots = 1;
+    long g_hat_len = (long)n_t1*n_fa*n_modes;
+    double *c_slices = (double *)orpheus_malloc((size_t)n_slots*slice_len*sizeof(double));
+    double *g_hat = (double *)orpheus_malloc((size_t)n_slots*g_hat_len*sizeof(double));
+    double *slot_results = (n_slots > 1
+        ? (double *)orpheus_calloc((size_t)n_slots*results_len, sizeof(double)) : NULL);
+    alloc_ok = alloc_ok && g_hat && c_slices && (n_slots == 1 || slot_results);
     reset_progress();
     int ndone = 0;
 
-    // Each thread integrates its static share of the phi nodes into its own thread_accum
     #pragma omp parallel num_threads(nthreads)
     {
-        int tid = 0;
-        #ifdef _OPENMP
-        tid = omp_get_thread_num();
-        #endif
-        double *thread_accum = thread_accums + (long)tid*acc_len;
-
-        // Per-thread scratch, sized for the largest tile and varphi2 chunk
-        double *abs_psia = (double *)orpheus_malloc((size_t)nt1max*nv1*sizeof(double));
-        double *varphi_a = (double *)orpheus_malloc((size_t)nt1max*nv1*sizeof(double));
-        double *cos4va = (double *)orpheus_malloc((size_t)nt1max*nv1*sizeof(double));
-        double *sin4va = (double *)orpheus_malloc((size_t)nt1max*nv1*sizeof(double));
-        double *abs_psib = (double *)orpheus_malloc((size_t)nt2max*nv2max*sizeof(double));
-        double *varphi_b = (double *)orpheus_malloc((size_t)nt2max*nv2max*sizeof(double));
-        double *cos4vb = (double *)orpheus_malloc((size_t)nt2max*nv2max*sizeof(double));
-        double *sin4vb = (double *)orpheus_malloc((size_t)nt2max*nv2max*sizeof(double));
-        double *xi_a_tab = (double *)orpheus_malloc(
-            (size_t)n_xi_unique*nt1max*nv1*sizeof(double));
-        double *xi_b_tab = (double *)orpheus_malloc(
-            (size_t)n_xi_unique*nt2max*nv2max*sizeof(double));
-        double *wtab3 = (double *)orpheus_malloc((size_t)nv1*nv2max*sizeof(double));
-        double *wtab4 = (double *)orpheus_malloc((size_t)nt2max*nv2max*sizeof(double));
-        double *wtab1 = (double *)orpheus_malloc((size_t)nv1*nv2max*sizeof(double));
-        double *wtab2 = (double *)orpheus_malloc((size_t)nv1*nv2max*sizeof(double));
-        double *xib_w4 = (double *)orpheus_malloc((size_t)nv2max*sizeof(double));
-        double *v2sums = (double *)orpheus_malloc((size_t)nv1*sizeof(double));
-        double *q_vals = (double *)orpheus_malloc(
-            (size_t)nt1max*nt2max*nv1*nv2max*sizeof(double));
-        double *tile_accum = (double *)orpheus_malloc((size_t)n_out*nt1max*nt2max*sizeof(double));
-        double *phi_accum = (double *)orpheus_malloc((size_t)acc_len*sizeof(double));
-        double *q_slice = (q_mode == 0
-            ? (double *)orpheus_malloc((size_t)slice_len*sizeof(double)) : NULL);
-        Interp4dAxis *axis_psib = (q_mode == 0 ? (Interp4dAxis *)orpheus_malloc(
-            (size_t)nt2max*nv2max*sizeof(Interp4dAxis)) : NULL);
-        Interp4dAxis *axis_varphib = (q_mode == 0 ? (Interp4dAxis *)orpheus_malloc(
-            (size_t)nt2max*nv2max*sizeof(Interp4dAxis)) : NULL);
-        int *tile_mask = (int *)orpheus_malloc((size_t)n_mask*nt1max*nt2max*sizeof(int));
-        int *tile_keep = (int *)orpheus_malloc((size_t)nt1max*nt2max*sizeof(int));
+        // Per-thread scratch of one column: the separations, xi and the factors of a pair on its
+        // varphi nodes; h_hat over (F_b, kappa beta), P over (F_b, iota, alpha) and P at one
+        // theta1 node over (F_b, alpha); per varphi2 node the slots and weights of its knots kappa;
+        // the slice row of each (kappa, beta) and the slot of each knot kappa; the basis Y_beta
+        // of varphi_b, (nv2, n_modes); and the outputs of the column
+        double *abs_psi = (double *)orpheus_malloc((size_t)nvmax*sizeof(double));
+        double *vpsi = (double *)orpheus_malloc((size_t)nvmax*sizeof(double));
+        double *cos4vpsi = (double *)orpheus_malloc((size_t)nvmax*sizeof(double));
+        double *sin4vpsi = (double *)orpheus_malloc((size_t)nvmax*sizeof(double));
+        double *xi_nodes = (double *)orpheus_malloc((size_t)n_xi_unique*nvmax*sizeof(double));
+        double *factor_rows = (double *)orpheus_malloc((size_t)SVA_NFAC*nvmax*sizeof(double));
+        double *h_hat = (double *)orpheus_malloc((size_t)n_fb*n_kb_max*sizeof(double));
+        double *p_iota = (double *)orpheus_malloc((size_t)n_fb*q_nr*n_modes*sizeof(double));
+        double *p_t1 = (double *)orpheus_malloc((size_t)n_fb*n_modes*sizeof(double));
+        int *kappa_slot = (int *)orpheus_malloc((size_t)n_stencil*nv2*sizeof(int));
+        double *kappa_w = (double *)orpheus_malloc((size_t)n_stencil*nv2*sizeof(double));
+        long *kb_row = (long *)orpheus_malloc((size_t)n_kb_max*sizeof(long));
+        int *slot_of_kappa = (int *)orpheus_malloc((size_t)q_nr*sizeof(int));
+        double *basis_vb = (double *)orpheus_malloc((size_t)nv2*n_modes*sizeof(double));
+        double *col_out = (double *)orpheus_malloc((size_t)n_out*n_r*sizeof(double));
 
         // A thread that failed to allocate clears alloc_ok for the whole team
-        if (!(abs_psia && varphi_a && cos4va && sin4va && abs_psib && varphi_b && cos4vb && sin4vb
-            && xi_a_tab && xi_b_tab && wtab3 && wtab4 && wtab1 && wtab2
-            && xib_w4 && v2sums && q_vals && tile_accum && phi_accum && tile_mask && tile_keep
-            && (q_mode != 0 || (q_slice && axis_psib && axis_varphib)))){
+        if (!(abs_psi && vpsi && cos4vpsi && sin4vpsi && xi_nodes && factor_rows
+            && h_hat && p_iota && p_t1 && kappa_slot && kappa_w && kb_row
+            && col_out && slot_of_kappa && basis_vb)){
             #pragma omp atomic write
             alloc_ok = 0;
         }
+        if (slot_of_kappa)
+            for (int kappa=0; kappa<q_nr; kappa++) slot_of_kappa[kappa] = -1;
         #pragma omp barrier
 
-        // A failed team still enters the `omp for`, whose barrier is collective, with zero trips
+        // A failed team still enters each `omp for`, whose barrier is collective, with zero trips
         int n_phi_run = alloc_ok ? n_phi : 0;
 
-        #pragma omp for schedule(static)
-        for (int iphi=0; iphi<n_phi_run; iphi++){
-            double phi = phi_grid[iphi];
+        for (int phi0=0; phi0<n_phi_run; phi0+=n_slots){
+            int n_run = n_phi-phi0 < n_slots ? n_phi-phi0 : n_slots;
 
-            // Get density slice at t1 = phi
-            // zero above the q grid, q_array[0, ...] below it, linear in between
-            if (q_mode == 0){
-                if (phi >= grid.r_max){
-                    memset(q_slice, 0, (size_t)slice_len*sizeof(double));
-                } else if (phi <= grid.r_min){
-                    memcpy(q_slice, q_array, (size_t)slice_len*sizeof(double));
-                } else {
-                    int i = 0;
-                    while (i < q_nr && q_r_centers[i] < phi) i++;
-                    i--;
-                    if (i > q_nr-2) i = q_nr-2;
-                    double w = (phi-q_r_centers[i])
-                        /(q_r_centers[i+1]-q_r_centers[i]);
-                    const double *q_lo = q_array + (long)i*slice_len;
-                    const double *q_hi = q_lo + slice_len;
-                    for (long j=0; j<slice_len; j++)
-                        q_slice[j] = (1.-w)*q_lo[j] + w*q_hi[j];
+            // Slice C_phi (Eq. 7, slice): q_array at t1 = phi, transposed to (iota, kappa, beta,
+            // alpha) so that the modes alpha of varphi1 are contiguous, both in the blocked order
+            // of fourier_row, in which the cosine and the sine modes each form a contiguous block
+            #pragma omp for schedule(static)
+            for (long item=0; item<n_run*n_iota_kappa; item++){
+                int islot = item/n_iota_kappa, iphi = phi0+islot;
+                long iota_kappa = item%n_iota_kappa;
+                if (phi_grid[iphi] >= grid.r_max) continue;
+                const Interp4dRadial *ax = &axis_phi[iphi];
+                const double *src[4];
+                for (int c=0; c<ax->n; c++)
+                    src[c] = q_array + (ax->first+c)*slice_len + iota_kappa*n_modes2;
+                double *dst = c_slices + islot*slice_len + iota_kappa*n_modes2;
+                for (int beta=0; beta<n_modes; beta++){
+                    for (int alpha=0; alpha<n_modes; alpha++){
+                        long alpha_beta = (long)alpha*n_modes + beta;
+                        double val = 0.;
+                        for (int c=0; c<ax->n; c++) val += ax->w[c]*src[c][alpha_beta];
+                        dst[(long)blocked_mode(beta, n_modes)*n_modes
+                            + blocked_mode(alpha, n_modes)] = val;
+                    }
                 }
             }
-            double sup_phi = q_mode == 2 ? sup_t1[iphi] : 1.;
-            const double *sup_t3_phi = (q_mode == 2
-                ? sup_t3 + (long)iphi*nt2tot*nv2 : sup_t3);
 
-            memset(phi_accum, 0, (size_t)acc_len*sizeof(double));
-
-            // Tiles of nrb1 x nrb2 bins from the bins (ib1_0, ib2_0), with nt1 x nt2 theta nodes
-            for (int itile=0; itile<n_tiles; itile++){
-                int ib1_0 = tiles[2*itile], ib2_0 = tiles[2*itile+1];
-                int nrb1 = nr_block < n_r-ib1_0 ? nr_block : n_r-ib1_0;
-                int nrb2 = nr_block < n_r-ib2_0 ? nr_block : n_r-ib2_0;
-                int nt1 = nrb1*ns1, nt2 = nrb2*ns2;
-                const double *t1_nodes = phi1_nodes + (long)ib1_0*ns1;
-                const double *t2_nodes = phi2_nodes + (long)ib2_0*ns2;
-                int npsia = nt1*nv1;
-
-                // psi_a on the (theta1, varphi1) nodes of the tile, for all varphi2 chunks
-                for (int it1=0; it1<nt1; it1++){
+            // Projections g_hat of pair a (step g, Eq. 7 g_hat): per theta1 node and pair of xi
+            // table and factor, g = xi_a f^a_t times the varphi1 weights, summed onto the modes
+            // Y_alpha(varphi1)
+            #pragma omp for schedule(dynamic, 4)
+            for (long item=0; item<(long)n_run*n_t1; item++){
+                int islot = item/n_t1, it1 = item%n_t1;
+                double phi = phi_grid[phi0+islot];
+                if (phi >= grid.r_max) continue;
+                sva_separations(phi, theta1_nodes[it1], -1., trig_v1, trig_v1+nv1, nv1,
+                    abs_psi, vpsi, cos4vpsi, sin4vpsi);
+                for (int itab=0; itab<n_xi_unique; itab++){
+                    if (!xi_used_a[itab]) continue;
+                    const double *xi_y = xi_y_tables + (long)itab*xi_n;
+                    double *dst = xi_nodes + (long)itab*nv1;
+                    for (int iv1=0; iv1<nv1; iv1++)
+                        dst[iv1] = interp1d_eval(xi_x, xi_y, xi_n,
+                            xi_logx0, xi_inv_dlogx, abs_psi[iv1]);
+                }
+                sva_factor_rows(trig_v1+2*nv1, trig_v1+3*nv1, cos4vpsi, sin4vpsi, nv1,
+                    factor_rows);
+                double *g_hat_t1 = g_hat + islot*g_hat_len + (long)it1*n_fa*n_modes;
+                for (int ifa=0; ifa<n_fa; ifa++){
+                    const double *xi_row = xi_nodes + (long)fa_xi[ifa]*nv1;
+                    const double *factor_row = factor_rows + (long)fa_factor[ifa]*nv1;
+                    double *dst = g_hat_t1 + (long)ifa*n_modes;
+                    for (int alpha=0; alpha<n_modes; alpha++) dst[alpha] = 0.;
                     for (int iv1=0; iv1<nv1; iv1++){
-                        double psia_x = phi - t1_nodes[it1]*cos_v1[iv1];
-                        double psia_y = -t1_nodes[it1]*sin_v1[iv1];
-                        int j = it1*nv1 + iv1;
-                        abs_psia[j] = hypot(psia_x, psia_y);
-                        varphi_a[j] = atan2(psia_y, psia_x);
-                        cos4va[j] = cos(4.*varphi_a[j]);
-                        sin4va[j] = sin(4.*varphi_a[j]);
-                    }
-                }
-                // xi_a of every distinct table at |psi_a|
-                for (int t=0; t<n_xi_unique; t++){
-                    const double *yi = xi_y_tables + (long)t*xi_n;
-                    double *dst = xi_a_tab + (long)t*npsia;
-                    for (int j=0; j<npsia; j++)
-                        dst[j] = interp1d_eval(xi_x, yi, xi_n,
-                            xi_logx0, xi_inv_dlogx, abs_psia[j]);
-                }
-
-                // Masks of the tile on its (theta1, theta2) nodes, and the nodes that any
-                // output keeps. The others are skipped.
-                long nt12 = (long)nt1*nt2;
-                for (int it1=0; it1<nt1; it1++){
-                    for (int it2=0; it2<nt2; it2++){
-                        long ielem = (long)(ib1_0 + it1/ns1)*n_r + ib2_0 + it2/ns2;
-                        int it12 = it1*nt2 + it2, keep = 0;
-                        for (int im=0; im<n_mask; im++){
-                            tile_mask[im*nt12 + it12] = pair_masks[im*block_size + ielem];
-                            keep |= pair_masks[im*block_size + ielem];
-                        }
-                        tile_keep[it12] = keep;
-                    }
-                }
-
-                // Chunks of nv2c <= v2_block varphi2 nodes from iv2_0
-                for (int iv2_0=0; iv2_0<nv2; iv2_0+=v2_block){
-                    int nv2c = v2_block < nv2-iv2_0 ? v2_block : nv2-iv2_0;
-                    int npsib = nt2*nv2c;
-                    const double *cos4v2c = cos4v2 + iv2_0;
-                    const double *sin4v2c = sin4v2 + iv2_0;
-                    const double *v2_wc = v2_w + iv2_0;
-
-                    // psi_b on the (theta2, varphi2) nodes of the chunk
-                    for (int it2=0; it2<nt2; it2++){
-                        for (int iv2=0; iv2<nv2c; iv2++){
-                            double psib_x = phi + t2_nodes[it2]*cos_v2[iv2_0+iv2];
-                            double psib_y = t2_nodes[it2]*sin_v2[iv2_0+iv2];
-                            int j = it2*nv2c + iv2;
-                            abs_psib[j] = hypot(psib_x, psib_y);
-                            varphi_b[j] = atan2(psib_y, psib_x);
-                            cos4vb[j] = cos(4.*varphi_b[j]);
-                            sin4vb[j] = sin(4.*varphi_b[j]);
-                        }
-                    }
-                    // xi_b of every distinct table at |psi_b|
-                    for (int t=0; t<n_xi_unique; t++){
-                        const double *yi = xi_y_tables + (long)t*xi_n;
-                        double *dst = xi_b_tab + (long)t*npsib;
-                        for (int j=0; j<npsib; j++)
-                            dst[j] = interp1d_eval(xi_x, yi, xi_n,
-                                xi_logx0, xi_inv_dlogx, abs_psib[j]);
-                    }
-                    // q-grid axes of |psi_b| and varphi_b
-                    if (q_mode == 0){
-                        for (int j=0; j<npsib; j++){
-                            axis_psib[j] = interp4d_axis_r(&grid, abs_psib[j]);
-                            axis_varphib[j] = interp4d_axis_phi(&grid, varphi_b[j]);
-                        }
-                    }
-
-                    // Weight tables independent of (theta1, theta2): wtab3 = cos(4*(v1-v2)) and
-                    // wtab4 = 2*cos(4*(v2-vb))
-                    for (int iv1=0; iv1<nv1; iv1++){
-                        for (int iv2=0; iv2<nv2c; iv2++)
-                            wtab3[iv1*nv2c + iv2] = cos4v1[iv1]*cos4v2c[iv2]
-                                + sin4v1[iv1]*sin4v2c[iv2];
-                    }
-                    for (int it2=0; it2<nt2; it2++)
-                        for (int iv2=0; iv2<nv2c; iv2++){
-                            int idx = it2*nv2c + iv2;
-                            wtab4[idx] = 2.*(cos4v2c[iv2]*cos4vb[idx]
-                                + sin4v2c[iv2]*sin4vb[idx]);
-                        }
-
-                    // q on the (theta1, |psi_b|, varphi1, varphi_b) tile at the nodes that any
-                    // output keeps: from the tensor (q_mode 0), constant (1) or separable (2)
-                    long q_stride = (long)nv1*nv2c;
-                    if (q_mode == 0){
-                        // Quadrilinear lookup on the axes resolved once per tile and per run
-                        for (int it1=0; it1<nt1; it1++){
-                            const Interp4dAxis *ax_t1 = &axis_t1[ib1_0*ns1 + it1];
-                            for (int it2=0; it2<nt2; it2++){
-                                if (!tile_keep[it1*nt2 + it2]) continue;
-                                double *dst = q_vals
-                                    + ((long)it1*nt2 + it2)*q_stride;
-                                for (int iv1=0; iv1<nv1; iv1++){
-                                    const Interp4dAxis *ax_v1 = &axis_v1[iv1];
-                                    double *row = dst + (long)iv1*nv2c;
-                                    for (int iv2=0; iv2<nv2c; iv2++){
-                                        int j = it2*nv2c + iv2;
-                                        row[iv2] = interp4d_gather(q_slice, &grid,
-                                            ax_t1, &axis_psib[j], ax_v1, &axis_varphib[j]);
-                                    }
-                                }
-                            }
-                        }
-                    } else if (q_mode == 1){
-                        long ntot = (long)nt1*nt2*q_stride;
-                        for (long j=0; j<ntot; j++) q_vals[j] = q_const;
-                    } else {
-                        // q_const s(phi) s(theta1) s(theta2), with sup_t3 already on varphi2
-                        for (int it1=0; it1<nt1; it1++){
-                            double sup12 = sup_phi*sup_t2[ib1_0*ns1 + it1];
-                            for (int it2=0; it2<nt2; it2++){
-                                if (!tile_keep[it1*nt2 + it2]) continue;
-                                const double *sup_t3_row = sup_t3_phi
-                                    + (long)(ib2_0*ns2 + it2)*nv2 + iv2_0;
-                                double *dst = q_vals
-                                    + ((long)it1*nt2 + it2)*q_stride;
-                                for (int iv1=0; iv1<nv1; iv1++){
-                                    double *row = dst + (long)iv1*nv2c;
-                                    for (int iv2=0; iv2<nv2c; iv2++)
-                                        row[iv2] = q_const*(sup12*sup_t3_row[iv2]);
-                                }
-                            }
-                        }
-                    }
-
-                    // Fold the varphi quadrature weights into q
-                    for (long it12=0; it12<(long)nt1*nt2; it12++){
-                        if (!tile_keep[it12]) continue;
-                        double *dst = q_vals + it12*q_stride;
-                        for (int iv1=0; iv1<nv1; iv1++){
-                            double w1 = v1_w[iv1];
-                            double *row = dst + (long)iv1*nv2c;
-                            for (int iv2=0; iv2<nv2c; iv2++)
-                                row[iv2] *= w1*v2_wc[iv2];
-                        }
-                    }
-
-                    memset(tile_accum, 0, (size_t)n_out*nt1*nt2*sizeof(double));
-
-                    // Callback loop. The (theta1, theta2) pair is the outer level, so the q
-                    // slice and the weight tables are built once for all n_cb callbacks;
-                    // moving the callbacks outside the r and varphi2 tiling measured 2x slower.
-                    // A callback is evaluated only where its output keeps the node. The
-                    // callbacks come sorted by (wid, xi_b), and the varphi2 sums are recomputed
-                    // only when that pair changes.
-                    for (int it1=0; it1<nt1; it1++){
-                        for (int it2=0; it2<nt2; it2++){
-                            int it12 = it1*nt2 + it2;
-                            if (!tile_keep[it12]) continue;
-                            const double *q_node = q_vals + (long)it12*q_stride;
-                            const double *cos4vb_row = cos4vb + it2*nv2c;
-                            const double *sin4vb_row = sin4vb + it2*nv2c;
-
-                            // wtab1 = cos(4*(va-vb)) and wtab2 = cos(4*(v1+v2-va-vb)) from the
-                            // cos and sin of the 4-fold angles, with c12, s12 those of 4*(v1+v2)
-                            for (int iv1=0; iv1<nv1; iv1++){
-                                double ca = cos4va[it1*nv1 + iv1];
-                                double sa = sin4va[it1*nv1 + iv1];
-                                double c1 = cos4v1[iv1], s1 = sin4v1[iv1];
-                                double *w1row = wtab1 + (long)iv1*nv2c;
-                                double *w2row = wtab2 + (long)iv1*nv2c;
-                                for (int iv2=0; iv2<nv2c; iv2++){
-                                    double cb = cos4vb_row[iv2], sb = sin4vb_row[iv2];
-                                    double c12 = c1*cos4v2c[iv2] - s1*sin4v2c[iv2];
-                                    double s12 = s1*cos4v2c[iv2] + c1*sin4v2c[iv2];
-                                    w1row[iv2] = ca*cb + sa*sb;
-                                    w2row[iv2] = c12*(ca*cb - sa*sb)
-                                        + s12*(sa*cb + ca*sb);
-                                }
-                            }
-
-                            // v2sums of the current (wid, xi_b), the w=4 weight folded into xi_b
-                            int v2sums_wid = -1, v2sums_xib = -1;
-                            for (int icb=0; icb<n_cb; icb++){
-                                if (!tile_mask[mask_idx[out_idx[icb]]*nt12 + it12]) continue;
-                                if (w_ids[icb] != v2sums_wid || xi_b_idx[icb] != v2sums_xib){
-                                    v2sums_wid = w_ids[icb];
-                                    v2sums_xib = xi_b_idx[icb];
-                                    const double *xib = xi_b_tab
-                                        + (long)v2sums_xib*npsib + it2*nv2c;
-                                    if (v2sums_wid == 4){
-                                        const double *w4row = wtab4 + it2*nv2c;
-                                        for (int j=0; j<nv2c; j++)
-                                            xib_w4[j] = xib[j]*w4row[j];
-                                        xib = xib_w4;
-                                    }
-                                    sva_v2sums(v2sums_wid, q_node, xib, wtab1, wtab2, wtab3,
-                                        nv1, nv2c, v2sums);
-                                }
-                                // Contract with xi_a over varphi1
-                                const double *xia = xi_a_tab
-                                    + (long)xi_a_idx[icb]*npsia + it1*nv1;
-                                double sum = 0.;
-                                for (int iv1=0; iv1<nv1; iv1++)
-                                    sum += xia[iv1]*v2sums[iv1];
-                                tile_accum[out_idx[icb]*nt12 + it12] += wick_fac[icb]*sum;
-                            }
-                        }
-                    }
-
-                    // Contract the phi subgrid nodes back onto the coarse bins
-                    for (int oi=0; oi<n_out; oi++){
-                        const double *acc = tile_accum + (long)oi*nt1*nt2;
-                        double *dst = phi_accum + (long)oi*block_size;
-                        for (int ib1=0; ib1<nrb1; ib1++){
-                            for (int ib2=0; ib2<nrb2; ib2++){
-                                double s = 0.;
-                                for (int is1=0; is1<ns1; is1++){
-                                    double w1 = phi1_weights[(ib1_0+ib1)*ns1 + is1];
-                                    for (int is2=0; is2<ns2; is2++)
-                                        s += acc[(long)(ib1*ns1+is1)*nt2 + ib2*ns2+is2]
-                                            *w1*phi2_weights[(ib2_0+ib2)*ns2 + is2];
-                                }
-                                dst[(long)(ib1_0+ib1)*n_r + ib2_0+ib2] += s;
-                            }
-                        }
+                        double g = v1_w[iv1]*xi_row[iv1]*factor_row[iv1];
+                        const double *basis = basis_v1 + (long)iv1*n_modes;
+                        for (int alpha=0; alpha<n_modes; alpha++) dst[alpha] += g*basis[alpha];
                     }
                 }
             }
 
-            // Symmetrise and fold this phi node into the thread total, within the mask of each
-            // output
-            double phi_weight = phi*phi_w[iphi];
-            double half_weight = .5*phi_weight;
-            for (int oi=0; oi<n_out; oi++){
-                const double *cur = phi_accum + (long)oi*block_size;
-                const int *mask = pair_masks + (long)mask_idx[oi]*block_size;
-                double *dst = thread_accum + (long)oi*block_size;
-                if (symmetric_mask[oi]){
-                    for (int i=0; i<n_r; i++)
-                        for (int j=0; j<n_r; j++)
-                            if (mask[i*n_r+j])
-                                dst[i*n_r+j] += half_weight*(cur[i*n_r+j] + cur[j*n_r+i]);
-                } else {
-                    for (long j=0; j<block_size; j++)
-                        if (mask[j]) dst[j] += phi_weight*cur[j];
+            // Columns, split among the threads: pair b on the theta2 nodes of column ib2 at phi,
+            // contracted with the shared slice and g_hat of all theta1 nodes. A column is
+            // accumulated as a row of the transposed results, so that it is contiguous
+            #pragma omp for schedule(dynamic)
+            for (int item=0; item<n_run*n_r; item++){
+                int islot = item/n_r, ib2 = item%n_r, iphi = phi0+islot;
+                double phi = phi_grid[iphi];
+                if (phi >= grid.r_max || n_iota < 1) continue;
+                const double *c_slice = c_slices + islot*slice_len;
+                const double *g_hat_phi = g_hat + islot*g_hat_len;
+
+                memset(col_out, 0, (size_t)n_out*n_r*sizeof(double));
+                for (int it2=ib2*n_sub2; it2<(ib2+1)*n_sub2; it2++){
+                    sva_separations(phi, theta2_nodes[it2], 1., trig_v2, trig_v2+nv2, nv2,
+                        abs_psi, vpsi, cos4vpsi, sin4vpsi);
+                    for (int itab=0; itab<n_xi_unique; itab++){
+                        if (!xi_used_b[itab]) continue;
+                        const double *xi_y = xi_y_tables + (long)itab*xi_n;
+                        double *dst = xi_nodes + (long)itab*nv2;
+                        for (int iv2=0; iv2<nv2; iv2++)
+                            dst[iv2] = interp1d_eval(xi_x, xi_y, xi_n,
+                                xi_logx0, xi_inv_dlogx, abs_psi[iv2]);
+                    }
+                    sva_factor_rows(trig_v2+2*nv2, trig_v2+3*nv2, cos4vpsi, sin4vpsi, nv2,
+                        factor_rows);
+
+                    // The radial knots kappa that |psi_b| reaches on the varphi2 nodes, numbered
+                    // in slots, with the slot and the weight R_kappa(|psi_b|) of each stencil point
+                    // of a node, and the basis Y_beta(varphi_b): slot k holds the (kappa, beta)
+                    // entries k*n_modes + beta, which lie in the slice rows kappa*n_modes + beta
+                    int n_kappa = 0;
+                    for (int iv2=0; iv2<nv2; iv2++){
+                        Interp4dRadial axis_psib = interp4d_axis_r(&grid, abs_psi[iv2]);
+                        int *slots = kappa_slot + n_stencil*iv2;
+                        double *weights = kappa_w + n_stencil*iv2;
+                        for (int c=0; c<axis_psib.n; c++){
+                            int kappa = axis_psib.first+c;
+                            double w_kappa = axis_psib.w[c];
+                            if (w_kappa != 0. && slot_of_kappa[kappa] < 0){
+                                slot_of_kappa[kappa] = n_kappa;
+                                long *kb_row_k = kb_row + (long)n_kappa*n_modes;
+                                for (int beta=0; beta<n_modes; beta++)
+                                    kb_row_k[beta] = (long)kappa*n_modes + beta;
+                                n_kappa++;
+                            }
+                            slots[c] = w_kappa != 0. ? slot_of_kappa[kappa] : 0;
+                            weights[c] = w_kappa;
+                        }
+                        for (int c=axis_psib.n; c<n_stencil; c++){ slots[c] = 0; weights[c] = 0.; }
+                        double inv_abs_psi = abs_psi[iv2] > 0. ? 1./abs_psi[iv2] : 0.;
+                        double x = phi + theta2_nodes[it2]*trig_v2[iv2];
+                        double y = theta2_nodes[it2]*trig_v2[nv2+iv2];
+                        fourier_row(inv_abs_psi > 0. ? x*inv_abs_psi : 1., y*inv_abs_psi, n_modes,
+                            basis_vb + (long)iv2*n_modes);
+                    }
+                    for (int k=0; k<n_kappa; k++)
+                        slot_of_kappa[kb_row[(long)k*n_modes]/n_modes] = -1;
+                    if (n_kappa == 0) continue;
+                    int n_kb = n_kappa*n_modes;
+
+                    // Projections h_hat of pair b (step g, Eq. 7 h_hat): per pair of xi table and
+                    // factor, h = xi_b f^b_t times the varphi2 weights, summed onto the (kappa,
+                    // beta) knots with R_kappa(|psi_b|) Y_beta(varphi_b)
+                    for (int ifb=0; ifb<n_fb; ifb++){
+                        const double *xi_row = xi_nodes + (long)fb_xi[ifb]*nv2;
+                        const double *factor_row = factor_rows + (long)fb_factor[ifb]*nv2;
+                        double *dst = h_hat + (long)ifb*n_kb;
+                        for (int ikb=0; ikb<n_kb; ikb++) dst[ikb] = 0.;
+                        for (int iv2=0; iv2<nv2; iv2++){
+                            double h = v2_w[iv2]*xi_row[iv2]*factor_row[iv2];
+                            const double *basis = basis_vb + (long)iv2*n_modes;
+                            for (int c=0; c<n_stencil; c++){
+                                double w_h = kappa_w[n_stencil*iv2+c]*h;
+                                if (w_h == 0.) continue;
+                                double *dst_kappa = dst + (long)kappa_slot[n_stencil*iv2+c]*n_modes;
+                                for (int beta=0; beta<n_modes; beta++)
+                                    dst_kappa[beta] += w_h*basis[beta];
+                            }
+                        }
+                    }
+
+                    // Contraction P of h_hat with the slice (step h, Eq. 7 P) on the theta1 knots
+                    // iota_lo to iota_hi, over (F_b, iota, alpha). A reflection about the x axis
+                    // leaves the r-terms unchanged and flips the sign of the cosine-sine blocks of
+                    // C, so only the modes alpha of the parity of beta enter, exactly so on varphi
+                    // grids symmetric under v -> -v
+                    memset(p_iota, 0, (size_t)n_fb*n_iota*n_modes*sizeof(double));
+                    for (int iota=iota_lo; iota<=iota_hi; iota++){
+                        const double *c_iota = c_slice + (long)iota*q_nr*n_modes2;
+                        for (int ikb=0; ikb<n_kb; ikb++){
+                            const double *c_row = c_iota + kb_row[ikb]*n_modes;
+                            int is_cos = ikb%n_modes < n_cos;
+                            int alpha_lo = is_cos ? 0 : n_cos, alpha_hi = is_cos ? n_cos : n_modes;
+                            for (int ifb=0; ifb<n_fb; ifb++){
+                                double h_val = h_hat[(long)ifb*n_kb + ikb];
+                                double *dst = p_iota + ((long)ifb*n_iota + iota-iota_lo)*n_modes;
+                                for (int alpha=alpha_lo; alpha<alpha_hi; alpha++)
+                                    dst[alpha] += h_val*c_row[alpha];
+                            }
+                        }
+                    }
+
+                    // Terms (step h, Eq. 7 terms): P at each theta1 node, the sum of R_iota P over
+                    // iota, then per callback the sum of c_t g_hat P over its terms t and the modes
+                    // alpha, times the radial weights omega_s omega_s' s(theta1) s(theta2)
+                    for (int it1=0; it1<n_t1; it1++){
+                        int ib1 = it1/n_sub1;
+                        const Interp4dRadial *ax = &axis_t1[it1];
+                        for (int ifb=0; ifb<n_fb; ifb++){
+                            double *dst = p_t1 + (long)ifb*n_modes;
+                            for (int alpha=0; alpha<n_modes; alpha++) dst[alpha] = 0.;
+                            for (int c=0; c<ax->n; c++){
+                                if (ax->w[c] == 0.) continue;
+                                const double *src = (p_iota
+                                    + ((long)ifb*n_iota + ax->first+c-iota_lo)*n_modes);
+                                for (int alpha=0; alpha<n_modes; alpha++)
+                                    dst[alpha] += ax->w[c]*src[alpha];
+                            }
+                        }
+                        const double *g_hat_t1 = g_hat_phi + (long)it1*n_fa*n_modes;
+                        double w_nodes = (theta1_weights[it1]*theta2_weights[it2]
+                            *(sup_theta1[it1]*sup_theta2[it2]));
+                        for (int icb=0; icb<n_cb; icb++){
+                            int wid = w_ids[icb];
+                            double sum = 0.;
+                            for (int t=0; t<sva_nterms[wid]; t++){
+                                const double *g_row = g_hat_t1 + (long)term_fa[2*icb+t]*n_modes;
+                                const double *p_row = p_t1 + (long)term_fb[2*icb+t]*n_modes;
+                                double dot = 0.;
+                                for (int alpha=0; alpha<n_modes; alpha++)
+                                    dot += g_row[alpha]*p_row[alpha];
+                                sum += sva_coef[wid][t]*dot;
+                            }
+                            col_out[(long)out_idx[icb]*n_r + ib1] += wick_fac[icb]*sum*w_nodes;
+                        }
+                    }
+                }
+
+                // Phi quadrature (step e): add the column times w_p phi_p q_const s(phi) to row ib2
+                // of the transposed results, or of the slot of phi. The product is taken apart from
+                // the sum, which FMA contraction would otherwise round differently for the two.
+                double phi_weight = phi*phi_w[iphi]*(q_const*sup_phi[iphi]);
+                double *dst = n_slots > 1 ? slot_results + islot*results_len : results;
+                for (long j=0; j<(long)n_out*n_r; j++) col_out[j] *= phi_weight;
+                for (int oi=0; oi<n_out; oi++){
+                    double *dst_row = dst + oi*block_size + (long)ib2*n_r;
+                    const double *src_row = col_out + (long)oi*n_r;
+                    for (int ib1=0; ib1<n_r; ib1++) dst_row[ib1] += src_row[ib1];
                 }
             }
-            #pragma omp atomic
-            ndone += 1;
-            print_progress(ndone, n_phi, verbose);
+
+            // Add the slots to the results in phi order, so that every element is summed in phi
+            // order whatever the number of threads
+            if (n_slots > 1){
+                #pragma omp for schedule(static)
+                for (long j=0; j<results_len; j++){
+                    for (int islot=0; islot<n_run; islot++){
+                        results[j] += slot_results[islot*results_len + j];
+                        slot_results[islot*results_len + j] = 0.;
+                    }
+                }
+            }
+            #pragma omp single nowait
+            {
+                ndone += n_run;
+                print_progress(ndone, n_phi, verbose);
+            }
         }
 
-        free(abs_psia); free(varphi_a); free(cos4va); free(sin4va);
-        free(abs_psib); free(varphi_b); free(cos4vb); free(sin4vb);
-        free(xi_a_tab); free(xi_b_tab);
-        free(wtab3); free(wtab4); free(wtab1); free(wtab2); free(xib_w4); free(v2sums);
-        free(q_vals); free(tile_accum); free(phi_accum); free(q_slice);
-        free(axis_psib); free(axis_varphib); free(tile_mask); free(tile_keep);
+        free(abs_psi); free(vpsi); free(cos4vpsi); free(sin4vpsi);
+        free(xi_nodes); free(factor_rows);
+        free(h_hat); free(p_iota); free(p_t1);
+        free(kappa_slot); free(kappa_w); free(kb_row); free(slot_of_kappa); free(basis_vb);
+        free(col_out);
     }
     if (verbose > 0){ printf("\n"); fflush(stdout); }
 
-    // Sum the per-thread accumulators in thread order
-    for (int t=0; alloc_ok && t<nthreads; t++){
-        const double *src = thread_accums + (long)t*acc_len;
-        for (long j=0; j<acc_len; j++) results[j] += src[j];
+    // Transpose the outputs back to (theta1, theta2), symmetrising the symmetric ones
+    if (alloc_ok){
+        #pragma omp parallel for schedule(dynamic) num_threads(nthreads)
+        for (int oi=0; oi<n_out; oi++){
+            double *res = results + (long)oi*block_size;
+            for (int i=0; i<n_r; i++){
+                for (int j=i+1; j<n_r; j++){
+                    long ij = (long)i*n_r + j, ji = (long)j*n_r + i;
+                    double r_ij = res[ji], r_ji = res[ij];
+                    if (symmetric_mask[oi]) r_ij = r_ji = .5*(r_ij + r_ji);
+                    res[ij] = r_ij;
+                    res[ji] = r_ji;
+                }
+            }
+        }
     }
 
-    free(thread_accums);
-    free(cos_v1); free(sin_v1); free(cos4v1); free(sin4v1);
-    free(cos_v2); free(sin_v2); free(cos4v2); free(sin4v2);
-    free(axis_t1); free(axis_v1);
+    free(c_slices); free(g_hat); free(slot_results);
+    free(trig_v1); free(trig_v2); free(axis_t1); free(basis_v1);
+    free(fa_of_key); free(fb_of_key); free(fa_xi); free(fa_factor); free(fb_xi); free(fb_factor);
+    free(term_fa); free(term_fb); free(xi_used_a); free(xi_used_b);
+    free(axis_phi);
 }
 
 
@@ -683,57 +635,30 @@ void quadruplet_sva_integrate(
 // Continuous-limit estimators //
 /////////////////////////////////
 
-// Phi integral of one mixed term on the fine grid, fine[i1, i2] = sum_k R w xi(r_jk) dphi_k,
-// with R the measured over the idealised triplet counts, interpolated from (nr_ratio, nr_ratio,
-// nphi_ratio) nodes, log-uniform in theta and uniform in phi, or R = 1 for nr_ratio = 0. The
+// Angular weight of qpp (w_type 0), qmm (1) or qpm (2) at the triplet angle phi, with (x, y) the
+// third side r_jk of polar angle phi_jk, from cos(4 phi) and sin(4 phi). That of qpm,
+// cos(4*(phi - phi_jk)) = Re[e^(4 i phi) (x - i y)^4]/|r_jk|^4, needs no trigonometric call.
+static inline double q_weight(int w_type, double cos4phi, double sin4phi, double x, double y){
+
+    if (w_type == 0) return 1.;
+    if (w_type == 1) return cos4phi;
+    double x2 = x*x, y2 = y*y, d = x2-y2, r2 = x2+y2;
+    return r2 > 0. ? (cos4phi*(d*d - 4.*x2*y2) + sin4phi*4.*x*y*d)/(r2*r2) : cos4phi;
+}
+
+// Phi integral of one mixed term on the fine grid, fine[i1, i2] = sum_k w xi(r_jk) dphi_k. The
 // progress counter ndone runs up to progtot rows, so that several calls fill one bar.
 static void continuous_q_fine(
     const double *fine_centers, int n_fine, const double *phi_centers, const double *dphi,
     int n_phi, const double *xi_x, int xi_n, double xi_logx0, double xi_inv_dlogx,
-    const double *xi_y, int w_type, const double *ratio, int nr_ratio, int nphi_ratio,
-    double ratio_logr0, double ratio_inv_dlogr, double ratio_phi0, double ratio_inv_dphi,
-    double *fine, int *ndone, int progtot, int nthreads, int verbose){
+    const double *xi_y, int w_type, double *fine, int *ndone, int progtot, int nthreads,
+    int verbose){
 
     // Trig of the phi nodes
-    double *cosphi = (double *)orpheus_malloc((size_t)n_phi*sizeof(double));
-    double *sinphi = (double *)orpheus_malloc((size_t)n_phi*sizeof(double));
-    double *cos4phi = (double *)orpheus_malloc((size_t)n_phi*sizeof(double));
-    if (!(cosphi && sinphi && cos4phi)){
-        free(cosphi); free(sinphi); free(cos4phi);
-        return;
-    }
-    for (int iphi=0; iphi<n_phi; iphi++){
-        cosphi[iphi] = cos(phi_centers[iphi]);
-        sinphi[iphi] = sin(phi_centers[iphi]);
-        cos4phi[iphi] = cos(4.*phi_centers[iphi]);
-    }
-
-    // Lower interpolation node and weight of every fine theta and phi, clamped to the ratio grid
-    int *itheta_lo = NULL, *iphi_lo = NULL;
-    double *wtheta = NULL, *wphi = NULL;
-    if (nr_ratio > 0){
-        itheta_lo = (int *)orpheus_malloc((size_t)n_fine*sizeof(int));
-        wtheta = (double *)orpheus_malloc((size_t)n_fine*sizeof(double));
-        iphi_lo = (int *)orpheus_malloc((size_t)n_phi*sizeof(int));
-        wphi = (double *)orpheus_malloc((size_t)n_phi*sizeof(double));
-        if (!(itheta_lo && wtheta && iphi_lo && wphi)){
-            free(cosphi); free(sinphi); free(cos4phi);
-            free(itheta_lo); free(wtheta); free(iphi_lo); free(wphi);
-            return;
-        }
-        for (int i=0; i<n_fine; i++){
-            double x = (log(fine_centers[i])-ratio_logr0)*ratio_inv_dlogr;
-            x = x < 0. ? 0. : (x > nr_ratio-1 ? nr_ratio-1 : x);
-            itheta_lo[i] = (int)x < nr_ratio-2 ? (int)x : nr_ratio-2;
-            wtheta[i] = x-itheta_lo[i];
-        }
-        for (int iphi=0; iphi<n_phi; iphi++){
-            double x = (phi_centers[iphi]-ratio_phi0)*ratio_inv_dphi;
-            x = x < 0. ? 0. : (x > nphi_ratio-1 ? nphi_ratio-1 : x);
-            iphi_lo[iphi] = (int)x < nphi_ratio-2 ? (int)x : nphi_ratio-2;
-            wphi[iphi] = x-iphi_lo[iphi];
-        }
-    }
+    double *trig_phi = trig_tables(phi_centers, n_phi);
+    if (!trig_phi) return;
+    const double *cosphi = trig_phi, *sinphi = trig_phi + n_phi;
+    const double *cos4phi = trig_phi + 2*n_phi, *sin4phi = trig_phi + 3*n_phi;
 
     // One task per fine theta1 row
     #pragma omp parallel for schedule(dynamic) num_threads(nthreads)
@@ -741,41 +666,14 @@ static void continuous_q_fine(
         double theta1 = fine_centers[i1];
         for (int i2=0; i2<n_fine; i2++){
             double theta2 = fine_centers[i2];
-            // Ratio rows at the four (theta1, theta2) corners and the weights between them
-            const double *r00 = NULL, *r01 = NULL, *r10 = NULL, *r11 = NULL;
-            double wt1 = 0., wt2 = 0.;
-            if (nr_ratio > 0){
-                r00 = ratio + ((size_t)itheta_lo[i1]*nr_ratio + itheta_lo[i2])*nphi_ratio;
-                r01 = r00 + nphi_ratio;
-                r10 = r00 + (size_t)nr_ratio*nphi_ratio;
-                r11 = r10 + nphi_ratio;
-                wt1 = wtheta[i1]; wt2 = wtheta[i2];
-            }
-            // xi at r_jk = |theta1 - theta2 e(phi)|, weighted per w_type as in continuous_q_single
+            // xi at r_jk = |theta1 - theta2 e(phi)|, weighted per w_type
             double acc = 0.;
             for (int iphi=0; iphi<n_phi; iphi++){
                 double rjk_x = theta1 - theta2*cosphi[iphi];
                 double rjk_y = -theta2*sinphi[iphi];
                 double xi = interp1d_eval(xi_x, xi_y, xi_n,
                     xi_logx0, xi_inv_dlogx, hypot(rjk_x, rjk_y));
-                double w;
-                if (w_type == 0){
-                    w = 1.;
-                } else if (w_type == 1){
-                    w = cos4phi[iphi];
-                } else {
-                    w = cos(4.*(phi_centers[iphi]-atan2(rjk_y, rjk_x)));
-                }
-                // Times R, linear in phi and bilinear in (theta1, theta2)
-                if (nr_ratio > 0){
-                    int ip = iphi_lo[iphi];
-                    double wp = wphi[iphi];
-                    double v00 = r00[ip] + wp*(r00[ip+1]-r00[ip]);
-                    double v01 = r01[ip] + wp*(r01[ip+1]-r01[ip]);
-                    double v10 = r10[ip] + wp*(r10[ip+1]-r10[ip]);
-                    double v11 = r11[ip] + wp*(r11[ip+1]-r11[ip]);
-                    w *= (1.-wt1)*((1.-wt2)*v00 + wt2*v01) + wt1*((1.-wt2)*v10 + wt2*v11);
-                }
+                double w = q_weight(w_type, cos4phi[iphi], sin4phi[iphi], rjk_x, rjk_y);
                 acc += w*xi*dphi[iphi];
             }
             fine[(size_t)i1*n_fine + i2] = acc;
@@ -785,8 +683,7 @@ static void continuous_q_fine(
         print_progress(*ndone, progtot, verbose);
     }
 
-    free(cosphi); free(sinphi); free(cos4phi);
-    free(itheta_lo); free(wtheta); free(iphi_lo); free(wphi);
+    free(trig_phi);
 }
 
 // Average of the fine grid over the alpha x alpha sub-bins of each (n_r, n_r) bin, times prefactor
@@ -814,325 +711,179 @@ static void continuous_q_binavg(
     }
 }
 
-// Continuous q-term (triplet) of one xi on a fine (alpha*n_r) grid, bin-averaged to (n_r, n_r).
-// w_type: 0 = qpp (w = 1), 1 = qmm (cos(4*PHI)), 2 = qpm (cos(4*(PHI-phi_jk)))
-// * fine_centers, fine_weights: (n_fine), n_fine = alpha*n_r. phi_centers, dphi: (n_phi)
-// * xi_y: (xi_n) on the log-uniform xi_x
-// * ratio: (nr_ratio, nr_ratio, nphi_ratio) measured over idealised triplet counts on log-uniform
-//   theta from ratio_logr0 and uniform phi in [0, pi) from ratio_phi0, unused for nr_ratio = 0
-// * out: (n_r, n_r), added to
-void continuous_q_single(
+// Continuous q-terms of all calls, each bin-averaged from a fine (alpha*n_r) grid, added to results
+// (n_calls, n_r, n_r)
+void continuous_q_tomo(
     int n_r, int alpha, const double *fine_centers, const double *fine_weights,
     const double *phi_centers, const double *dphi, int n_fine, int n_phi,
-    const double *xi_x, int xi_n, double xi_logx0, double xi_inv_dlogx, const double *xi_y,
-    int w_type, double sigma_eps2, double area, double nbar,
-    const double *ratio, int nr_ratio, int nphi_ratio, double ratio_logr0, double ratio_inv_dlogr,
-    double ratio_phi0, double ratio_inv_dphi, double *out, int nthreads, int verbose){
+    const double *xi_x, int xi_n, double xi_logx0, double xi_inv_dlogx,
+    const double *xi_y_tables, double sigma_eps2, double area, double nbar,
+    int n_calls, const int *call_xi_idx, const int *call_w_type, double *results,
+    int nthreads, int verbose){
 
     double *fine = (double *)orpheus_malloc((size_t)n_fine*n_fine*sizeof(double));
     if (!fine) return;
     reset_progress();
     int ndone = 0;
-    continuous_q_fine(fine_centers, n_fine, phi_centers, dphi, n_phi,
-        xi_x, xi_n, xi_logx0, xi_inv_dlogx, xi_y, w_type, ratio, nr_ratio, nphi_ratio,
-        ratio_logr0, ratio_inv_dlogr, ratio_phi0, ratio_inv_dphi, fine, &ndone, n_fine,
-        nthreads, verbose);
-    if (verbose > 0){ printf("\n"); fflush(stdout); }
-    continuous_q_binavg(fine, fine_weights, n_fine, n_r, alpha,
-        2.*sigma_eps2/(M_PI*area*nbar), out, nthreads);
-    free(fine);
-}
-
-
-// Build q-terms for all tomo combos, in continuous approximation. The calls run one after the
-// other, each parallelised over the fine grid.
-// * Grids as in continuous_q_single. xi_y_tables: (n_xi_unique, xi_n)
-// * Calls, each (n_calls): xi table call_xi_idx, w_type call_w_type, output call_out_idx and
-//   factor call_factor
-// * results: (n_out, n_r, n_r), added to
-void continuous_q_tomo(
-    int n_r, int alpha, const double *fine_centers, const double *fine_weights,
-    const double *phi_centers, const double *dphi, int n_fine, int n_phi,
-    const double *xi_x, int xi_n, double xi_logx0, double xi_inv_dlogx,
-    const double *xi_y_tables, int n_xi_unique,
-    double sigma_eps2, double area, double nbar,
-    int n_calls, const int *call_xi_idx, const int *call_w_type,
-    const int *call_out_idx, const double *call_factor,
-    int n_out, double *results, int nthreads, int verbose){
-
-    long block_size = (long)n_r*n_r;
-    double *fine = (double *)orpheus_malloc((size_t)n_fine*n_fine*sizeof(double));
-    double *block = (double *)orpheus_malloc((size_t)block_size*sizeof(double));
-    if (!(fine && block)){
-        free(fine); free(block);
-        return;
-    }
-    reset_progress();
-    int ndone = 0;
-    // Each call fills the fine grid, bin-averages it and adds it with its factor to its output
+    // One call after the other, each parallelised over the fine grid
     for (int icall=0; icall<n_calls; icall++){
         continuous_q_fine(fine_centers, n_fine, phi_centers, dphi, n_phi,
             xi_x, xi_n, xi_logx0, xi_inv_dlogx, xi_y_tables + (long)call_xi_idx[icall]*xi_n,
-            call_w_type[icall], NULL, 0, 0, 0., 0., 0., 0., fine, &ndone, n_calls*n_fine,
-            nthreads, verbose);
-        memset(block, 0, (size_t)block_size*sizeof(double));
+            call_w_type[icall], fine, &ndone, n_calls*n_fine, nthreads, verbose);
         continuous_q_binavg(fine, fine_weights, n_fine, n_r, alpha,
-            2.*sigma_eps2/(M_PI*area*nbar), block, nthreads);
-        double fac = call_factor[icall];
-        double *dst = results + (long)call_out_idx[icall]*block_size;
-        for (long j=0; j<block_size; j++)
-            dst[j] += fac*block[j];
+            2.*sigma_eps2/(M_PI*area*nbar), results + (long)icall*n_r*n_r, nthreads);
     }
     if (verbose > 0){ printf("\n"); fflush(stdout); }
-    free(fine); free(block);
+    free(fine);
 }
 
-
-// Build r-terms for all tomo combos, in continuous approximation. The side integrals are
-// shared across work units, the outer products parallelise over (combo, Wick pairing).
-// * theta_centers: (n_r) radial nodes. phi_grid, phi_w: (n_phi). v_grid, v_w: (n_v) on [0, 2 pi).
-//   v_half, v_half_w: (n_vh) on [0, pi]
-// * xi_y_tables: (n_xi_unique, xi_n) on the log-uniform xi_x
-// * Work units, each (n_work): xi_+ and xi_- tables of the two pairs, work_xi_a_p, work_xi_a_m,
-//   work_xi_b_p and work_xi_b_m, and work_out_idx, the first of five consecutive outputs
-//   rp0, rp1, rm0, rm1, rpm
-// * results: (n_out, n_r, n_r), added to
+// Continuous r-terms of all work units at a constant density, phi integrals of products of varphi
+// integrals of either pair, added to results (n_out, n_r, n_r)
 void continuous_rterms_tomo(
     int n_r, const double *theta_centers, const double *phi_grid, const double *phi_w, int n_phi,
-    const double *v_grid, const double *v_w, int n_v,
-    const double *v_half, const double *v_half_w, int n_vh, double area,
+    const double *v_grid, const double *v_w, int n_v, double area,
     const double *xi_x, int xi_n, double xi_logx0, double xi_inv_dlogx,
     const double *xi_y_tables, int n_xi_unique,
     int n_work, const int *work_xi_a_p, const int *work_xi_b_p,
     const int *work_xi_a_m, const int *work_xi_b_m, const int *work_out_idx,
-    int n_out, double *results, int nthreads, int verbose){
+    double *results, int nthreads, int verbose){
 
-    // Prefactors 1/(2 pi A) of rp1, rm0, rm1, rpm and 2/(pi A) of rp0
+    // Prefactor 1/(2 pi A), which is the 2/(pi A) of rp0 times the 1/4 of its half circles
     long block_size = (long)n_r*n_r;
     double pre_r = 1./(2.*M_PI*area);
-    double pre_rp0 = 2./(M_PI*area);
 
-    // Distinct (xi_p, xi_m) table pairs per side, so that each side integral is evaluated once
-    int *a_xip = (int *)orpheus_malloc((size_t)n_work*sizeof(int));
-    int *a_xim = (int *)orpheus_malloc((size_t)n_work*sizeof(int));
-    int *b_xip = (int *)orpheus_malloc((size_t)n_work*sizeof(int));
-    int *b_xim = (int *)orpheus_malloc((size_t)n_work*sizeof(int));
-    int *a_of_work = (int *)orpheus_malloc((size_t)n_work*sizeof(int));
-    int *b_of_work = (int *)orpheus_malloc((size_t)n_work*sizeof(int));
-    int nside_a = 0, nside_b = 0;
-    for (int iwork=0; iwork<n_work; iwork++){
-        int ip = work_xi_a_p[iwork], im = work_xi_a_m[iwork], found = -1;
-        for (int iside=0; iside<nside_a; iside++)
-            if (a_xip[iside] == ip && a_xim[iside] == im){ found = iside; break; }
-        if (found < 0){ found = nside_a; a_xip[nside_a] = ip; a_xim[nside_a] = im; nside_a++; }
-        a_of_work[iwork] = found;
-
-        ip = work_xi_b_p[iwork]; im = work_xi_b_m[iwork]; found = -1;
-        for (int iside=0; iside<nside_b; iside++)
-            if (b_xip[iside] == ip && b_xim[iside] == im){ found = iside; break; }
-        if (found < 0){ found = nside_b; b_xip[nside_b] = ip; b_xim[nside_b] = im; nside_b++; }
-        b_of_work[iwork] = found;
-    }
-
-    // Side integrals over (phi, distinct table pair), stored as I[(iphi*nside + iside)*n_r + ir]
-    long a_stride = (long)nside_a*n_r, b_stride = (long)nside_b*n_r;
-    long a_len = (long)n_phi*a_stride, b_len = (long)n_phi*b_stride;
-    double *Ia_rp0 = (double *)orpheus_malloc(a_len*sizeof(double));
-    double *Ia_rp1_c = (double *)orpheus_malloc(a_len*sizeof(double));
-    double *Ia_rp1_s = (double *)orpheus_malloc(a_len*sizeof(double));
-    double *Ia_rm0 = (double *)orpheus_malloc(a_len*sizeof(double));
-    double *Ia_rm1 = (double *)orpheus_malloc(a_len*sizeof(double));
-    double *Ia_rpm = (double *)orpheus_malloc(a_len*sizeof(double));
-    double *Ib_rp0 = (double *)orpheus_malloc(b_len*sizeof(double));
-    double *Ib_rp1_c = (double *)orpheus_malloc(b_len*sizeof(double));
-    double *Ib_rp1_s = (double *)orpheus_malloc(b_len*sizeof(double));
-    double *Ib_rm0 = (double *)orpheus_malloc(b_len*sizeof(double));
-    double *Ib_rm1 = (double *)orpheus_malloc(b_len*sizeof(double));
-    double *Ib_rpm = (double *)orpheus_malloc(b_len*sizeof(double));
-
-    // Bail out if any of the side-integral tables failed to allocate
-    if (!(a_xip && a_xim && b_xip && b_xim && a_of_work && b_of_work
-        && Ia_rp0 && Ia_rp1_c && Ia_rp1_s && Ia_rm0 && Ia_rm1 && Ia_rpm
-        && Ib_rp0 && Ib_rp1_c && Ib_rp1_s && Ib_rm0 && Ib_rm1 && Ib_rpm)){
-        free(a_xip); free(a_xim); free(b_xip); free(b_xim); free(a_of_work); free(b_of_work);
-        free(Ia_rp0); free(Ia_rp1_c); free(Ia_rp1_s);
-        free(Ia_rm0); free(Ia_rm1); free(Ia_rpm);
-        free(Ib_rp0); free(Ib_rp1_c); free(Ib_rp1_s);
-        free(Ib_rm0); free(Ib_rm1); free(Ib_rpm);
+    // Integrals over varphi of each xi table that a work unit reads, as J[(iphi*n_xi_unique +
+    // itab)*n_r + ir]: J_1 and J_c4v of xi_+, J_c4psi and J_c4vpsi of xi_-. The first pair sits at
+    // psi = phi - theta e(varphi) and the second at psi(varphi + pi), so on a varphi grid that a
+    // shift by pi maps onto itself both take the same integrals, and those of sin(4*varphi_psi)
+    // and sin(4*(varphi - varphi_psi)) vanish by the symmetry varphi -> -varphi
+    long j_len = (long)n_phi*n_xi_unique*n_r;
+    int *tab_used = (int *)orpheus_calloc(n_xi_unique, sizeof(int));
+    double *J_1 = (double *)orpheus_malloc(j_len*sizeof(double));
+    double *J_c4v = (double *)orpheus_malloc(j_len*sizeof(double));
+    double *J_c4psi = (double *)orpheus_malloc(j_len*sizeof(double));
+    double *J_c4vpsi = (double *)orpheus_malloc(j_len*sizeof(double));
+    double *trig_v = trig_tables(v_grid, n_v);
+    if (!(tab_used && J_1 && J_c4v && J_c4psi && J_c4vpsi && trig_v)){
+        free(tab_used); free(J_1); free(J_c4v); free(J_c4psi); free(J_c4vpsi); free(trig_v);
         return;
     }
-
-    if (verbose > 0) printf("  side integrals ");
-    reset_progress();
-    int nsidedone = 0;
-    int nsidetot = n_phi*(nside_a+nside_b);
-
-    // Side a: integrals over varphi at psi_a = phi - theta e(varphi), with xi_+ for rpm
-    #pragma omp parallel for schedule(dynamic) collapse(2) num_threads(nthreads)
-    for (int iphi=0; iphi<n_phi; iphi++){
-        for (int iside=0; iside<nside_a; iside++){
-            double phi = phi_grid[iphi];
-            const double *xip = xi_y_tables + (long)a_xip[iside]*xi_n;
-            const double *xim = xi_y_tables + (long)a_xim[iside]*xi_n;
-            long off = ((long)iphi*nside_a + iside)*n_r;
-
-            for (int ir=0; ir<n_r; ir++){
-                double theta = theta_centers[ir];
-
-                // rp0: varphi in [0, pi]
-                double s_rp0 = 0.;
-                for (int iv=0; iv<n_vh; iv++){
-                    double abs_psia = sqrt(phi*phi + theta*theta
-                        - 2.*phi*theta*cos(v_half[iv]));
-                    s_rp0 += interp1d_eval(xi_x, xip, xi_n, xi_logx0,
-                        xi_inv_dlogx, abs_psia)*v_half_w[iv];
-                }
-                Ia_rp0[off+ir] = s_rp0;
-
-                // rp1, rm0, rm1, rpm: varphi in [0, 2*pi]
-                double s_rp1_c = 0., s_rp1_s = 0., s_rm0 = 0., s_rm1 = 0., s_rpm = 0.;
-                for (int iv=0; iv<n_v; iv++){
-                    double varphi = v_grid[iv];
-                    double psia_x = phi - theta*cos(varphi), psia_y = -theta*sin(varphi);
-                    double abs_psia = hypot(psia_x, psia_y);
-                    double varphi_a = atan2(psia_y, psia_x);
-                    double xim_val = interp1d_eval(xi_x, xim, xi_n,
-                        xi_logx0, xi_inv_dlogx, abs_psia);
-                    double xip_val = interp1d_eval(xi_x, xip, xi_n,
-                        xi_logx0, xi_inv_dlogx, abs_psia);
-                    s_rp1_c += xim_val*cos(4.*varphi_a)*v_w[iv];
-                    s_rp1_s += xim_val*sin(4.*varphi_a)*v_w[iv];
-                    s_rm0 += xim_val*cos(4.*(varphi-varphi_a))*v_w[iv];
-                    s_rm1 += xip_val*cos(4.*varphi)*v_w[iv];
-                    s_rpm += xip_val*v_w[iv];
-                }
-                Ia_rp1_c[off+ir] = s_rp1_c;
-                Ia_rp1_s[off+ir] = s_rp1_s;
-                Ia_rm0[off+ir] = s_rm0;
-                Ia_rm1[off+ir] = s_rm1;
-                Ia_rpm[off+ir] = s_rpm;
-            }
-            #pragma omp atomic
-            nsidedone += 1;
-            print_progress(nsidedone, nsidetot, verbose);
-        }
+    const double *cos_v = trig_v, *sin_v = trig_v + n_v, *cos4v = trig_v + 2*n_v;
+    const double *sin4v = trig_v + 3*n_v;
+    for (int iwork=0; iwork<n_work; iwork++){
+        tab_used[work_xi_a_p[iwork]] = tab_used[work_xi_b_p[iwork]] = 1;
+        tab_used[work_xi_a_m[iwork]] = tab_used[work_xi_b_m[iwork]] = 1;
     }
 
-    // Side b: the same at psi_b = phi + theta e(varphi), with xi_- and 2*cos(4*(varphi-varphi_b))
-    // for rpm
-    #pragma omp parallel for schedule(dynamic) collapse(2) num_threads(nthreads)
-    for (int iphi=0; iphi<n_phi; iphi++){
-        for (int iside=0; iside<nside_b; iside++){
-            double phi = phi_grid[iphi];
-            const double *xip = xi_y_tables + (long)b_xip[iside]*xi_n;
-            const double *xim = xi_y_tables + (long)b_xim[iside]*xi_n;
-            long off = ((long)iphi*nside_b + iside)*n_r;
-
-            for (int ir=0; ir<n_r; ir++){
-                double theta = theta_centers[ir];
-
-                // rp0: varphi in [0, pi]
-                double s_rp0 = 0.;
-                for (int iv=0; iv<n_vh; iv++){
-                    double abs_psib = sqrt(phi*phi + theta*theta
-                        + 2.*phi*theta*cos(v_half[iv]));
-                    s_rp0 += interp1d_eval(xi_x, xip, xi_n, xi_logx0,
-                        xi_inv_dlogx, abs_psib)*v_half_w[iv];
-                }
-                Ib_rp0[off+ir] = s_rp0;
-
-                // rp1, rm0, rm1, rpm: varphi in [0, 2*pi]
-                double s_rp1_c = 0., s_rp1_s = 0., s_rm0 = 0., s_rm1 = 0., s_rpm = 0.;
-                for (int iv=0; iv<n_v; iv++){
-                    double varphi = v_grid[iv];
-                    double psib_x = phi + theta*cos(varphi), psib_y = theta*sin(varphi);
-                    double abs_psib = hypot(psib_x, psib_y);
-                    double varphi_b = atan2(psib_y, psib_x);
-                    double xim_val = interp1d_eval(xi_x, xim, xi_n,
-                        xi_logx0, xi_inv_dlogx, abs_psib);
-                    double xip_val = interp1d_eval(xi_x, xip, xi_n,
-                        xi_logx0, xi_inv_dlogx, abs_psib);
-                    s_rp1_c += xim_val*cos(4.*varphi_b)*v_w[iv];
-                    s_rp1_s += xim_val*sin(4.*varphi_b)*v_w[iv];
-                    s_rm0 += xim_val*cos(4.*(varphi-varphi_b))*v_w[iv];
-                    s_rm1 += xip_val*cos(4.*varphi)*v_w[iv];
-                    s_rpm += 2.*xim_val*cos(4.*(varphi-varphi_b))*v_w[iv];
-                }
-                Ib_rp1_c[off+ir] = s_rp1_c;
-                Ib_rp1_s[off+ir] = s_rp1_s;
-                Ib_rm0[off+ir] = s_rm0;
-                Ib_rm1[off+ir] = s_rm1;
-                Ib_rpm[off+ir] = s_rpm;
-            }
-            #pragma omp atomic
-            nsidedone += 1;
-            print_progress(nsidedone, nsidetot, verbose);
-        }
-    }
-    if (verbose > 0){ printf("\n  outer products "); fflush(stdout); }
     reset_progress();
-    int nworkdone = 0;
+    int ndone = 0;
+    int ntot = n_phi*n_r + n_work;
 
-    // Outer products of the two sides per work unit, integrated over phi with weight phi dphi
+    // Varphi integrals per (phi, theta) node pair, whose separations all xi tables share, with
+    // e(4*varphi_psi) = (psi/|psi|)^4
+    #pragma omp parallel num_threads(nthreads)
+    {
+        // Lower xi node and its weight, cos(4*varphi_psi) and cos(4*(varphi - varphi_psi)) per
+        // varphi node, with the node -1 outside of the xi grid
+        int *ilo = (int *)orpheus_malloc((size_t)n_v*sizeof(int));
+        double *wlo = (double *)orpheus_malloc((size_t)n_v*sizeof(double));
+        double *c4psi = (double *)orpheus_malloc((size_t)n_v*sizeof(double));
+        double *c4vpsi = (double *)orpheus_malloc((size_t)n_v*sizeof(double));
+        int ok = ilo && wlo && c4psi && c4vpsi;
+
+        #pragma omp for schedule(dynamic) collapse(2)
+        for (int iphi=0; iphi<n_phi; iphi++){
+            for (int ir=0; ir<n_r; ir++){
+                if (!ok) continue;
+                double phi = phi_grid[iphi], theta = theta_centers[ir];
+                for (int iv=0; iv<n_v; iv++){
+                    double x = phi - theta*cos_v[iv], y = -theta*sin_v[iv];
+                    double abs_psi = hypot(x, y);
+                    ilo[iv] = interp1d_locate(xi_x, xi_n, xi_logx0, xi_inv_dlogx, abs_psi, wlo+iv);
+                    double c = abs_psi > 0. ? x/abs_psi : 1., s = abs_psi > 0. ? y/abs_psi : 0.;
+                    double c2 = c*c - s*s, s2 = 2.*c*s;
+                    double c4 = c2*c2 - s2*s2, s4 = 2.*c2*s2;
+                    c4psi[iv] = c4;
+                    c4vpsi[iv] = cos4v[iv]*c4 + sin4v[iv]*s4;
+                }
+                for (int itab=0; itab<n_xi_unique; itab++){
+                    if (!tab_used[itab]) continue;
+                    const double *xi_y = xi_y_tables + (long)itab*xi_n;
+                    double s_1 = 0., s_c4v = 0., s_c4psi = 0., s_c4vpsi = 0.;
+                    for (int iv=0; iv<n_v; iv++){
+                        if (ilo[iv] < 0) continue;
+                        int i = ilo[iv];
+                        double xi_w = (xi_y[i] + wlo[iv]*(xi_y[i+1]-xi_y[i]))*v_w[iv];
+                        s_1 += xi_w;
+                        s_c4v += xi_w*cos4v[iv];
+                        s_c4psi += xi_w*c4psi[iv];
+                        s_c4vpsi += xi_w*c4vpsi[iv];
+                    }
+                    long off = ((long)iphi*n_xi_unique + itab)*n_r + ir;
+                    J_1[off] = s_1;
+                    J_c4v[off] = s_c4v;
+                    J_c4psi[off] = s_c4psi;
+                    J_c4vpsi[off] = s_c4vpsi;
+                }
+                #pragma omp atomic
+                ndone += 1;
+                print_progress(ndone, ntot, verbose);
+            }
+        }
+        free(ilo); free(wlo); free(c4psi); free(c4vpsi);
+    }
+
+    // Outer products of the two pairs per work unit, i.e. (combo, Wick pairing), integrated over
+    // phi with weight phi dphi
     #pragma omp parallel for schedule(dynamic) num_threads(nthreads)
     for (int iwork=0; iwork<n_work; iwork++){
-        double *rp0 = (double *)orpheus_calloc(block_size, sizeof(double));
-        double *rp1 = (double *)orpheus_calloc(block_size, sizeof(double));
-        double *rm0 = (double *)orpheus_calloc(block_size, sizeof(double));
-        double *rm1 = (double *)orpheus_calloc(block_size, sizeof(double));
-        double *rpm = (double *)orpheus_calloc(block_size, sizeof(double));
-        if (!(rp0 && rp1 && rm0 && rm1 && rpm)){
-            free(rp0); free(rp1); free(rm0); free(rm1); free(rpm);
-            continue;
-        }
+        // rp0, rp1, rm0, rm1 and rpm of the work unit, in the order of its outputs
+        double *acc = (double *)orpheus_calloc((size_t)5*block_size, sizeof(double));
+        if (!acc) continue;
+        double *rp0 = acc, *rp1 = acc + block_size, *rm0 = acc + 2*block_size;
+        double *rm1 = acc + 3*block_size, *rpm = acc + 4*block_size;
 
         for (int iphi=0; iphi<n_phi; iphi++){
             double phi_weight = phi_w[iphi]*phi_grid[iphi];
-            long off_a = ((long)iphi*nside_a + a_of_work[iwork])*n_r;
-            long off_b = ((long)iphi*nside_b + b_of_work[iwork])*n_r;
+            long row = (long)iphi*n_xi_unique;
+            const double *a_1 = J_1 + (row + work_xi_a_p[iwork])*n_r;
+            const double *a_c4v = J_c4v + (row + work_xi_a_p[iwork])*n_r;
+            const double *a_c4psi = J_c4psi + (row + work_xi_a_m[iwork])*n_r;
+            const double *a_c4vpsi = J_c4vpsi + (row + work_xi_a_m[iwork])*n_r;
+            const double *b_1 = J_1 + (row + work_xi_b_p[iwork])*n_r;
+            const double *b_c4v = J_c4v + (row + work_xi_b_p[iwork])*n_r;
+            const double *b_c4psi = J_c4psi + (row + work_xi_b_m[iwork])*n_r;
+            const double *b_c4vpsi = J_c4vpsi + (row + work_xi_b_m[iwork])*n_r;
 
             for (int i1=0; i1<n_r; i1++){
                 for (int i2=0; i2<n_r; i2++){
                     long idx = (long)i1*n_r + i2;
-                    rp0[idx] += phi_weight*Ia_rp0[off_a+i1]*Ib_rp0[off_b+i2];
-                    rp1[idx] += phi_weight*(Ia_rp1_c[off_a+i1]*Ib_rp1_c[off_b+i2]
-                        + Ia_rp1_s[off_a+i1]*Ib_rp1_s[off_b+i2]);
-                    rm0[idx] += phi_weight*Ia_rm0[off_a+i1]*Ib_rm0[off_b+i2];
-                    rm1[idx] += phi_weight*Ia_rm1[off_a+i1]*Ib_rm1[off_b+i2];
-                    rpm[idx] += phi_weight*Ia_rpm[off_a+i1]*Ib_rpm[off_b+i2];
+                    rp0[idx] += phi_weight*a_1[i1]*b_1[i2];
+                    rp1[idx] += phi_weight*a_c4psi[i1]*b_c4psi[i2];
+                    rm0[idx] += phi_weight*a_c4vpsi[i1]*b_c4vpsi[i2];
+                    rm1[idx] += phi_weight*a_c4v[i1]*b_c4v[i2];
+                    rpm[idx] += phi_weight*a_1[i1]*b_c4vpsi[i2];
                 }
             }
         }
 
-        // Apply prefactors and accumulate into output
-        int out0 = work_out_idx[iwork];
+        // Apply the prefactors and add to the five consecutive outputs rp0, rp1, rm0, rm1 and rpm
+        // from work_out_idx, with the 2 of the second pair of rpm
+        double *dst = results + (long)work_out_idx[iwork]*block_size;
         #pragma omp critical
         {
-            double *dst;
-            dst = results + (long)(out0+0)*block_size;
-            for (long j=0; j<block_size; j++) dst[j] += pre_rp0*rp0[j];
-            dst = results + (long)(out0+1)*block_size;
-            for (long j=0; j<block_size; j++) dst[j] += pre_r*rp1[j];
-            dst = results + (long)(out0+2)*block_size;
-            for (long j=0; j<block_size; j++) dst[j] += pre_r*rm0[j];
-            dst = results + (long)(out0+3)*block_size;
-            for (long j=0; j<block_size; j++) dst[j] += pre_r*rm1[j];
-            dst = results + (long)(out0+4)*block_size;
-            for (long j=0; j<block_size; j++) dst[j] += pre_r*rpm[j];
+            for (long j=0; j<4*block_size; j++) dst[j] += pre_r*acc[j];
+            for (long j=4*block_size; j<5*block_size; j++) dst[j] += 2.*pre_r*acc[j];
         }
 
-        free(rp0); free(rp1); free(rm0); free(rm1); free(rpm);
+        free(acc);
         #pragma omp atomic
-        nworkdone += 1;
-        print_progress(nworkdone, n_work, verbose);
+        ndone += 1;
+        print_progress(ndone, ntot, verbose);
     }
     if (verbose > 0){ printf("\n"); fflush(stdout); }
 
-    free(a_xip); free(a_xim); free(b_xip); free(b_xim); free(a_of_work); free(b_of_work);
-    free(Ia_rp0); free(Ia_rp1_c); free(Ia_rp1_s);
-    free(Ia_rm0); free(Ia_rm1); free(Ia_rpm);
-    free(Ib_rp0); free(Ib_rp1_c); free(Ib_rp1_s);
-    free(Ib_rm0); free(Ib_rm1); free(Ib_rpm);
+    free(tab_used); free(J_1); free(J_c4v); free(J_c4psi); free(J_c4vpsi); free(trig_v);
 }
 
 
@@ -1140,66 +891,304 @@ void continuous_rterms_tomo(
 // Phi-reduction of mixed terms //
 //////////////////////////////////
 
-// Sum of the triplet counts against weight*xi(r_jk) over phi, for one mixed term
-// * Nt: (nr, nr, nphi) over (theta1, theta2, phi). tc: (nr). phic: (nphi)
-// * weight_type as w_type of continuous_q_single. xi_y: (xi_n) on the log-uniform xi_x
-// * out: (nr, nr), overwritten
+// Integral over phi of the triplets per unit angle (nr, nr, n_modes), in the basis 1, cos(n phi),
+// sin(n phi), against weight*xi(r_jk) for one mixed term, written to out (nr, nr)
 void triplet_term_reduce(
-    const double *Nt, int nr, int nphi, const double *tc, const double *phic, int weight_type,
-    const double *xi_x, int xi_n, double xi_logx0, double xi_inv_dlogx,
+    const double *triplets, int nr, int n_modes, const double *theta_edges, int n_sub, int n_ang,
+    int weight_type, const double *xi_x, int xi_n, double xi_logx0, double xi_inv_dlogx,
     const double *xi_y, double *out, int nthreads, int verbose){
 
-    // Trig of the phi nodes
-    double *cosphi = (double *)orpheus_malloc((size_t)nphi*sizeof(double));
-    double *sinphi = (double *)orpheus_malloc((size_t)nphi*sizeof(double));
-    double *cos4phi = (double *)orpheus_malloc((size_t)nphi*sizeof(double));
-    if (!(cosphi && sinphi && cos4phi)){
-        free(cosphi); free(sinphi); free(cos4phi);
+    // Radial sub-nodes at the midpoints of n_sub equal sub-intervals of each bin, over which
+    // weight*xi is averaged with the triplets uniform in theta dtheta, and their weights theta
+    // dtheta, normalised within each bin
+    int n_nodes = nr*n_sub;
+    double *theta_nodes = (double *)orpheus_malloc((size_t)n_nodes*sizeof(double));
+    double *theta_weights = (double *)orpheus_malloc((size_t)n_nodes*sizeof(double));
+    // Angular nodes at the midpoints of n_ang (even) equal intervals of 2 pi, of which those in
+    // (0, pi) suffice as weight*xi is even in phi, their trig and Fourier basis (n_half, n_modes)
+    int n_half = n_ang/2;
+    double *phi_nodes = (double *)orpheus_malloc((size_t)n_half*sizeof(double));
+    double *basis = (double *)orpheus_malloc((size_t)n_half*n_modes*sizeof(double));
+    if (!(theta_nodes && theta_weights && phi_nodes && basis)){
+        free(theta_nodes); free(theta_weights); free(phi_nodes); free(basis);
         return;
     }
-    for (int iphi=0; iphi<nphi; iphi++){
-        cosphi[iphi] = cos(phic[iphi]);
-        sinphi[iphi] = sin(phic[iphi]);
-        cos4phi[iphi] = cos(4.*phic[iphi]);
+    for (int i=0; i<nr; i++){
+        double dt = (theta_edges[i+1]-theta_edges[i])/n_sub, norm = 0.;
+        for (int isub=0; isub<n_sub; isub++){
+            double lo = theta_edges[i] + isub*dt, hi = lo + dt;
+            theta_nodes[i*n_sub+isub] = .5*(lo+hi);
+            theta_weights[i*n_sub+isub] = hi*hi - lo*lo;
+            norm += theta_weights[i*n_sub+isub];
+        }
+        for (int isub=0; isub<n_sub; isub++) theta_weights[i*n_sub+isub] /= norm;
     }
+    for (int iphi=0; iphi<n_half; iphi++) phi_nodes[iphi] = (iphi+.5)*2.*M_PI/n_ang;
+    double *trig_phi = trig_tables(phi_nodes, n_half);
+    if (!trig_phi){
+        free(theta_nodes); free(theta_weights); free(phi_nodes); free(basis);
+        return;
+    }
+    const double *cosphi = trig_phi, *sinphi = trig_phi + n_half;
+    const double *cos4phi = trig_phi + 2*n_half, *sin4phi = trig_phi + 3*n_half;
+    for (int iphi=0; iphi<n_half; iphi++)
+        fourier_row(cosphi[iphi], sinphi[iphi], n_modes, basis + (long)iphi*n_modes);
+    // Each node in (0, pi) counts twice
+    double dphi = 4.*M_PI/n_ang;
     reset_progress();
     int ndone = 0;
 
-    #pragma omp parallel for schedule(dynamic) num_threads(nthreads)
-    for (int i1=0; i1<nr; i1++){
-        double theta1 = tc[i1];
-        for (int i2=0; i2<nr; i2++){
-            double theta2 = tc[i2];
-            const double *row = Nt + ((size_t)i1*nr + i2)*nphi;
-            // xi at r_jk = |theta1 - theta2 e(phi)|, weighted by the triplet counts
-            double acc = 0.;
-            for (int iphi=0; iphi<nphi; iphi++){
-                double cphi = cosphi[iphi];
-                double rjk2 = theta1*theta1 + theta2*theta2 - 2.*theta1*theta2*cphi;
-                double rjk = rjk2 > 0. ? sqrt(rjk2) : 0.;
-                double xi = interp1d_eval(xi_x, xi_y, xi_n,
-                    xi_logx0, xi_inv_dlogx, rjk);
-                // Angular weight of qpp, qmm or qpm
-                double w;
-                if (weight_type == 0){
-                    w = 1.;
-                } else if (weight_type == 1){
-                    w = cos4phi[iphi];
-                } else {
-                    double rjk_x = theta1 - theta2*cphi;
-                    double rjk_y = -theta2*sinphi[iphi];
-                    double phi_jk = atan2(rjk_y, rjk_x);
-                    w = cos(4.*(phic[iphi]-phi_jk));
+    #pragma omp parallel num_threads(nthreads)
+    {
+        // The triplets of one radial bin pair on the angular nodes
+        double *triplets_phi = (double *)orpheus_malloc((size_t)n_half*sizeof(double));
+        #pragma omp for schedule(dynamic)
+        for (int i1=0; i1<nr; i1++){
+            for (int i2=0; i2<nr && triplets_phi; i2++){
+                const double *coef = triplets + ((size_t)i1*nr + i2)*n_modes;
+                // Triplets on the nodes from their cosine coefficients, the only ones that enter
+                // as weight*xi is even in phi: 1, cos(phi), cos(2 phi), ... sit at 0, 1, 3, ... of
+                // the triplets and at 0 ... n_modes/2 of the blocked basis
+                for (int iphi=0; iphi<n_half; iphi++){
+                    const double *row = basis + (long)iphi*n_modes;
+                    double val = coef[0];
+                    for (int k=1; k<=n_modes/2; k++) val += coef[2*k-1]*row[k];
+                    triplets_phi[iphi] = val;
                 }
-                acc += row[iphi]*w*xi;
+                double acc = 0.;
+                for (int is1=0; is1<n_sub; is1++){
+                    double theta1 = theta_nodes[i1*n_sub+is1];
+                    for (int is2=0; is2<n_sub; is2++){
+                        double theta2 = theta_nodes[i2*n_sub+is2];
+                        double sum = 0.;
+                        for (int iphi=0; iphi<n_half; iphi++){
+                            double rjk2 = theta1*theta1 + theta2*theta2
+                                - 2.*theta1*theta2*cosphi[iphi];
+                            double rjk = rjk2 > 0. ? sqrt(rjk2) : 0.;
+                            double xi = interp1d_eval(xi_x, xi_y, xi_n,
+                                xi_logx0, xi_inv_dlogx, rjk);
+                            sum += triplets_phi[iphi]*xi*q_weight(weight_type, cos4phi[iphi],
+                                sin4phi[iphi], theta1 - theta2*cosphi[iphi], -theta2*sinphi[iphi]);
+                        }
+                        acc += theta_weights[i1*n_sub+is1]*theta_weights[i2*n_sub+is2]*sum;
+                    }
+                }
+                out[(size_t)i1*nr + i2] = acc*dphi;
             }
-            out[(size_t)i1*nr + i2] = acc;
+            #pragma omp atomic
+            ndone += 1;
+            #pragma omp critical
+            print_progress(ndone, nr, verbose);
         }
-        #pragma omp atomic
-        ndone += 1;
-        print_progress(ndone, nr, verbose);
+        free(triplets_phi);
     }
     if (verbose > 0){ printf("\n"); fflush(stdout); }
 
-    free(cosphi); free(sinphi); free(cos4phi);
+    free(theta_nodes); free(theta_weights); free(phi_nodes); free(basis); free(trig_phi);
+}
+
+
+////////////////////////////////////////////////////////
+// Post-processing of the measured quadruplet density //
+////////////////////////////////////////////////////////
+
+// Density (nr, nr, nr, nm, nm) of the sparse radial bins from the smallest aligned block of 2^l
+// bins per axis that holds count_min quadruplets per angular resolution cell, else the whole grid,
+// in place
+void quadruplets_merge_sparse(
+    double *q, int nr, int nm, const double *v, double cell_norm, double q_ideal,
+    double count_min, int nthreads){
+
+    long nm2 = (long)nm*nm, n_cell = (long)nr*nr*nr;
+
+    // Sparse bins, whose idealised count per cell, q_ideal cell_norm v_i v_j v_k, is below
+    // count_min
+    long n_sparse = 0;
+    for (long cell=0; cell<n_cell; cell++)
+        if (q_ideal*cell_norm*v[cell/((long)nr*nr)]*v[(cell/nr)%nr]*v[cell%nr] < count_min)
+            n_sparse++;
+    if (n_sparse == 0) return;
+    long *sparse = (long *)orpheus_malloc((size_t)n_sparse*sizeof(long));
+    double *cell_sum = (double *)orpheus_malloc((size_t)n_cell*sizeof(double));
+    double *merged = (double *)orpheus_malloc((size_t)n_sparse*nm2*sizeof(double));
+    if (!(sparse && cell_sum && merged)){
+        free(sparse); free(cell_sum); free(merged);
+        return;
+    }
+    n_sparse = 0;
+    for (long cell=0; cell<n_cell; cell++)
+        if (q_ideal*cell_norm*v[cell/((long)nr*nr)]*v[(cell/nr)%nr]*v[cell%nr] < count_min)
+            sparse[n_sparse++] = cell;
+
+    // Sum of q over the nm2 resolution cells of each radial bin, nm2 times its constant Fourier
+    // coefficient
+    for (long cell=0; cell<n_cell; cell++) cell_sum[cell] = q[cell*nm2]*nm2;
+
+    // Block of each sparse bin and its density, the mean of q over its bins weighted by v_i v_j
+    // v_k, written once all are known. The count of a block is cell_norm v_i v_j v_k q summed over
+    // its bins and averaged over the nm^2 cells
+    #pragma omp parallel for schedule(dynamic) num_threads(nthreads)
+    for (long is=0; is<n_sparse; is++){
+        long cell = sparse[is];
+        int bin[3] = {(int)(cell/((long)nr*nr)), (int)((cell/nr)%nr), (int)(cell%nr)};
+        int lo[3], hi[3];
+        for (int size=2; ; size*=2){
+            for (int a=0; a<3; a++){
+                lo[a] = bin[a]/size*size;
+                hi[a] = lo[a]+size < nr ? lo[a]+size : nr;
+            }
+            double count = 0.;
+            for (int i=lo[0]; i<hi[0]; i++)
+                for (int j=lo[1]; j<hi[1]; j++)
+                    for (int k=lo[2]; k<hi[2]; k++)
+                        count += v[i]*v[j]*v[k]*cell_sum[((long)i*nr + j)*nr + k];
+            if (cell_norm*count/nm2 >= count_min || size >= nr) break;
+        }
+        double *dst = merged + is*nm2;
+        double v_sum = 0.;
+        for (long ab=0; ab<nm2; ab++) dst[ab] = 0.;
+        for (int i=lo[0]; i<hi[0]; i++){
+            for (int j=lo[1]; j<hi[1]; j++){
+                for (int k=lo[2]; k<hi[2]; k++){
+                    double vol = v[i]*v[j]*v[k];
+                    const double *src = q + (((long)i*nr + j)*nr + k)*nm2;
+                    v_sum += vol;
+                    for (long ab=0; ab<nm2; ab++) dst[ab] += vol*src[ab];
+                }
+            }
+        }
+        for (long ab=0; ab<nm2; ab++) dst[ab] /= v_sum;
+    }
+    #pragma omp parallel for schedule(static) num_threads(nthreads)
+    for (long is=0; is<n_sparse; is++)
+        memcpy(q + sparse[is]*nm2, merged + is*nm2, (size_t)nm2*sizeof(double));
+
+    free(sparse); free(cell_sum); free(merged);
+}
+
+// Knot values of the quadruplet density (nr, nr, nr, nm, nm) from its bin means m, in place, whose
+// interpolant has these means
+void quadruplets_to_knots(double *q, int nr, int nm, double coef, int nthreads){
+
+    long nm2 = (long)nm*nm;
+    for (int axis=0; axis<3; axis++){
+        // Stride of the axis, and the start of its line through the bins (u, w) of the other two
+        long stride = axis == 0 ? (long)nr*nr*nm2 : (axis == 1 ? (long)nr*nm2 : nm2);
+        #pragma omp parallel num_threads(nthreads)
+        {
+            double *prev = (double *)orpheus_malloc((size_t)nm2*sizeof(double));
+            double *cur = (double *)orpheus_malloc((size_t)nm2*sizeof(double));
+            #pragma omp for schedule(static)
+            for (long line=0; line<(long)nr*nr; line++){
+                if (!(prev && cur)) continue;
+                long u = line/nr, w = line%nr;
+                long start = (axis == 0 ? (u*nr + w)*nm2
+                    : (axis == 1 ? (u*nr*nr + w)*nm2 : (u*nr + w)*nr*nm2));
+                memcpy(prev, q + start, (size_t)nm2*sizeof(double));
+                // m_i - coef (m_(i+1) - 2 m_i + m_(i-1)) except at the first and the last bin, coef
+                // 1/24 for the cubic and 1/8 for the linear interpolation
+                for (int i=1; i<nr-1; i++){
+                    double *node = q + start + i*stride;
+                    const double *next = node + stride;
+                    memcpy(cur, node, (size_t)nm2*sizeof(double));
+                    for (long ab=0; ab<nm2; ab++)
+                        node[ab] = cur[ab] - coef*(next[ab] - 2.*cur[ab] + prev[ab]);
+                    double *swap = prev; prev = cur; cur = swap;
+                }
+            }
+            free(prev); free(cur);
+        }
+    }
+}
+
+// Quadruplet density (nr, nr, nr, nm, nm), nr even and >= 4, extrapolated to vanishing radial bin
+// width from its bin means q, in place: (4 q - q_2)/3 of the knot values of q and of q_2 on merged
+// pairs of radial bins
+void quadruplets_richardson(
+    double *q, int nr, int nm, const double *weights, const double *centers, double coef,
+    int cubic, int nthreads){
+
+    int n2 = nr/2;
+    long nm2 = (long)nm*nm, slab_len = (long)n2*nm2;
+    double *w_merged = (double *)orpheus_malloc((size_t)n2*sizeof(double));
+    double *centers_merged = (double *)orpheus_malloc((size_t)n2*sizeof(double));
+    double *q_merged = (double *)orpheus_malloc((size_t)n2*n2*n2*nm2*sizeof(double));
+    Interp4dRadial *axes = (Interp4dRadial *)orpheus_malloc((size_t)nr*sizeof(Interp4dRadial));
+    if (!(w_merged && centers_merged && q_merged && axes)){
+        free(w_merged); free(centers_merged); free(q_merged); free(axes);
+        return;
+    }
+
+    // Weights of the merged bins and their centers, the weighted means of the centers
+    for (int mi=0; mi<n2; mi++){
+        w_merged[mi] = weights[2*mi] + weights[2*mi+1];
+        centers_merged[mi] = ((weights[2*mi]*centers[2*mi] + weights[2*mi+1]*centers[2*mi+1])
+            /w_merged[mi]);
+    }
+
+    // Merged density q_2, the same counts on pairs of radial bins: the mean over the 2 x 2 x 2
+    // radial bins of a merged bin with the radial weights
+    #pragma omp parallel for schedule(static) num_threads(nthreads)
+    for (long mijk=0; mijk<(long)n2*n2*n2; mijk++){
+        int mi = mijk/((long)n2*n2), mj = (mijk/n2)%n2, mk = mijk%n2;
+        double *dst = q_merged + mijk*nm2;
+        double norm = 1./(w_merged[mi]*w_merged[mj]*w_merged[mk]);
+        for (long ab=0; ab<nm2; ab++) dst[ab] = 0.;
+        for (int d1=0; d1<2; d1++){
+            for (int d2=0; d2<2; d2++){
+                for (int d3=0; d3<2; d3++){
+                    int i = 2*mi+d1, j = 2*mj+d2, k = 2*mk+d3;
+                    double wt = weights[i]*weights[j]*weights[k]*norm;
+                    const double *src = q + (((long)i*nr + j)*nr + k)*nm2;
+                    for (long ab=0; ab<nm2; ab++) dst[ab] += wt*src[ab];
+                }
+            }
+        }
+    }
+
+    // Knot values of both, quadruplets_to_knots with coef
+    quadruplets_to_knots(q, nr, nm, coef, nthreads);
+    quadruplets_to_knots(q_merged, n2, nm, coef, nthreads);
+
+    // Stencil of each radial bin on the merged centers, as the integral interpolates (cubic or
+    // linear), held beyond the first and the last of them
+    Interp4dGrid grid_merged = interp4d_grid(centers_merged, n2, cubic);
+    double last = centers_merged[n2-1];
+    for (int i=0; i<nr; i++)
+        axes[i] = interp4d_axis_r(&grid_merged, centers[i] < last ? centers[i] : last);
+
+    // (4 q - q_2)/3 with q_2 interpolated per (theta1, theta2) bin first in theta1 and theta2 for
+    // all merged theta3, then in theta3
+    #pragma omp parallel num_threads(nthreads)
+    {
+        double *slab = (double *)orpheus_malloc((size_t)slab_len*sizeof(double));
+        #pragma omp for schedule(static)
+        for (long ij=0; ij<(long)nr*nr; ij++){
+            if (!slab) continue;
+            const Interp4dRadial *ai = axes + ij/nr, *aj = axes + ij%nr;
+            for (long x=0; x<slab_len; x++) slab[x] = 0.;
+            for (int d1=0; d1<ai->n; d1++){
+                for (int d2=0; d2<aj->n; d2++){
+                    double wt = ai->w[d1]*aj->w[d2];
+                    if (wt == 0.) continue;
+                    const double *src = (q_merged
+                        + ((long)(ai->first+d1)*n2 + aj->first+d2)*slab_len);
+                    for (long x=0; x<slab_len; x++) slab[x] += wt*src[x];
+                }
+            }
+            for (int k=0; k<nr; k++){
+                const Interp4dRadial *ak = axes + k;
+                double *dst = q + (ij*nr + k)*nm2;
+                for (long ab=0; ab<nm2; ab++){
+                    double q_merged_k = 0.;
+                    for (int d3=0; d3<ak->n; d3++)
+                        q_merged_k += ak->w[d3]*slab[(long)(ak->first+d3)*nm2 + ab];
+                    dst[ab] = (4.*dst[ab] - q_merged_k)/3.;
+                }
+            }
+        }
+        free(slab);
+    }
+
+    free(w_merged); free(centers_merged); free(q_merged); free(axes);
 }
